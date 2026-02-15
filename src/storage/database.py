@@ -92,6 +92,37 @@ class Database:
                 activated_at TEXT,
                 expired_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS shadow_army (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                shadow_type TEXT NOT NULL,
+                rank TEXT NOT NULL DEFAULT 'normal',
+                status TEXT NOT NULL DEFAULT 'dormant',
+                source_quest_id TEXT,
+                source_quest_title TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                trigger_json TEXT DEFAULT '{}',
+                action_json TEXT DEFAULT '{}',
+                level INTEGER DEFAULT 1,
+                exp INTEGER DEFAULT 0,
+                exp_to_next INTEGER DEFAULT 100,
+                total_executions INTEGER DEFAULT 0,
+                successful_executions INTEGER DEFAULT 0,
+                failed_executions INTEGER DEFAULT 0,
+                last_executed TEXT,
+                loyalty REAL DEFAULT 1.0,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS shadow_execution_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                shadow_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                details TEXT DEFAULT '',
+                FOREIGN KEY (shadow_id) REFERENCES shadow_army(id)
+            );
         """)
         await self._db.commit()
 
@@ -237,5 +268,74 @@ class Database:
         await self._db.execute(
             "INSERT INTO activity_log (timestamp, event_type, data_json) VALUES (?, ?, ?)",
             (datetime.now().isoformat(), event_type, json.dumps(data, default=str)),
+        )
+        await self._db.commit()
+
+    # ── Shadow Army ──────────────────────────────────
+
+    async def save_shadow(self, shadow_data: dict[str, Any]) -> None:
+        """保存影子士兵"""
+        await self._db.execute("""
+            INSERT OR REPLACE INTO shadow_army
+            (id, name, shadow_type, rank, status, source_quest_id,
+             source_quest_title, description, trigger_json, action_json,
+             level, exp, exp_to_next, total_executions, successful_executions,
+             failed_executions, last_executed, loyalty, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            shadow_data["id"], shadow_data["name"],
+            shadow_data["type"], shadow_data["rank"],
+            shadow_data["status"], shadow_data.get("source_quest_id"),
+            shadow_data.get("source_quest_title", ""),
+            shadow_data.get("description", ""),
+            json.dumps(shadow_data.get("trigger", {})),
+            json.dumps(shadow_data.get("action", {})),
+            shadow_data.get("level", 1), shadow_data.get("exp", 0),
+            shadow_data.get("exp_to_next", 100),
+            shadow_data.get("total_executions", 0),
+            shadow_data.get("successful_executions", 0),
+            shadow_data.get("failed_executions", 0),
+            shadow_data.get("last_executed"),
+            shadow_data.get("loyalty", 1.0),
+            shadow_data.get("created_at"),
+        ))
+        await self._db.commit()
+
+    async def load_all_shadows(self) -> list[dict[str, Any]]:
+        """加载所有影子"""
+        async with self._db.execute("SELECT * FROM shadow_army ORDER BY created_at") as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "type": row["shadow_type"],
+                    "rank": row["rank"],
+                    "status": row["status"],
+                    "source_quest_id": row["source_quest_id"],
+                    "source_quest_title": row["source_quest_title"],
+                    "description": row["description"],
+                    "trigger": json.loads(row["trigger_json"]) if row["trigger_json"] else {},
+                    "action": json.loads(row["action_json"]) if row["action_json"] else {},
+                    "level": row["level"],
+                    "exp": row["exp"],
+                    "exp_to_next": row["exp_to_next"],
+                    "total_executions": row["total_executions"],
+                    "successful_executions": row["successful_executions"],
+                    "failed_executions": row["failed_executions"],
+                    "last_executed": row["last_executed"],
+                    "loyalty": row["loyalty"],
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+
+    async def log_shadow_execution(
+        self, shadow_id: str, success: bool, details: str = ""
+    ) -> None:
+        """记录影子执行日志"""
+        await self._db.execute(
+            "INSERT INTO shadow_execution_log (shadow_id, timestamp, success, details) VALUES (?, ?, ?, ?)",
+            (shadow_id, datetime.now().isoformat(), 1 if success else 0, details),
         )
         await self._db.commit()

@@ -36,6 +36,14 @@ class EventType(Enum):
     EXP_GAINED = "exp_gained"
     STAT_CHANGED = "stat_changed"
 
+    # 影子军团事件
+    SHADOW_EXTRACTED = "shadow_extracted"
+    SHADOW_DEPLOYED = "shadow_deployed"
+    SHADOW_RECALLED = "shadow_recalled"
+    SHADOW_DESTROYED = "shadow_destroyed"
+    SHADOW_LEVEL_UP = "shadow_level_up"
+    SHADOW_EXECUTED = "shadow_executed"
+
     # 通知事件
     NOTIFICATION_PUSH = "notification_push"
 

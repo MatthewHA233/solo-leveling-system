@@ -287,6 +287,103 @@ async def get_penalty():
     return _system_ref.penalty_system.get_status()
 
 
+# ── Shadow Army API ────────────────────────────────
+
+@app.get("/api/shadows")
+async def get_shadow_army():
+    """获取影子军团状态"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    return _system_ref.shadow_army.get_army()
+
+
+@app.get("/api/shadows/templates")
+async def get_shadow_templates():
+    """获取可解锁的影子模板"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    level = _system_ref.player_mgr.player.level
+    return {"templates": _system_ref.shadow_army.get_unlockable_templates(level)}
+
+
+@app.post("/api/shadows/extract")
+async def extract_shadow(body: dict):
+    """抽取影子 (从完成的任务创建自动化)
+    POST body: {
+        "name": "影子名字",
+        "type": "warrior|guardian|scribe|mage|general",
+        "rank": "normal|elite|knight|commander|monarch",
+        "description": "这个影子做什么",
+        "trigger": {"kind": "cron", "interval_minutes": 30},
+        "action": {"kind": "shell", "command": "..."},
+        "source_quest_id": "可选",
+        "source_quest_title": "可选"
+    }
+    """
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    from ..system.shadow_army import ShadowType, ShadowRank
+
+    try:
+        shadow_type = ShadowType(body.get("type", "warrior"))
+        rank = ShadowRank(body.get("rank", "normal"))
+    except ValueError as e:
+        return JSONResponse({"error": f"无效参数: {e}"}, status_code=400)
+
+    level = _system_ref.player_mgr.player.level
+    return await _system_ref.shadow_army.extract_shadow(
+        source_quest_id=body.get("source_quest_id"),
+        source_quest_title=body.get("source_quest_title", ""),
+        name=body.get("name", "无名影子"),
+        shadow_type=shadow_type,
+        rank=rank,
+        description=body.get("description", ""),
+        trigger=body.get("trigger", {}),
+        action=body.get("action", {}),
+        player_level=level,
+    )
+
+
+@app.post("/api/shadows/extract-template/{template_id}")
+async def extract_shadow_from_template(template_id: str):
+    """从预定义模板抽取影子"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    level = _system_ref.player_mgr.player.level
+    return await _system_ref.shadow_army.extract_from_template(template_id, level)
+
+
+@app.post("/api/shadows/{shadow_id}/deploy")
+async def deploy_shadow(shadow_id: str):
+    """部署影子 (激活)"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    return await _system_ref.shadow_army.deploy_shadow(shadow_id)
+
+
+@app.post("/api/shadows/{shadow_id}/recall")
+async def recall_shadow(shadow_id: str):
+    """召回影子 (休眠)"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    return await _system_ref.shadow_army.recall_shadow(shadow_id)
+
+
+@app.post("/api/shadows/{shadow_id}/destroy")
+async def destroy_shadow(shadow_id: str):
+    """销毁影子"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    return await _system_ref.shadow_army.destroy_shadow(shadow_id)
+
+
 @app.get("/api/devices")
 async def get_devices():
     """获取所有设备"""
