@@ -212,6 +212,18 @@ async def get_daily_report():
     return report
 
 
+@app.get("/api/report/weekly")
+async def get_weekly_report():
+    """获取每周报告"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    from ..system.report import ReportGenerator
+    reporter = ReportGenerator(_system_ref.db)
+    report = await reporter.generate_weekly_report(_system_ref.player_mgr.player)
+    return report
+
+
 @app.get("/api/motive")
 async def get_motive():
     """获取当前动机推断"""
