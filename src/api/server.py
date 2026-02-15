@@ -200,6 +200,15 @@ async def get_achievements():
     }
 
 
+@app.get("/api/hidden-quests")
+async def get_hidden_quest_status():
+    """获取隐藏任务检测器状态"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    return _system_ref.hidden_quest_detector.get_status()
+
+
 @app.get("/api/report")
 async def get_daily_report():
     """获取每日报告"""

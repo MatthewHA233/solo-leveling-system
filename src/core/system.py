@@ -29,6 +29,7 @@ from ..system.shop import ShopSystem
 from ..system.penalty import PenaltySystem
 from ..system.skills import SkillSystem
 from ..system.shadow_army import ShadowArmy
+from ..system.hidden_quests import HiddenQuestDetector
 from ..cognition.pattern_detector import PatternDetector
 from ..storage.database import Database
 from ..storage.models import ContextSnapshot
@@ -85,6 +86,7 @@ class SoloLevelingSystem:
         self.penalty_system = PenaltySystem(self.player_mgr, self.bus)
         self.skill_system = SkillSystem(self.bus)
         self.shadow_army = ShadowArmy(self.bus)
+        self.hidden_quest_detector = HiddenQuestDetector()
 
         # 状态追踪
         self._current_window = ""
