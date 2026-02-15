@@ -114,6 +114,18 @@
         .ach-progress { text-align:center; padding:10px; }
         .ach-pct { font-size:2em; font-weight:900; color:var(--gold); }
         .ach-pct-label { font-size:0.8em; color:var(--dim); }
+
+        /* Devices */
+        .device-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px; }
+        .device-card { padding:14px; border-radius:10px; background:rgba(74,144,217,.04); border:1px solid rgba(74,144,217,.1); position:relative; transition:all .25s; }
+        .device-card.active { border-color:var(--green); box-shadow:0 0 12px rgba(68,255,136,.15); background:rgba(68,255,136,.04); }
+        .device-card.offline { opacity:0.4; }
+        .device-type { font-size:1.8em; text-align:center; margin-bottom:6px; }
+        .device-name { font-size:0.9em; font-weight:600; text-align:center; }
+        .device-status { font-size:0.7em; text-align:center; margin-top:4px; }
+        .device-window { font-size:0.7em; color:var(--dim); text-align:center; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .device-active-dot { position:absolute; top:8px; right:8px; width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 6px var(--green); }
+        .switch-item { font-size:0.75em; padding:4px 8px; margin-bottom:3px; border-left:2px solid var(--purple); background:rgba(153,102,255,.03); border-radius:0 6px 6px 0; color:var(--dim); }
     </style>
 </head>
 <body>
@@ -213,6 +225,18 @@
                 <div class="pattern-desc">每日任务状态正常</div>
             </div>
         </div>
+
+        <!-- Devices -->
+        <div class="card span3">
+            <div class="card-t">📱 多设备感知 <span id="deviceBadge" style="margin-left:auto;font-size:0.75em;color:var(--dim)">检测中...</span></div>
+            <div id="devicePanel">
+                <div class="empty">正在检测 OpenClaw Nodes...</div>
+            </div>
+            <div id="deviceSwitches" style="margin-top:12px;display:none">
+                <div style="font-size:0.8em;color:var(--dim);margin-bottom:6px">🔄 设备切换记录</div>
+                <div id="switchList"></div>
+            </div>
+        </div>
     </div>
 </div>
 <div class="notifs" id="notifs"></div>
@@ -222,7 +246,7 @@ const B = '';
 let ws;
 
 async function init() {
-    await Promise.all([fetchStatus(), fetchQuests(), fetchSnapshots(), fetchAchievements(), fetchPattern(), fetchShop(), fetchSkills(), fetchPenalty()]);
+    await Promise.all([fetchStatus(), fetchQuests(), fetchSnapshots(), fetchAchievements(), fetchPattern(), fetchShop(), fetchSkills(), fetchPenalty(), fetchDevices()]);
     connectWS();
     setInterval(fetchStatus, 8000);
     setInterval(fetchQuests, 12000);
@@ -232,6 +256,7 @@ async function init() {
     setInterval(fetchShop, 15000);
     setInterval(fetchSkills, 20000);
     setInterval(fetchPenalty, 30000);
+    setInterval(fetchDevices, 30000);
 }
 
 async function fetchStatus() {
@@ -392,6 +417,54 @@ async function fetchPenalty() {
 
 async function buyItem(id) { const r=await fetch(B+`/api/shop/buy/${id}`,{method:'POST'}); fetchShop(); fetchStatus(); }
 async function useSkill(id) { await fetch(B+`/api/skills/${id}/activate`,{method:'POST'}); fetchSkills(); }
+
+const DEVICE_ICONS = {mac:'🍎',windows:'🪟',linux:'🐧',android:'🤖',ios:'📱',unknown:'💻'};
+
+async function fetchDevices() {
+    try {
+        const r = await fetch(B+'/api/devices'); const d = await r.json();
+        const stats = d.stats;
+        const badge = el('deviceBadge');
+        badge.textContent = d.openclaw_available
+            ? `✅ OpenClaw | ${stats.online_devices}/${stats.total_devices} 在线`
+            : '❌ OpenClaw 未连接';
+        badge.style.color = d.openclaw_available ? 'var(--green)' : 'var(--red)';
+
+        const panel = el('devicePanel');
+        if (d.devices?.length > 0) {
+            panel.innerHTML = '<div class="device-grid">' + d.devices.map(dev => {
+                const icon = DEVICE_ICONS[dev.device_type] || '💻';
+                const isActive = dev.is_active;
+                const statusColor = dev.status === 'online' ? 'var(--green)' : dev.status === 'idle' ? 'var(--gold)' : 'var(--red)';
+                const statusText = dev.status === 'online' ? '🟢 在线' : dev.status === 'idle' ? '🟡 空闲' : '⚫ 离线';
+                return `<div class="device-card ${isActive?'active':''} ${dev.status==='offline'?'offline':''}">
+                    ${isActive?'<div class="device-active-dot"></div>':''}
+                    <div class="device-type">${icon}</div>
+                    <div class="device-name">${dev.name}</div>
+                    <div class="device-status" style="color:${statusColor}">${statusText}${isActive?' · 当前活跃':''}</div>
+                    ${dev.current_window?`<div class="device-window">🪟 ${dev.current_window}</div>`:''}
+                    ${dev.battery_level>=0?`<div class="device-window">🔋 ${Math.round(dev.battery_level)}%</div>`:''}
+                </div>`;
+            }).join('') + '</div>';
+        } else {
+            panel.innerHTML = `<div class="empty" style="font-size:0.85em">
+                ${d.openclaw_available
+                    ? '暂无配对设备。在你的 Mac/手机上安装 OpenClaw Node 即可自动发现。'
+                    : 'OpenClaw Nodes 未检测到。多设备感知需要 OpenClaw 支持。'}
+            </div>`;
+        }
+
+        // 设备切换记录
+        const sr = await fetch(B+'/api/devices/switches'); const sd = await sr.json();
+        if (sd.switches?.length > 0) {
+            el('deviceSwitches').style.display = 'block';
+            el('switchList').innerHTML = sd.switches.slice(-5).reverse().map(s => {
+                const t = new Date(s.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+                return `<div class="switch-item">${t} — ${s.from_name||'无'} → ${s.to_name}</div>`;
+            }).join('');
+        }
+    } catch(e) {}
+}
 
 function connectWS() {
     const p = location.protocol==='https:'?'wss:':'ws:';
