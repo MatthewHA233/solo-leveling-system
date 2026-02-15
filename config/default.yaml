@@ -1,0 +1,97 @@
+# Solo Leveling System - Configuration
+
+# 系统设置
+system:
+  name: "独自升级系统"
+  version: "0.1.0"
+  capture_interval: 30        # 截屏间隔(秒)
+  analysis_interval: 60       # AI 分析间隔(秒)
+  timezone: "Asia/Shanghai"
+
+# 玩家初始配置
+player:
+  name: "CC"
+  initial_level: 1
+  initial_stats:
+    focus: 50
+    productivity: 50
+    consistency: 50
+    creativity: 50
+    wellness: 50
+
+# AI 配置
+ai:
+  provider: "claude"          # claude | gemini | local
+  api_base: "https://cn.xingsuancode.com/v1"
+  model: "claude-opus-4-6"
+  # api_key 从环境变量 SOLO_AI_API_KEY 读取
+  max_tokens: 2048
+  temperature: 0.7
+
+# 感知层配置
+perception:
+  screen_capture:
+    enabled: true
+    interval: 30              # 截屏间隔(秒)
+    quality: 70               # JPEG 质量 (1-100)
+    resize_width: 1280        # 缩放宽度(节省 token)
+    max_stored: 100           # 最多保留截图数
+  window_detector:
+    enabled: true
+    interval: 5               # 窗口检测间隔(秒)
+  input_monitor:
+    enabled: false             # 键鼠监控(可选,隐私敏感)
+
+# 认知引擎配置
+cognition:
+  # AI 分析提示词风格
+  analysis_style: "solo_leveling"
+  # 上下文窗口: 保留最近 N 次分析结果用于推断
+  context_window: 10
+  # 动机推断灵敏度 (0-1, 越高越容易触发)
+  motive_sensitivity: 0.6
+
+# 任务系统
+quests:
+  daily_reset_hour: 5         # 每日任务重置时间 (24h)
+  auto_generate: true         # 自动生成任务
+  max_active_quests: 10       # 最大同时进行任务数
+
+# Buff 系统
+buffs:
+  focus_zone:
+    trigger_minutes: 30       # 连续专注 N 分钟触发
+    effect:
+      focus: 20
+      exp_multiplier: 1.5
+  distraction:
+    trigger_switches: 5       # N 分钟内切换 M 次触发
+    trigger_window_minutes: 5
+    effect:
+      focus: -15
+      productivity: -10
+    duration_minutes: 10
+
+# 通知配置
+notification:
+  enabled: true
+  style: "solo_leveling"      # solo_leveling | minimal | detailed
+  sound: true
+  # 免打扰时间段
+  dnd:
+    enabled: true
+    start: "23:00"
+    end: "08:00"
+
+# Web 面板
+web:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8888
+
+# 数据存储
+storage:
+  database: "data/system.db"
+  screenshots_dir: "data/screenshots"
+  max_screenshot_age_days: 7
+  max_storage_mb: 2048

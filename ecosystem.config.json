@@ -1,0 +1,19 @@
+{
+  "apps": [
+    {
+      "name": "solo-leveling",
+      "script": "python3",
+      "args": "-m src.core",
+      "cwd": "/root/openclaw/solo-leveling-system",
+      "interpreter": "none",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "max_restarts": 10,
+      "restart_delay": 3000,
+      "log_date_format": "YYYY-MM-DD HH:mm:ss",
+      "error_file": "/root/openclaw/solo-leveling-system/data/logs/error.log",
+      "out_file": "/root/openclaw/solo-leveling-system/data/logs/out.log"
+    }
+  ]
+}

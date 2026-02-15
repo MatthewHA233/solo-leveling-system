@@ -1,0 +1,53 @@
+# 每日任务配置
+# 可以在这里自定义你的每日任务
+
+daily_quests:
+  - title: "🏃 晨间训练"
+    description: "完成至少 15 分钟的运动或拉伸。身体是革命的本钱。"
+    difficulty: D
+    exp_reward: 20
+    category: wellness
+
+  - title: "📚 知识汲取"
+    description: "阅读至少 30 分钟的书籍、文档或教程。"
+    difficulty: D
+    exp_reward: 20
+    category: learning
+
+  - title: "🎯 专注时刻"
+    description: "完成至少 1 小时不间断的深度工作。"
+    difficulty: C
+    exp_reward: 30
+    category: focus
+
+# 预定义成就模板
+achievements:
+  # 你可以在这里添加自定义成就
+  # custom_achievement:
+  #   name: "自定义成就名"
+  #   description: "解锁条件描述"
+  #   exp_reward: 50
+  #   hidden: false
+
+# 隐藏任务模板
+hidden_quests:
+  marathon_coder:
+    title: "🏆 马拉松编程"
+    description: "系统检测到你已经连续编程超过 4 小时。传奇！"
+    difficulty: A
+    exp_reward: 200
+    trigger: "coding_streak_4h"
+
+  comeback_king:
+    title: "👑 王者归来"
+    description: "从惩罚区域中成功逃出并完成所有每日任务。"
+    difficulty: S
+    exp_reward: 500
+    trigger: "escape_penalty_and_complete_daily"
+
+  first_blood:
+    title: "🩸 第一滴血"
+    description: "第一次在深夜编程超过 2 小时。"
+    difficulty: B
+    exp_reward: 80
+    trigger: "night_coding_2h"
