@@ -287,6 +287,55 @@ async def get_penalty():
     return _system_ref.penalty_system.get_status()
 
 
+@app.get("/api/devices")
+async def get_devices():
+    """获取所有设备"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    return {
+        "devices": _system_ref.device_manager.get_all_devices(),
+        "stats": _system_ref.device_manager.get_stats(),
+        "openclaw_available": _system_ref.openclaw_bridge._openclaw_available,
+    }
+
+
+@app.get("/api/devices/switches")
+async def get_device_switches():
+    """获取设备切换历史"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    return {
+        "switches": _system_ref.device_manager.get_switch_history(),
+    }
+
+
+@app.get("/api/devices/timeline")
+async def get_device_timeline():
+    """获取多设备合并时间线"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    return {
+        "timeline": _system_ref.device_manager.get_merged_timeline(),
+    }
+
+
+@app.post("/api/devices/{device_id}/notify")
+async def notify_device(device_id: str, body: dict):
+    """向指定设备发送通知"""
+    if not _system_ref:
+        return JSONResponse({"error": "系统未初始化"}, status_code=503)
+
+    success = await _system_ref.openclaw_bridge.send_notification(
+        device_id,
+        body.get("title", "独自升级系统"),
+        body.get("message", ""),
+    )
+    return {"success": success}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket 实时推送"""

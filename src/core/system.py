@@ -15,6 +15,8 @@ from .events import EventBus, EventType, bus
 from .player import Player, PlayerStats, PlayerManager
 from ..perception.screen_capture import ScreenCapture
 from ..perception.window_detector import WindowDetector
+from ..perception.device_manager import DeviceManager
+from ..perception.openclaw_bridge import OpenClawBridge
 from ..cognition.analyzer import Analyzer
 from ..cognition.pattern_detector import PatternDetector
 from ..cognition.motive_engine import MotiveEngine
@@ -60,6 +62,11 @@ class SoloLevelingSystem:
         self.window_detector = WindowDetector(
             self.bus,
             self.config.perception.window_detector.interval,
+        )
+        self.device_manager = DeviceManager()
+        self.openclaw_bridge = OpenClawBridge(
+            self.device_manager,
+            self.config.storage.screenshots_dir,
         )
 
         # 认知层
@@ -132,6 +139,19 @@ class SoloLevelingSystem:
         await self.screen_capture.start()
         await self.window_detector.start()
 
+        # 检查 OpenClaw 多设备支持
+        if await self.openclaw_bridge.check_openclaw():
+            devices = await self.openclaw_bridge.discover_devices()
+            if devices:
+                print(f"  📱 发现 {len(devices)} 个已配对设备")
+                for d in devices:
+                    status = "🟢" if d["status"] == "online" else "⚪"
+                    print(f"     {status} {d['name']} ({d['device_type']})")
+            else:
+                print(f"  📱 OpenClaw 可用，暂无配对设备")
+        else:
+            print(f"  📱 OpenClaw 未检测到，使用本地感知模式")
+
         # 设置 Web API 引用
         set_system_ref(self)
 
@@ -177,6 +197,10 @@ class SoloLevelingSystem:
                 # 每 5 分钟检查过期任务
                 if tick_count % 30 == 0:
                     await self.quest_engine.check_expired_quests()
+
+                # 每 2 分钟轮询多设备状态
+                if tick_count % 12 == 0 and self.openclaw_bridge._openclaw_available:
+                    await self.openclaw_bridge.poll_all_devices()
 
             except Exception as e:
                 print(f"[System] 主循环错误: {e}")
