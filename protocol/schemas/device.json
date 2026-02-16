@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Device",
+  "description": "设备注册信息",
+  "type": "object",
+  "required": ["device_id", "device_name", "device_type", "platform"],
+  "properties": {
+    "device_id": {
+      "type": "string",
+      "description": "设备唯一标识",
+      "pattern": "^(mac|win|android)-[a-z0-9]{8}$"
+    },
+    "device_name": {
+      "type": "string",
+      "description": "设备友好名称"
+    },
+    "device_type": {
+      "type": "string",
+      "enum": ["mac", "windows", "android"],
+      "description": "设备类型"
+    },
+    "platform": {
+      "type": "string",
+      "description": "操作系统"
+    },
+    "platform_version": {
+      "type": "string",
+      "description": "操作系统版本"
+    },
+    "agent_version": {
+      "type": "string",
+      "description": "客户端版本号"
+    },
+    "last_seen": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "is_online": {
+      "type": "boolean"
+    },
+    "is_focused": {
+      "type": "boolean",
+      "description": "是否是当前焦点设备"
+    }
+  }
+}

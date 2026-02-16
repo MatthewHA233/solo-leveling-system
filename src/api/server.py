@@ -12,16 +12,22 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pathlib import Path
 
-app = FastAPI(title="独自升级系统", version="0.1.0")
+app = FastAPI(title="独自升级系统", version="0.2.0")
 
 # 全局引用 (在 system.py 启动时注入)
 _system_ref = None
 _ws_clients: set[WebSocket] = set()
 
+# 注册 Agent API 路由
+from .agent_api import router as agent_router, set_system_ref as agent_set_system_ref
+app.include_router(agent_router)
+
 
 def set_system_ref(system):
     global _system_ref
     _system_ref = system
+    # 同时注入到 agent_api
+    agent_set_system_ref(system)
 
 
 @app.get("/api/status")
