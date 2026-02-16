@@ -242,7 +242,9 @@
 <div class="notifs" id="notifs"></div>
 
 <script>
-const B = '';
+// 自动检测 base path (支持 Nginx 反代 /solo/ 等前缀)
+const _pathBase = location.pathname.replace(/\/[^/]*$/, '').replace(/\/$/, '');
+const B = _pathBase;
 let ws;
 
 async function init() {
@@ -468,7 +470,7 @@ async function fetchDevices() {
 
 function connectWS() {
     const p = location.protocol==='https:'?'wss:':'ws:';
-    ws = new WebSocket(`${p}//${location.host}/ws`);
+    ws = new WebSocket(`${p}//${location.host}${_pathBase}/ws`);
     ws.onmessage = e => { try { const m=JSON.parse(e.data); if(m.notification) showNotif(m.notification); fetchStatus(); fetchQuests(); fetchAchievements(); } catch(ex){} };
     ws.onclose = () => setTimeout(connectWS,3000);
     ws.onerror = () => ws.close();
