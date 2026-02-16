@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh-Hans</string>
+	<key>CFBundleDisplayName</key>
+	<string>Solo Agent</string>
+	<key>CFBundleExecutable</key>
+	<string>SoloAgent</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.solo-leveling.agent</string>
+	<key>CFBundleName</key>
+	<string>SoloAgent</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Solo Agent 需要屏幕捕捉权限来分析您的工作活动，帮助您追踪生产力和触发游戏化任务。截图仅用于 AI 分析，不会永久存储。</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Solo Agent 需要控制其他应用的权限来检测您当前使用的应用窗口。</string>
+</dict>
+</plist>

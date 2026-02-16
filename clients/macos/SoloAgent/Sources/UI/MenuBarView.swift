@@ -29,8 +29,14 @@ struct MenuBarView: View {
                          value: agent.isConnected ? "已连接" : "离线",
                          color: agent.isConnected ? .green : .red)
                 
-                StatusRow(icon: "number", label: "截图数量",
+                StatusRow(icon: "number", label: "今日截图",
                          value: "\(agent.captureCount)")
+                
+                if agent.pendingReportCount > 0 {
+                    StatusRow(icon: "arrow.triangle.2.circlepath", label: "待同步",
+                             value: "\(agent.pendingReportCount)",
+                             color: .orange)
+                }
                 
                 if let lastCapture = agent.lastCaptureTime {
                     StatusRow(icon: "clock", label: "最后捕捉",
@@ -39,6 +45,14 @@ struct MenuBarView: View {
                 
                 StatusRow(icon: "desktopcomputer", label: "设备 ID",
                          value: agent.deviceId)
+                
+                // 今日 Top App
+                let topApps = agent.persistence.todayTopApps(limit: 1)
+                if let top = topApps.first {
+                    StatusRow(icon: "star.fill", label: "最常用",
+                             value: "\(top.appName) (\(formatDuration(top.foregroundSeconds)))",
+                             color: .purple)
+                }
             }
             
             Divider()
@@ -93,7 +107,17 @@ struct MenuBarView: View {
             }
         }
         .padding()
-        .frame(width: 280)
+        .frame(width: 300)
+    }
+    
+    /// 格式化时长
+    private func formatDuration(_ seconds: Double) -> String {
+        let hours = Int(seconds) / 3600
+        let minutes = (Int(seconds) % 3600) / 60
+        if hours > 0 {
+            return "\(hours)h \(minutes)m"
+        }
+        return "\(minutes)m"
     }
 }
 

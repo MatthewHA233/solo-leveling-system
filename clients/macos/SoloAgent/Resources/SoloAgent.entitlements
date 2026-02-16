@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Sandbox (推荐) -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	
+	<!-- 网络: 出站连接 (连接服务器) -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	
+	<!-- 屏幕捕捉 -->
+	<key>com.apple.security.screen-capture</key>
+	<true/>
+	
+	<!-- Accessibility (窗口标题检测) -->
+	<key>com.apple.security.accessibility</key>
+	<true/>
+	
+	<!-- 用户通知 -->
+	<key>com.apple.security.user-notifications</key>
+	<true/>
+	
+	<!-- 文件: 读写用户数据 (配置文件+缓存) -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	
+	<!-- 允许访问 ~/.config/solo-agent/ -->
+	<key>com.apple.security.files.home-relative-path.read-write</key>
+	<array>
+		<string>.config/solo-agent/</string>
+	</array>
+</dict>
+</plist>
