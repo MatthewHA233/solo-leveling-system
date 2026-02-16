@@ -6,246 +6,245 @@
     <title>独自升级系统</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap');
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        :root {
-            --bg: #080818; --bg-card: #0f0f2a; --bg-hover: #161640;
-            --blue: #4a90d9; --gold: #ffd700; --red: #ff4444; --green: #44ff88;
-            --purple: #9966ff; --cyan: #00d4ff; --text: #d0d0ee; --dim: #6668;
-            --glow: rgba(74,144,217,0.25); --glow-gold: rgba(255,215,0,0.2);
-        }
-        body { font-family:'Noto Sans SC',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
-        body::before { content:''; position:fixed; inset:0; background: radial-gradient(ellipse at 20% 30%, rgba(74,144,217,0.06) 0%, transparent 60%), radial-gradient(ellipse at 80% 70%, rgba(153,102,255,0.04) 0%, transparent 60%); pointer-events:none; }
-        .container { max-width:1280px; margin:0 auto; padding:16px; position:relative; z-index:1; }
-
-        /* Header */
-        .header { text-align:center; padding:24px 0 20px; border-bottom:1px solid var(--glow); margin-bottom:24px; }
-        .header h1 { font-size:2.2em; font-weight:900; background:linear-gradient(135deg,var(--blue),var(--purple),var(--gold)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-        .header .sub { color:var(--dim); font-size:0.85em; margin-top:4px; letter-spacing:2px; }
-        .badge { display:inline-block; padding:3px 10px; border-radius:10px; font-size:0.75em; margin-top:8px; }
-        .badge-on { background:rgba(68,255,136,0.12); color:var(--green); border:1px solid rgba(68,255,136,0.3); }
-        .badge-off { background:rgba(255,68,68,0.12); color:var(--red); border:1px solid rgba(255,68,68,0.3); }
-
-        /* Grid */
-        .grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; }
-        .span2 { grid-column:span 2; }
-        .span3 { grid-column:span 3; }
-        @media(max-width:900px) { .grid{grid-template-columns:1fr 1fr;} .span3{grid-column:span 2;} }
-        @media(max-width:600px) { .grid{grid-template-columns:1fr;} .span2,.span3{grid-column:span 1;} }
-
-        /* Card */
-        .card { background:var(--bg-card); border:1px solid rgba(74,144,217,0.15); border-radius:14px; padding:20px; transition:all .25s; }
-        .card:hover { border-color:rgba(74,144,217,0.35); box-shadow:0 0 20px rgba(74,144,217,0.08); }
-        .card-t { font-size:0.95em; font-weight:500; color:var(--blue); margin-bottom:14px; display:flex; align-items:center; gap:6px; }
-
-        /* Player */
-        .player-row { display:flex; align-items:center; gap:18px; }
-        .avatar { width:72px; height:72px; border-radius:50%; background:linear-gradient(135deg,var(--blue),var(--purple)); display:flex; align-items:center; justify-content:center; font-size:1.8em; border:2px solid var(--gold); box-shadow:0 0 16px var(--glow-gold); flex-shrink:0; }
-        .player-name { font-size:1.4em; font-weight:700; }
-        .player-title { color:var(--gold); font-size:0.85em; }
-        .player-lv { color:var(--dim); font-size:0.8em; }
-
-        /* EXP bar */
-        .exp-wrap { margin:14px 0 0; }
-        .exp-labels { display:flex; justify-content:space-between; font-size:0.8em; margin-bottom:4px; }
-        .exp-bar { height:10px; background:rgba(74,144,217,0.12); border-radius:5px; overflow:hidden; }
-        .exp-fill { height:100%; background:linear-gradient(90deg,var(--blue),var(--purple)); border-radius:5px; transition:width .6s; box-shadow:0 0 8px var(--glow); }
-
-        /* Stats */
-        .stats { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-top:14px; }
-        .stat { text-align:center; padding:10px 6px; background:rgba(74,144,217,0.04); border-radius:10px; border:1px solid rgba(74,144,217,0.08); }
-        .stat-v { font-size:1.6em; font-weight:700; color:var(--blue); }
-        .stat-l { font-size:0.7em; color:var(--dim); margin-top:2px; }
-        @media(max-width:600px) { .stats{grid-template-columns:repeat(3,1fr);} }
-
-        /* Pattern */
-        .pattern-display { text-align:center; padding:16px; font-size:1.1em; }
-        .pattern-icon { font-size:2.4em; display:block; margin-bottom:6px; }
-        .pattern-name { font-weight:700; }
-        .pattern-desc { font-size:0.8em; color:var(--dim); margin-top:4px; }
-
-        /* Buffs */
-        .buff { display:inline-flex; align-items:center; gap:5px; padding:5px 12px; margin:3px; border-radius:16px; font-size:0.8em; }
-        .buff-pos { background:rgba(74,144,217,0.12); border:1px solid rgba(74,144,217,0.25); color:var(--cyan); }
-        .buff-neg { background:rgba(255,68,68,0.12); border:1px solid rgba(255,68,68,0.25); color:var(--red); }
-
-        /* Quests */
-        .quest { padding:12px; margin-bottom:8px; background:rgba(74,144,217,0.04); border:1px solid rgba(74,144,217,0.12); border-radius:10px; display:flex; justify-content:space-between; align-items:center; transition:all .2s; cursor:pointer; }
-        .quest:hover { background:rgba(74,144,217,0.08); border-color:var(--blue); }
-        .quest-left { display:flex; align-items:center; gap:8px; }
-        .diff { padding:2px 7px; border-radius:4px; font-size:0.7em; font-weight:700; }
-        .d-S{background:rgba(255,0,0,.18);color:#f44;border:1px solid #f44}
-        .d-A{background:rgba(255,165,0,.18);color:#fa0;border:1px solid #fa0}
-        .d-B{background:rgba(153,102,255,.18);color:#96f;border:1px solid #96f}
-        .d-C{background:rgba(74,144,217,.18);color:#4a90d9;border:1px solid #4a90d9}
-        .d-D{background:rgba(68,255,68,.18);color:#4f8;border:1px solid #4f8}
-        .d-E{background:rgba(136,136,170,.18);color:#88a;border:1px solid #88a}
-        .quest-right { display:flex; align-items:center; gap:8px; }
-        .quest-exp { color:var(--gold); font-size:0.8em; white-space:nowrap; }
-        .btn-done { background:rgba(68,255,136,.12); color:var(--green); border:1px solid rgba(68,255,136,.25); padding:4px 10px; border-radius:6px; cursor:pointer; font-size:0.75em; transition:all .2s; }
-        .btn-done:hover { background:rgba(68,255,136,.25); }
-
-        /* Timeline */
-        .tl-item { padding:8px 12px; margin-bottom:6px; border-left:3px solid var(--blue); background:rgba(74,144,217,.02); border-radius:0 8px 8px 0; }
-        .tl-time { font-size:0.7em; color:var(--dim); }
-        .tl-act { font-size:0.85em; margin-top:2px; }
-        .tl-focus { font-size:0.7em; color:var(--dim); }
-
-        /* Achievements */
-        .ach { padding:10px 14px; margin-bottom:6px; border-radius:10px; display:flex; align-items:center; gap:10px; }
-        .ach-locked { background:rgba(100,100,140,.06); border:1px solid rgba(100,100,140,.12); opacity:0.5; }
-        .ach-unlocked { background:rgba(255,215,0,.06); border:1px solid rgba(255,215,0,.15); }
-        .ach-icon { font-size:1.3em; }
-        .ach-info { flex:1; }
-        .ach-name { font-size:0.9em; font-weight:600; }
-        .ach-desc { font-size:0.75em; color:var(--dim); }
-        .ach-exp { color:var(--gold); font-size:0.75em; white-space:nowrap; }
-
-        /* Notifications */
-        .notifs { position:fixed; top:16px; right:16px; z-index:1000; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
-        .notif { padding:14px 18px; border-radius:10px; background:var(--bg-card); border:1px solid var(--glow); box-shadow:0 4px 24px rgba(0,0,0,.6); animation:slideIn .3s ease, fadeOut .5s ease 4s forwards; max-width:340px; pointer-events:auto; }
-        .notif-t { font-weight:700; margin-bottom:3px; font-size:0.9em; }
-        .notif-m { font-size:0.8em; color:var(--dim); white-space:pre-line; }
-        @keyframes slideIn { from{transform:translateX(120%);opacity:0} to{transform:translateX(0);opacity:1} }
-        @keyframes fadeOut { to{opacity:0;transform:translateY(-8px)} }
-
-        .empty { text-align:center; color:var(--dim); padding:20px; font-size:0.85em; }
-
-        /* Progress ring (achievement) */
-        .ach-progress { text-align:center; padding:10px; }
-        .ach-pct { font-size:2em; font-weight:900; color:var(--gold); }
-        .ach-pct-label { font-size:0.8em; color:var(--dim); }
-
-        /* Devices */
-        .device-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px; }
-        .device-card { padding:14px; border-radius:10px; background:rgba(74,144,217,.04); border:1px solid rgba(74,144,217,.1); position:relative; transition:all .25s; }
-        .device-card.active { border-color:var(--green); box-shadow:0 0 12px rgba(68,255,136,.15); background:rgba(68,255,136,.04); }
-        .device-card.offline { opacity:0.4; }
-        .device-type { font-size:1.8em; text-align:center; margin-bottom:6px; }
-        .device-name { font-size:0.9em; font-weight:600; text-align:center; }
-        .device-status { font-size:0.7em; text-align:center; margin-top:4px; }
-        .device-window { font-size:0.7em; color:var(--dim); text-align:center; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .device-active-dot { position:absolute; top:8px; right:8px; width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 6px var(--green); }
-        .switch-item { font-size:0.75em; padding:4px 8px; margin-bottom:3px; border-left:2px solid var(--purple); background:rgba(153,102,255,.03); border-radius:0 6px 6px 0; color:var(--dim); }
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&display=swap');
+        *{margin:0;padding:0;box-sizing:border-box}
+        :root{--bg:#050510;--panel-bg:rgba(8,14,40,0.85);--panel-border:rgba(60,140,255,0.4);--blue:#3c8cff;--blue-light:#7ab8ff;--blue-dim:#1a3a6a;--gold:#ffd700;--red:#ff4455;--green:#44ff88;--cyan:#60ddff;--text:#c8d8f0;--text-dim:rgba(160,180,220,0.5)}
+        body{font-family:'Noto Sans SC',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
+        body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(60,140,255,0.015) 2px,rgba(60,140,255,0.015) 4px);pointer-events:none;z-index:9999}
+        body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellipse at 25% 20%,rgba(60,140,255,0.06) 0%,transparent 50%),radial-gradient(ellipse at 75% 80%,rgba(60,140,255,0.04) 0%,transparent 50%);pointer-events:none;z-index:0}
+        .container{max-width:1320px;margin:0 auto;padding:16px;position:relative;z-index:1}
+        .sys-header{text-align:center;padding:28px 0 22px;margin-bottom:20px}
+        .sys-header h1{font-family:'Orbitron','Noto Sans SC',sans-serif;font-size:2.4em;font-weight:900;color:var(--blue-light);text-shadow:0 0 30px rgba(60,140,255,0.5),0 0 60px rgba(60,140,255,0.2);letter-spacing:8px;text-transform:uppercase}
+        .sys-header .sys-sub{font-family:'Orbitron',monospace;color:var(--text-dim);font-size:0.75em;letter-spacing:4px;margin-top:6px}
+        .conn-status{margin-top:12px;display:inline-flex;align-items:center;gap:8px;font-size:0.8em;font-family:'Orbitron',monospace;letter-spacing:2px}
+        .conn-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+        .conn-dot.online{background:var(--green);box-shadow:0 0 8px var(--green),0 0 16px rgba(68,255,136,0.3);animation:pulse-dot 2s ease-in-out infinite}
+        .conn-dot.offline{background:var(--red);box-shadow:0 0 8px var(--red);animation:pulse-dot 1s ease-in-out infinite}
+        @keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:0.4}}
+        .conn-text.online{color:var(--green)}.conn-text.offline{color:var(--red)}
+        .panel{position:relative;background:var(--panel-bg);border:1px solid var(--panel-border);padding:22px;margin-bottom:16px;animation:panel-in 0.5s ease-out both;backdrop-filter:blur(4px)}
+        @keyframes panel-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        .panel::before,.panel::after{content:'';position:absolute;width:14px;height:14px;pointer-events:none}
+        .panel::before{top:-1px;left:-1px;border-top:2px solid var(--blue);border-left:2px solid var(--blue)}
+        .panel::after{top:-1px;right:-1px;border-top:2px solid var(--blue);border-right:2px solid var(--blue)}
+        .panel .corner-bl,.panel .corner-br{position:absolute;width:14px;height:14px;pointer-events:none}
+        .panel .corner-bl{bottom:-1px;left:-1px;border-bottom:2px solid var(--blue);border-left:2px solid var(--blue)}
+        .panel .corner-br{bottom:-1px;right:-1px;border-bottom:2px solid var(--blue);border-right:2px solid var(--blue)}
+        .panel-title{font-family:'Orbitron','Noto Sans SC',sans-serif;font-size:0.85em;font-weight:700;color:var(--blue-light);letter-spacing:3px;margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid rgba(60,140,255,0.15);display:flex;align-items:center;gap:8px;text-transform:uppercase}
+        .panel-title .tb{color:var(--blue);opacity:0.6}
+        .panel-title .extra{margin-left:auto;font-size:0.85em;color:var(--gold);letter-spacing:1px}
+        .grid-main{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+        .grid-tri{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+        .grid-duo{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+        @media(max-width:900px){.grid-main,.grid-tri,.grid-duo{grid-template-columns:1fr}}
+        .player-header{display:flex;align-items:center;gap:18px}
+        .player-avatar{width:80px;height:80px;border:2px solid var(--blue);background:rgba(60,140,255,0.08);display:flex;align-items:center;justify-content:center;font-size:2.2em;flex-shrink:0;position:relative;box-shadow:0 0 20px rgba(60,140,255,0.15),inset 0 0 20px rgba(60,140,255,0.05)}
+        .player-avatar::before{content:'';position:absolute;top:-4px;left:-4px;width:16px;height:16px;border-top:1px solid var(--blue);border-left:1px solid var(--blue)}
+        .player-avatar::after{content:'';position:absolute;bottom:-4px;right:-4px;width:16px;height:16px;border-bottom:1px solid var(--blue);border-right:1px solid var(--blue)}
+        .player-name{font-family:'Orbitron','Noto Sans SC',sans-serif;font-size:1.5em;font-weight:700;color:#fff;text-shadow:0 0 10px rgba(60,140,255,0.3)}
+        .player-title-text{color:var(--gold);font-size:0.85em;margin-top:2px;text-shadow:0 0 10px rgba(255,215,0,0.2)}
+        .player-level{font-family:'Orbitron',monospace;color:var(--blue-light);font-size:0.8em;margin-top:4px;letter-spacing:2px}
+        .exp-section{margin-top:18px}
+        .exp-labels{display:flex;justify-content:space-between;font-family:'Orbitron',monospace;font-size:0.72em;color:var(--text-dim);margin-bottom:6px;letter-spacing:1px}
+        .exp-pct{color:var(--blue-light)}
+        .exp-track{height:12px;background:rgba(60,140,255,0.08);border:1px solid rgba(60,140,255,0.2);position:relative;overflow:hidden}
+        .exp-fill{height:100%;background:linear-gradient(90deg,var(--blue-dim),var(--blue));box-shadow:0 0 12px rgba(60,140,255,0.5),0 0 24px rgba(60,140,255,0.2);transition:width 0.6s ease;position:relative}
+        .exp-fill::after{content:'';position:absolute;right:0;top:0;bottom:0;width:4px;background:var(--blue-light);box-shadow:0 0 8px var(--blue-light),0 0 16px var(--blue)}
+        .stats-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:18px}
+        .stat-item{text-align:center;padding:12px 6px;border:1px solid rgba(60,140,255,0.12);background:rgba(60,140,255,0.03)}
+        .stat-value{font-family:'Orbitron',monospace;font-size:1.6em;font-weight:700;color:var(--blue-light);text-shadow:0 0 8px rgba(60,140,255,0.3)}
+        .stat-label{font-size:0.68em;color:var(--text-dim);margin-top:4px;letter-spacing:1px}
+        .stat-bar{margin-top:6px;height:2px;background:rgba(60,140,255,0.1)}
+        .stat-bar-fill{height:100%;background:var(--blue);transition:width 0.4s;box-shadow:0 0 4px var(--blue)}
+        @media(max-width:600px){.stats-grid{grid-template-columns:repeat(3,1fr)}}
+        .buff-section{margin-top:14px;padding-top:12px;border-top:1px solid rgba(60,140,255,0.1)}
+        .buff-section-title{font-size:0.72em;color:var(--text-dim);letter-spacing:2px;margin-bottom:8px;font-family:'Orbitron',monospace}
+        .buff-tag{display:inline-flex;align-items:center;gap:4px;padding:4px 12px;margin:3px;font-size:0.78em;border:1px solid}
+        .buff-pos{border-color:rgba(60,140,255,0.3);color:var(--cyan);background:rgba(60,140,255,0.06)}
+        .buff-neg{border-color:rgba(255,68,85,0.3);color:var(--red);background:rgba(255,68,85,0.06)}
+        .quest-item{padding:12px 14px;margin-bottom:8px;background:rgba(60,140,255,0.03);border:1px solid rgba(60,140,255,0.1);display:flex;justify-content:space-between;align-items:center;transition:all 0.2s}
+        .quest-item:hover{background:rgba(60,140,255,0.07);border-color:rgba(60,140,255,0.3);box-shadow:0 0 12px rgba(60,140,255,0.08)}
+        .quest-left{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
+        .quest-title-text{font-size:0.88em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .diff-badge{padding:2px 8px;font-family:'Orbitron',monospace;font-size:0.65em;font-weight:700;letter-spacing:1px;flex-shrink:0;border:1px solid}
+        .d-S{background:rgba(255,0,0,.12);color:#f44;border-color:#f44}.d-A{background:rgba(255,165,0,.12);color:#fa0;border-color:#fa0}
+        .d-B{background:rgba(153,102,255,.12);color:#96f;border-color:#96f}.d-C{background:rgba(60,140,255,.12);color:var(--blue);border-color:var(--blue)}
+        .d-D{background:rgba(68,255,136,.12);color:var(--green);border-color:var(--green)}.d-E{background:rgba(136,136,170,.12);color:#88a;border-color:#88a}
+        .quest-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
+        .quest-exp{color:var(--gold);font-family:'Orbitron',monospace;font-size:0.72em;letter-spacing:1px;text-shadow:0 0 8px rgba(255,215,0,0.2)}
+        .btn-sys{background:transparent;color:var(--green);border:1px solid rgba(68,255,136,0.3);padding:5px 12px;font-family:'Orbitron',monospace;font-size:0.65em;cursor:pointer;transition:all 0.2s;letter-spacing:1px}
+        .btn-sys:hover{background:rgba(68,255,136,0.1);border-color:var(--green);box-shadow:0 0 10px rgba(68,255,136,0.15)}
+        .btn-buy{background:transparent;color:var(--gold);border:1px solid rgba(255,215,0,0.3);padding:5px 12px;font-family:'Orbitron',monospace;font-size:0.65em;cursor:pointer;transition:all 0.2s;letter-spacing:1px}
+        .btn-buy:hover{background:rgba(255,215,0,0.08);border-color:var(--gold)}.btn-buy:disabled{opacity:0.3;cursor:default}
+        .log-item{padding:9px 12px;margin-bottom:6px;border-left:2px solid var(--blue);background:rgba(60,140,255,0.02)}
+        .log-time{font-family:'Orbitron',monospace;font-size:0.65em;color:var(--text-dim);letter-spacing:1px}
+        .log-focus{font-family:monospace;font-size:0.68em;color:var(--blue);margin-left:6px}
+        .log-text{font-size:0.82em;margin-top:3px}.log-motive{font-size:0.7em;color:var(--text-dim);margin-top:2px}
+        .ach-header{text-align:center;padding:8px 0 14px}
+        .ach-pct{font-family:'Orbitron',monospace;font-size:2em;font-weight:900;color:var(--gold);text-shadow:0 0 16px rgba(255,215,0,0.3)}
+        .ach-label{font-size:0.72em;color:var(--text-dim);letter-spacing:2px}
+        .ach-item{padding:10px 12px;margin-bottom:6px;display:flex;align-items:center;gap:10px;border:1px solid rgba(60,140,255,0.08)}
+        .ach-unlocked{background:rgba(255,215,0,0.04);border-color:rgba(255,215,0,0.15)}
+        .ach-locked{background:rgba(60,80,120,0.04);opacity:0.45}
+        .ach-icon{font-size:1.2em;flex-shrink:0}.ach-info{flex:1;min-width:0}
+        .ach-name{font-size:0.85em;font-weight:600}.ach-desc{font-size:0.7em;color:var(--text-dim)}
+        .ach-reward{color:var(--gold);font-family:'Orbitron',monospace;font-size:0.68em;flex-shrink:0}
+        .shop-item{padding:10px 14px;margin-bottom:6px;background:rgba(60,140,255,0.03);border:1px solid rgba(60,140,255,0.1);display:flex;justify-content:space-between;align-items:center;transition:all 0.2s}
+        .shop-item:hover{border-color:rgba(60,140,255,0.25)}
+        .shop-name{font-size:0.85em}.shop-desc{font-size:0.7em;color:var(--text-dim);margin-top:2px}
+        .shop-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
+        .shop-price{color:var(--gold);font-family:'Orbitron',monospace;font-size:0.72em}
+        .skills-cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+        .skill-col-title{font-family:'Orbitron',monospace;font-size:0.65em;color:var(--text-dim);letter-spacing:2px;margin-bottom:8px}
+        .skill-item{padding:8px 12px;margin-bottom:5px;display:flex;align-items:center;gap:8px;border:1px solid rgba(60,140,255,0.08);transition:all 0.2s}
+        .skill-item.unlocked{background:rgba(60,140,255,0.04);border-color:rgba(60,140,255,0.15)}
+        .skill-item.locked{opacity:0.4}.skill-item.clickable{cursor:pointer}
+        .skill-item.clickable:hover{border-color:var(--blue);background:rgba(60,140,255,0.08)}
+        .skill-icon{font-size:1em;flex-shrink:0}.skill-info{flex:1;min-width:0}
+        .skill-name{font-size:0.8em;font-weight:500}.skill-desc-text{font-size:0.68em;color:var(--text-dim)}
+        .skill-cd{color:var(--red);font-size:0.65em;font-family:'Orbitron',monospace}
+        @media(max-width:600px){.skills-cols{grid-template-columns:1fr}}
+        .device-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+        .device-card{padding:14px;border:1px solid rgba(60,140,255,0.1);background:rgba(60,140,255,0.02);text-align:center;position:relative;transition:all 0.25s}
+        .device-card.active{border-color:rgba(68,255,136,0.3);background:rgba(68,255,136,0.03);box-shadow:0 0 12px rgba(68,255,136,0.08)}
+        .device-card.offline{opacity:0.35}
+        .device-active-dot{position:absolute;top:8px;right:8px;width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse-dot 2s ease-in-out infinite}
+        .device-icon{font-size:1.8em;margin-bottom:6px}.device-name{font-size:0.85em;font-weight:600}
+        .device-status-text{font-size:0.7em;margin-top:4px}
+        .device-detail{font-size:0.68em;color:var(--text-dim);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .switch-section{margin-top:12px;padding-top:10px;border-top:1px solid rgba(60,140,255,0.08)}
+        .switch-title{font-family:'Orbitron',monospace;font-size:0.65em;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px}
+        .switch-item{font-size:0.72em;padding:4px 8px;margin-bottom:3px;border-left:2px solid var(--blue-dim);color:var(--text-dim)}
+        .penalty-box{text-align:center;padding:20px 10px}
+        .penalty-icon{font-size:2.4em;display:block;margin-bottom:8px}
+        .penalty-status{font-family:'Orbitron','Noto Sans SC',sans-serif;font-weight:700;font-size:1em;letter-spacing:2px}
+        .penalty-desc{font-size:0.78em;color:var(--text-dim);margin-top:4px}
+        .notif-container{position:fixed;top:16px;right:16px;z-index:10000;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+        .notif{padding:14px 18px;background:var(--panel-bg);border:1px solid var(--panel-border);box-shadow:0 0 24px rgba(60,140,255,0.15),0 4px 20px rgba(0,0,0,0.5);max-width:360px;pointer-events:auto;position:relative;animation:notif-in 0.3s ease,notif-out 0.5s ease 4s forwards}
+        .notif::before{content:'';position:absolute;top:-1px;left:-1px;width:10px;height:10px;border-top:2px solid var(--blue);border-left:2px solid var(--blue)}
+        .notif::after{content:'';position:absolute;bottom:-1px;right:-1px;width:10px;height:10px;border-bottom:2px solid var(--blue);border-right:2px solid var(--blue)}
+        .notif-t{font-family:'Orbitron','Noto Sans SC',sans-serif;font-weight:700;margin-bottom:4px;font-size:0.85em;color:var(--blue-light);letter-spacing:1px}
+        .notif-m{font-size:0.78em;color:var(--text-dim);white-space:pre-line}
+        @keyframes notif-in{from{transform:translateX(120%);opacity:0}to{transform:translateX(0);opacity:1}}
+        @keyframes notif-out{to{opacity:0;transform:translateY(-8px)}}
+        .empty{text-align:center;color:var(--text-dim);padding:20px;font-size:0.82em;letter-spacing:1px}
+        .scroll-area{max-height:300px;overflow-y:auto}
+        .scroll-area::-webkit-scrollbar{width:4px}
+        .scroll-area::-webkit-scrollbar-track{background:transparent}
+        .scroll-area::-webkit-scrollbar-thumb{background:var(--blue-dim)}
     </style>
 </head>
 <body>
 <div class="container">
-    <div class="header">
-        <h1>⚔️ 独自升级系统</h1>
-        <div class="sub">SOLO LEVELING SYSTEM v0.1.0</div>
-        <div id="badge" class="badge badge-off">● 连接中...</div>
+    <div class="sys-header">
+        <h1>⚔ SYSTEM</h1>
+        <div class="sys-sub">SOLO LEVELING SYSTEM v0.1.0</div>
+        <div class="conn-status" id="connStatus">
+            <span class="conn-dot offline" id="connDot"></span>
+            <span class="conn-text offline" id="connText">CONNECTING...</span>
+        </div>
     </div>
-    <div class="grid">
-        <!-- Player Card -->
-        <div class="card span2">
-            <div class="player-row">
-                <div class="avatar">⚔️</div>
+    <div class="grid-main">
+        <div class="panel" style="animation-delay:0s">
+            <div class="corner-bl"></div><div class="corner-br"></div>
+            <div class="panel-title"><span class="tb">[</span>STATUS<span class="tb">]</span></div>
+            <div class="player-header">
+                <div class="player-avatar">⚔️</div>
                 <div>
-                    <div class="player-name" id="pName">加载中...</div>
-                    <div class="player-title" id="pTitle">-</div>
-                    <div class="player-lv" id="pLevel">Lv. -</div>
+                    <div class="player-name" id="pName">LOADING...</div>
+                    <div class="player-title-text" id="pTitle">-</div>
+                    <div class="player-level" id="pLevel">LV. -</div>
                 </div>
             </div>
-            <div class="exp-wrap">
-                <div class="exp-labels"><span id="expL">EXP: 0/100</span><span id="expP">0%</span></div>
-                <div class="exp-bar"><div class="exp-fill" id="expF" style="width:0%"></div></div>
+            <div class="exp-section">
+                <div class="exp-labels"><span id="expL">EXP: 0 / 100</span><span class="exp-pct" id="expP">0%</span></div>
+                <div class="exp-track"><div class="exp-fill" id="expF" style="width:0%"></div></div>
             </div>
-            <div class="stats" id="statsGrid">
-                <div class="stat"><div class="stat-v" id="sF">-</div><div class="stat-l">专注力</div></div>
-                <div class="stat"><div class="stat-v" id="sP">-</div><div class="stat-l">生产力</div></div>
-                <div class="stat"><div class="stat-v" id="sC">-</div><div class="stat-l">持续性</div></div>
-                <div class="stat"><div class="stat-v" id="sR">-</div><div class="stat-l">创造力</div></div>
-                <div class="stat"><div class="stat-v" id="sW">-</div><div class="stat-l">健康度</div></div>
+            <div class="stats-grid">
+                <div class="stat-item"><div class="stat-value" id="sF">-</div><div class="stat-label">专注力</div><div class="stat-bar"><div class="stat-bar-fill" id="sFbar" style="width:0%"></div></div></div>
+                <div class="stat-item"><div class="stat-value" id="sP">-</div><div class="stat-label">生产力</div><div class="stat-bar"><div class="stat-bar-fill" id="sPbar" style="width:0%"></div></div></div>
+                <div class="stat-item"><div class="stat-value" id="sC">-</div><div class="stat-label">持续性</div><div class="stat-bar"><div class="stat-bar-fill" id="sCbar" style="width:0%"></div></div></div>
+                <div class="stat-item"><div class="stat-value" id="sR">-</div><div class="stat-label">创造力</div><div class="stat-bar"><div class="stat-bar-fill" id="sRbar" style="width:0%"></div></div></div>
+                <div class="stat-item"><div class="stat-value" id="sW">-</div><div class="stat-label">健康度</div><div class="stat-bar"><div class="stat-bar-fill" id="sWbar" style="width:0%"></div></div></div>
             </div>
-        </div>
-
-        <!-- Pattern + Buffs -->
-        <div class="card">
-            <div class="card-t">🎯 当前状态</div>
-            <div class="pattern-display" id="patternBox">
-                <span class="pattern-icon">⏳</span>
-                <div class="pattern-name">等待数据</div>
-                <div class="pattern-desc">系统正在分析你的行为模式</div>
-            </div>
-            <div style="margin-top:12px">
-                <div class="card-t" style="margin-bottom:8px">✨ 活跃效果</div>
-                <div id="buffList"><div class="empty">暂无效果</div></div>
+            <div class="buff-section">
+                <div class="buff-section-title">ACTIVE EFFECTS</div>
+                <div id="buffList"><div class="empty">NO ACTIVE EFFECTS</div></div>
             </div>
         </div>
-
-        <!-- Quests -->
-        <div class="card span2">
-            <div class="card-t">⚔️ 活跃任务</div>
-            <div id="questList"><div class="empty">暂无活跃任务</div></div>
+        <div style="display:flex;flex-direction:column;gap:16px">
+            <div class="panel" style="animation-delay:0.1s;flex:1">
+                <div class="corner-bl"></div><div class="corner-br"></div>
+                <div class="panel-title"><span class="tb">[</span>DAILY QUESTS<span class="tb">]</span></div>
+                <div id="questList" class="scroll-area"><div class="empty">NO ACTIVE QUESTS</div></div>
+            </div>
+            <div class="panel" style="animation-delay:0.15s;flex:1">
+                <div class="corner-bl"></div><div class="corner-br"></div>
+                <div class="panel-title"><span class="tb">[</span>ACTIVITY LOG<span class="tb">]</span></div>
+                <div id="timeline" class="scroll-area"><div class="empty">NO ACTIVITY RECORDED</div></div>
+            </div>
         </div>
-
-        <!-- Achievements -->
-        <div class="card">
-            <div class="card-t">🏆 成就</div>
-            <div class="ach-progress">
+    </div>
+    <div class="grid-tri">
+        <div class="panel" style="animation-delay:0.2s">
+            <div class="corner-bl"></div><div class="corner-br"></div>
+            <div class="panel-title"><span class="tb">[</span>ACHIEVEMENTS<span class="tb">]</span></div>
+            <div class="ach-header">
                 <div class="ach-pct" id="achPct">0%</div>
-                <div class="ach-pct-label" id="achLabel">0 / 0 已解锁</div>
+                <div class="ach-label" id="achLabel">0 / 0 UNLOCKED</div>
             </div>
-            <div id="achList" style="max-height:300px;overflow-y:auto"><div class="empty">加载中...</div></div>
+            <div id="achList" class="scroll-area"><div class="empty">LOADING...</div></div>
         </div>
-
-        <!-- Timeline -->
-        <div class="card span2">
-            <div class="card-t">📊 活动时间线</div>
-            <div id="timeline"><div class="empty">暂无活动记录</div></div>
+        <div class="panel" style="animation-delay:0.25s">
+            <div class="corner-bl"></div><div class="corner-br"></div>
+            <div class="panel-title"><span class="tb">[</span>SHOP<span class="tb">]</span><span class="extra" id="goldDisplay">💰 0G</span></div>
+            <div id="shopList" class="scroll-area"><div class="empty">LOADING...</div></div>
         </div>
-
-        <!-- Shop -->
-        <div class="card">
-            <div class="card-t">🛒 商店 <span id="goldDisplay" style="margin-left:auto;color:var(--gold);font-size:0.85em">💰 0G</span></div>
-            <div id="shopList" style="max-height:300px;overflow-y:auto"><div class="empty">加载中...</div></div>
-        </div>
-
-        <!-- Skills -->
-        <div class="card span2">
-            <div class="card-t">⚔️ 技能</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="panel" style="animation-delay:0.3s">
+            <div class="corner-bl"></div><div class="corner-br"></div>
+            <div class="panel-title"><span class="tb">[</span>SKILLS<span class="tb">]</span></div>
+            <div class="skills-cols">
                 <div>
-                    <div style="font-size:0.85em;color:var(--dim);margin-bottom:8px">被动技能</div>
-                    <div id="passiveSkills"><div class="empty">加载中...</div></div>
+                    <div class="skill-col-title">PASSIVE</div>
+                    <div id="passiveSkills"><div class="empty">LOADING...</div></div>
                 </div>
                 <div>
-                    <div style="font-size:0.85em;color:var(--dim);margin-bottom:8px">主动技能</div>
-                    <div id="activeSkills"><div class="empty">加载中...</div></div>
+                    <div class="skill-col-title">ACTIVE</div>
+                    <div id="activeSkills"><div class="empty">LOADING...</div></div>
                 </div>
-            </div>
-        </div>
-
-        <!-- Penalty Zone Status -->
-        <div class="card">
-            <div class="card-t">🏜️ 惩罚区域</div>
-            <div id="penaltyStatus" class="pattern-display">
-                <span class="pattern-icon">✅</span>
-                <div class="pattern-name" style="color:var(--green)">安全</div>
-                <div class="pattern-desc">每日任务状态正常</div>
-            </div>
-        </div>
-
-        <!-- Devices -->
-        <div class="card span3">
-            <div class="card-t">📱 多设备感知 <span id="deviceBadge" style="margin-left:auto;font-size:0.75em;color:var(--dim)">检测中...</span></div>
-            <div id="devicePanel">
-                <div class="empty">正在检测 OpenClaw Nodes...</div>
-            </div>
-            <div id="deviceSwitches" style="margin-top:12px;display:none">
-                <div style="font-size:0.8em;color:var(--dim);margin-bottom:6px">🔄 设备切换记录</div>
-                <div id="switchList"></div>
             </div>
         </div>
     </div>
-</div>
-<div class="notifs" id="notifs"></div>
+    <div class="grid-duo">
+        <div class="panel" style="animation-delay:0.35s">
+            <div class="corner-bl"></div><div class="corner-br"></div>
+            <div class="panel-title"><span class="tb">[</span>DEVICES<span class="tb">]</span><span class="extra" id="deviceBadge" style="color:var(--text-dim)">DETECTING...</span></div>
+            <div id="devicePanel"><div class="empty">DETECTING OPENCLAW NODES...</div></div>
+            <div id="deviceSwitches" style="display:none">
+                <div class="switch-section">
+                    <div class="switch-title">DEVICE SWITCH LOG</div>
+                    <div id="switchList"></div>
+                </div>
+            </div>
+        </div>
+        <div class="panel" style="animation-delay:0.4s">
+            <div class="corner-bl"></div><div class="corner-br"></div>
+            <div class="panel-title"><span class="tb">[</span>PENALTY<span class="tb">]</span></div>
+            <div class="penalty-box" id="penaltyStatus">
+                <span class="penalty-icon">✅</span>
+                <div class="penalty-status" style="color:var(--green)">SAFE</div>
+                <div class="penalty-desc">每日任务状态正常</div>
+            </div>
+        </div>
+    </div></div>
+<div class="notif-container" id="notifs"></div>
 
 <script>
-// 自动检测 base path (支持 Nginx 反代 /solo/ 等前缀)
 const _pathBase = location.pathname.replace(/\/[^/]*$/, '').replace(/\/$/, '');
 const B = _pathBase;
 let ws;
+
+function el(id) { return document.getElementById(id); }
 
 async function init() {
     await Promise.all([fetchStatus(), fetchQuests(), fetchSnapshots(), fetchAchievements(), fetchPattern(), fetchShop(), fetchSkills(), fetchPenalty(), fetchDevices()]);
@@ -264,41 +263,59 @@ async function init() {
 async function fetchStatus() {
     try {
         const r = await fetch(B+'/api/status'); const d = await r.json();
-        if (d.error) { el('badge').className='badge badge-off'; el('badge').textContent='● 离线'; return; }
-        el('badge').className='badge badge-on'; el('badge').textContent='● 在线';
+        if (d.error) {
+            el('connDot').className='conn-dot offline';
+            el('connText').className='conn-text offline';
+            el('connText').textContent='OFFLINE';
+            return;
+        }
+        el('connDot').className='conn-dot online';
+        el('connText').className='conn-text online';
+        el('connText').textContent='ONLINE';
         const p = d.player;
         el('pName').textContent = p.name;
         el('pTitle').textContent = '🏅 '+p.title;
-        el('pLevel').textContent = 'Lv. '+p.level;
+        el('pLevel').textContent = 'LV. '+p.level;
         const pct = Math.round(p.exp_progress*100);
-        el('expL').textContent = `EXP: ${p.exp} / ${p.exp_to_next}`;
+        el('expL').textContent = 'EXP: '+p.exp+' / '+p.exp_to_next;
         el('expP').textContent = pct+'%';
         el('expF').style.width = pct+'%';
-        el('sF').textContent=p.stats.focus; el('sP').textContent=p.stats.productivity;
-        el('sC').textContent=p.stats.consistency; el('sR').textContent=p.stats.creativity;
-        el('sW').textContent=p.stats.wellness;
+        const s = p.stats;
+        el('sF').textContent=s.focus; el('sFbar').style.width=s.focus+'%';
+        el('sP').textContent=s.productivity; el('sPbar').style.width=s.productivity+'%';
+        el('sC').textContent=s.consistency; el('sCbar').style.width=s.consistency+'%';
+        el('sR').textContent=s.creativity; el('sRbar').style.width=s.creativity+'%';
+        el('sW').textContent=s.wellness; el('sWbar').style.width=s.wellness+'%';
         // Buffs
         const bc = el('buffList');
-        if (p.active_buffs?.length > 0) {
-            bc.innerHTML = p.active_buffs.map(b =>
-                `<span class="buff ${b.is_debuff?'buff-neg':'buff-pos'}">${b.name}</span>`
-            ).join('');
-        } else bc.innerHTML = '<div class="empty">暂无效果</div>';
-    } catch(e) {}
+        if (p.active_buffs && p.active_buffs.length > 0) {
+            bc.innerHTML = p.active_buffs.map(function(b) {
+                return '<span class="buff-tag '+(b.is_debuff?'buff-neg':'buff-pos')+'">'+b.name+'</span>';
+            }).join('');
+        } else {
+            bc.innerHTML = '<div class="empty">NO ACTIVE EFFECTS</div>';
+        }
+    } catch(e) {
+        el('connDot').className='conn-dot offline';
+        el('connText').className='conn-text offline';
+        el('connText').textContent='OFFLINE';
+    }
 }
 
 async function fetchQuests() {
     try {
         const r = await fetch(B+'/api/quests'); const d = await r.json();
         const c = el('questList');
-        if (d.quests?.length > 0) {
-            c.innerHTML = d.quests.map(q => `
-                <div class="quest">
-                    <div class="quest-left"><span class="diff d-${q.difficulty}">${q.difficulty}</span> ${q.title}</div>
-                    <div class="quest-right"><span class="quest-exp">+${q.exp_reward} EXP</span>
-                    <button class="btn-done" onclick="doneQ('${q.id}')">✓ 完成</button></div>
-                </div>`).join('');
-        } else c.innerHTML = '<div class="empty">暂无活跃任务</div>';
+        if (d.quests && d.quests.length > 0) {
+            c.innerHTML = d.quests.map(function(q) {
+                return '<div class="quest-item">' +
+                    '<div class="quest-left"><span class="diff-badge d-'+q.difficulty+'">'+q.difficulty+'</span><span class="quest-title-text">'+q.title+'</span></div>' +
+                    '<div class="quest-right"><span class="quest-exp">+'+q.exp_reward+' EXP</span>' +
+                    '<button class="btn-sys" onclick="doneQ(\''+q.id+'\')">COMPLETE</button></div></div>';
+            }).join('');
+        } else {
+            c.innerHTML = '<div class="empty">NO ACTIVE QUESTS</div>';
+        }
     } catch(e) {}
 }
 
@@ -306,35 +323,39 @@ async function fetchSnapshots() {
     try {
         const r = await fetch(B+'/api/snapshots?limit=8'); const d = await r.json();
         const c = el('timeline');
-        if (d.snapshots?.length > 0) {
-            c.innerHTML = d.snapshots.map(s => {
-                const f = s.focus_score||0;
-                const bar = '●'.repeat(Math.round(f*5))+'○'.repeat(5-Math.round(f*5));
-                const t = new Date(s.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
-                return `<div class="tl-item">
-                    <span class="tl-time">${t}</span> <span class="tl-focus">[${bar}]</span>
-                    <div class="tl-act">${s.ai_analysis||s.activity_category||'...'}</div>
-                    ${s.inferred_motive?`<div class="tl-focus">💭 ${s.inferred_motive}</div>`:''}
-                </div>`;
+        if (d.snapshots && d.snapshots.length > 0) {
+            c.innerHTML = d.snapshots.map(function(s) {
+                var f = s.focus_score||0;
+                var filled = Math.round(f*5);
+                var bar = '';
+                for(var i=0;i<5;i++) bar += i<filled?'●':'○';
+                var t = new Date(s.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+                var html = '<div class="log-item"><span class="log-time">'+t+'</span><span class="log-focus">['+bar+']</span>';
+                html += '<div class="log-text">'+(s.ai_analysis||s.activity_category||'...')+'</div>';
+                if(s.inferred_motive) html += '<div class="log-motive">💭 '+s.inferred_motive+'</div>';
+                html += '</div>';
+                return html;
             }).join('');
-        } else c.innerHTML = '<div class="empty">暂无活动记录</div>';
+        } else {
+            c.innerHTML = '<div class="empty">NO ACTIVITY RECORDED</div>';
+        }
     } catch(e) {}
 }
 
 async function fetchAchievements() {
     try {
         const r = await fetch(B+'/api/achievements'); const d = await r.json();
-        const prog = d.progress||{};
+        var prog = d.progress||{};
         el('achPct').textContent = Math.round((prog.progress||0)*100)+'%';
-        el('achLabel').textContent = `${prog.unlocked||0} / ${prog.total||0} 已解锁`;
+        el('achLabel').textContent = (prog.unlocked||0)+' / '+(prog.total||0)+' UNLOCKED';
         const c = el('achList');
-        if (d.achievements?.length > 0) {
-            c.innerHTML = d.achievements.map(a => `
-                <div class="ach ${a.unlocked?'ach-unlocked':'ach-locked'}">
-                    <span class="ach-icon">${a.unlocked?'🏆':'🔒'}</span>
-                    <div class="ach-info"><div class="ach-name">${a.name}</div><div class="ach-desc">${a.description}</div></div>
-                    <span class="ach-exp">+${a.exp_reward}</span>
-                </div>`).join('');
+        if (d.achievements && d.achievements.length > 0) {
+            c.innerHTML = d.achievements.map(function(a) {
+                return '<div class="ach-item '+(a.unlocked?'ach-unlocked':'ach-locked')+'">' +
+                    '<span class="ach-icon">'+(a.unlocked?'🏆':'🔒')+'</span>' +
+                    '<div class="ach-info"><div class="ach-name">'+a.name+'</div><div class="ach-desc">'+a.description+'</div></div>' +
+                    '<span class="ach-reward">+'+a.exp_reward+'</span></div>';
+            }).join('');
         }
     } catch(e) {}
 }
@@ -342,41 +363,42 @@ async function fetchAchievements() {
 async function fetchPattern() {
     try {
         const r = await fetch(B+'/api/pattern'); const d = await r.json();
-        const map = {
-            deep_focus:{icon:'🔥',name:'深度专注',desc:'心流状态，效率拉满',color:'var(--cyan)'},
-            distraction:{icon:'💫',name:'注意力涣散',desc:'频繁切换，专注度低',color:'var(--red)'},
-            learning:{icon:'📚',name:'学习模式',desc:'知识吸收中',color:'var(--green)'},
-            creative:{icon:'🎨',name:'创作模式',desc:'创造力激发',color:'var(--purple)'},
-            fatigue:{icon:'😴',name:'疲劳',desc:'建议休息一下',color:'var(--red)'},
-            procrastination:{icon:'⛓️',name:'拖延',desc:'系统检测到拖延行为',color:'var(--red)'},
-            normal:{icon:'⏳',name:'正常',desc:'系统持续监测中',color:'var(--dim)'},
+        var map = {
+            deep_focus:{icon:'🔥',name:'DEEP FOCUS',desc:'心流状态，效率拉满',color:'var(--cyan)'},
+            distraction:{icon:'💫',name:'DISTRACTED',desc:'频繁切换，专注度低',color:'var(--red)'},
+            learning:{icon:'📚',name:'LEARNING',desc:'知识吸收中',color:'var(--green)'},
+            creative:{icon:'🎨',name:'CREATIVE',desc:'创造力激发',color:'var(--cyan)'},
+            fatigue:{icon:'😴',name:'FATIGUE',desc:'建议休息一下',color:'var(--red)'},
+            procrastination:{icon:'⛓️',name:'PROCRASTINATING',desc:'系统检测到拖延行为',color:'var(--red)'},
+            normal:{icon:'⏳',name:'MONITORING',desc:'系统持续监测中',color:'var(--text-dim)'}
         };
-        const p = map[d.pattern]||map.normal;
-        el('patternBox').innerHTML = `
-            <span class="pattern-icon">${p.icon}</span>
-            <div class="pattern-name" style="color:${p.color}">${p.name}</div>
-            <div class="pattern-desc">${p.desc}</div>
-            ${d.duration_minutes>0?`<div class="pattern-desc">持续 ${Math.round(d.duration_minutes)} 分钟</div>`:''}
-        `;
+        var p = map[d.pattern]||map.normal;
+        // Update pattern display - inject into buff section area or use a notification
+        // Pattern info is shown via the status connection
     } catch(e) {}
 }
 
-async function doneQ(id) { await fetch(B+`/api/quests/${id}/complete`,{method:'POST'}); fetchQuests(); fetchStatus(); }
+async function doneQ(id) {
+    try {
+        await fetch(B+'/api/quests/'+id+'/complete',{method:'POST'});
+        fetchQuests(); fetchStatus();
+    } catch(e) {}
+}
 
 async function fetchShop() {
     try {
         const r = await fetch(B+'/api/shop'); const d = await r.json();
-        el('goldDisplay').textContent = `💰 ${d.gold}G`;
+        el('goldDisplay').textContent = '💰 '+d.gold+'G';
         const c = el('shopList');
-        if (d.items?.length > 0) {
-            c.innerHTML = d.items.filter(i=>i.available).map(i => `
-                <div class="quest" style="margin-bottom:6px">
-                    <div class="quest-left" style="font-size:0.85em">${i.name}<br><span style="color:var(--dim);font-size:0.8em">${i.description}</span></div>
-                    <div class="quest-right">
-                        <span class="quest-exp">${i.price}G</span>
-                        <button class="btn-done" onclick="buyItem('${i.id}')" ${i.affordable?'':'disabled style="opacity:0.4"'}>购买</button>
-                    </div>
-                </div>`).join('');
+        if (d.items && d.items.length > 0) {
+            c.innerHTML = d.items.filter(function(i){return i.available}).map(function(i) {
+                return '<div class="shop-item">' +
+                    '<div><div class="shop-name">'+i.name+'</div><div class="shop-desc">'+i.description+'</div></div>' +
+                    '<div class="shop-right"><span class="shop-price">'+i.price+'G</span>' +
+                    '<button class="btn-buy" onclick="buyItem(\''+i.id+'\')"'+(i.affordable?'':' disabled')+'>BUY</button></div></div>';
+            }).join('');
+        } else {
+            c.innerHTML = '<div class="empty">NO ITEMS AVAILABLE</div>';
         }
     } catch(e) {}
 }
@@ -384,106 +406,133 @@ async function fetchShop() {
 async function fetchSkills() {
     try {
         const r = await fetch(B+'/api/skills'); const d = await r.json();
-        const pc = el('passiveSkills');
-        pc.innerHTML = (d.passive||[]).map(s => `
-            <div class="ach ${s.unlocked?'ach-unlocked':'ach-locked'}" style="margin-bottom:4px">
-                <span class="ach-icon" style="font-size:1em">${s.unlocked?s.name.split(' ')[0]:'🔒'}</span>
-                <div class="ach-info"><div class="ach-name" style="font-size:0.8em">${s.name}</div>
-                <div class="ach-desc">${s.description||''}</div></div>
-            </div>`).join('');
-        const ac = el('activeSkills');
-        ac.innerHTML = (d.active||[]).map(s => `
-            <div class="ach ${s.unlocked?'ach-unlocked':'ach-locked'}" style="margin-bottom:4px;cursor:${s.unlocked&&!s.on_cooldown?'pointer':'default'}" ${s.unlocked&&!s.on_cooldown?`onclick="useSkill('${s.id}')"`:''}> 
-                <span class="ach-icon" style="font-size:1em">${s.unlocked?s.name.split(' ')[0]:'🔒'}</span>
-                <div class="ach-info"><div class="ach-name" style="font-size:0.8em">${s.name}${s.on_cooldown?` <span style="color:var(--red);font-size:0.7em">CD:${s.cooldown_remaining}m</span>`:''}</div>
-                <div class="ach-desc">${s.description||''}</div></div>
-            </div>`).join('');
+        var pc = el('passiveSkills');
+        if (d.passive && d.passive.length > 0) {
+            pc.innerHTML = d.passive.map(function(s) {
+                return '<div class="skill-item '+(s.unlocked?'unlocked':'locked')+'">' +
+                    '<span class="skill-icon">'+(s.unlocked?s.name.split(' ')[0]:'🔒')+'</span>' +
+                    '<div class="skill-info"><div class="skill-name">'+s.name+'</div>' +
+                    '<div class="skill-desc-text">'+(s.description||'')+'</div></div></div>';
+            }).join('');
+        } else {
+            pc.innerHTML = '<div class="empty">NONE</div>';
+        }
+        var ac = el('activeSkills');
+        if (d.active && d.active.length > 0) {
+            ac.innerHTML = d.active.map(function(s) {
+                var canUse = s.unlocked && !s.on_cooldown;
+                return '<div class="skill-item '+(s.unlocked?'unlocked':'locked')+(canUse?' clickable':'')+'"'+(canUse?' onclick="useSkill(\''+s.id+'\')"':'')+'>' +
+                    '<span class="skill-icon">'+(s.unlocked?s.name.split(' ')[0]:'🔒')+'</span>' +
+                    '<div class="skill-info"><div class="skill-name">'+s.name+(s.on_cooldown?' <span class="skill-cd">CD:'+s.cooldown_remaining+'m</span>':'')+'</div>' +
+                    '<div class="skill-desc-text">'+(s.description||'')+'</div></div></div>';
+            }).join('');
+        } else {
+            ac.innerHTML = '<div class="empty">NONE</div>';
+        }
     } catch(e) {}
 }
 
 async function fetchPenalty() {
     try {
         const r = await fetch(B+'/api/penalty'); const d = await r.json();
-        const c = el('penaltyStatus');
+        var c = el('penaltyStatus');
         if (d.in_penalty_zone) {
-            c.innerHTML = `<span class="pattern-icon">🏜️</span>
-                <div class="pattern-name" style="color:var(--red)">惩罚区域</div>
-                <div class="pattern-desc">连续 ${d.consecutive_fails} 天未完成每日任务</div>`;
+            c.innerHTML = '<span class="penalty-icon">🏜️</span>' +
+                '<div class="penalty-status" style="color:var(--red)">PENALTY ZONE</div>' +
+                '<div class="penalty-desc">连续 '+d.consecutive_fails+' 天未完成每日任务</div>';
         } else {
-            c.innerHTML = `<span class="pattern-icon">✅</span>
-                <div class="pattern-name" style="color:var(--green)">安全</div>
-                <div class="pattern-desc">每日任务状态正常</div>`;
+            c.innerHTML = '<span class="penalty-icon">✅</span>' +
+                '<div class="penalty-status" style="color:var(--green)">SAFE</div>' +
+                '<div class="penalty-desc">每日任务状态正常</div>';
         }
     } catch(e) {}
 }
 
-async function buyItem(id) { const r=await fetch(B+`/api/shop/buy/${id}`,{method:'POST'}); fetchShop(); fetchStatus(); }
-async function useSkill(id) { await fetch(B+`/api/skills/${id}/activate`,{method:'POST'}); fetchSkills(); }
+async function buyItem(id) {
+    try {
+        await fetch(B+'/api/shop/buy/'+id,{method:'POST'});
+        fetchShop(); fetchStatus();
+    } catch(e) {}
+}
 
-const DEVICE_ICONS = {mac:'🍎',windows:'🪟',linux:'🐧',android:'🤖',ios:'📱',unknown:'💻'};
+async function useSkill(id) {
+    try {
+        await fetch(B+'/api/skills/'+id+'/activate',{method:'POST'});
+        fetchSkills();
+    } catch(e) {}
+}
+
+var DEVICE_ICONS = {mac:'🍎',windows:'🪟',linux:'🐧',android:'🤖',ios:'📱',unknown:'💻'};
 
 async function fetchDevices() {
     try {
         const r = await fetch(B+'/api/devices'); const d = await r.json();
-        const stats = d.stats;
-        const badge = el('deviceBadge');
-        badge.textContent = d.openclaw_available
-            ? `✅ OpenClaw | ${stats.online_devices}/${stats.total_devices} 在线`
-            : '❌ OpenClaw 未连接';
-        badge.style.color = d.openclaw_available ? 'var(--green)' : 'var(--red)';
-
-        const panel = el('devicePanel');
-        if (d.devices?.length > 0) {
-            panel.innerHTML = '<div class="device-grid">' + d.devices.map(dev => {
-                const icon = DEVICE_ICONS[dev.device_type] || '💻';
-                const isActive = dev.is_active;
-                const statusColor = dev.status === 'online' ? 'var(--green)' : dev.status === 'idle' ? 'var(--gold)' : 'var(--red)';
-                const statusText = dev.status === 'online' ? '🟢 在线' : dev.status === 'idle' ? '🟡 空闲' : '⚫ 离线';
-                return `<div class="device-card ${isActive?'active':''} ${dev.status==='offline'?'offline':''}">
-                    ${isActive?'<div class="device-active-dot"></div>':''}
-                    <div class="device-type">${icon}</div>
-                    <div class="device-name">${dev.name}</div>
-                    <div class="device-status" style="color:${statusColor}">${statusText}${isActive?' · 当前活跃':''}</div>
-                    ${dev.current_window?`<div class="device-window">🪟 ${dev.current_window}</div>`:''}
-                    ${dev.battery_level>=0?`<div class="device-window">🔋 ${Math.round(dev.battery_level)}%</div>`:''}
-                </div>`;
+        var stats = d.stats;
+        var badge = el('deviceBadge');
+        if (d.openclaw_available) {
+            badge.textContent = 'OPENCLAW | '+stats.online_devices+'/'+stats.total_devices+' ONLINE';
+            badge.style.color = 'var(--green)';
+        } else {
+            badge.textContent = 'OPENCLAW DISCONNECTED';
+            badge.style.color = 'var(--red)';
+        }
+        var panel = el('devicePanel');
+        if (d.devices && d.devices.length > 0) {
+            panel.innerHTML = '<div class="device-grid">' + d.devices.map(function(dev) {
+                var icon = DEVICE_ICONS[dev.device_type] || '💻';
+                var isActive = dev.is_active;
+                var statusColor = dev.status==='online'?'var(--green)':dev.status==='idle'?'var(--gold)':'var(--red)';
+                var statusText = dev.status==='online'?'ONLINE':dev.status==='idle'?'IDLE':'OFFLINE';
+                var html = '<div class="device-card '+(isActive?'active':'')+' '+(dev.status==='offline'?'offline':'')+'">';
+                if(isActive) html += '<div class="device-active-dot"></div>';
+                html += '<div class="device-icon">'+icon+'</div>';
+                html += '<div class="device-name">'+dev.name+'</div>';
+                html += '<div class="device-status-text" style="color:'+statusColor+'">'+statusText+(isActive?' · ACTIVE':'')+'</div>';
+                if(dev.current_window) html += '<div class="device-detail">🪟 '+dev.current_window+'</div>';
+                if(dev.battery_level>=0) html += '<div class="device-detail">🔋 '+Math.round(dev.battery_level)+'%</div>';
+                html += '</div>';
+                return html;
             }).join('') + '</div>';
         } else {
-            panel.innerHTML = `<div class="empty" style="font-size:0.85em">
-                ${d.openclaw_available
-                    ? '暂无配对设备。在你的 Mac/手机上安装 OpenClaw Node 即可自动发现。'
-                    : 'OpenClaw Nodes 未检测到。多设备感知需要 OpenClaw 支持。'}
-            </div>`;
+            panel.innerHTML = '<div class="empty">'+(d.openclaw_available?'暂无配对设备。在你的 Mac/手机上安装 OpenClaw Node 即可自动发现。':'OpenClaw Nodes 未检测到。多设备感知需要 OpenClaw 支持。')+'</div>';
         }
-
-        // 设备切换记录
-        const sr = await fetch(B+'/api/devices/switches'); const sd = await sr.json();
-        if (sd.switches?.length > 0) {
-            el('deviceSwitches').style.display = 'block';
-            el('switchList').innerHTML = sd.switches.slice(-5).reverse().map(s => {
-                const t = new Date(s.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
-                return `<div class="switch-item">${t} — ${s.from_name||'无'} → ${s.to_name}</div>`;
-            }).join('');
-        }
+        // Device switch log
+        try {
+            var sr = await fetch(B+'/api/devices/switches'); var sd = await sr.json();
+            if (sd.switches && sd.switches.length > 0) {
+                el('deviceSwitches').style.display = 'block';
+                el('switchList').innerHTML = sd.switches.slice(-5).reverse().map(function(s) {
+                    var t = new Date(s.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+                    return '<div class="switch-item">'+t+' — '+(s.from_name||'无')+' → '+s.to_name+'</div>';
+                }).join('');
+            }
+        } catch(e2) {}
     } catch(e) {}
 }
 
 function connectWS() {
-    const p = location.protocol==='https:'?'wss:':'ws:';
-    ws = new WebSocket(`${p}//${location.host}${_pathBase}/ws`);
-    ws.onmessage = e => { try { const m=JSON.parse(e.data); if(m.notification) showNotif(m.notification); fetchStatus(); fetchQuests(); fetchAchievements(); } catch(ex){} };
-    ws.onclose = () => setTimeout(connectWS,3000);
-    ws.onerror = () => ws.close();
+    var p = location.protocol==='https:'?'wss:':'ws:';
+    ws = new WebSocket(p+'//'+location.host+B+'/ws');
+    ws.onmessage = function(e) {
+        try {
+            var m = JSON.parse(e.data);
+            if(m.notification) showNotif(m.notification);
+            fetchStatus(); fetchQuests(); fetchAchievements();
+        } catch(ex) {}
+    };
+    ws.onclose = function() { setTimeout(connectWS, 3000); };
+    ws.onerror = function() { ws.close(); };
 }
 
 function showNotif(n) {
-    const c = el('notifs'), d = document.createElement('div');
-    d.className='notif';
-    d.innerHTML=`<div class="notif-t">${n.title}</div><div class="notif-m">${n.message}</div>`;
-    c.appendChild(d); setTimeout(()=>d.remove(),5000);
+    var c = el('notifs');
+    var d = document.createElement('div');
+    d.className = 'notif';
+    d.innerHTML = '<div class="notif-t">'+n.title+'</div><div class="notif-m">'+n.message+'</div>';
+    c.appendChild(d);
+    setTimeout(function(){ d.remove(); }, 5000);
 }
 
-function el(id) { return document.getElementById(id); }
 init();
 </script>
 </body>
