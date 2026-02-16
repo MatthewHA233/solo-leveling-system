@@ -1,6 +1,6 @@
 """
-独自升级系统 - 模块入口
-python -m src.core.system
+独自升级系统 - 服务端入口
+python -m server.core
 """
 import asyncio
 from .system import main

@@ -3,7 +3,7 @@
     {
       "name": "solo-leveling",
       "script": "python3",
-      "args": "-m src.core",
+      "args": "-m server.core",
       "cwd": "/root/openclaw/solo-leveling-system",
       "interpreter": "none",
       "env": {

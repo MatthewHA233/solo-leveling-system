@@ -407,21 +407,17 @@ class DeviceState:
 
 ```
 solo-leveling-system/
-├── server/                          # 后端服务
-│   ├── src/
-│   │   ├── core/                    # 系统核心 (现有)
-│   │   ├── perception/              # 感知层 → 改为接收客户端数据
-│   │   ├── cognition/               # 认知引擎 (现有 + 增强)
-│   │   ├── system/                  # 游戏系统 (现有)
-│   │   ├── api/                     # API 层 (现有 + 扩展)
-│   │   ├── storage/                 # 数据层 (现有)
-│   │   └── devices/                 # 新增: 设备管理
-│   │       ├── manager.py           # 设备注册/心跳/状态
-│   │       ├── focus.py             # 焦点追踪
-│   │       └── sync.py             # 跨设备数据同步
-│   ├── config/
-│   ├── data/
-│   └── requirements.txt
+├── server/                          # 后端服务 (Python)
+│   ├── core/                        # 系统核心 (入口: python -m server.core)
+│   ├── perception/                  # 感知层 (接收客户端数据 + 本地感知)
+│   ├── cognition/                   # 认知引擎 (规则引擎 + AI 分析)
+│   ├── system/                      # 游戏系统 (任务/Buff/经验/成就/影子军团/...)
+│   ├── api/                         # FastAPI (Web API + Agent API + WebSocket)
+│   ├── storage/                     # 数据层 (SQLite)
+│   └── ui/web/                      # Web Dashboard (前端)
+├── config/                          # 配置文件
+├── data/                            # 运行时数据 (SQLite + 截图 + 日志)
+├── requirements.txt
 │
 ├── clients/                         # 各平台客户端
 │   ├── macos/                       # macOS Agent (Swift)
