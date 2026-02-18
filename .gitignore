@@ -5,6 +5,7 @@ data/
 *.log
 .env
 config/local.yaml
+ecosystem.config.js
 
 # Xcode / Swift
 .build/

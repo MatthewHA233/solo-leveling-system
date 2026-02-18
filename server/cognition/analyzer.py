@@ -521,17 +521,60 @@ class Analyzer:
             self._context_history = self._context_history[-max_size:]
 
     async def _call_ai(self, messages: list[dict]) -> dict | None:
-        """调用 AI API"""
+        """调用 AI API (Anthropic Messages 格式)"""
         try:
             async with httpx.AsyncClient(timeout=60) as client:
-                headers = {}
-                if self.ai_config.api_key:
-                    headers["Authorization"] = f"Bearer {self.ai_config.api_key}"
+                headers = {
+                    "x-api-key": self.ai_config.api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                    "User-Agent": "solo-leveling-system/1.0",
+                }
 
-                url = f"{self.ai_config.api_base.rstrip('/')}/chat/completions"
+                url = f"{self.ai_config.api_base.rstrip('/')}/messages"
+
+                # 转换消息格式: OpenAI → Anthropic Messages
+                anthropic_messages = []
+                for msg in messages:
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        anthropic_messages.append({
+                            "role": msg["role"],
+                            "content": content,
+                        })
+                    elif isinstance(content, list):
+                        # 多模态: text + image
+                        anthropic_content = []
+                        for block in content:
+                            if block.get("type") == "text":
+                                anthropic_content.append({
+                                    "type": "text",
+                                    "text": block["text"],
+                                })
+                            elif block.get("type") == "image_url":
+                                # OpenAI image_url → Anthropic source
+                                data_url = block["image_url"]["url"]
+                                # data:image/jpeg;base64,xxx
+                                if data_url.startswith("data:"):
+                                    parts = data_url.split(",", 1)
+                                    media_type = parts[0].split(":")[1].split(";")[0]
+                                    b64_data = parts[1]
+                                    anthropic_content.append({
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": media_type,
+                                            "data": b64_data,
+                                        },
+                                    })
+                        anthropic_messages.append({
+                            "role": msg["role"],
+                            "content": anthropic_content,
+                        })
+
                 payload = {
                     "model": self.ai_config.model,
-                    "messages": messages,
+                    "messages": anthropic_messages,
                     "max_tokens": self.ai_config.max_tokens,
                     "temperature": self.ai_config.temperature,
                 }
@@ -540,7 +583,8 @@ class Analyzer:
                 resp.raise_for_status()
                 data = resp.json()
 
-                content = data["choices"][0]["message"]["content"]
+                # Anthropic 响应格式: data.content[0].text
+                content = data["content"][0]["text"]
                 return self._parse_json_response(content)
 
         except Exception as e:
