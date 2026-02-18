@@ -3,7 +3,8 @@ import SwiftUI
 /// 菜单栏弹出视图
 struct MenuBarView: View {
     @EnvironmentObject var agent: AgentManager
-    
+    @Environment(\.openWindow) private var openWindow
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Header
@@ -96,9 +97,15 @@ struct MenuBarView: View {
                     NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                 }
                 .buttonStyle(.link)
-                
+
+                Button("时间线") {
+                    openWindow(id: "timeline")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                .buttonStyle(.link)
+
                 Spacer()
-                
+
                 Button("退出") {
                     NSApplication.shared.terminate(nil)
                 }

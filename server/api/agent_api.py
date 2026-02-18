@@ -7,6 +7,7 @@ Agent API — 处理客户端 (macOS/Windows/Android) 的数据上报和通信
 import base64
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -352,38 +353,52 @@ async def _trigger_analysis(device_id: str, report: AgentReport):
     """触发 AI 分析 (如果系统已初始化)"""
     if not _system_ref:
         return
-    
+
+    # 保存截图到磁盘，供主分析循环使用
+    screenshot_path = None
+    if report.snapshot.screenshot_b64:
+        screenshot_path = _save_agent_screenshot(
+            device_id, report.snapshot.screenshot_b64
+        )
+
+    # 更新系统的当前窗口状态（让主分析循环能获取 agent 上报的数据）
+    app_name = report.snapshot.active_window.app_name or ""
+    window_title = report.snapshot.active_window.window_title or ""
+    _system_ref._current_window = app_name
+    _system_ref._current_title = window_title
+
     # 构造快照数据，触发现有分析管线
     from ..storage.models import ContextSnapshot
-    
+
     snapshot = ContextSnapshot(
         id=f"agent_{uuid.uuid4().hex[:8]}",
         timestamp=datetime.now(),
-        active_window=report.snapshot.active_window.app_name or "",
-        window_title=report.snapshot.active_window.window_title or "",
+        screenshot_path=screenshot_path,
+        active_window=app_name,
+        window_title=window_title,
         ai_analysis="",
         inferred_motive="",
         activity_category="",
         focus_score=0.0,
     )
-    
+
     # 保存快照到数据库
     await _system_ref.db.save_snapshot(snapshot)
-    
+
     # 触发 Level 1 分析 (规则引擎, 零成本)
     if hasattr(_system_ref, 'analyzer'):
         analysis = await _system_ref.analyzer.analyze_level1(
-            app_name=report.snapshot.active_window.app_name,
-            window_title=report.snapshot.active_window.window_title,
+            app_name=app_name,
+            window_title=window_title,
             bundle_id=report.snapshot.active_window.bundle_id,
         )
-        
+
         if analysis:
             snapshot.activity_category = analysis.get("category")
             snapshot.ai_analysis = analysis.get("summary")
             snapshot.focus_score = analysis.get("focus_score")
             await _system_ref.db.save_snapshot(snapshot)
-            
+
             # 触发事件
             from ..core.events import EventType
             await _system_ref.bus.emit_simple(
@@ -396,3 +411,27 @@ async def _trigger_analysis(device_id: str, report: AgentReport):
                     "device_id": device_id,
                 },
             )
+
+
+def _save_agent_screenshot(device_id: str, screenshot_b64: str) -> str | None:
+    """将 agent 上报的 base64 截图保存到磁盘"""
+    try:
+        screenshots_dir = Path("data/screenshots")
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+        image_data = base64.b64decode(screenshot_b64)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{device_id}_{timestamp}.jpg"
+        filepath = screenshots_dir / filename
+        filepath.write_bytes(image_data)
+
+        # 清理旧截图，只保留最近 100 张
+        all_shots = sorted(screenshots_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime)
+        if len(all_shots) > 100:
+            for old in all_shots[:-100]:
+                old.unlink(missing_ok=True)
+
+        return str(filepath)
+    except Exception as e:
+        print(f"[AgentAPI] 保存截图失败: {e}")
+        return None

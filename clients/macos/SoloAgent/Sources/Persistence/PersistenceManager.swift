@@ -112,6 +112,34 @@ final class PersistenceManager {
         return (try? context.fetch(descriptor)) ?? []
     }
     
+    // MARK: - Timeline Queries
+
+    /// 查询指定时间范围内有截图的活动记录
+    func activitiesWithScreenshots(from startDate: Date, to endDate: Date) -> [ActivityRecord] {
+        let predicate = #Predicate<ActivityRecord> { record in
+            record.timestamp >= startDate &&
+            record.timestamp <= endDate &&
+            record.screenshotPath != nil
+        }
+        let descriptor = FetchDescriptor<ActivityRecord>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
+    /// 查询今天有截图的活动记录
+    func todayActivitiesWithScreenshots() -> [ActivityRecord] {
+        let startOfDay = Calendar.current.startOfDay(for: Date())
+        return activitiesWithScreenshots(from: startOfDay, to: Date())
+    }
+
+    /// 查询最近 24 小时有截图的活动记录
+    func last24hActivitiesWithScreenshots() -> [ActivityRecord] {
+        let cutoff = Date().addingTimeInterval(-24 * 3600)
+        return activitiesWithScreenshots(from: cutoff, to: Date())
+    }
+
     /// 清理过期活动记录 (默认保留 7 天)
     func cleanupOldRecords(olderThan days: Int = 7) {
         let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()

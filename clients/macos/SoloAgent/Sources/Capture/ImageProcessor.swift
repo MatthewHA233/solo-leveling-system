@@ -61,6 +61,45 @@ enum ImageProcessor {
         return jpegData
     }
     
+    /// 生成缩略图: 缩小到指定宽度 + 低质量 JPEG
+    /// - Parameters:
+    ///   - jpegData: 原始 JPEG 数据
+    ///   - maxWidth: 缩略图最大宽度
+    ///   - quality: JPEG 质量
+    /// - Returns: 缩略图 JPEG Data
+    static func generateThumbnail(_ jpegData: Data, maxWidth: Int = 320, quality: Double = 0.5) -> Data? {
+        guard let nsImage = NSImage(data: jpegData) else { return nil }
+
+        let originalSize = nsImage.size
+        guard originalSize.width > 0 else { return nil }
+
+        let scale = CGFloat(maxWidth) / originalSize.width
+        let targetWidth = CGFloat(maxWidth)
+        let targetHeight = originalSize.height * scale
+        let targetSize = NSSize(width: targetWidth, height: targetHeight)
+
+        let resizedImage = NSImage(size: targetSize)
+        resizedImage.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        nsImage.draw(
+            in: NSRect(origin: .zero, size: targetSize),
+            from: NSRect(origin: .zero, size: originalSize),
+            operation: .copy,
+            fraction: 1.0
+        )
+        resizedImage.unlockFocus()
+
+        guard let tiffData = resizedImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+
+        return bitmap.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: NSNumber(value: quality)]
+        )
+    }
+
     /// 检测截图中是否包含敏感输入 (密码框等)
     /// 简单实现: 基于窗口标题判断
     static func containsSensitiveContent(windowTitle: String?, bundleId: String?, config: AgentConfig) -> Bool {

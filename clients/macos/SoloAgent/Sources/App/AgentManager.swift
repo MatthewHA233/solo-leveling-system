@@ -211,8 +211,16 @@ final class AgentManager: ObservableObject {
             )
             
             let screenshotSize = compressed?.count ?? 0
-            
-            // 4. 构建上报数据
+
+            // 4. 保存截图到本地
+            var screenshotRelativePath: String? = nil
+            if let compressed = compressed {
+                screenshotRelativePath = ScreenshotStorageManager.shared.saveScreenshot(
+                    imageData: compressed, appName: windowInfo.appName
+                )
+            }
+
+            // 5. 构建上报数据
             let report = AgentReport(
                 deviceId: config.deviceId,
                 timestamp: Date(),
@@ -224,25 +232,26 @@ final class AgentManager: ObservableObject {
                 )
             )
             
-            // 5. 上报服务器
+            // 6. 上报服务器
             let success = await networkClient.sendReport(report)
-            
-            // 6. 保存活动记录到本地数据库
+
+            // 7. 保存活动记录到本地数据库
             let stateStr = activityStateString(windowMonitor.currentActivityState)
             persistence.saveActivityRecord(
                 windowInfo: windowInfo,
                 idleSeconds: windowMonitor.idleSeconds,
                 isScreenLocked: windowMonitor.isScreenLocked,
+                screenshotPath: screenshotRelativePath,
                 screenshotSize: screenshotSize,
                 activityState: stateStr,
                 isSynced: success
             )
-            
+
             if success {
                 captureCount += 1
                 lastCaptureTime = Date()
             } else {
-                // 7. 上报失败 → 存入离线队列
+                // 8. 上报失败 → 存入离线队列
                 if let reportData = try? JSONEncoder().encode(report) {
                     persistence.cachePendingReport(deviceId: config.deviceId, reportData: reportData)
                     pendingReportCount = persistence.fetchPendingReports(limit: 1000).count
@@ -312,8 +321,9 @@ final class AgentManager: ObservableObject {
                 
                 persistence.cleanupOldRecords(olderThan: 7)
                 persistence.cleanupFailedReports(maxRetries: 10)
-                
-                Logger.info("🧹 定期清理完成, 数据库大小: \(persistence.databaseSize)")
+                ScreenshotStorageManager.shared.cleanupOldScreenshots(olderThanHours: 48)
+
+                Logger.info("🧹 定期清理完成, 数据库大小: \(persistence.databaseSize), 截图占用: \(ScreenshotStorageManager.shared.totalDiskUsage())")
             }
         }
     }
