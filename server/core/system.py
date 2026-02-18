@@ -213,13 +213,15 @@ class SoloLevelingSystem:
 
     async def _run_analysis(self) -> None:
         """执行一次 AI 分析"""
-        self._analysis_counter += 1
-
-        # 分析当前屏幕
-        # 找最新截图
+        # 没有截图也没有窗口信息时跳过，避免白烧 API
         screenshots_dir = Path(self.config.storage.screenshots_dir)
         screenshots = sorted(screenshots_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime)
         latest_screenshot = str(screenshots[-1]) if screenshots else None
+
+        if not latest_screenshot and not self._current_window and not self._current_title:
+            return
+
+        self._analysis_counter += 1
 
         analysis = await self.analyzer.analyze_screenshot(
             screenshot_path=latest_screenshot,
