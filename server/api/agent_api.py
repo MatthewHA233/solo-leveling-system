@@ -385,28 +385,46 @@ async def _trigger_analysis(device_id: str, report: AgentReport):
     # 保存快照到数据库
     await _system_ref.db.save_snapshot(snapshot)
 
-    # 触发 Level 1 分析 (规则引擎, 零成本)
+    # 先走 Level 1 规则引擎
     if hasattr(_system_ref, 'analyzer'):
-        analysis = await _system_ref.analyzer.analyze_level1(
+        l1 = await _system_ref.analyzer.analyze_level1(
             app_name=app_name,
             window_title=window_title,
             bundle_id=report.snapshot.active_window.bundle_id,
         )
 
+        # 规则引擎置信度低或有截图时，升级到 Level 2 AI 分析
+        use_ai = (l1 and l1.get("confidence", 0) < 0.8) or screenshot_path
+        if use_ai and hasattr(_system_ref.analyzer, 'analyze_screenshot'):
+            analysis = await _system_ref.analyzer.analyze_screenshot(
+                screenshot_path=screenshot_path,
+                window_name=app_name,
+                window_title=window_title,
+            )
+        elif l1:
+            analysis = {
+                "activity": l1.get("summary", ""),
+                "category": l1.get("category", "unknown"),
+                "motive": "",
+                "focus_score": l1.get("focus_score", 0.5),
+            }
+        else:
+            analysis = None
+
         if analysis:
-            snapshot.activity_category = analysis.get("category")
-            snapshot.ai_analysis = analysis.get("summary")
-            snapshot.focus_score = analysis.get("focus_score")
+            snapshot.activity_category = analysis.get("category", "")
+            snapshot.ai_analysis = analysis.get("activity", "")
+            snapshot.inferred_motive = analysis.get("motive", "")
+            snapshot.focus_score = analysis.get("focus_score", 0.5)
             await _system_ref.db.save_snapshot(snapshot)
 
-            # 触发事件
             from ..core.events import EventType
             await _system_ref.bus.emit_simple(
                 EventType.CONTEXT_ANALYZED,
                 analysis={
-                    "activity": analysis.get("summary", ""),
+                    "activity": analysis.get("activity", ""),
                     "category": analysis.get("category", "other"),
-                    "motive": "",
+                    "motive": analysis.get("motive", ""),
                     "focus_score": analysis.get("focus_score", 0.5),
                     "device_id": device_id,
                 },
