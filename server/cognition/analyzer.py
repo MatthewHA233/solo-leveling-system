@@ -29,7 +29,7 @@ WINDOW_RULES: dict[str, list[str]] = {
     "coding": [
         "visual studio code", "vscode", "intellij", "pycharm", "webstorm",
         "xcode", "android studio", "sublime text", "vim", "neovim", "nvim",
-        "terminal", "iterm", "warp", "alacritty", "cursor", "windsurf",
+        "terminal", "终端", "iterm", "warp", "alacritty", "cursor", "windsurf",
         "github desktop", "sourcetree", "tower",
     ],
     "writing": [
@@ -41,7 +41,7 @@ WINDOW_RULES: dict[str, list[str]] = {
         "hackerrank", "duolingo", "anki",
     ],
     "browsing": [
-        "chrome", "firefox", "safari", "edge", "arc", "brave",
+        "chrome", "firefox", "safari", "edge", "arc", "brave", "浏览器",
     ],
     "media": [
         "youtube", "netflix", "bilibili", "spotify", "apple music",
@@ -65,7 +65,7 @@ WINDOW_RULES: dict[str, list[str]] = {
         "blender", "cinema 4d", "after effects", "premiere",
     ],
     "reading": [
-        "kindle", "books", "pdf", "calibre", "readwise",
+        "kindle", "books", "图书", "pdf", "calibre", "readwise",
         "pocket", "instapaper", "微信读书",
     ],
 }
