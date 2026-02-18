@@ -369,6 +369,27 @@ class Analyzer:
         """Level 1 — 零成本规则分类"""
         return classify_by_rules(app_name, window_title)
 
+    async def analyze_level1(self, app_name: str, window_title: str, bundle_id: str = "") -> dict:
+        """Level 1 — 规则引擎快速分类（零成本，供 Agent API 调用）"""
+        result = classify_by_rules(app_name or "", window_title or "")
+        category = result["category"]
+        detail = result["detail"]
+
+        # 推断 focus_score
+        focus_map = {
+            "coding": 0.8, "writing": 0.8, "work": 0.7, "learning": 0.7,
+            "design": 0.7, "research": 0.7, "reading": 0.6, "meeting": 0.6,
+            "communication": 0.5, "browsing": 0.4, "social": 0.3,
+            "media": 0.2, "gaming": 0.2, "idle": 0.0, "unknown": 0.3,
+        }
+
+        return {
+            "category": category,
+            "summary": detail,
+            "focus_score": focus_map.get(category, 0.3),
+            "confidence": result["confidence"],
+        }
+
     # ── Level 2: AI 截图分析 ───────────────────────────
 
     async def analyze_screenshot(

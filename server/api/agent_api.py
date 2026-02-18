@@ -359,13 +359,12 @@ async def _trigger_analysis(device_id: str, report: AgentReport):
     snapshot = ContextSnapshot(
         id=f"agent_{uuid.uuid4().hex[:8]}",
         timestamp=datetime.now(),
-        active_window=report.snapshot.active_window.app_name or "unknown",
+        active_window=report.snapshot.active_window.app_name or "",
         window_title=report.snapshot.active_window.window_title or "",
-        ai_analysis=None,
-        inferred_motive=None,
-        activity_category=None,
-        focus_score=None,
-        device_id=device_id,
+        ai_analysis="",
+        inferred_motive="",
+        activity_category="",
+        focus_score=0.0,
     )
     
     # 保存快照到数据库
