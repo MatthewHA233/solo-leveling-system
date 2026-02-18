@@ -19,7 +19,7 @@ struct AgentConfig: Codable {
         serverURL
             .replacingOccurrences(of: "https://", with: "wss://")
             .replacingOccurrences(of: "http://", with: "ws://")
-        + "/ws/agent/\(deviceId)"
+        + "/api/v1/agent/ws/\(deviceId)"
     }
     
     // MARK: - Capture Settings

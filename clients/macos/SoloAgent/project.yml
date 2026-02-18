@@ -1,0 +1,29 @@
+name: SoloAgent
+
+options:
+  bundleIdPrefix: com.solo-leveling
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: zh-Hans
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+targets:
+  SoloAgent:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.solo-leveling.agent
+        INFOPLIST_FILE: Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Resources/SoloAgent.entitlements
+        CODE_SIGN_STYLE: Automatic
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: false
+        ENABLE_HARDENED_RUNTIME: true

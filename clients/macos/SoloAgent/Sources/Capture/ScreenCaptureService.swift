@@ -48,7 +48,6 @@ class ScreenCaptureService {
             let config = SCStreamConfiguration()
             config.width = display.width
             config.height = display.height
-            config.scaleFactor = 1   // 不需要 Retina 分辨率 (省带宽)
             config.pixelFormat = kCVPixelFormatType_32BGRA
             config.showsCursor = false
             config.capturesAudio = false
@@ -85,7 +84,6 @@ class ScreenCaptureService {
             let config = SCStreamConfiguration()
             config.width = Int(window.frame.width)
             config.height = Int(window.frame.height)
-            config.scaleFactor = 1
             config.pixelFormat = kCVPixelFormatType_32BGRA
             
             return try await SCScreenshotManager.captureImage(

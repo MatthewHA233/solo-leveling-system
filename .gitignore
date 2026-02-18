@@ -5,3 +5,10 @@ data/
 *.log
 .env
 config/local.yaml
+
+# Xcode / Swift
+.build/
+.swiftpm/
+*.xcodeproj/
+DerivedData/
+xcuserdata/
