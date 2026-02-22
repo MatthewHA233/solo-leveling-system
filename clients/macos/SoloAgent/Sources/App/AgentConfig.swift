@@ -8,20 +8,6 @@ struct AgentConfig: Codable {
     /// 设备友好名称
     var deviceName: String
     
-    /// 服务器地址
-    var serverURL: String
-    
-    /// API 密钥 (未来用)
-    var apiKey: String?
-    
-    /// WebSocket 地址 (自动生成)
-    var wsURL: String {
-        serverURL
-            .replacingOccurrences(of: "https://", with: "wss://")
-            .replacingOccurrences(of: "http://", with: "ws://")
-        + "/api/v1/agent/ws/\(deviceId)"
-    }
-    
     // MARK: - Capture Settings
     
     /// 截图最大宽度 (px)
@@ -36,6 +22,53 @@ struct AgentConfig: Codable {
     /// 本地缓存过期时间 (秒)
     var localCacheTTL: TimeInterval = 3600
     
+    // MARK: - Gemini AI Settings
+
+    /// Gemini API Key
+    var geminiApiKey: String?
+
+    /// Gemini API 基地址
+    var geminiApiBase: String = "https://api.apiyi.com"
+
+    /// Gemini 模型名
+    var geminiModel: String = "gemini-3-flash-preview"
+
+    /// 是否启用 AI 分析
+    var aiEnabled: Bool = true
+
+    // MARK: - Batch Analysis Settings
+
+    /// 批次目标时长 (秒, 15分钟)
+    var batchTargetDuration: TimeInterval = 900
+
+    /// 批次最大间隔阈值 (秒, 超过则断开新批次)
+    var batchMaxGap: TimeInterval = 120
+
+    /// 批次最小有效时长 (秒, 低于则跳过)
+    var batchMinDuration: TimeInterval = 300
+
+    /// 截屏间隔 (秒)
+    var screenshotInterval: TimeInterval = 10
+
+    // MARK: - Video Settings
+
+    /// 视频最大高度 (px)
+    var videoMaxHeight: Int = 720
+
+    /// 视频码率 (bps)
+    var videoBitRate: Int = 300_000
+
+    /// 视频帧采样步长 (每 N 帧取 1 帧)
+    var videoFrameStride: Int = 2
+
+    // MARK: - Overlay Settings
+
+    /// 是否启用全息悬浮覆盖层
+    var overlayEnabled: Bool = true
+
+    /// 迷你状态条位置 ("right" / "left")
+    var miniBarPosition: String = "right"
+
     // MARK: - Privacy
     
     /// 排除的应用 (不截图)
@@ -73,8 +106,7 @@ struct AgentConfig: Codable {
         // 生成默认配置
         let defaultConfig = AgentConfig(
             deviceId: Self.generateDeviceId(),
-            deviceName: Host.current().localizedName ?? "Mac",
-            serverURL: "http://36.151.148.51:8888"
+            deviceName: Host.current().localizedName ?? "Mac"
         )
         defaultConfig.save()
         return defaultConfig

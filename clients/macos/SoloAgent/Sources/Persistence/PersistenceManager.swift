@@ -19,7 +19,13 @@ final class PersistenceManager {
             ActivityRecord.self,
             PendingReport.self,
             DailyStats.self,
-            AppUsageRecord.self
+            AppUsageRecord.self,
+            PlayerRecord.self,
+            QuestRecord.self,
+            BuffRecord.self,
+            ScreenshotRecord.self,
+            BatchRecord.self,
+            ActivityCardRecord.self,
         ])
         
         let config = ModelConfiguration(
@@ -361,6 +367,113 @@ final class PersistenceManager {
         save()
     }
     
+    // MARK: - Screenshot Records (批次分析)
+
+    func saveScreenshotRecord(filePath: String, fileSize: Int, capturedAt: Int) {
+        let record = ScreenshotRecord(
+            capturedAt: capturedAt,
+            filePath: filePath,
+            fileSize: fileSize
+        )
+        context.insert(record)
+        save()
+    }
+
+    func unprocessedScreenshots() -> [ScreenshotRecord] {
+        let predicate = #Predicate<ScreenshotRecord> { record in
+            record.batchId == nil
+        }
+        // 最新的截图优先处理，让用户尽快看到当前活动的分析结果
+        var descriptor = FetchDescriptor<ScreenshotRecord>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.capturedAt, order: .reverse)]
+        )
+        // 限制每次处理量，避免一次加载太多
+        descriptor.fetchLimit = 500
+        let results = (try? context.fetch(descriptor)) ?? []
+        // 返回时按时间正序，供 createBatches 正确分割
+        return results.reversed()
+    }
+
+    func markScreenshotsAsBatched(_ records: [ScreenshotRecord], batchId: String) {
+        for record in records {
+            record.batchId = batchId
+        }
+        save()
+    }
+
+    // MARK: - Batch Records
+
+    func saveBatch(_ batch: BatchRecord) {
+        context.insert(batch)
+        save()
+    }
+
+    func updateBatchStatus(_ batchId: String, status: String, videoPath: String? = nil, errorMessage: String? = nil) {
+        let predicate = #Predicate<BatchRecord> { record in
+            record.id == batchId
+        }
+        let descriptor = FetchDescriptor<BatchRecord>(predicate: predicate)
+        guard let batch = try? context.fetch(descriptor).first else { return }
+        batch.status = status
+        if let videoPath { batch.videoPath = videoPath }
+        if let errorMessage { batch.errorMessage = errorMessage }
+        save()
+    }
+
+    func pendingBatches() -> [BatchRecord] {
+        let pendingStatus = "pending"
+        let predicate = #Predicate<BatchRecord> { record in
+            record.status == pendingStatus
+        }
+        let descriptor = FetchDescriptor<BatchRecord>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.startTs)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
+    func screenshotsForBatch(_ batchId: String) -> [ScreenshotRecord] {
+        let predicate = #Predicate<ScreenshotRecord> { record in
+            record.batchId == batchId
+        }
+        let descriptor = FetchDescriptor<ScreenshotRecord>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.capturedAt)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
+    // MARK: - Activity Card Records
+
+    func saveActivityCards(_ cards: [ActivityCardRecord]) {
+        for card in cards {
+            context.insert(card)
+        }
+        save()
+    }
+
+    func activityCards(for date: Date) -> [ActivityCardRecord] {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: date)
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay) ?? date
+        let startTs = Int(startOfDay.timeIntervalSince1970)
+        let endTs = Int(endOfDay.timeIntervalSince1970)
+
+        let predicate = #Predicate<ActivityCardRecord> { card in
+            card.startTs >= startTs && card.startTs < endTs
+        }
+        let descriptor = FetchDescriptor<ActivityCardRecord>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.startTs)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
+    func allActivityCardsToday() -> [ActivityCardRecord] {
+        activityCards(for: Date())
+    }
+
     // MARK: - Storage Info
     
     /// 数据库文件大小
@@ -385,8 +498,97 @@ final class PersistenceManager {
         return (activities, pending, daily, appUsage)
     }
     
+    // MARK: - Player Persistence
+
+    func savePlayer(_ player: Player) {
+        let descriptor = FetchDescriptor<PlayerRecord>()
+        if let existing = try? context.fetch(descriptor).first {
+            existing.update(from: player)
+        } else {
+            let record = PlayerRecord()
+            record.update(from: player)
+            context.insert(record)
+        }
+        save()
+    }
+
+    func loadPlayer() -> Player? {
+        let descriptor = FetchDescriptor<PlayerRecord>()
+        guard let record = try? context.fetch(descriptor).first else { return nil }
+        return record.toPlayer()
+    }
+
+    // MARK: - Quest Persistence
+
+    func saveQuest(_ quest: Quest) {
+        let questId = quest.id
+        let predicate = #Predicate<QuestRecord> { record in
+            record.questId == questId
+        }
+        let descriptor = FetchDescriptor<QuestRecord>(predicate: predicate)
+
+        if let existing = try? context.fetch(descriptor).first {
+            existing.update(from: quest)
+        } else {
+            let record = QuestRecord(
+                questId: quest.id,
+                type: quest.type.rawValue,
+                title: quest.title,
+                questDescription: quest.description,
+                difficulty: quest.difficulty.rawValue,
+                status: quest.status.rawValue,
+                expReward: quest.expReward,
+                source: quest.source,
+                context: quest.context,
+                deadline: quest.deadline,
+                createdAt: quest.createdAt,
+                completedAt: quest.completedAt
+            )
+            context.insert(record)
+        }
+        save()
+    }
+
+    func loadActiveQuests() -> [Quest] {
+        let activeStatus = QuestStatus.active.rawValue
+        let predicate = #Predicate<QuestRecord> { record in
+            record.status == activeStatus
+        }
+        let descriptor = FetchDescriptor<QuestRecord>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+        )
+        let records = (try? context.fetch(descriptor)) ?? []
+        return records.map { $0.toQuest() }
+    }
+
+    // MARK: - Buff Persistence
+
+    func saveBuff(_ buff: ActiveBuff) {
+        let buffId = buff.id
+        let predicate = #Predicate<BuffRecord> { record in
+            record.buffId == buffId
+        }
+        let descriptor = FetchDescriptor<BuffRecord>(predicate: predicate)
+
+        if let existing = try? context.fetch(descriptor).first {
+            existing.update(from: buff)
+        } else {
+            let record = BuffRecord(buffId: buff.id, name: buff.name)
+            record.update(from: buff)
+            context.insert(record)
+        }
+        save()
+    }
+
+    func loadActiveBuffs() -> [ActiveBuff] {
+        let descriptor = FetchDescriptor<BuffRecord>()
+        let records = (try? context.fetch(descriptor)) ?? []
+        return records.map { $0.toBuff() }.filter { !$0.isExpired }
+    }
+
     // MARK: - Save
-    
+
     private func save() {
         do {
             try context.save()

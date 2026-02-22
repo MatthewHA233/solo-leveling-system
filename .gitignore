@@ -10,9 +10,11 @@ data/
 config/local.yaml
 ecosystem.config.js
 
+# Python
+.venv/
+
 # Xcode / Swift
 .build/
 .swiftpm/
-*.xcodeproj/
 DerivedData/
 xcuserdata/

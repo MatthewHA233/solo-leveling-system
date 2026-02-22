@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 菜单栏弹出视图
+/// 菜单栏弹出视图 — 精简版（详细状态已迁移到全息悬浮 UI）
 struct MenuBarView: View {
     @EnvironmentObject var agent: AgentManager
     @Environment(\.openWindow) private var openWindow
@@ -15,49 +15,26 @@ struct MenuBarView: View {
                 Text("Solo Agent")
                     .font(.headline)
                 Spacer()
-                StatusBadge(isConnected: agent.isConnected)
+                // Player level badge
+                Text("Lv.\(agent.player.level)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.purple)
             }
-            
+
             Divider()
-            
-            // 状态信息
+
+            // 精简状态
             VStack(alignment: .leading, spacing: 6) {
                 StatusRow(icon: "camera.fill", label: "捕捉状态",
                          value: agent.isCapturing ? (agent.isPaused ? "隐私模式" : "运行中") : "已停止",
                          color: agent.isCapturing && !agent.isPaused ? .green : .orange)
-                
-                StatusRow(icon: "server.rack", label: "服务器",
-                         value: agent.isConnected ? "已连接" : "离线",
-                         color: agent.isConnected ? .green : .red)
-                
+
                 StatusRow(icon: "number", label: "今日截图",
                          value: "\(agent.captureCount)")
-                
-                if agent.pendingReportCount > 0 {
-                    StatusRow(icon: "arrow.triangle.2.circlepath", label: "待同步",
-                             value: "\(agent.pendingReportCount)",
-                             color: .orange)
-                }
-                
-                if let lastCapture = agent.lastCaptureTime {
-                    StatusRow(icon: "clock", label: "最后捕捉",
-                             value: lastCapture.formatted(.relative(presentation: .named)))
-                }
-                
-                StatusRow(icon: "desktopcomputer", label: "设备 ID",
-                         value: agent.deviceId)
-                
-                // 今日 Top App
-                let topApps = agent.persistence.todayTopApps(limit: 1)
-                if let top = topApps.first {
-                    StatusRow(icon: "star.fill", label: "最常用",
-                             value: "\(top.appName) (\(formatDuration(top.foregroundSeconds)))",
-                             color: .purple)
-                }
             }
-            
+
             Divider()
-            
+
             // 控制按钮
             HStack(spacing: 8) {
                 Button(action: {
@@ -75,7 +52,7 @@ struct MenuBarView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(agent.isCapturing ? .red : .green)
-                
+
                 Button(action: {
                     agent.togglePause()
                 }) {
@@ -88,13 +65,19 @@ struct MenuBarView: View {
                 .buttonStyle(.bordered)
                 .disabled(!agent.isCapturing)
             }
-            
+
             Divider()
-            
+
             // 底部链接
             HStack {
+                Button("切换覆盖层") {
+                    OverlayManager.shared.toggleFullOverlay(agentManager: agent)
+                }
+                .buttonStyle(.link)
+
                 Button("设置...") {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    openWindow(id: "settings")
+                    NSApp.activate(ignoringOtherApps: true)
                 }
                 .buttonStyle(.link)
 
@@ -116,16 +99,6 @@ struct MenuBarView: View {
         .padding()
         .frame(width: 300)
     }
-    
-    /// 格式化时长
-    private func formatDuration(_ seconds: Double) -> String {
-        let hours = Int(seconds) / 3600
-        let minutes = (Int(seconds) % 3600) / 60
-        if hours > 0 {
-            return "\(hours)h \(minutes)m"
-        }
-        return "\(minutes)m"
-    }
 }
 
 /// 状态行
@@ -134,7 +107,7 @@ struct StatusRow: View {
     let label: String
     let value: String
     var color: Color = .primary
-    
+
     var body: some View {
         HStack {
             Image(systemName: icon)
@@ -155,7 +128,7 @@ struct StatusRow: View {
 /// 连接状态徽章
 struct StatusBadge: View {
     let isConnected: Bool
-    
+
     var body: some View {
         HStack(spacing: 4) {
             Circle()

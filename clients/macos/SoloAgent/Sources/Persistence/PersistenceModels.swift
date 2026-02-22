@@ -166,6 +166,166 @@ final class DailyStats {
     }
 }
 
+// MARK: - 截图记录 (用于批次分析)
+
+/// 每次截屏的记录，关联到批次
+@Model
+final class ScreenshotRecord {
+    /// 捕捉时间 (Unix timestamp)
+    var capturedAt: Int
+
+    /// 文件路径 (相对路径)
+    var filePath: String
+
+    /// 文件大小 (bytes)
+    var fileSize: Int
+
+    /// 所属批次 ID
+    var batchId: String?
+
+    init(
+        capturedAt: Int = Int(Date().timeIntervalSince1970),
+        filePath: String,
+        fileSize: Int = 0,
+        batchId: String? = nil
+    ) {
+        self.capturedAt = capturedAt
+        self.filePath = filePath
+        self.fileSize = fileSize
+        self.batchId = batchId
+    }
+}
+
+// MARK: - 批次记录
+
+/// 视频批次分析记录
+@Model
+final class BatchRecord {
+    /// 批次唯一 ID
+    @Attribute(.unique) var id: String
+
+    /// 批次开始时间 (Unix timestamp)
+    var startTs: Int
+
+    /// 批次结束时间 (Unix timestamp)
+    var endTs: Int
+
+    /// 状态: pending / processing / completed / failed
+    var status: String
+
+    /// 截图数量
+    var screenshotCount: Int
+
+    /// 合成视频路径
+    var videoPath: String?
+
+    /// 创建时间
+    var createdAt: Date
+
+    /// 错误信息
+    var errorMessage: String?
+
+    init(
+        id: String = "batch_\(UUID().uuidString.prefix(8))",
+        startTs: Int,
+        endTs: Int,
+        status: String = "pending",
+        screenshotCount: Int = 0,
+        videoPath: String? = nil,
+        createdAt: Date = Date(),
+        errorMessage: String? = nil
+    ) {
+        self.id = id
+        self.startTs = startTs
+        self.endTs = endTs
+        self.status = status
+        self.screenshotCount = screenshotCount
+        self.videoPath = videoPath
+        self.createdAt = createdAt
+        self.errorMessage = errorMessage
+    }
+}
+
+// MARK: - 活动卡片记录
+
+/// AI 生成的活动卡片
+@Model
+final class ActivityCardRecord {
+    /// 所属批次 ID
+    var batchId: String
+
+    /// 开始时间 (显示用, 如 "10:30 AM")
+    var startTime: String
+
+    /// 结束时间 (显示用)
+    var endTime: String
+
+    /// 开始时间 (Unix timestamp)
+    var startTs: Int
+
+    /// 结束时间 (Unix timestamp)
+    var endTs: Int
+
+    /// 活动类别
+    var category: String
+
+    /// 活动子类别
+    var subcategory: String
+
+    /// 活动标题
+    var title: String
+
+    /// 活动摘要
+    var summary: String
+
+    /// 详细时间线
+    var detailedSummary: String
+
+    /// 干扰记录 (JSON)
+    var distractionsJson: String?
+
+    /// 主要应用/网站
+    var appSitePrimary: String?
+
+    /// 次要应用/网站
+    var appSiteSecondary: String?
+
+    /// 创建时间
+    var createdAt: Date
+
+    init(
+        batchId: String,
+        startTime: String,
+        endTime: String,
+        startTs: Int,
+        endTs: Int,
+        category: String,
+        subcategory: String = "",
+        title: String,
+        summary: String,
+        detailedSummary: String = "",
+        distractionsJson: String? = nil,
+        appSitePrimary: String? = nil,
+        appSiteSecondary: String? = nil,
+        createdAt: Date = Date()
+    ) {
+        self.batchId = batchId
+        self.startTime = startTime
+        self.endTime = endTime
+        self.startTs = startTs
+        self.endTs = endTs
+        self.category = category
+        self.subcategory = subcategory
+        self.title = title
+        self.summary = summary
+        self.detailedSummary = detailedSummary
+        self.distractionsJson = distractionsJson
+        self.appSitePrimary = appSitePrimary
+        self.appSiteSecondary = appSiteSecondary
+        self.createdAt = createdAt
+    }
+}
+
 // MARK: - 应用使用记录
 
 /// 应用使用时长追踪 (每日每个应用一条)

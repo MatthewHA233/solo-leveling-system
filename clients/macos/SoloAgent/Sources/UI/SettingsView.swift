@@ -4,33 +4,56 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var agent: AgentManager
     
-    @State private var serverURL: String = ""
     @State private var deviceName: String = ""
-    @State private var captureInterval: Double = 30
+    @State private var captureInterval: Double = 10
+    @State private var batchDuration: Double = 15  // 分钟
     @State private var captureQuality: Double = 0.6
     @State private var maxWidth: Double = 1280
     @State private var excludedApps: String = ""
     @State private var showSaved: Bool = false
     
     var body: some View {
-        TabView {
-            generalTab
-                .tabItem { Label("通用", systemImage: "gear") }
-            
-            captureTab
-                .tabItem { Label("捕捉", systemImage: "camera") }
-            
-            privacyTab
-                .tabItem { Label("隐私", systemImage: "lock.shield") }
-            
-            dataTab
-                .tabItem { Label("数据", systemImage: "cylinder.split.1x2") }
-            
-            aboutTab
-                .tabItem { Label("关于", systemImage: "info.circle") }
+        VStack(spacing: 0) {
+            TabView {
+                generalTab
+                    .tabItem { Label("通用", systemImage: "gear") }
+
+                captureTab
+                    .tabItem { Label("捕捉", systemImage: "camera") }
+
+                privacyTab
+                    .tabItem { Label("隐私", systemImage: "lock.shield") }
+
+                dataTab
+                    .tabItem { Label("数据", systemImage: "cylinder.split.1x2") }
+
+                aboutTab
+                    .tabItem { Label("关于", systemImage: "info.circle") }
+            }
+            .padding(20)
+
+            Divider()
+
+            // 全局保存栏
+            HStack {
+                if showSaved {
+                    Label("已保存并生效", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                        .transition(.opacity)
+                }
+
+                Spacer()
+
+                Button("保存") {
+                    saveConfig()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut("s", modifiers: .command)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
         }
-        .padding(20)
-        .frame(width: 480, height: 400)
         .onAppear {
             loadConfig()
         }
@@ -40,33 +63,18 @@ struct SettingsView: View {
     
     private var generalTab: some View {
         Form {
-            Section("服务器") {
-                TextField("服务器地址", text: $serverURL)
-                    .textFieldStyle(.roundedBorder)
-                Text("当前: \(agent.isConnected ? "已连接 ✅" : "未连接 ❌")")
+            Section("AI 分析") {
+                Text("模式: 本地 Gemini API 视频批次分析")
                     .font(.caption)
-                    .foregroundColor(agent.isConnected ? .green : .red)
+                    .foregroundColor(.secondary)
             }
-            
+
             Section("设备") {
                 TextField("设备名称", text: $deviceName)
                     .textFieldStyle(.roundedBorder)
                 Text("设备 ID: \(agent.deviceId)")
                     .font(.caption)
                     .foregroundColor(.secondary)
-            }
-            
-            HStack {
-                Spacer()
-                if showSaved {
-                    Text("已保存 ✓")
-                        .foregroundColor(.green)
-                        .font(.caption)
-                }
-                Button("保存") {
-                    saveConfig()
-                }
-                .buttonStyle(.borderedProminent)
             }
         }
     }
@@ -75,37 +83,73 @@ struct SettingsView: View {
     
     private var captureTab: some View {
         Form {
-            Section("截图设置") {
+            Section("截图频率") {
                 HStack {
-                    Text("活跃间隔:")
-                    Slider(value: $captureInterval, in: 10...120, step: 5)
-                    Text("\(Int(captureInterval))秒")
-                        .frame(width: 50)
+                    Text("截图间隔:")
+                    Slider(value: $captureInterval, in: 0.1...60, step: captureIntervalStep)
+                    Text(formatInterval(captureInterval))
+                        .frame(width: 55, alignment: .trailing)
+                        .font(.system(.body, design: .monospaced))
                 }
-                
+                Text("活跃状态下的截图频率，越快截图越密集")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section("AI 分析批次") {
+                HStack {
+                    Text("批次时长:")
+                    Slider(value: $batchDuration, in: 1...30, step: 1)
+                    Text("\(Int(batchDuration)) 分钟")
+                        .frame(width: 55, alignment: .trailing)
+                        .font(.system(.body, design: .monospaced))
+                }
+                let framesPerBatch = Int(batchDuration * 60 / captureInterval)
+                Text("每 \(Int(batchDuration)) 分钟合成一段视频发给 AI 分析，约 \(framesPerBatch) 帧")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section("图片质量") {
                 HStack {
                     Text("JPEG 质量:")
                     Slider(value: $captureQuality, in: 0.3...1.0, step: 0.1)
                     Text("\(Int(captureQuality * 100))%")
-                        .frame(width: 50)
+                        .frame(width: 55, alignment: .trailing)
                 }
-                
+
                 HStack {
                     Text("最大宽度:")
                     Slider(value: $maxWidth, in: 640...2560, step: 160)
                     Text("\(Int(maxWidth))px")
-                        .frame(width: 60)
+                        .frame(width: 55, alignment: .trailing)
                 }
             }
-            
+
             Section("预估数据量") {
                 let perShot = Int(maxWidth * captureQuality * 0.05)
-                let perDay = perShot * (86400 / Int(captureInterval)) / 1024
-                Text("约 \(perShot)KB/张，\(perDay)MB/天")
+                let shotsPerDay = Int(86400 / captureInterval)
+                let mbPerDay = perShot * shotsPerDay / 1024
+                Text("约 \(perShot)KB/张 · \(shotsPerDay) 张/天 · \(mbPerDay)MB/天")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
         }
+    }
+
+    /// 截图间隔滑块步进值（根据当前值动态调整）
+    private var captureIntervalStep: Double {
+        if captureInterval < 1 { return 0.1 }
+        if captureInterval < 10 { return 0.5 }
+        return 1
+    }
+
+    /// 格式化间隔显示
+    private func formatInterval(_ value: Double) -> String {
+        if value < 1 {
+            return String(format: "%.1fs", value)
+        }
+        return String(format: "%.0fs", value)
     }
     
     // MARK: - 隐私
@@ -276,17 +320,20 @@ struct SettingsView: View {
     
     private func loadConfig() {
         let config = agent.config
-        serverURL = config.serverURL
         deviceName = config.deviceName
+        captureInterval = config.screenshotInterval
+        batchDuration = config.batchTargetDuration / 60  // 秒→分钟
         captureQuality = config.captureJpegQuality
         maxWidth = Double(config.captureMaxWidth)
         excludedApps = config.excludedApps.joined(separator: "\n")
     }
-    
+
     private func saveConfig() {
-        var config = agent.config
-        config.serverURL = serverURL
+        // 从磁盘读最新配置，避免覆盖掉 UI 中没有的字段（如 API key）
+        var config = AgentConfig.load()
         config.deviceName = deviceName
+        config.screenshotInterval = captureInterval
+        config.batchTargetDuration = batchDuration * 60  // 分钟→秒
         config.captureJpegQuality = captureQuality
         config.captureMaxWidth = Int(maxWidth)
         config.excludedApps = excludedApps
@@ -294,10 +341,17 @@ struct SettingsView: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         config.save()
-        
-        showSaved = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            showSaved = false
+
+        // 实时应用新配置
+        agent.reloadConfig()
+
+        withAnimation {
+            showSaved = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            withAnimation {
+                showSaved = false
+            }
         }
     }
     

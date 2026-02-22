@@ -1,0 +1,260 @@
+import Foundation
+import AVFoundation
+import AppKit
+import CoreGraphics
+
+/// 视频合成服务 — 将截屏序列合成为 MP4 延时摄影视频
+actor VideoProcessingService {
+
+    /// 延时摄影视频输出根目录
+    private let timelapsesDir: URL = {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config")
+            .appendingPathComponent("solo-agent")
+            .appendingPathComponent("timelapses")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    /// 截图根目录
+    private let screenshotsDir: URL = {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config")
+            .appendingPathComponent("solo-agent")
+            .appendingPathComponent("screenshots")
+    }()
+
+    // MARK: - Public API
+
+    /// 从截图序列生成延时摄影视频
+    /// - Parameters:
+    ///   - screenshots: 截图列表 (相对路径 + Unix timestamp)
+    ///   - outputURL: 输出文件 URL，nil 则自动生成
+    ///   - fps: 帧率 (默认 1fps)
+    ///   - maxHeight: 最大高度 (降低分辨率)
+    ///   - bitRate: 视频码率
+    ///   - frameStride: 帧采样步长 (每 N 帧取 1 帧)
+    /// - Returns: 生成的视频文件 URL
+    func generateVideo(
+        screenshots: [(path: String, timestamp: Int)],
+        outputURL: URL? = nil,
+        fps: Int = 1,
+        maxHeight: Int = 720,
+        bitRate: Int = 300_000,
+        frameStride: Int = 2
+    ) async throws -> URL {
+        // 帧采样
+        let sampled = stride(from: 0, to: screenshots.count, by: frameStride).map { screenshots[$0] }
+        guard !sampled.isEmpty else {
+            throw VideoError.noFrames
+        }
+
+        // 确定输出路径
+        let output = outputURL ?? generateOutputURL()
+        try? FileManager.default.createDirectory(
+            at: output.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        // 删除已存在的文件
+        if FileManager.default.fileExists(atPath: output.path) {
+            try FileManager.default.removeItem(at: output)
+        }
+
+        // 读取第一帧确定尺寸
+        guard let firstImage = loadImage(relativePath: sampled[0].path) else {
+            throw VideoError.cannotLoadImage(sampled[0].path)
+        }
+
+        let (videoWidth, videoHeight) = computeSize(
+            originalWidth: firstImage.width,
+            originalHeight: firstImage.height,
+            maxHeight: maxHeight
+        )
+
+        // 创建 AVAssetWriter
+        let writer = try AVAssetWriter(outputURL: output, fileType: .mp4)
+
+        let videoSettings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: videoWidth,
+            AVVideoHeightKey: videoHeight,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoAverageBitRateKey: bitRate,
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264BaselineAutoLevel,
+            ] as [String: Any],
+        ]
+
+        let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        writerInput.expectsMediaDataInRealTime = false
+
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: writerInput,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+                kCVPixelBufferWidthKey as String: videoWidth,
+                kCVPixelBufferHeightKey as String: videoHeight,
+            ]
+        )
+
+        writer.add(writerInput)
+        writer.startWriting()
+        writer.startSession(atSourceTime: .zero)
+
+        // 写入帧
+        let frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
+
+        for (index, shot) in sampled.enumerated() {
+            guard let image = loadImage(relativePath: shot.path) else { continue }
+
+            let presentationTime = CMTimeMultiply(frameDuration, multiplier: Int32(index))
+
+            while !writerInput.isReadyForMoreMediaData {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+
+            guard let pixelBuffer = createPixelBuffer(
+                from: image,
+                width: videoWidth,
+                height: videoHeight,
+                pool: adaptor.pixelBufferPool
+            ) else { continue }
+
+            adaptor.append(pixelBuffer, withPresentationTime: presentationTime)
+        }
+
+        writerInput.markAsFinished()
+        await writer.finishWriting()
+
+        guard writer.status == .completed else {
+            throw VideoError.writingFailed(writer.error?.localizedDescription ?? "unknown")
+        }
+
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: output.path)[.size] as? Int) ?? 0
+        let sizeMB = String(format: "%.1f", Double(fileSize) / 1_048_576.0)
+        Logger.info("🎬 视频合成完成: \(sampled.count) 帧, \(sizeMB)MB → \(output.lastPathComponent)")
+
+        return output
+    }
+
+    // MARK: - Helpers
+
+    private func generateOutputURL() -> URL {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let dayStr = dateFormatter.string(from: Date())
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH-mm-ss"
+        let timeStr = timeFormatter.string(from: Date())
+
+        let dayDir = timelapsesDir.appendingPathComponent(dayStr)
+        return dayDir.appendingPathComponent("timelapse_\(timeStr).mp4")
+    }
+
+    private func loadImage(relativePath: String) -> CGImage? {
+        let url = screenshotsDir.appendingPathComponent(relativePath)
+        guard let data = try? Data(contentsOf: url),
+              let nsImage = NSImage(data: data),
+              let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        return cgImage
+    }
+
+    private func computeSize(originalWidth: Int, originalHeight: Int, maxHeight: Int) -> (Int, Int) {
+        if originalHeight <= maxHeight {
+            // 确保宽度是偶数 (H.264 要求)
+            let w = originalWidth % 2 == 0 ? originalWidth : originalWidth - 1
+            let h = originalHeight % 2 == 0 ? originalHeight : originalHeight - 1
+            return (w, h)
+        }
+        let scale = Double(maxHeight) / Double(originalHeight)
+        var w = Int(Double(originalWidth) * scale)
+        var h = maxHeight
+        // H.264 要求宽高为偶数
+        w = w % 2 == 0 ? w : w - 1
+        h = h % 2 == 0 ? h : h - 1
+        return (w, h)
+    }
+
+    private func createPixelBuffer(
+        from image: CGImage,
+        width: Int,
+        height: Int,
+        pool: CVPixelBufferPool?
+    ) -> CVPixelBuffer? {
+        var pixelBuffer: CVPixelBuffer?
+
+        if let pool {
+            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pixelBuffer)
+        } else {
+            let attrs: [String: Any] = [
+                kCVPixelBufferCGImageCompatibilityKey as String: true,
+                kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+            ]
+            CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32ARGB, attrs as CFDictionary, &pixelBuffer)
+        }
+
+        guard let buffer = pixelBuffer else { return nil }
+
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: baseAddress,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+        ) else { return nil }
+
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        return buffer
+    }
+
+    // MARK: - Cleanup
+
+    func cleanupOldVideos(olderThanDays: Int = 3) {
+        let cutoff = Date().addingTimeInterval(-Double(olderThanDays) * 86400)
+        let fm = FileManager.default
+
+        guard let dateDirs = try? fm.contentsOfDirectory(
+            at: timelapsesDir,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        for dirURL in dateDirs {
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: dirURL.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            guard let attrs = try? dirURL.resourceValues(forKeys: [.contentModificationDateKey]),
+                  let modDate = attrs.contentModificationDate,
+                  modDate < cutoff else { continue }
+            try? fm.removeItem(at: dirURL)
+        }
+    }
+}
+
+// MARK: - Errors
+
+enum VideoError: Error, LocalizedError {
+    case noFrames
+    case cannotLoadImage(String)
+    case writingFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noFrames: return "没有可用的截屏帧"
+        case .cannotLoadImage(let path): return "无法加载图片: \(path)"
+        case .writingFailed(let reason): return "视频写入失败: \(reason)"
+        }
+    }
+}
