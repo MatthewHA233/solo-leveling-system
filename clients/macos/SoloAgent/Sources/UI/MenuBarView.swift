@@ -82,8 +82,7 @@ struct MenuBarView: View {
                 .buttonStyle(.link)
 
                 Button("时间线") {
-                    openWindow(id: "timeline")
-                    NSApp.activate(ignoringOtherApps: true)
+                    OverlayManager.shared.showFullOverlay(agentManager: agent)
                 }
                 .buttonStyle(.link)
 

@@ -42,7 +42,7 @@ final class OverlayWindowController {
     func showMiniBar<Content: View>(content: Content) {
         if miniBarPanel == nil {
             let screen = NSScreen.main ?? NSScreen.screens.first!
-            let barSize = HolographicTheme.miniBarSize
+            let barSize = NeonBrutalismTheme.miniBarSize
             let x = screen.visibleFrame.maxX - barSize.width - 8
             let y = screen.visibleFrame.midY - barSize.height / 2
 
@@ -72,12 +72,15 @@ final class OverlayWindowController {
     func showFullPanel<Content: View>(content: Content) {
         if fullPanel == nil {
             let screen = NSScreen.main ?? NSScreen.screens.first!
-            let panelSize = HolographicTheme.fullPanelSize
-            let x = screen.visibleFrame.maxX - panelSize.width - 20
-            let y = screen.visibleFrame.midY - panelSize.height / 2
+            let maxW = screen.visibleFrame.width - 40
+            let maxH = screen.visibleFrame.height - 40
+            let panelW = min(NeonBrutalismTheme.fullPanelSize.width, maxW)
+            let panelH = min(NeonBrutalismTheme.fullPanelSize.height, maxH)
+            let x = screen.visibleFrame.maxX - panelW - 20
+            let y = screen.visibleFrame.midY - panelH / 2
 
             let panel = HolographicPanel(contentRect: NSRect(
-                x: x, y: y, width: panelSize.width, height: panelSize.height
+                x: x, y: y, width: panelW, height: panelH
             ))
             panel.contentView = NSHostingView(rootView: content)
             fullPanel = panel
@@ -107,19 +110,26 @@ final class OverlayWindowController {
     // MARK: - Notification Window
 
     func showNotification<Content: View>(content: Content) {
-        let screen = NSScreen.main ?? NSScreen.screens.first!
-        let width: CGFloat = 320
-        let height: CGFloat = 80
-        let x = screen.visibleFrame.maxX - width - 16
-        let y = screen.visibleFrame.maxY - height - 16
+        let hostingView = NSHostingView(rootView: content)
 
-        let panel = HolographicPanel(contentRect: NSRect(
-            x: x, y: y, width: width, height: height
-        ))
-        panel.contentView = NSHostingView(rootView: content)
-        panel.orderFrontRegardless()
+        if let panel = notificationPanel {
+            // Reuse existing panel — just swap content
+            panel.contentView = hostingView
+            panel.orderFrontRegardless()
+        } else {
+            let screen = NSScreen.main ?? NSScreen.screens.first!
+            let width: CGFloat = 320
+            let height: CGFloat = 260   // room for up to 3 stacked
+            let x = screen.visibleFrame.maxX - width - 16
+            let y = screen.visibleFrame.maxY - height - 16
 
-        notificationPanel = panel
+            let panel = HolographicPanel(contentRect: NSRect(
+                x: x, y: y, width: width, height: height
+            ))
+            panel.contentView = hostingView
+            panel.orderFrontRegardless()
+            notificationPanel = panel
+        }
     }
 
     func hideNotification() {

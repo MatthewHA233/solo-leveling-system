@@ -12,7 +12,6 @@ final class OverlayManager: ObservableObject {
     let hotkeyManager = HotkeyManager()
 
     private var notificationQueue: [(id: UUID, title: String, body: String)] = []
-    private var notificationDismissTask: Task<Void, Never>?
 
     private init() {}
 
@@ -90,7 +89,7 @@ final class OverlayManager: ObservableObject {
     }
 
     func showFullOverlay(agentManager: AgentManager) {
-        let view = FullOverlayView(agentManager: agentManager) { [weak self] in
+        let view = UnifiedSystemView(agentManager: agentManager) { [weak self] in
             self?.hideFullOverlay()
         }
         windowController.showFullPanel(content: view)
@@ -114,14 +113,7 @@ final class OverlayManager: ObservableObject {
         }
 
         updateNotificationDisplay()
-
-        // Auto-dismiss after 4 seconds
-        notificationDismissTask?.cancel()
-        notificationDismissTask = Task {
-            try? await Task.sleep(for: .seconds(4))
-            guard !Task.isCancelled else { return }
-            dismissNotification(id: id)
-        }
+        // Auto-dismiss is handled by SwiftUI .task in NotificationStackView
     }
 
     private func dismissNotification(id: UUID) {
@@ -135,7 +127,9 @@ final class OverlayManager: ObservableObject {
 
     private func updateNotificationDisplay() {
         let items = notificationQueue
-        let view = NotificationStackView(items: items)
+        let view = NotificationStackView(items: items) { [weak self] id in
+            self?.dismissNotification(id: id)
+        }
         windowController.showNotification(content: view)
     }
 
@@ -151,12 +145,20 @@ final class OverlayManager: ObservableObject {
 
 private struct NotificationStackView: View {
     let items: [(id: UUID, title: String, body: String)]
+    let onDismiss: (UUID) -> Void
 
     var body: some View {
         VStack(spacing: 4) {
             ForEach(items, id: \.id) { item in
                 NotificationPopupView(title: item.title, message: item.body)
+                    .onTapGesture { onDismiss(item.id) }
+                    .pointingHand()
+                    .task(id: item.id) {
+                        try? await Task.sleep(for: .seconds(5))
+                        onDismiss(item.id)
+                    }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 }

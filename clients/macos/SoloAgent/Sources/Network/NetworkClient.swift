@@ -115,12 +115,13 @@ class NetworkClient {
     
     /// WebSocket 消息接收循环
     private func receiveLoop() async {
-        guard let ws = webSocketTask else { return }
-        
         while isConnectedInternal {
+            // 每次循环重新获取当前 task，避免持有已释放的旧引用
+            guard let ws = webSocketTask else { break }
+
             do {
                 let message = try await ws.receive()
-                
+
                 switch message {
                 case .string(let text):
                     handleServerMessage(text)
@@ -134,10 +135,7 @@ class NetworkClient {
             } catch {
                 Logger.warning("WebSocket 接收错误: \(error.localizedDescription)")
                 isConnectedInternal = false
-                
-                // 自动重连
-                try? await Task.sleep(for: .seconds(5))
-                try? await reconnect()
+                break  // 退出循环，由 heartbeat 检测重连
             }
         }
     }
@@ -156,9 +154,15 @@ class NetworkClient {
     }
     
     /// 自动重连
-    private func reconnect() async throws {
+    func reconnect() async {
         Logger.info("🔄 WebSocket 重连中...")
-        try await connect()
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        do {
+            try await connect()
+        } catch {
+            Logger.warning("WebSocket 重连失败: \(error.localizedDescription)")
+        }
     }
     
     // MARK: - Local Cache (离线模式)

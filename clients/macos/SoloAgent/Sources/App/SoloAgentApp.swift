@@ -26,13 +26,7 @@ struct SoloAgentApp: App {
         .defaultSize(width: 480, height: 400)
         .defaultPosition(.center)
 
-        // 时间线窗口
-        Window("活动时间线", id: "timeline") {
-            TimelineView()
-                .environmentObject(agentManager)
-        }
-        .defaultSize(width: 900, height: 700)
-        .defaultPosition(.center)
+        // 时间线已整合到统一面板 (⌘⇧S)
     }
 }
 
