@@ -290,6 +290,9 @@ final class ActivityCardRecord {
     /// 次要应用/网站
     var appSiteSecondary: String?
 
+    /// 与主线目标的关联 (如 "直接推进", "间接相关", "偏离主线")
+    var goalAlignment: String?
+
     /// 创建时间
     var createdAt: Date
 
@@ -307,6 +310,7 @@ final class ActivityCardRecord {
         distractionsJson: String? = nil,
         appSitePrimary: String? = nil,
         appSiteSecondary: String? = nil,
+        goalAlignment: String? = nil,
         createdAt: Date = Date()
     ) {
         self.batchId = batchId
@@ -322,6 +326,7 @@ final class ActivityCardRecord {
         self.distractionsJson = distractionsJson
         self.appSitePrimary = appSitePrimary
         self.appSiteSecondary = appSiteSecondary
+        self.goalAlignment = goalAlignment
         self.createdAt = createdAt
     }
 }

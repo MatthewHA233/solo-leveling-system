@@ -410,6 +410,18 @@ struct DirectivesHubView: View {
                     .lineLimit(isExpanded ? nil : 3)
                     .fixedSize(horizontal: false, vertical: true)
 
+                if let alignment = card.goalAlignment, !alignment.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: goalAlignmentIcon(alignment))
+                            .font(.system(size: 9))
+                            .foregroundColor(goalAlignmentColor(alignment))
+                        Text(alignment)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(goalAlignmentColor(alignment))
+                            .lineLimit(isExpanded ? nil : 1)
+                    }
+                }
+
                 if isExpanded {
                     timelineExpandedContent(card)
                 }
@@ -496,6 +508,34 @@ struct DirectivesHubView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+    }
+
+    // MARK: - Goal Alignment Helpers
+
+    private func goalAlignmentColor(_ alignment: String) -> Color {
+        let lower = alignment.lowercased()
+        if lower.contains("直接") || lower.contains("推进") {
+            return NeonBrutalismTheme.expGreen
+        } else if lower.contains("间接") || lower.contains("相关") {
+            return NeonBrutalismTheme.electricBlue
+        } else if lower.contains("偏离") || lower.contains("无关") {
+            return NeonBrutalismTheme.dangerRed
+        } else {
+            return NeonBrutalismTheme.textSecondary
+        }
+    }
+
+    private func goalAlignmentIcon(_ alignment: String) -> String {
+        let lower = alignment.lowercased()
+        if lower.contains("直接") || lower.contains("推进") {
+            return "arrow.up.right.circle.fill"
+        } else if lower.contains("间接") || lower.contains("相关") {
+            return "arrow.turn.right.up"
+        } else if lower.contains("偏离") || lower.contains("无关") {
+            return "exclamationmark.triangle.fill"
+        } else {
+            return "minus.circle"
+        }
     }
 
     // MARK: - Data

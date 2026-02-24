@@ -98,7 +98,9 @@ final class AIClient {
 
         let prompt = PromptTemplates.activityCardPrompt(
             transcription: transcriptionJson,
-            existingCards: existingJson
+            existingCards: existingJson,
+            mainQuest: config.mainQuest ?? "",
+            motivations: config.motivations ?? []
         )
 
         Self.debugLog("开始生成活动卡片, 转录段数: \(transcription.count)")

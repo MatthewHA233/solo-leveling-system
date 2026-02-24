@@ -246,6 +246,8 @@ final class BatchManager {
                 appSecondary = appSites["secondary"] as? String
             }
 
+            let goalAlignment = dict["goalAlignment"] as? String
+
             return ActivityCardRecord(
                 batchId: batchId,
                 startTime: startTime,
@@ -259,7 +261,8 @@ final class BatchManager {
                 detailedSummary: detailedSummary,
                 distractionsJson: distractionsJson,
                 appSitePrimary: appPrimary,
-                appSiteSecondary: appSecondary
+                appSiteSecondary: appSecondary,
+                goalAlignment: goalAlignment
             )
         }
     }

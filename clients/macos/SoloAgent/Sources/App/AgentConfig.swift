@@ -69,6 +69,14 @@ struct AgentConfig: Codable {
     /// 迷你状态条位置 ("right" / "left")
     var miniBarPosition: String = "right"
 
+    // MARK: - 主线目标
+
+    /// 当前主线项目/目标
+    var mainQuest: String?
+
+    /// 宽泛动机 (如 "自我提升", "赚钱", "探索AI")
+    var motivations: [String]?
+
     // MARK: - Privacy
     
     /// 排除的应用 (不截图)

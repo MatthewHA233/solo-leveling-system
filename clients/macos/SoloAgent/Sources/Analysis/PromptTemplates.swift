@@ -53,11 +53,34 @@ enum PromptTemplates {
     /// 活动卡片生成 prompt
     static func activityCardPrompt(
         transcription: String,
-        existingCards: String
+        existingCards: String,
+        mainQuest: String = "",
+        motivations: [String] = []
     ) -> String {
-        """
-        你是「独自升级系统」的活动分析引擎。根据屏幕活动转录，生成结构化的活动卡片。
+        let goalContext: String
+        if !mainQuest.isEmpty {
+            let motStr = motivations.isEmpty ? "" : "（动机：\(motivations.joined(separator: "、"))）"
+            goalContext = """
 
+            ## 主人的主线目标
+            当前主线：\(mainQuest)\(motStr)
+
+            你需要判断每段活动与主线目标的关系，在 goalAlignment 字段中用一句话说明：
+            - 直接推进主线的活动 → 说明具体推进了什么（如"在开发独自升级系统的客户端 overlay 功能"）
+            - 间接相关的活动 → 说明如何间接帮助（如"调研 SwiftUI 动画技术，可应用于项目 UI"）
+            - 与主线无关的活动 → 如实描述（如"在刷社交媒体，与主线无关"）
+            - 休息/放松 → 中性描述（如"短暂休息"）
+
+            摘要也要围绕主线目标来写——不是泛泛地说"在写代码"，而是说"在推进 XX 项目的 XX 功能"。
+
+            """
+        } else {
+            goalContext = ""
+        }
+
+        return """
+        你是用户的个人 AI 伙伴。根据屏幕活动转录，生成结构化的活动卡片。
+        \(goalContext)
         ## 转录内容
         \(transcription)
 
@@ -70,26 +93,24 @@ enum PromptTemplates {
 
         ### 标题指南
         - 具体、简洁、5-10 字
-        - 避免模糊词如"工作"、"使用电脑"
-        - 好例子: "重构 OAuth 认证模块"、"调研 SwiftUI 动画方案"
+        - 如果跟主线相关，标题要体现项目名
+        - 好例子: "开发 SoloAgent 通知系统"、"调研 SwiftUI 动画方案"
         - 坏例子: "写代码"、"上网"
 
         ### 摘要指南
-        - 2-3 句话
-        - 第一人称省略"我"
-        - 描述做了什么、为什么、进展如何
-        - 例: "在 VS Code 中重构了 AgentManager 的截屏流程，将单图分析改为批次视频分析。主要修改了 performCapture 和新增 batchProcessingLoop 方法。"
+        - 2-3 句话，第一人称省略"我"
+        - 围绕「做了什么 → 对主线目标的意义 → 进展如何」来写
+        - 例: "重构了 SoloAgent 的 OverlayManager 通知系统，修复了 toast 不消失的 bug。这是独自升级系统客户端体验优化的一部分。"
 
         ### 详细时间线指南
         - 逐分钟粒度
         - 格式: `[时:分] 具体操作 [应用] [对象]`
-        - 例: `[10:32] 打开 AgentManager.swift [VS Code] [solo-leveling-system]`
 
         ### 类别分类
         从以下选择: coding / writing / learning / browsing / media / social / gaming / work / communication / design / reading / research / meeting / idle / unknown
 
         ### 干扰记录
-        记录任何偏离主要活动的行为（切到社交媒体、查看无关网站等）
+        记录任何偏离主要活动的行为
 
         ## 输出格式
         严格 JSON 数组：
@@ -102,14 +123,15 @@ enum PromptTemplates {
             "endTs": 1708503300,
             "category": "coding",
             "subcategory": "refactoring",
-            "title": "重构截屏分析流程",
-            "summary": "在 VS Code 中重构了 AgentManager 的截屏流程...",
-            "detailedSummary": "[10:30] 打开 AgentManager.swift [VS Code]\\n[10:32] 修改 performCapture 方法...",
+            "title": "开发 SoloAgent 通知系统",
+            "summary": "重构了通知面板的生命周期管理...",
+            "detailedSummary": "[10:30] 打开 OverlayManager.swift [Cursor]\\n[10:32] 修改 showNotification 方法...",
+            "goalAlignment": "直接推进：在开发独自升级系统的客户端通知功能",
             "distractions": [
               {"time": "10:45 AM", "description": "切到微信查看消息", "durationSeconds": 60}
             ],
             "appSites": {
-              "primary": "VS Code",
+              "primary": "Cursor",
               "secondary": "Chrome - GitHub"
             }
           }
