@@ -59,7 +59,9 @@ struct DayNightChartView: View {
     @State private var selectedDate: Date = Date()
 
     @State private var hoveredActivity: ChronosActivity?
+    @State private var hoveredGridCell: CellKey?
     @Binding var selectedCell: CellKey?
+    @Binding var isExpanded: Bool
 
     // ── Grid 尺寸 ──
     private let cols = 24
@@ -78,12 +80,30 @@ struct DayNightChartView: View {
     private let traceBaseX: CGFloat = 10  // 第一路走线 x 偏移
     private let trackSp: CGFloat = 10     // 并行走线间距
 
+    // ── 可见列范围 ──
+    private var visibleStart: Int {
+        if isExpanded { return 0 }
+        let h = Calendar.current.component(.hour, from: Date())
+        return max(0, h - 2)
+    }
+    private var visibleEnd: Int {
+        if isExpanded { return cols }
+        let h = Calendar.current.component(.hour, from: Date())
+        return min(cols, h + 7)   // 右6列 = h+7 (exclusive)
+    }
+    private var visibleCount: Int { visibleEnd - visibleStart }
+
     // ── 计算属性 ──
     private var colStride: CGFloat { cellW + colGap }
     private var rowStride: CGFloat { cellH + rowGap }
     private var gridH: CGFloat { CGFloat(rows) * rowStride - rowGap }
-    private var totalW: CGFloat { hPad + CGFloat(cols) * colStride + 16 }
+    private var totalW: CGFloat { hPad + CGFloat(visibleCount) * colStride + 16 }
     private var totalH: CGFloat { topPad + gridH + bottomPad }
+
+    /// 将实际列号转换为画布 x 坐标
+    private func colX(_ col: Int) -> CGFloat {
+        hPad + CGFloat(col - visibleStart) * colStride
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -134,22 +154,27 @@ struct DayNightChartView: View {
         .onContinuousHover { phase in
             switch phase {
             case .active(let loc):
-                let c = Int((loc.x - hPad) / colStride)
+                let c = Int((loc.x - hPad) / colStride) + visibleStart
                 let rBlock = Int((loc.y - topPad) / rowStride)
-                if c >= 0, c < cols, rBlock >= 0, rBlock < rows {
+                if c >= visibleStart, c < visibleEnd, rBlock >= 0, rBlock < rows {
+                    hoveredGridCell = CellKey(col: c, row: rBlock)
                     let localY = loc.y - topPad - CGFloat(rBlock) * rowStride
                     let extraMin = min(Int(localY / minuteH), 4)
                     let m = c * 60 + rBlock * 5 + extraMin
                     hoveredActivity = activities.first { m >= $0.startMinute && m < $0.endMinute }
-                } else { hoveredActivity = nil }
+                } else {
+                    hoveredGridCell = nil
+                    hoveredActivity = nil
+                }
             case .ended:
+                hoveredGridCell = nil
                 hoveredActivity = nil
             }
         }
         .onTapGesture { location in
-            let c = Int((location.x - hPad) / colStride)
+            let c = Int((location.x - hPad) / colStride) + visibleStart
             let r = Int((location.y - topPad) / rowStride)
-            guard c >= 0, c < cols, r >= 0, r < rows else { return }
+            guard c >= visibleStart, c < visibleEnd, r >= 0, r < rows else { return }
             let tapped = CellKey(col: c, row: r)
             if selectedCell == tapped {
                 selectedCell = nil
@@ -162,12 +187,12 @@ struct DayNightChartView: View {
     // MARK: - Draw: Grid
 
     private func drawGrid(ctx: inout GraphicsContext) {
-        for c in 0..<cols {
+        for c in visibleStart..<visibleEnd {
             let isNight = c < 6 || c >= 22
             let borderA = isNight ? 0.05 : 0.09
 
             for r in 0..<rows {
-                let cx = hPad + CGFloat(c) * colStride
+                let cx = colX(c)
                 let cy = topPad + CGFloat(r) * rowStride
 
                 ctx.stroke(Path(CGRect(x: cx, y: cy, width: cellW, height: cellH)),
@@ -178,7 +203,8 @@ struct DayNightChartView: View {
 
         // 6 小时大分隔线
         for c in Swift.stride(from: 6, through: 18, by: 6) {
-            let x = hPad + CGFloat(c) * colStride - colGap / 2
+            guard c >= visibleStart && c < visibleEnd else { continue }
+            let x = colX(c) - colGap / 2
             var p = Path()
             p.move(to: .init(x: x, y: topPad))
             p.addLine(to: .init(x: x, y: topPad + gridH))
@@ -190,8 +216,8 @@ struct DayNightChartView: View {
 
     private func drawTimeLabels(ctx: inout GraphicsContext) {
         // 小时标签 (顶部，每列居中)
-        for c in 0..<cols {
-            let x = hPad + CGFloat(c) * colStride + cellW / 2
+        for c in visibleStart..<visibleEnd {
+            let x = colX(c) + cellW / 2
             let major = c % 6 == 0
             let t = Text(String(format: "%02d:00", c))
                 .font(.system(size: major ? 12 : 10, weight: major ? .bold : .medium, design: .monospaced))
@@ -200,8 +226,8 @@ struct DayNightChartView: View {
         }
 
         // 每列每个间隙都显示 HH:MM
-        for c in 0..<cols {
-            let colX = hPad + CGFloat(c) * colStride + cellW / 2
+        for c in visibleStart..<visibleEnd {
+            let cx = colX(c) + cellW / 2
 
             for r in 0..<(rows - 1) {
                 let boundary = (r + 1) * 5
@@ -215,7 +241,7 @@ struct DayNightChartView: View {
                     .foregroundColor(isMajor
                         ? NeonBrutalismTheme.textSecondary
                         : NeonBrutalismTheme.textSecondary.opacity(0.5))
-                ctx.draw(ctx.resolve(label), at: .init(x: colX, y: gapY), anchor: .center)
+                ctx.draw(ctx.resolve(label), at: .init(x: cx, y: gapY), anchor: .center)
             }
         }
     }
@@ -236,17 +262,19 @@ struct DayNightChartView: View {
                 guard col < cols, row < rows else { break }
                 let cellStart = col * 60 + row * 5
 
-                let cx = hPad + CGFloat(col) * colStride
-                let cy = topPad + CGFloat(row) * rowStride
+                // 跳过不可见列
+                if col >= visibleStart && col < visibleEnd {
+                    let cx = colX(col)
+                    let cy = topPad + CGFloat(row) * rowStride
 
-                // 部分填充 — 只填活动实际覆盖的分钟范围
-                let localStart = max(a.startMinute, cellStart) - cellStart
-                let localEnd = min(a.endMinute, cellStart + 5) - cellStart
-                let fillY = cy + CGFloat(localStart) * minuteH
-                let fillH = CGFloat(localEnd - localStart) * minuteH
+                    let localStart = max(a.startMinute, cellStart) - cellStart
+                    let localEnd = min(a.endMinute, cellStart + 5) - cellStart
+                    let fillY = cy + CGFloat(localStart) * minuteH
+                    let fillH = CGFloat(localEnd - localStart) * minuteH
 
-                ctx.fill(Path(CGRect(x: cx, y: fillY, width: cellW, height: fillH)),
-                         with: .color(color.opacity(opacity)))
+                    ctx.fill(Path(CGRect(x: cx, y: fillY, width: cellW, height: fillH)),
+                             with: .color(color.opacity(opacity)))
+                }
 
                 m = cellStart + 5
             }
@@ -270,45 +298,42 @@ struct DayNightChartView: View {
                 let cellStart = col * 60 + row * 5
                 let cellEnd = cellStart + 5
 
-                let localStart = max(a.startMinute, cellStart) - cellStart // 0-4
-                let localEnd = min(a.endMinute, cellEnd) - cellStart       // 1-5
+                if col >= visibleStart && col < visibleEnd {
+                    let localStart = max(a.startMinute, cellStart) - cellStart
+                    let localEnd = min(a.endMinute, cellEnd) - cellStart
 
-                let cx = hPad + CGFloat(col) * colStride
-                let cy = topPad + CGFloat(row) * rowStride
-                let x = cx + trackX
-                let y0 = cy + CGFloat(localStart) * minuteH
-                let y1 = cy + CGFloat(localEnd) * minuteH
+                    let cx = colX(col)
+                    let cy = topPad + CGFloat(row) * rowStride
+                    let x = cx + trackX
+                    let y0 = cy + CGFloat(localStart) * minuteH
+                    let y1 = cy + CGFloat(localEnd) * minuteH
 
-                // 竖线
-                var seg = Path()
-                seg.move(to: .init(x: x, y: y0))
-                seg.addLine(to: .init(x: x, y: y1))
+                    var seg = Path()
+                    seg.move(to: .init(x: x, y: y0))
+                    seg.addLine(to: .init(x: x, y: y1))
 
-                let lw = glow ? traceW + 2 : (hovered ? traceW + 0.5 : traceW)
-                let op = glow ? 1.0 : (hovered ? 1.0 : 0.75)
-                ctx.stroke(seg, with: .color(color.opacity(op)),
-                           style: StrokeStyle(lineWidth: lw, lineCap: .round))
+                    let lw = glow ? traceW + 2 : (hovered ? traceW + 0.5 : traceW)
+                    let op = glow ? 1.0 : (hovered ? 1.0 : 0.75)
+                    ctx.stroke(seg, with: .color(color.opacity(op)),
+                               style: StrokeStyle(lineWidth: lw, lineCap: .round))
 
-                if !glow {
-                    // 起点端子 (方形焊盘)
-                    if cellStart <= a.startMinute && a.startMinute < cellEnd {
-                        ctx.fill(Path(CGRect(x: x - 3, y: y0 - 1.5, width: 6, height: 3)),
-                                 with: .color(color))
-                    }
-                    // 终点端子 (圆点)
-                    if cellStart < a.endMinute && a.endMinute <= cellEnd {
-                        ctx.fill(Path(ellipseIn: CGRect(x: x - 3, y: y1 - 3, width: 6, height: 6)),
-                                 with: .color(color))
-                    }
-
-                    // 间隙连接线 (同列下一格，细虚线)
-                    if a.endMinute > cellEnd && row < rows - 1 {
-                        let nextCy = topPad + CGFloat(row + 1) * rowStride
-                        var conn = Path()
-                        conn.move(to: .init(x: x, y: y1))
-                        conn.addLine(to: .init(x: x, y: nextCy))
-                        ctx.stroke(conn, with: .color(color.opacity(0.25)),
-                                   style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [2, 3]))
+                    if !glow {
+                        if cellStart <= a.startMinute && a.startMinute < cellEnd {
+                            ctx.fill(Path(CGRect(x: x - 3, y: y0 - 1.5, width: 6, height: 3)),
+                                     with: .color(color))
+                        }
+                        if cellStart < a.endMinute && a.endMinute <= cellEnd {
+                            ctx.fill(Path(ellipseIn: CGRect(x: x - 3, y: y1 - 3, width: 6, height: 6)),
+                                     with: .color(color))
+                        }
+                        if a.endMinute > cellEnd && row < rows - 1 {
+                            let nextCy = topPad + CGFloat(row + 1) * rowStride
+                            var conn = Path()
+                            conn.move(to: .init(x: x, y: y1))
+                            conn.addLine(to: .init(x: x, y: nextCy))
+                            ctx.stroke(conn, with: .color(color.opacity(0.25)),
+                                       style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [2, 3]))
+                        }
                     }
                 }
 
@@ -317,7 +342,7 @@ struct DayNightChartView: View {
         }
     }
 
-    // MARK: - Draw: Step Nodes (焊点)
+    // MARK: - Draw: Step Nodes (焊点 — 悬浮单元格时灯光亮起 + 描述闪出)
 
     private func drawStepNodes(ctx: inout GraphicsContext, layouts: [TraceLayout]) {
         for layout in layouts {
@@ -327,32 +352,53 @@ struct DayNightChartView: View {
             for step in layout.activity.steps {
                 let col = step.minute / 60
                 let row = (step.minute % 60) / 5
-                guard col < cols, row < rows else { continue }
+                guard col >= visibleStart, col < visibleEnd, row < rows else { continue }
                 let cellStart = col * 60 + row * 5
                 let localMin = step.minute - cellStart
 
-                let cx = hPad + CGFloat(col) * colStride
+                let cx = colX(col)
                 let cy = topPad + CGFloat(row) * rowStride
                 let x = cx + trackX
                 let y = cy + CGFloat(localMin) * minuteH
 
+                let lit = hoveredGridCell?.col == col && hoveredGridCell?.row == row
+
+                if lit {
+                    // 灯光光晕 — 外圈辉光
+                    ctx.drawLayer { glow in
+                        glow.addFilter(.blur(radius: 8))
+                        glow.fill(Path(ellipseIn: CGRect(x: x - 8, y: y - 8, width: 16, height: 16)),
+                                  with: .color(color.opacity(0.6)))
+                    }
+                }
+
                 // 背景挖空
-                ctx.fill(Path(ellipseIn: CGRect(x: x - 5, y: y - 5, width: 10, height: 10)),
+                let nodeR: CGFloat = lit ? 6 : 5
+                ctx.fill(Path(ellipseIn: CGRect(x: x - nodeR, y: y - nodeR, width: nodeR * 2, height: nodeR * 2)),
                          with: .color(NeonBrutalismTheme.background))
                 // 外环
-                ctx.stroke(Path(ellipseIn: CGRect(x: x - 4.5, y: y - 4.5, width: 9, height: 9)),
-                           with: .color(color), lineWidth: 1.5)
+                let ringR: CGFloat = lit ? 5.5 : 4.5
+                ctx.stroke(Path(ellipseIn: CGRect(x: x - ringR, y: y - ringR, width: ringR * 2, height: ringR * 2)),
+                           with: .color(color.opacity(lit ? 1.0 : 0.6)), lineWidth: lit ? 2 : 1.5)
                 // 内点
-                ctx.fill(Path(ellipseIn: CGRect(x: x - 2, y: y - 2, width: 4, height: 4)),
+                let dotR: CGFloat = lit ? 2.5 : 2
+                ctx.fill(Path(ellipseIn: CGRect(x: x - dotR, y: y - dotR, width: dotR * 2, height: dotR * 2)),
                          with: .color(color))
-                // 序号 + 细目标题 (右侧)
-                let labelText = step.title.isEmpty
-                    ? step.label
-                    : "\(step.label) \(step.title)"
-                let label = Text(labelText)
+
+                // 序号（始终显示）
+                let numLabel = Text(step.label)
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(color)
-                ctx.draw(ctx.resolve(label), at: .init(x: x + 9, y: y), anchor: .leading)
+                    .foregroundColor(color.opacity(lit ? 1.0 : 0.5))
+                ctx.draw(ctx.resolve(numLabel), at: .init(x: x + 9, y: y), anchor: .leading)
+
+                // 描述文字（仅悬浮时闪出）
+                if lit && !step.title.isEmpty {
+                    let titleLabel = Text(step.title)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(color)
+                    let numWidth: CGFloat = 16  // 序号占位
+                    ctx.draw(ctx.resolve(titleLabel), at: .init(x: x + 9 + numWidth, y: y), anchor: .leading)
+                }
             }
         }
     }
@@ -366,12 +412,17 @@ struct DayNightChartView: View {
 
             let startCol = a.startMinute / 60
             let endCol = min((a.endMinute - 1) / 60, cols - 1)
+
+            // 活动至少部分在可见范围内
+            guard endCol >= visibleStart && startCol < visibleEnd else { continue }
+
+            let clampedStart = max(startCol, visibleStart)
+            let clampedEnd = min(endCol, visibleEnd - 1)
             let firstRow = (a.startMinute % 60) / 5
             let lastRow = ((a.endMinute - 1) % 60) / 5
 
-            // 活动视觉区域的包围盒
-            let x1 = hPad + CGFloat(startCol) * colStride
-            let x2 = hPad + CGFloat(endCol) * colStride + cellW
+            let x1 = colX(clampedStart)
+            let x2 = colX(clampedEnd) + cellW
             let y1 = topPad + CGFloat(firstRow) * rowStride
             let y2: CGFloat
             if startCol == endCol {
@@ -383,13 +434,11 @@ struct DayNightChartView: View {
             let cx = (x1 + x2) / 2
             let cy = (y1 + y2) / 2
 
-            // 标题 — 居中于整个活动区域
             let title = Text(a.title)
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundColor(color)
             ctx.draw(ctx.resolve(title), at: .init(x: cx, y: cy - 8), anchor: .center)
 
-            // 时间范围 — 标题下方
             let time = Text("\(Self.fmt(a.startMinute)) \u{2013} \(Self.fmt(a.endMinute))")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(color.opacity(0.5))
@@ -403,23 +452,21 @@ struct DayNightChartView: View {
         let cal = Calendar.current
         let h = cal.component(.hour, from: Date())
         let m = cal.component(.minute, from: Date())
-        guard h < cols else { return }
+        guard h >= visibleStart, h < visibleEnd else { return }
 
         let row = m / 5
         let localMin = m % 5
         guard row < rows else { return }
 
-        let cx = hPad + CGFloat(h) * colStride
+        let cx = colX(h)
         let cy = topPad + CGFloat(row) * rowStride
         let y = cy + CGFloat(localMin) * minuteH
 
-        // 横线刻度
         var tick = Path()
         tick.move(to: .init(x: cx, y: y))
         tick.addLine(to: .init(x: cx + cellW, y: y))
         ctx.stroke(tick, with: .color(NeonBrutalismTheme.electricBlue.opacity(0.6)), lineWidth: 1)
 
-        // 左侧小圆点
         ctx.fill(Path(ellipseIn: CGRect(x: cx - 2, y: y - 2, width: 4, height: 4)),
                  with: .color(NeonBrutalismTheme.electricBlue))
     }
@@ -428,9 +475,9 @@ struct DayNightChartView: View {
 
     private func drawSelectedCellHighlight(ctx: inout GraphicsContext) {
         guard let sel = selectedCell else { return }
-        guard sel.col >= 0, sel.col < cols, sel.row >= 0, sel.row < rows else { return }
+        guard sel.col >= visibleStart, sel.col < visibleEnd, sel.row >= 0, sel.row < rows else { return }
 
-        let cx = hPad + CGFloat(sel.col) * colStride
+        let cx = colX(sel.col)
         let cy = topPad + CGFloat(sel.row) * rowStride
         let rect = CGRect(x: cx, y: cy, width: cellW, height: cellH)
 
@@ -541,7 +588,7 @@ struct DayNightChartView: View {
 // MARK: - Preview
 
 #Preview("昼夜表 — 电路走线") {
-    DayNightChartView(selectedCell: .constant(nil))
+    DayNightChartView(selectedCell: .constant(nil), isExpanded: .constant(false))
         .environmentObject(AgentManager.shared)
         .frame(width: 1200, height: 850)
 }

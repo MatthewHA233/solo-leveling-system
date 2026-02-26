@@ -1,58 +1,55 @@
 import SwiftUI
 
 /// 全域网监控 — 标准 macOS 窗口
-/// 布局: 上方标题栏 + 中间(左昼夜表 / 右日志或详情) + 下方(VesselMatrix + Directives)
+/// 收起: 左侧栏(VesselMatrix+Directives) + 昼夜表(当前附近列) + 右栏(日志/详情)
+/// 展开: 左侧栏隐藏, 昼夜表铺满24列 + 右栏
 struct UnifiedSystemView: View {
     @EnvironmentObject var agentManager: AgentManager
     @State private var selectedCell: CellKey?
     @State private var selectedDate: Date = Date()
+    @State private var isChartExpanded: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
-            // Title bar + legend
+            // Title bar
             titleBar
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
 
             NeonDivider(.horizontal)
 
-            // Main content: chart + right column
+            // Main area
             HStack(spacing: 0) {
-                // Left: DayNightChart (主区域)
-                DayNightChartView(selectedCell: $selectedCell)
-                    .environmentObject(agentManager)
+                // Left sidebar — only when collapsed
+                if !isChartExpanded {
+                    leftSidebar
+                        .frame(width: 220)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+
+                    // Sidebar collapse handle
+                    sidebarHandle(expand: true)
+                } else {
+                    // Sidebar expand handle (narrow strip)
+                    sidebarHandle(expand: false)
+                }
+
+                // Center: DayNightChart
+                DayNightChartView(
+                    selectedCell: $selectedCell,
+                    isExpanded: $isChartExpanded
+                )
+                .environmentObject(agentManager)
 
                 NeonDivider(.vertical)
 
-                // Right column (280px): CellDetail or OmniscienceLog
+                // Right column
                 rightColumn
                     .frame(width: 280)
             }
-
-            NeonDivider(.horizontal)
-
-            // Bottom row: VesselMatrix + Directives
-            HStack(spacing: 0) {
-                VesselMatrixView(
-                    player: agentManager.player,
-                    buffs: agentManager.player.activeBuffs
-                )
-                .frame(width: 220)
-
-                NeonDivider(.vertical)
-
-                DirectivesHubView(
-                    agentManager: agentManager,
-                    quests: agentManager.activeQuests,
-                    onCompleteQuest: { questId in
-                        _ = agentManager.questEngine?.completeQuest(questId)
-                    }
-                )
-            }
-            .frame(height: 180)
         }
         .background(NeonBrutalismTheme.background)
         .overlay(NeonScanlineOverlay().allowsHitTesting(false))
+        .animation(.easeInOut(duration: 0.3), value: isChartExpanded)
     }
 
     // MARK: - Title Bar
@@ -78,6 +75,67 @@ struct UnifiedSystemView: View {
                 .foregroundColor(NeonBrutalismTheme.textSecondary)
 
             Spacer()
+        }
+    }
+
+    // MARK: - Left Sidebar
+
+    private var leftSidebar: some View {
+        VStack(spacing: 0) {
+            VesselMatrixView(
+                player: agentManager.player,
+                buffs: agentManager.player.activeBuffs
+            )
+
+            NeonDivider(.horizontal)
+
+            DirectivesHubView(
+                agentManager: agentManager,
+                quests: agentManager.activeQuests,
+                onCompleteQuest: { questId in
+                    _ = agentManager.questEngine?.completeQuest(questId)
+                }
+            )
+        }
+    }
+
+    // MARK: - Sidebar Handle
+
+    private func sidebarHandle(expand: Bool) -> some View {
+        Button(action: { isChartExpanded.toggle() }) {
+            VStack(spacing: 6) {
+                Spacer()
+                Image(systemName: expand ? "chevron.compact.left" : "chevron.compact.right")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(NeonBrutalismTheme.electricBlue.opacity(0.5))
+                if !expand {
+                    Text("STATUS")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(NeonBrutalismTheme.electricBlue.opacity(0.3))
+                        .rotationEffect(.degrees(-90))
+                        .fixedSize()
+                }
+                Spacer()
+            }
+            .frame(width: expand ? 16 : 24)
+            .contentShape(Rectangle())
+            .background(
+                NeonBrutalismTheme.electricBlue.opacity(0.03)
+            )
+            .overlay(
+                Rectangle()
+                    .fill(NeonBrutalismTheme.electricBlue.opacity(0.08))
+                    .frame(width: 1),
+                alignment: expand ? .trailing : .leading
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            if hovering {
+                NSCursor.resizeLeftRight.push()
+            } else {
+                NSCursor.pop()
+            }
         }
     }
 
