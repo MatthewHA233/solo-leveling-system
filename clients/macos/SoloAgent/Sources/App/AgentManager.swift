@@ -18,6 +18,7 @@ final class AgentManager: ObservableObject {
     @Published var player: Player = Player()
     @Published var activeQuests: [Quest] = []
     @Published var activeBuffs: [ActiveBuff] = []
+    @Published var activityCardsUpdated: Date = Date(timeIntervalSince1970: 0)
 
     // MARK: - Sub-systems
     private(set) var config: AgentConfig
@@ -546,6 +547,9 @@ final class AgentManager: ObservableObject {
                 "duration_min": durationMin,
             ])
         }
+
+        // 通知昼夜表等视图刷新
+        activityCardsUpdated = Date()
     }
 
     /// 根据活动类别返回默认专注度分数

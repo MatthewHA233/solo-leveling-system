@@ -26,7 +26,13 @@ struct SoloAgentApp: App {
         .defaultSize(width: 480, height: 400)
         .defaultPosition(.center)
 
-        // 时间线已整合到统一面板 (⌘⇧S)
+        // 全域网监控窗口（标准 macOS 窗口）
+        Window("全域网监控", id: "omniscience") {
+            UnifiedSystemView()
+                .environmentObject(agentManager)
+        }
+        .defaultSize(width: 1600, height: 1000)
+        .defaultPosition(.center)
     }
 }
 

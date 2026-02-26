@@ -70,19 +70,15 @@ struct MenuBarView: View {
 
             // 底部链接
             HStack {
-                Button("切换覆盖层") {
-                    OverlayManager.shared.toggleFullOverlay(agentManager: agent)
+                Button("全域网监控") {
+                    openWindow(id: "omniscience")
+                    NSApp.activate(ignoringOtherApps: true)
                 }
                 .buttonStyle(.link)
 
                 Button("设置...") {
                     openWindow(id: "settings")
                     NSApp.activate(ignoringOtherApps: true)
-                }
-                .buttonStyle(.link)
-
-                Button("时间线") {
-                    OverlayManager.shared.showFullOverlay(agentManager: agent)
                 }
                 .buttonStyle(.link)
 

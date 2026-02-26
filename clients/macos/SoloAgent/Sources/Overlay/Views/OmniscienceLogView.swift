@@ -59,7 +59,7 @@ struct OmniscienceLogView: View {
                 }
             }
         }
-        .frame(width: NeonBrutalismTheme.rightColumnWidth)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Log Row
@@ -116,4 +116,16 @@ struct OmniscienceLogView: View {
         case .ai:       return Color(red: 0.0, green: 0.85, blue: 0.85)
         }
     }
+}
+
+#Preview("右栏 - 系统日志") {
+    let feed = ActivityFeed()
+    feed.push(ActivityFeedItem(type: .capture, icon: "camera.fill", title: "Cursor | coding", expAmount: 0))
+    feed.push(ActivityFeedItem(type: .exp, icon: "star.fill", title: "专注编程", expAmount: 4))
+    feed.push(ActivityFeedItem(type: .quest, icon: "flag.fill", title: "新任务：昼夜表设计"))
+    feed.push(ActivityFeedItem(type: .ai, icon: "brain", title: "AI 分析完成", expAmount: 10))
+    feed.push(ActivityFeedItem(type: .system, icon: "gear", title: "系统同步完成"))
+
+    return OmniscienceLogView(activityFeed: feed, isCapturing: true)
+        .background(NeonBrutalismTheme.background)
 }

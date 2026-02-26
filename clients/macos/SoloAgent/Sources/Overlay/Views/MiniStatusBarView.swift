@@ -11,24 +11,15 @@ struct MiniStatusBarView: View {
                 .font(NeonBrutalismTheme.miniLevelFont)
                 .brutalGlow()
 
-            // Exp bar
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.white.opacity(0.1))
-                        .frame(height: 6)
-
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(NeonBrutalismTheme.expBarGradient)
-                        .frame(
-                            width: max(0, geo.size.width * agentManager.player.expProgress),
-                            height: 6
-                        )
-                        .shadow(color: NeonBrutalismTheme.expGreen.opacity(0.6), radius: 4)
-                }
-                .frame(height: 6)
-                .frame(maxHeight: .infinity, alignment: .center)
-            }
+            // Exp bar -> 动机进度条 (Mock)
+            MotivationBarView(
+                title: "系统同步率",
+                level: agentManager.player.level,
+                progress: agentManager.player.expProgress,
+                coreColor: NeonBrutalismTheme.expGreen
+            )
+            .frame(width: 100, height: 20)
+            .padding(.leading, 8)
 
             // Latest activity icon
             if let icon = agentManager.activityFeed.latestIcon {

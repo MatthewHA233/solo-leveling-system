@@ -76,10 +76,7 @@ enum NeonBrutalismTheme {
 
     // MARK: - Dimensions
 
-    static let fullPanelSize = CGSize(width: 1100, height: 700)
     static let miniBarSize = CGSize(width: 200, height: 36)
-    static let leftColumnWidth: CGFloat = 200
-    static let rightColumnWidth: CGFloat = 260
     static let cornerRadius: CGFloat = 12
     static let borderWidth: CGFloat = 1
     static let dividerOpacity: Double = 0.15

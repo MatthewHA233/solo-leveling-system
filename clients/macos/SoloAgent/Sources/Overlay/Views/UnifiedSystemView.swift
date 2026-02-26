@@ -1,72 +1,58 @@
 import SwiftUI
 
-/// 统一三栏浮动面板 (1100x700) — 替代 FullOverlayView
+/// 全域网监控 — 标准 macOS 窗口
+/// 布局: 上方标题栏 + 中间(左昼夜表 / 右日志或详情) + 下方(VesselMatrix + Directives)
 struct UnifiedSystemView: View {
-    @ObservedObject var agentManager: AgentManager
-    var onClose: (() -> Void)?
+    @EnvironmentObject var agentManager: AgentManager
+    @State private var selectedCell: CellKey?
+    @State private var selectedDate: Date = Date()
 
     var body: some View {
-        ZStack {
-            VStack(spacing: 0) {
-                // Title bar
-                titleBar
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+        VStack(spacing: 0) {
+            // Title bar + legend
+            titleBar
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
 
-                NeonDivider(.horizontal)
+            NeonDivider(.horizontal)
 
-                // Three columns
-                HStack(spacing: 0) {
-                    // Left: Player status
-                    VesselMatrixView(
-                        player: agentManager.player,
-                        buffs: agentManager.player.activeBuffs
-                    )
+            // Main content: chart + right column
+            HStack(spacing: 0) {
+                // Left: DayNightChart (主区域)
+                DayNightChartView(selectedCell: $selectedCell)
+                    .environmentObject(agentManager)
 
-                    NeonDivider(.vertical)
+                NeonDivider(.vertical)
 
-                    // Center: Directives + Timeline
-                    DirectivesHubView(
-                        agentManager: agentManager,
-                        quests: agentManager.activeQuests,
-                        onCompleteQuest: { questId in
-                            _ = agentManager.questEngine?.completeQuest(questId)
-                        }
-                    )
-
-                    NeonDivider(.vertical)
-
-                    // Right: System log
-                    OmniscienceLogView(
-                        activityFeed: agentManager.activityFeed,
-                        isCapturing: agentManager.isCapturing
-                    )
-                }
+                // Right column (280px): CellDetail or OmniscienceLog
+                rightColumn
+                    .frame(width: 280)
             }
 
-            // CRT scanline overlay
-            NeonScanlineOverlay()
-                .allowsHitTesting(false)
+            NeonDivider(.horizontal)
+
+            // Bottom row: VesselMatrix + Directives
+            HStack(spacing: 0) {
+                VesselMatrixView(
+                    player: agentManager.player,
+                    buffs: agentManager.player.activeBuffs
+                )
+                .frame(width: 220)
+
+                NeonDivider(.vertical)
+
+                DirectivesHubView(
+                    agentManager: agentManager,
+                    quests: agentManager.activeQuests,
+                    onCompleteQuest: { questId in
+                        _ = agentManager.questEngine?.completeQuest(questId)
+                    }
+                )
+            }
+            .frame(height: 180)
         }
-        .frame(
-            width: panelWidth,
-            height: panelHeight
-        )
-        .brutalPanel()
-    }
-
-    // MARK: - Safe Panel Size
-
-    private var panelWidth: CGFloat {
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        let maxW = (screen?.visibleFrame.width ?? 1200) - 40
-        return min(NeonBrutalismTheme.fullPanelSize.width, maxW)
-    }
-
-    private var panelHeight: CGFloat {
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        let maxH = (screen?.visibleFrame.height ?? 800) - 40
-        return min(NeonBrutalismTheme.fullPanelSize.height, maxH)
+        .background(NeonBrutalismTheme.background)
+        .overlay(NeonScanlineOverlay().allowsHitTesting(false))
     }
 
     // MARK: - Title Bar
@@ -84,18 +70,36 @@ struct UnifiedSystemView: View {
                     .brutalGlow()
             }
 
-            Spacer()
+            Text("\u{00B7}")
+                .foregroundColor(NeonBrutalismTheme.textSecondary)
 
-            // Close button
-            Button(action: { onClose?() }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(NeonBrutalismTheme.textSecondary)
-                    .frame(width: 22, height: 22)
-                    .background(Color.white.opacity(0.04))
-                    .clipShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            Text(DayNightChartView.dateString(selectedDate))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(NeonBrutalismTheme.textSecondary)
+
+            Spacer()
+        }
+    }
+
+    // MARK: - Right Column
+
+    @ViewBuilder
+    private var rightColumn: some View {
+        if let cell = selectedCell {
+            ChronosCellDetailView(
+                col: cell.col,
+                row: cell.row,
+                selectedDate: selectedDate,
+                onClose: { selectedCell = nil }
+            )
+            .environmentObject(agentManager)
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+        } else {
+            OmniscienceLogView(
+                activityFeed: agentManager.activityFeed,
+                isCapturing: agentManager.isCapturing
+            )
+            .transition(.opacity)
         }
     }
 }

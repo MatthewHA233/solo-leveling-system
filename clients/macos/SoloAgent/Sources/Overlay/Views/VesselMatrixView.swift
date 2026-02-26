@@ -41,7 +41,7 @@ struct VesselMatrixView: View {
                 .padding(.vertical, 12)
             }
         }
-        .frame(width: NeonBrutalismTheme.leftColumnWidth)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Player
@@ -85,31 +85,26 @@ struct VesselMatrixView: View {
     // MARK: - EXP
 
     private var expSection: some View {
-        VStack(spacing: 3) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.white.opacity(0.08))
-                        .frame(height: 10)
-
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(NeonBrutalismTheme.expBarGradient)
-                        .frame(width: max(0, geo.size.width * player.expProgress), height: 10)
-                        .shadow(color: NeonBrutalismTheme.expGreen.opacity(0.6), radius: 6)
-                }
-            }
-            .frame(height: 10)
-
-            HStack {
-                Text("EXP")
-                    .font(NeonBrutalismTheme.captionFont)
-                    .foregroundColor(NeonBrutalismTheme.textSecondary)
-                Spacer()
-                Text("\(player.exp) / \(player.expToNext)")
-                    .font(NeonBrutalismTheme.captionFont)
-                    .foregroundColor(NeonBrutalismTheme.expGreen)
-                    .shadow(color: NeonBrutalismTheme.expGreen.opacity(0.4), radius: 3)
-            }
+        VStack(alignment: .leading, spacing: 12) {
+            Text("MOTIVATION MATRIX")
+                .font(NeonBrutalismTheme.captionFont)
+                .foregroundColor(NeonBrutalismTheme.textSecondary)
+                
+            // 主线动机 (真实数据绑定)
+            MotivationBarView(
+                title: "系统权限解锁",
+                level: player.level,
+                progress: player.expProgress,
+                coreColor: NeonBrutalismTheme.expGreen
+            )
+            
+            // 支线动机 (Mock, 演示产品视野的多维进度)
+            MotivationBarView(
+                title: "UI 框架重构",
+                level: 3,
+                progress: 0.65,
+                coreColor: NeonBrutalismTheme.electricBlue
+            )
         }
         .padding(.horizontal, 14)
     }
@@ -192,4 +187,21 @@ struct VesselMatrixView: View {
         }
         .padding(.horizontal, 14)
     }
+}
+
+#Preview("左栏 - Vessel") {
+    VesselMatrixView(
+        player: Player(
+            name: "Maxwell",
+            level: 12,
+            exp: 680,
+            title: "暗影君主",
+            stats: PlayerStats(focus: 75, productivity: 80, consistency: 60, creativity: 70, wellness: 55)
+        ),
+        buffs: [
+            ActiveBuff(id: "b1", name: "专注领域", effects: [:], activatedAt: Date(), expiresAt: Date().addingTimeInterval(1800), isDebuff: false),
+            ActiveBuff(id: "b2", name: "久坐疲劳", effects: [:], activatedAt: Date(), expiresAt: Date().addingTimeInterval(600), isDebuff: true),
+        ]
+    )
+    .background(NeonBrutalismTheme.background)
 }

@@ -444,6 +444,14 @@ final class PersistenceManager {
         return (try? context.fetch(descriptor)) ?? []
     }
 
+    func batchRecord(for batchId: String) -> BatchRecord? {
+        let predicate = #Predicate<BatchRecord> { record in
+            record.id == batchId
+        }
+        let descriptor = FetchDescriptor<BatchRecord>(predicate: predicate)
+        return try? context.fetch(descriptor).first
+    }
+
     // MARK: - Activity Card Records
 
     func saveActivityCards(_ cards: [ActivityCardRecord]) {

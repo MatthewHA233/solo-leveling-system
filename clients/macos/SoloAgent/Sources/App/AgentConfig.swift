@@ -38,14 +38,14 @@ struct AgentConfig: Codable {
 
     // MARK: - Batch Analysis Settings
 
-    /// 批次目标时长 (秒, 15分钟)
-    var batchTargetDuration: TimeInterval = 900
+    /// 批次目标时长 (秒, 5分钟)
+    var batchTargetDuration: TimeInterval = 300
 
     /// 批次最大间隔阈值 (秒, 超过则断开新批次)
     var batchMaxGap: TimeInterval = 120
 
     /// 批次最小有效时长 (秒, 低于则跳过)
-    var batchMinDuration: TimeInterval = 300
+    var batchMinDuration: TimeInterval = 150
 
     /// 截屏间隔 (秒)
     var screenshotInterval: TimeInterval = 10

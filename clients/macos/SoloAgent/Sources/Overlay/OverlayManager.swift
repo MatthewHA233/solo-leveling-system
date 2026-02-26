@@ -1,11 +1,10 @@
 import SwiftUI
 
-/// 高层协调器 — 管理迷你条/全屏覆盖/通知弹窗的显隐
+/// 高层协调器 — 管理迷你条/通知弹窗的显隐（全域网监控已迁移到标准窗口）
 @MainActor
 final class OverlayManager: ObservableObject {
     static let shared = OverlayManager()
 
-    @Published var isFullOverlayVisible = false
     @Published var isMiniBarVisible = true
 
     let windowController = OverlayWindowController()
@@ -18,9 +17,21 @@ final class OverlayManager: ObservableObject {
     // MARK: - Setup
 
     func setup(agentManager: AgentManager) {
-        // Register hotkey
-        hotkeyManager.onToggle = { [weak self] in
-            self?.toggleFullOverlay(agentManager: agentManager)
+        // Register hotkey — now opens the standard window
+        hotkeyManager.onToggle = {
+            DispatchQueue.main.async {
+                if let window = NSApp.windows.first(where: { $0.title == "全域网监控" }) {
+                    if window.isVisible {
+                        window.orderOut(nil)
+                    } else {
+                        window.makeKeyAndOrderFront(nil)
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                } else {
+                    // Fallback: use openWindow via notification
+                    NotificationCenter.default.post(name: .openOmniscienceWindow, object: nil)
+                }
+            }
         }
         hotkeyManager.register()
 
@@ -78,29 +89,6 @@ final class OverlayManager: ObservableObject {
         isMiniBarVisible = false
     }
 
-    // MARK: - Full Overlay
-
-    func toggleFullOverlay(agentManager: AgentManager) {
-        if isFullOverlayVisible {
-            hideFullOverlay()
-        } else {
-            showFullOverlay(agentManager: agentManager)
-        }
-    }
-
-    func showFullOverlay(agentManager: AgentManager) {
-        let view = UnifiedSystemView(agentManager: agentManager) { [weak self] in
-            self?.hideFullOverlay()
-        }
-        windowController.showFullPanel(content: view)
-        isFullOverlayVisible = true
-    }
-
-    func hideFullOverlay() {
-        windowController.hideFullPanel()
-        isFullOverlayVisible = false
-    }
-
     // MARK: - Notifications
 
     func pushNotification(title: String, body: String) {
@@ -113,7 +101,6 @@ final class OverlayManager: ObservableObject {
         }
 
         updateNotificationDisplay()
-        // Auto-dismiss is handled by SwiftUI .task in NotificationStackView
     }
 
     private func dismissNotification(id: UUID) {
@@ -139,6 +126,12 @@ final class OverlayManager: ObservableObject {
         hotkeyManager.unregister()
         windowController.closeAll()
     }
+}
+
+// MARK: - Notification Name
+
+extension Notification.Name {
+    static let openOmniscienceWindow = Notification.Name("openOmniscienceWindow")
 }
 
 // MARK: - Notification Stack Helper View

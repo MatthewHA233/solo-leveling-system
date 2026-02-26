@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C1D2E3F4A5B6C7D800000001 /* MotivationBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F3A4B5C6D7E800000001 /* MotivationBarView.swift */; };
+		C1D2E3F4A5B6C7D800000002 /* DayNightChartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F3A4B5C6D7E800000002 /* DayNightChartView.swift */; };
+		C1D2E3F4A5B6C7D800000003 /* ChronosActivityConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F3A4B5C6D7E800000003 /* ChronosActivityConverter.swift */; };
+		C1D2E3F4A5B6C7D800000004 /* ChronosCellDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F3A4B5C6D7E800000004 /* ChronosCellDetailView.swift */; };
 		040533CFDAFFD15E04D7FF64 /* ExpEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69789686CF6C057C9C1FF29C /* ExpEngine.swift */; };
 		07393F9815DC629AEB0E7477 /* OverlayManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB5310630BB8F33153AB893D /* OverlayManager.swift */; };
 		08DAEB8616644929F1FAE3C5 /* NotificationPopupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF4E7D001F072C71ED97737 /* NotificationPopupView.swift */; };
@@ -60,6 +64,10 @@
 		A1C2D3E4F5A6B7C800000004 /* VesselMatrixView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VesselMatrixView.swift; sourceTree = "<group>"; };
 		A1C2D3E4F5A6B7C800000005 /* DirectivesHubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectivesHubView.swift; sourceTree = "<group>"; };
 		A1C2D3E4F5A6B7C800000006 /* OmniscienceLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmniscienceLogView.swift; sourceTree = "<group>"; };
+		D1E2F3A4B5C6D7E800000001 /* MotivationBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotivationBarView.swift; sourceTree = "<group>"; };
+		D1E2F3A4B5C6D7E800000002 /* DayNightChartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DayNightChartView.swift; sourceTree = "<group>"; };
+		D1E2F3A4B5C6D7E800000003 /* ChronosActivityConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChronosActivityConverter.swift; sourceTree = "<group>"; };
+		D1E2F3A4B5C6D7E800000004 /* ChronosCellDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChronosCellDetailView.swift; sourceTree = "<group>"; };
 		23D817712B272F8044AD62D3 /* NetworkClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkClient.swift; sourceTree = "<group>"; };
 		26F34E477ADA7B786C986020 /* RuleClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuleClassifier.swift; sourceTree = "<group>"; };
 		28E9EECCB8A30D7AE498E83A /* SystemMessages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMessages.swift; sourceTree = "<group>"; };
@@ -143,10 +151,14 @@
 		4AEBF3E8C271D4367FC34151 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				D1E2F3A4B5C6D7E800000004 /* ChronosCellDetailView.swift */,
+				D1E2F3A4B5C6D7E800000003 /* ChronosActivityConverter.swift */,
 				A1C2D3E4F5A6B7C800000005 /* DirectivesHubView.swift */,
 				E0D0EE6515C68F11E2444D8C /* MiniStatusBarView.swift */,
 				CFF4E7D001F072C71ED97737 /* NotificationPopupView.swift */,
 				A1C2D3E4F5A6B7C800000006 /* OmniscienceLogView.swift */,
+				D1E2F3A4B5C6D7E800000001 /* MotivationBarView.swift */,
+				D1E2F3A4B5C6D7E800000002 /* DayNightChartView.swift */,
 				A1C2D3E4F5A6B7C800000003 /* UnifiedSystemView.swift */,
 				A1C2D3E4F5A6B7C800000004 /* VesselMatrixView.swift */,
 			);
@@ -352,6 +364,10 @@
 				B1C2D3E4F5A6B7C800000001 /* NeonBrutalismTheme.swift in Sources */,
 				B1C2D3E4F5A6B7C800000002 /* NeonBrutalismModifiers.swift in Sources */,
 				B1C2D3E4F5A6B7C800000006 /* OmniscienceLogView.swift in Sources */,
+				C1D2E3F4A5B6C7D800000001 /* MotivationBarView.swift in Sources */,
+				C1D2E3F4A5B6C7D800000002 /* DayNightChartView.swift in Sources */,
+				C1D2E3F4A5B6C7D800000003 /* ChronosActivityConverter.swift in Sources */,
+				C1D2E3F4A5B6C7D800000004 /* ChronosCellDetailView.swift in Sources */,
 				E82940D8D320DC8837372ACB /* GameModels.swift in Sources */,
 				4522BD76B81069EB3EA40B75 /* GamePersistenceModels.swift in Sources */,
 				FED54C8EE7042B3E30D2E1A9 /* HotkeyManager.swift in Sources */,

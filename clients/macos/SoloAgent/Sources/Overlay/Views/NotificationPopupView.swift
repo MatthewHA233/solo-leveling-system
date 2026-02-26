@@ -49,3 +49,12 @@ struct NotificationPopupView: View {
         .overlay(NeonScanlineOverlay().clipShape(RoundedRectangle(cornerRadius: 10)))
     }
 }
+
+#Preview("通知弹窗") {
+    VStack(spacing: 8) {
+        NotificationPopupView(title: "+25 EXP", message: "专注编程 30 分钟，效率极高")
+        NotificationPopupView(title: "新任务", message: "完成 SoloAgent 昼夜表设计")
+    }
+    .padding(20)
+    .background(Color.black)
+}

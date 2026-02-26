@@ -29,12 +29,11 @@ class HolographicPanel: NSPanel {
 
 // MARK: - OverlayWindowController
 
-/// 管理全息悬浮窗的创建和生命周期
+/// 管理浮动面板（迷你条 + 通知）— 全域网监控已迁移到标准窗口
 @MainActor
 final class OverlayWindowController {
 
     private var miniBarPanel: HolographicPanel?
-    private var fullPanel: HolographicPanel?
     private var notificationPanel: HolographicPanel?
 
     // MARK: - Mini Status Bar
@@ -65,46 +64,6 @@ final class OverlayWindowController {
 
     var isMiniBarVisible: Bool {
         miniBarPanel?.isVisible ?? false
-    }
-
-    // MARK: - Full Overlay
-
-    func showFullPanel<Content: View>(content: Content) {
-        if fullPanel == nil {
-            let screen = NSScreen.main ?? NSScreen.screens.first!
-            let maxW = screen.visibleFrame.width - 40
-            let maxH = screen.visibleFrame.height - 40
-            let panelW = min(NeonBrutalismTheme.fullPanelSize.width, maxW)
-            let panelH = min(NeonBrutalismTheme.fullPanelSize.height, maxH)
-            let x = screen.visibleFrame.maxX - panelW - 20
-            let y = screen.visibleFrame.midY - panelH / 2
-
-            let panel = HolographicPanel(contentRect: NSRect(
-                x: x, y: y, width: panelW, height: panelH
-            ))
-            panel.contentView = NSHostingView(rootView: content)
-            fullPanel = panel
-        } else {
-            fullPanel?.contentView = NSHostingView(rootView: content)
-        }
-
-        fullPanel?.orderFrontRegardless()
-    }
-
-    func hideFullPanel() {
-        fullPanel?.orderOut(nil)
-    }
-
-    var isFullPanelVisible: Bool {
-        fullPanel?.isVisible ?? false
-    }
-
-    func toggleFullPanel<Content: View>(content: @autoclosure () -> Content) {
-        if isFullPanelVisible {
-            hideFullPanel()
-        } else {
-            showFullPanel(content: content())
-        }
     }
 
     // MARK: - Notification Window
@@ -142,8 +101,6 @@ final class OverlayWindowController {
     func closeAll() {
         miniBarPanel?.orderOut(nil)
         miniBarPanel = nil
-        fullPanel?.orderOut(nil)
-        fullPanel = nil
         notificationPanel?.orderOut(nil)
         notificationPanel = nil
     }
