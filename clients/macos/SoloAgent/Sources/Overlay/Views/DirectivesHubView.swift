@@ -11,12 +11,12 @@ struct DirectivesHubView: View {
         VStack(spacing: 0) {
             // Fixed header
             HStack {
-                Text("THE DIRECTIVES")
+                Text("指令任务")
                     .font(NeonBrutalismTheme.sectionHeaderFont)
                     .foregroundColor(NeonBrutalismTheme.textSecondary)
                     .padding(.leading, 16)
                 Spacer()
-                Text("\(activeQuests.count) ACTIVE")
+                Text("\(activeQuests.count) 进行中")
                     .font(NeonBrutalismTheme.captionFont)
                     .foregroundColor(NeonBrutalismTheme.electricBlue)
                     .padding(.trailing, 16)
@@ -37,7 +37,7 @@ struct DirectivesHubView: View {
             VStack(alignment: .leading, spacing: 8) {
                 if activeQuests.isEmpty {
                     VStack(spacing: 8) {
-                        Text("NO ACTIVE DIRECTIVES")
+                        Text("暂无活跃任务")
                             .font(NeonBrutalismTheme.bodyFont)
                             .foregroundColor(NeonBrutalismTheme.textSecondary)
                     }
@@ -56,7 +56,7 @@ struct DirectivesHubView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 8)
 
-                    Text("COMPLETED")
+                    Text("已完成")
                         .font(NeonBrutalismTheme.captionFont)
                         .foregroundColor(NeonBrutalismTheme.textSecondary)
                         .padding(.horizontal, 16)
@@ -88,7 +88,7 @@ struct DirectivesHubView: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
                     if quest.type == .daily {
-                        BrutalBadge(text: "DAILY", color: NeonBrutalismTheme.electricBlue)
+                        BrutalBadge(text: "每日", color: NeonBrutalismTheme.electricBlue)
                     }
                     Text(quest.title)
                         .font(NeonBrutalismTheme.bodyFont)
@@ -97,7 +97,7 @@ struct DirectivesHubView: View {
                 }
 
                 HStack(spacing: 8) {
-                    Text("+\(quest.expReward) EXP")
+                    Text("+\(quest.expReward) 经验")
                         .font(NeonBrutalismTheme.captionFont)
                         .foregroundColor(NeonBrutalismTheme.expGreen)
 
@@ -167,8 +167,8 @@ struct DirectivesHubView: View {
     private func formatCountdown(_ seconds: TimeInterval) -> String {
         let h = Int(seconds) / 3600
         let m = (Int(seconds) % 3600) / 60
-        if h > 0 { return "\(h)h \(m)m" }
-        return "\(m)m"
+        if h > 0 { return "\(h)时\(m)分" }
+        return "\(m)分"
     }
 }
 

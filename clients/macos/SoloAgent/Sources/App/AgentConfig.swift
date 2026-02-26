@@ -22,6 +22,14 @@ struct AgentConfig: Codable {
     /// 本地缓存过期时间 (秒)
     var localCacheTTL: TimeInterval = 3600
     
+    // MARK: - AI Provider Settings
+
+    /// AI 提供商: "gemini" | "openai"
+    var aiProvider: String = "gemini"
+
+    /// 是否启用 AI 分析
+    var aiEnabled: Bool = true
+
     // MARK: - Gemini AI Settings
 
     /// Gemini API Key
@@ -33,8 +41,16 @@ struct AgentConfig: Codable {
     /// Gemini 模型名
     var geminiModel: String = "gemini-3-flash-preview"
 
-    /// 是否启用 AI 分析
-    var aiEnabled: Bool = true
+    // MARK: - OpenAI Compatible Settings
+
+    /// OpenAI API Key
+    var openaiApiKey: String?
+
+    /// OpenAI API 基地址
+    var openaiApiBase: String = "https://api.apiyi.com"
+
+    /// OpenAI 模型名
+    var openaiModel: String = "qwen3.5-flash-2026-02-23"
 
     // MARK: - Batch Analysis Settings
 

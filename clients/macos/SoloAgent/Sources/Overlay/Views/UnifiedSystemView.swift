@@ -4,10 +4,22 @@ import SwiftUI
 /// 收起: 左侧栏(VesselMatrix+Directives) + 昼夜表(当前附近列) + 右栏(日志/详情)
 /// 展开: 左侧栏隐藏, 昼夜表铺满24列 + 右栏
 struct UnifiedSystemView: View {
+    enum SidebarTab: String, CaseIterable {
+        case status, directives, settings
+        var icon: String {
+            switch self {
+            case .status: return "gamecontroller"
+            case .directives: return "list.bullet.clipboard"
+            case .settings: return "gearshape"
+            }
+        }
+    }
+
     @EnvironmentObject var agentManager: AgentManager
     @State private var selectedCell: CellKey?
     @State private var selectedDate: Date = Date()
     @State private var isChartExpanded: Bool = false
+    @State private var sidebarTab: SidebarTab = .status
 
     var body: some View {
         VStack(spacing: 0) {
@@ -62,7 +74,7 @@ struct UnifiedSystemView: View {
                     .frame(width: 8, height: 8)
                     .neonPulse()
 
-                Text("SHADOW MONARCH SYSTEM")
+                Text("暗影君主系统")
                     .font(NeonBrutalismTheme.titleFont)
                     .brutalGlow()
             }
@@ -82,20 +94,53 @@ struct UnifiedSystemView: View {
 
     private var leftSidebar: some View {
         VStack(spacing: 0) {
-            VesselMatrixView(
-                player: agentManager.player,
-                buffs: agentManager.player.activeBuffs
-            )
-
-            NeonDivider(.horizontal)
-
-            DirectivesHubView(
-                agentManager: agentManager,
-                quests: agentManager.activeQuests,
-                onCompleteQuest: { questId in
-                    _ = agentManager.questEngine?.completeQuest(questId)
+            // Tab bar
+            HStack(spacing: 0) {
+                ForEach(SidebarTab.allCases, id: \.self) { tab in
+                    Button(action: { sidebarTab = tab }) {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 11))
+                            .foregroundColor(
+                                sidebarTab == tab
+                                    ? NeonBrutalismTheme.electricBlue
+                                    : NeonBrutalismTheme.textSecondary
+                            )
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                            .background(
+                                sidebarTab == tab
+                                    ? NeonBrutalismTheme.electricBlue.opacity(0.08)
+                                    : Color.clear
+                            )
+                    }
+                    .buttonStyle(.plain)
                 }
-            )
+            }
+            .overlay(alignment: .bottom) {
+                NeonDivider(.horizontal)
+            }
+
+            // Tab content
+            switch sidebarTab {
+            case .status:
+                VesselMatrixView(
+                    player: agentManager.player,
+                    buffs: agentManager.player.activeBuffs
+                )
+
+            case .directives:
+                DirectivesHubView(
+                    agentManager: agentManager,
+                    quests: agentManager.activeQuests,
+                    onCompleteQuest: { questId in
+                        _ = agentManager.questEngine?.completeQuest(questId)
+                    }
+                )
+
+            case .settings:
+                SidebarSettingsView()
+                    .environmentObject(agentManager)
+            }
         }
     }
 
@@ -109,7 +154,7 @@ struct UnifiedSystemView: View {
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(NeonBrutalismTheme.electricBlue.opacity(0.5))
                 if !expand {
-                    Text("STATUS")
+                    Text("状态")
                         .font(.system(size: 8, weight: .bold, design: .monospaced))
                         .foregroundColor(NeonBrutalismTheme.electricBlue.opacity(0.3))
                         .rotationEffect(.degrees(-90))

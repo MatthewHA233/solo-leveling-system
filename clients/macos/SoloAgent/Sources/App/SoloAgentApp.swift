@@ -18,14 +18,6 @@ struct SoloAgentApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // 设置窗口
-        Window("设置", id: "settings") {
-            SettingsView()
-                .environmentObject(agentManager)
-        }
-        .defaultSize(width: 480, height: 400)
-        .defaultPosition(.center)
-
         // 全域网监控窗口（标准 macOS 窗口）
         Window("全域网监控", id: "omniscience") {
             UnifiedSystemView()

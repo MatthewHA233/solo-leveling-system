@@ -22,7 +22,7 @@ struct ChronosCellDetailView: View {
                 HStack {
                     Image(systemName: "square.grid.3x3.topleft.filled")
                         .foregroundColor(NeonBrutalismTheme.electricBlue)
-                    Text("CELL DETAIL")
+                    Text("时格详情")
                         .font(.system(size: 12, weight: .black, design: .monospaced))
                         .foregroundColor(NeonBrutalismTheme.electricBlue)
                     Spacer()
@@ -184,7 +184,7 @@ struct ChronosCellDetailView: View {
                 Image(systemName: "film")
                     .font(.system(size: 11))
                     .foregroundColor(NeonBrutalismTheme.electricBlue)
-                Text("TIMELAPSE")
+                Text("延时影像")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(NeonBrutalismTheme.electricBlue)
             }

@@ -8,7 +8,7 @@ struct VesselMatrixView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Section header
-            Text("THE VESSEL")
+            Text("猎人面板")
                 .font(NeonBrutalismTheme.sectionHeaderFont)
                 .foregroundColor(NeonBrutalismTheme.textSecondary)
                 .padding(.horizontal, 14)
@@ -50,7 +50,7 @@ struct VesselMatrixView: View {
         HStack(alignment: .top, spacing: 8) {
             // Level (大号发光数字)
             VStack(spacing: 2) {
-                Text("Lv.")
+                Text("等级")
                     .font(NeonBrutalismTheme.captionFont)
                     .foregroundColor(NeonBrutalismTheme.textSecondary)
                 Text("\(player.level)")
@@ -86,7 +86,7 @@ struct VesselMatrixView: View {
 
     private var expSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("MOTIVATION MATRIX")
+            Text("动力矩阵")
                 .font(NeonBrutalismTheme.captionFont)
                 .foregroundColor(NeonBrutalismTheme.textSecondary)
                 
@@ -113,7 +113,7 @@ struct VesselMatrixView: View {
 
     private var statsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("STATS")
+            Text("属性")
                 .font(NeonBrutalismTheme.sectionHeaderFont)
                 .foregroundColor(NeonBrutalismTheme.textSecondary)
 
@@ -156,7 +156,7 @@ struct VesselMatrixView: View {
 
     private var buffSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("BUFFS")
+            Text("增益效果")
                 .font(NeonBrutalismTheme.sectionHeaderFont)
                 .foregroundColor(NeonBrutalismTheme.textSecondary)
 
@@ -177,7 +177,7 @@ struct VesselMatrixView: View {
                     if let expiresAt = buff.expiresAt {
                         let remaining = expiresAt.timeIntervalSince(Date())
                         if remaining > 0 {
-                            Text("\(Int(remaining / 60))m")
+                            Text("\(Int(remaining / 60))分")
                                 .font(.system(size: 9, design: .monospaced))
                                 .foregroundColor(NeonBrutalismTheme.textSecondary)
                         }

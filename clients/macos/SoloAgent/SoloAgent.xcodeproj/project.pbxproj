@@ -51,6 +51,7 @@
 		AA1B2C3D4E5F6A7B8C9D0E1F /* VideoProcessingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2C3D4E5F6A7B8C9D0E1F2A /* VideoProcessingService.swift */; };
 		CC3D4E5F6A7B8C9D0E1F2A3B /* BatchManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD4E5F6A7B8C9D0E1F2A3B4C /* BatchManager.swift */; };
 		EE5F6A7B8C9D0E1F2A3B4C5D /* PromptTemplates.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF6A7B8C9D0E1F2A3B4C5D6E /* PromptTemplates.swift */; };
+		A1C2D3E4F5A6B7C800000007 /* SidebarSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E4F5A6B7C800000008 /* SidebarSettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -100,6 +101,7 @@
 		BB2C3D4E5F6A7B8C9D0E1F2A /* VideoProcessingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoProcessingService.swift; sourceTree = "<group>"; };
 		DD4E5F6A7B8C9D0E1F2A3B4C /* BatchManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchManager.swift; sourceTree = "<group>"; };
 		FF6A7B8C9D0E1F2A3B4C5D6E /* PromptTemplates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptTemplates.swift; sourceTree = "<group>"; };
+		A1C2D3E4F5A6B7C800000008 /* SidebarSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarSettingsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -159,6 +161,7 @@
 				A1C2D3E4F5A6B7C800000006 /* OmniscienceLogView.swift */,
 				D1E2F3A4B5C6D7E800000001 /* MotivationBarView.swift */,
 				D1E2F3A4B5C6D7E800000002 /* DayNightChartView.swift */,
+				A1C2D3E4F5A6B7C800000008 /* SidebarSettingsView.swift */,
 				A1C2D3E4F5A6B7C800000003 /* UnifiedSystemView.swift */,
 				A1C2D3E4F5A6B7C800000004 /* VesselMatrixView.swift */,
 			);
@@ -382,6 +385,7 @@
 				5AFFF48F73AD022D5721A02E /* OverlayWindowController.swift in Sources */,
 				22400C01BCC32769C78AA377 /* PersistenceManager.swift in Sources */,
 				4CEEE2F8B4C01479E8FAAD37 /* PersistenceModels.swift in Sources */,
+				A1C2D3E4F5A6B7C800000007 /* SidebarSettingsView.swift in Sources */,
 				B1C2D3E4F5A6B7C800000003 /* UnifiedSystemView.swift in Sources */,
 				B1C2D3E4F5A6B7C800000004 /* VesselMatrixView.swift in Sources */,
 				D1C675D230576A31594FF609 /* PlayerManager.swift in Sources */,

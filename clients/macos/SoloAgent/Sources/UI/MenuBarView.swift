@@ -12,11 +12,11 @@ struct MenuBarView: View {
                 Image(systemName: "bolt.fill")
                     .foregroundColor(.purple)
                     .font(.title2)
-                Text("Solo Agent")
+                Text("独自升级")
                     .font(.headline)
                 Spacer()
                 // Player level badge
-                Text("Lv.\(agent.player.level)")
+                Text("等级 \(agent.player.level)")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.purple)
             }
@@ -72,12 +72,6 @@ struct MenuBarView: View {
             HStack {
                 Button("全域网监控") {
                     openWindow(id: "omniscience")
-                    NSApp.activate(ignoringOtherApps: true)
-                }
-                .buttonStyle(.link)
-
-                Button("设置...") {
-                    openWindow(id: "settings")
                     NSApp.activate(ignoringOtherApps: true)
                 }
                 .buttonStyle(.link)

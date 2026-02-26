@@ -66,12 +66,14 @@ final class AgentManager: ObservableObject {
         // 从本地数据库恢复今日计数
         self.captureCount = persistence.todayActivityCount()
 
-        // 初始化 AI Client (Gemini)
-        if config.aiEnabled, let key = config.geminiApiKey, !key.isEmpty {
+        // 初始化 AI Client (按 aiProvider 选择密钥)
+        let activeKey: String? = config.aiProvider == "openai" ? config.openaiApiKey : config.geminiApiKey
+        if config.aiEnabled, let key = activeKey, !key.isEmpty {
             let client = AIClient(config: config)
             self.aiClient = client
             self.batchManager = BatchManager(config: config, persistence: persistence, aiClient: client)
-            Logger.info("🤖 AI 分析已启用 (Gemini: \(config.geminiModel))")
+            let model = config.aiProvider == "openai" ? config.openaiModel : config.geminiModel
+            Logger.info("🤖 AI 分析已启用 (\(config.aiProvider): \(model))")
         }
 
         // 初始化游戏引擎
@@ -302,20 +304,16 @@ final class AgentManager: ObservableObject {
         Logger.info("📊 数据库: \(counts.activities) 活动, \(counts.dailyStats) 日统计, \(counts.appUsage) 应用记录")
         Logger.info("💾 数据库大小: \(persistence.databaseSize)")
         Logger.info("🎮 玩家: Lv.\(player.level) \(player.title) | EXP: \(player.exp)/\(player.expToNext)")
+        let activeModel = config.aiProvider == "openai" ? config.openaiModel : config.geminiModel
+        let activeHasKey = config.aiProvider == "openai"
+            ? (config.openaiApiKey != nil && !config.openaiApiKey!.isEmpty)
+            : (config.geminiApiKey != nil && !config.geminiApiKey!.isEmpty)
         if batchManager != nil {
-            Logger.info("🤖 AI 分析: 已启用 (Gemini \(config.geminiModel), 视频批次模式)")
-            AIClient.debugLog("✅ batchManager 已初始化, 模型: \(config.geminiModel)")
+            Logger.info("🤖 AI 分析: 已启用 (\(config.aiProvider) \(activeModel), 视频批次模式)")
+            AIClient.debugLog("✅ batchManager 已初始化, provider: \(config.aiProvider), 模型: \(activeModel)")
         } else {
             Logger.info("🤖 AI 分析: 未启用 (纯规则引擎模式)")
-            AIClient.debugLog("❌ batchManager 为 nil, aiEnabled=\(config.aiEnabled), hasKey=\(config.geminiApiKey != nil)")
-        }
-
-        // 直接写文件调试
-        let debugPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/solo-agent/agent-debug.log")
-        let debugMsg = "[INIT] batchManager=\(batchManager != nil), aiEnabled=\(config.aiEnabled), hasKey=\(config.geminiApiKey != nil), model=\(config.geminiModel)\n"
-        if let data = debugMsg.data(using: .utf8) {
-            try? data.write(to: debugPath)
+            AIClient.debugLog("❌ batchManager 为 nil, aiEnabled=\(config.aiEnabled), provider=\(config.aiProvider), hasKey=\(activeHasKey)")
         }
 
         Logger.info("✅ Solo Agent 已就绪")
@@ -623,8 +621,24 @@ final class AgentManager: ObservableObject {
         // 更新截图间隔
         captureStrategy.activeInterval = newConfig.screenshotInterval
 
-        // 更新批次管理器配置
-        batchManager?.config = newConfig
+        // 更新或创建批次管理器
+        let newActiveKey: String? = newConfig.aiProvider == "openai" ? newConfig.openaiApiKey : newConfig.geminiApiKey
+        if newConfig.aiEnabled, let key = newActiveKey, !key.isEmpty {
+            if let bm = batchManager {
+                bm.config = newConfig
+            } else {
+                // batchManager 之前未创建（如切换了 provider），补创建
+                let client = AIClient(config: newConfig)
+                self.aiClient = client
+                self.batchManager = BatchManager(config: newConfig, persistence: persistence, aiClient: client)
+                startBatchProcessingLoop()
+                let model = newConfig.aiProvider == "openai" ? newConfig.openaiModel : newConfig.geminiModel
+                Logger.info("🤖 AI 分析: 热启用 (\(newConfig.aiProvider): \(model))")
+            }
+        } else {
+            batchManager = nil
+            aiClient = nil
+        }
 
         // 触发 UI 刷新
         objectWillChange.send()

@@ -15,7 +15,7 @@ struct OmniscienceLogView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
             HStack(spacing: 6) {
-                Text("SYSTEM.LOG")
+                Text("系统日志")
                     .font(NeonBrutalismTheme.sectionHeaderFont)
                     .foregroundColor(NeonBrutalismTheme.textSecondary)
 
@@ -28,7 +28,7 @@ struct OmniscienceLogView: View {
                             .fill(NeonBrutalismTheme.dangerRed)
                             .frame(width: 6, height: 6)
                             .neonPulse()
-                        Text("REC")
+                        Text("录制中")
                             .font(.system(size: 8, weight: .bold, design: .monospaced))
                             .foregroundColor(NeonBrutalismTheme.dangerRed)
                     }
