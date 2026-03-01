@@ -49,8 +49,11 @@ struct AgentConfig: Codable {
     /// OpenAI API 基地址
     var openaiApiBase: String = "https://api.apiyi.com"
 
-    /// OpenAI 模型名
+    /// OpenAI 模型名（Phase 1 视频转录，用轻量模型）
     var openaiModel: String = "qwen3.5-flash-2026-02-23"
+
+    /// Phase 2 活动卡片生成模型（用更强的模型确保理解力）
+    var openaiCardModel: String = "qwen3.5-plus-2026-02-15"
 
     // MARK: - Batch Analysis Settings
 
@@ -64,18 +67,21 @@ struct AgentConfig: Codable {
     var batchMinDuration: TimeInterval = 150
 
     /// 截屏间隔 (秒)
-    var screenshotInterval: TimeInterval = 10
+    var screenshotInterval: TimeInterval = 2
 
     // MARK: - Video Settings
 
     /// 视频最大高度 (px)
     var videoMaxHeight: Int = 720
 
+    /// 视频播放帧率 (fps)
+    var videoFps: Int = 4
+
     /// 视频码率 (bps)
-    var videoBitRate: Int = 300_000
+    var videoBitRate: Int = 500_000
 
     /// 视频帧采样步长 (每 N 帧取 1 帧)
-    var videoFrameStride: Int = 2
+    var videoFrameStride: Int = 1
 
     // MARK: - Overlay Settings
 

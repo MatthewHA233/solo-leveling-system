@@ -210,34 +210,50 @@ struct DayNightChartView: View {
 
         let cal = Calendar.current
         let storage = ScreenshotStorageManager.shared
-        let persistence = agent.persistence
 
+        // 在主线程完成 SwiftData 查询（@MainActor 要求），收集图片路径
+        struct BatchInfo {
+            let batchId: String
+            let startMin: Int
+            let endMin: Int
+            let imagePath: String
+            let videoPath: String?
+        }
+        var batchInfos: [BatchInfo] = []
+        for batch in batches {
+            let startDate = Date(timeIntervalSince1970: Double(batch.startTs))
+            let endDate = Date(timeIntervalSince1970: Double(batch.endTs))
+            let sh = cal.component(.hour, from: startDate)
+            let sm = cal.component(.minute, from: startDate)
+            let eh = cal.component(.hour, from: endDate)
+            let em = cal.component(.minute, from: endDate)
+            let startMin = sh * 60 + sm
+            var endMin = eh * 60 + em
+            if endMin <= startMin { endMin = startMin + 1 }
+
+            let screenshots = agent.persistence.screenshotsForBatch(batch.id)
+            guard !screenshots.isEmpty else { continue }
+            let midIdx = screenshots.count / 2
+            batchInfos.append(BatchInfo(
+                batchId: batch.id,
+                startMin: startMin,
+                endMin: endMin,
+                imagePath: screenshots[midIdx].filePath,
+                videoPath: batch.videoPath
+            ))
+        }
+
+        // 图片加载放到后台（纯文件 IO，不涉及 SwiftData）
         DispatchQueue.global(qos: .utility).async {
             var thumbnails: [BatchThumbnail] = []
-            for batch in batches {
-                let startDate = Date(timeIntervalSince1970: Double(batch.startTs))
-                let endDate = Date(timeIntervalSince1970: Double(batch.endTs))
-                let sh = cal.component(.hour, from: startDate)
-                let sm = cal.component(.minute, from: startDate)
-                let eh = cal.component(.hour, from: endDate)
-                let em = cal.component(.minute, from: endDate)
-                let startMin = sh * 60 + sm
-                var endMin = eh * 60 + em
-                if endMin <= startMin { endMin = startMin + 1 }
-
-                // 取该 batch 的截图，选中间帧
-                let screenshots = persistence.screenshotsForBatch(batch.id)
-                guard !screenshots.isEmpty else { continue }
-                let midIdx = screenshots.count / 2
-                let midRecord = screenshots[midIdx]
-
-                if let img = NSImage(contentsOf: storage.thumbnailURL(for: midRecord.filePath)) {
+            for info in batchInfos {
+                if let img = NSImage(contentsOf: storage.thumbnailURL(for: info.imagePath)) {
                     thumbnails.append(BatchThumbnail(
-                        batchId: batch.id,
-                        startMinute: startMin,
-                        endMinute: endMin,
+                        batchId: info.batchId,
+                        startMinute: info.startMin,
+                        endMinute: info.endMin,
                         image: img,
-                        videoPath: batch.videoPath
+                        videoPath: info.videoPath
                     ))
                 }
             }

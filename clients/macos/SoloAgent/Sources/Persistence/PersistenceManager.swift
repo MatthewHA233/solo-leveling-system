@@ -457,6 +457,28 @@ final class PersistenceManager {
         save()
     }
 
+    /// 保存 Phase 1 转录结果到批次（缓存，重新生成卡片时无需重新转录）
+    func updateBatchTranscription(_ batchId: String, transcriptionJson: String) {
+        let predicate = #Predicate<BatchRecord> { record in
+            record.id == batchId
+        }
+        let descriptor = FetchDescriptor<BatchRecord>(predicate: predicate)
+        guard let batch = try? context.fetch(descriptor).first else { return }
+        batch.transcriptionJson = transcriptionJson
+        save()
+    }
+
+    /// 校正批次 endTs（视频 stride 采样可能导致末尾截断）
+    func updateBatchEndTs(_ batchId: String, endTs: Int) {
+        let predicate = #Predicate<BatchRecord> { record in
+            record.id == batchId
+        }
+        let descriptor = FetchDescriptor<BatchRecord>(predicate: predicate)
+        guard let batch = try? context.fetch(descriptor).first else { return }
+        batch.endTs = endTs
+        save()
+    }
+
     func pendingBatches() -> [BatchRecord] {
         let pendingStatus = "pending"
         let predicate = #Predicate<BatchRecord> { record in

@@ -622,19 +622,36 @@ final class AgentManager: ObservableObject {
     }
 
 
-    // MARK: - Re-analyze Batch
+    // MARK: - Re-analyze / Regenerate
 
-    /// 供 View 调用：重新分析指定批次
-    /// 返回 true 表示调用成功（不代表 AI 一定成功），false 表示无 batchManager
+    /// 供 View 调用：完整重新分析指定批次（Phase 1 + Phase 2）
     @discardableResult
     func reanalyzeBatch(_ batchId: String) async -> Bool {
         guard let bm = batchManager else { return false }
-        // 开始时刷新一次，让 view 看到 status="processing"
         activityCardsUpdated = Date()
         await bm.reanalyzeBatch(batchId)
-        // 清理进度文字
         batchProgress.removeValue(forKey: batchId)
-        // 结束时再刷新，让 view 看到最终 status
+        activityCardsUpdated = Date()
+        return true
+    }
+
+    /// 供 View 调用：只重新生成卡片（跳过 Phase 1，用缓存转录）
+    @discardableResult
+    func regenerateCards(_ batchId: String) async -> Bool {
+        guard let bm = batchManager else { return false }
+        activityCardsUpdated = Date()
+        await bm.regenerateCards(batchId)
+        batchProgress.removeValue(forKey: batchId)
+        activityCardsUpdated = Date()
+        return true
+    }
+
+    /// 供 View 调用：一键重新整理今日所有卡片
+    @discardableResult
+    func reorganizeTodayCards() async -> Bool {
+        guard let bm = batchManager else { return false }
+        activityCardsUpdated = Date()
+        await bm.reorganizeTodayCards()
         activityCardsUpdated = Date()
         return true
     }

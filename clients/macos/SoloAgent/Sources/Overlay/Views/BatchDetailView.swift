@@ -30,7 +30,7 @@ struct BatchDetailView: View {
     let selectedDate: Date
     let player: AVPlayer?
     var onVideoTap: () -> Void
-    var onSeekToTime: (String) -> Void
+    var onSeekToTime: (String, String) -> Void  // (startTime, endTime)
     @EnvironmentObject var agent: AgentManager
     var onClose: () -> Void
 
@@ -216,38 +216,71 @@ struct BatchDetailView: View {
         }
     }
 
-    // MARK: - Regenerate Button
+    // MARK: - Regenerate Buttons
 
     @ViewBuilder
     private func regenerateButton() -> some View {
+        HStack(spacing: 8) {
+            // 重新生成卡片（只跑 Phase 2，快速）
+            actionButton(
+                icon: "arrow.clockwise",
+                label: "重新生成卡片",
+                color: NeonBrutalismTheme.electricBlue
+            ) {
+                isRegenerating = true
+                Task {
+                    let success = await agent.regenerateCards(batchId)
+                    isRegenerating = false
+                    if !success {
+                        AIClient.debugLog("[UI] regenerateCards 失败：AI 未配置")
+                    }
+                }
+            }
+
+            // 完整重新分析（Phase 1 + Phase 2，耗时）
+            actionButton(
+                icon: "film",
+                label: "重新转录视频",
+                color: .orange
+            ) {
+                isRegenerating = true
+                Task {
+                    let success = await agent.reanalyzeBatch(batchId)
+                    isRegenerating = false
+                    if !success {
+                        AIClient.debugLog("[UI] reanalyzeBatch 失败：AI 未配置")
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func actionButton(icon: String, label: String, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: {
             guard !isRegenerating else { return }
-            isRegenerating = true
-            Task {
-                await agent.reanalyzeBatch(batchId)
-                isRegenerating = false
-            }
+            action()
         }) {
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 if isRegenerating {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11))
+                    Image(systemName: icon)
+                        .font(.system(size: 10))
                 }
-                Text("重新生成 AI 摘要")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                Text(label)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
             }
-            .foregroundColor(isRegenerating ? NeonBrutalismTheme.textSecondary : NeonBrutalismTheme.electricBlue)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .foregroundColor(isRegenerating ? NeonBrutalismTheme.textSecondary : color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
             .background(
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(NeonBrutalismTheme.electricBlue.opacity(isRegenerating ? 0.03 : 0.08))
+                    .fill(color.opacity(isRegenerating ? 0.03 : 0.08))
                     .overlay(
                         RoundedRectangle(cornerRadius: 4)
-                            .strokeBorder(NeonBrutalismTheme.electricBlue.opacity(0.2), lineWidth: 0.5)
+                            .strokeBorder(color.opacity(0.2), lineWidth: 0.5)
                     )
             )
         }
@@ -463,11 +496,14 @@ struct BatchDetailView: View {
                     .lineLimit(4)
             } else {
                 ForEach(Array(timelineEntries.enumerated()), id: \.offset) { idx, entry in
+                    let endTime = idx + 1 < timelineEntries.count
+                        ? timelineEntries[idx + 1].time
+                        : card.endTime
                     TimelineEntryRow(
                         entry: entry,
                         isLast: idx == timelineEntries.count - 1,
                         categoryColor: categoryColor(card.category),
-                        onTap: { onSeekToTime(entry.time) }
+                        onTap: { onSeekToTime(entry.time, endTime) }
                     )
                 }
             }

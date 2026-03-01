@@ -24,6 +24,9 @@ struct UnifiedSystemView: View {
     @State private var sidebarTab: SidebarTab = .status
     @State private var isVideoExpanded: Bool = false
     @State private var batchPlayer: AVPlayer?
+    @State private var loopStartTime: String?
+    @State private var loopEndTime: String?
+    @State private var isReorganizing: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,12 +57,23 @@ struct UnifiedSystemView: View {
                     ExpandedVideoPlayerView(
                         player: player,
                         batchId: selectedBatchId ?? "",
+                        selectedDate: selectedDate,
+                        loopStartTime: loopStartTime,
+                        loopEndTime: loopEndTime,
                         onCollapse: {
                             withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                                 isVideoExpanded = false
                             }
+                            loopStartTime = nil
+                            loopEndTime = nil
+                        },
+                        onStopLoop: {
+                            loopStartTime = nil
+                            loopEndTime = nil
+                            batchPlayer?.play()  // 确保继续顺序播放
                         }
                     )
+                    .environmentObject(agentManager)
                     .transition(.scale(scale: 0.3, anchor: .trailing).combined(with: .opacity))
                 } else {
                     DayNightChartView(
@@ -164,6 +178,41 @@ struct UnifiedSystemView: View {
             }
 
             Spacer()
+
+            // 一键整理今日卡片
+            Button(action: {
+                guard !isReorganizing else { return }
+                isReorganizing = true
+                Task {
+                    await agentManager.reorganizeTodayCards()
+                    isReorganizing = false
+                }
+            }) {
+                HStack(spacing: 4) {
+                    if isReorganizing {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 10))
+                    }
+                    Text("整理卡片")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                }
+                .foregroundColor(isReorganizing ? NeonBrutalismTheme.textSecondary : .orange)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.orange.opacity(isReorganizing ? 0.03 : 0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .strokeBorder(Color.orange.opacity(0.2), lineWidth: 0.5)
+                        )
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isReorganizing)
         }
     }
 
@@ -275,8 +324,8 @@ struct UnifiedSystemView: View {
                         isVideoExpanded.toggle()
                     }
                 },
-                onSeekToTime: { timeStr in
-                    seekPlayerToTime(timeStr)
+                onSeekToTime: { startTime, endTime in
+                    seekPlayerToTime(startTime, endTime: endTime)
                 },
                 onClose: {
                     isVideoExpanded = false
@@ -298,6 +347,8 @@ struct UnifiedSystemView: View {
 
     private func setupBatchPlayer() {
         isVideoExpanded = false
+        loopStartTime = nil
+        loopEndTime = nil
         guard let batchId = selectedBatchId,
               let batch = agentManager.persistence.batchRecord(for: batchId),
               let path = batch.videoPath,
@@ -308,13 +359,13 @@ struct UnifiedSystemView: View {
         batchPlayer = AVPlayer(url: URL(fileURLWithPath: path))
     }
 
-    private func seekPlayerToTime(_ timeStr: String) {
+    private func seekPlayerToTime(_ startTime: String, endTime: String) {
         guard let batchId = selectedBatchId,
               let batch = agentManager.persistence.batchRecord(for: batchId),
               let player = batchPlayer else { return }
 
         // Parse "HH:mm" → Unix timestamp for selectedDate
-        let parts = timeStr.split(separator: ":")
+        let parts = startTime.split(separator: ":")
         guard parts.count == 2,
               let hour = Int(parts[0]),
               let minute = Int(parts[1]) else { return }
@@ -341,6 +392,10 @@ struct UnifiedSystemView: View {
         let seekTime = CMTime(seconds: seekSeconds, preferredTimescale: 600)
         player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero)
         player.play()
+
+        // 设置循环范围
+        loopStartTime = startTime
+        loopEndTime = endTime
 
         // Auto-expand if not already
         if !isVideoExpanded {

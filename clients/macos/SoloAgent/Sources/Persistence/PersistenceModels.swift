@@ -225,6 +225,9 @@ final class BatchRecord {
     /// 错误信息
     var errorMessage: String?
 
+    /// Phase 1 转录结果缓存（JSON 字符串），重新生成卡片时无需重新转录视频
+    var transcriptionJson: String?
+
     init(
         id: String = "batch_\(UUID().uuidString.prefix(8))",
         startTs: Int,
@@ -233,7 +236,8 @@ final class BatchRecord {
         screenshotCount: Int = 0,
         videoPath: String? = nil,
         createdAt: Date = Date(),
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        transcriptionJson: String? = nil
     ) {
         self.id = id
         self.startTs = startTs
@@ -243,6 +247,7 @@ final class BatchRecord {
         self.videoPath = videoPath
         self.createdAt = createdAt
         self.errorMessage = errorMessage
+        self.transcriptionJson = transcriptionJson
     }
 }
 

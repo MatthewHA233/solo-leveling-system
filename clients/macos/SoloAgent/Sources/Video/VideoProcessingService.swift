@@ -48,8 +48,17 @@ actor VideoProcessingService {
         guard !sampled.isEmpty else {
             throw VideoError.noFrames
         }
-        // 构建帧→时间戳映射（视频第 i 秒 = sampled[i].timestamp）
-        let frameTimestamps = sampled.map(\.timestamp)
+        // 预加载可用帧（跳过无法加载的图片），同时保持时间戳同步
+        var validFrames: [(image: CGImage, timestamp: Int)] = []
+        for shot in sampled {
+            if let img = loadImage(relativePath: shot.path) {
+                validFrames.append((image: img, timestamp: shot.timestamp))
+            }
+        }
+        guard !validFrames.isEmpty else {
+            throw VideoError.noFrames
+        }
+        let frameTimestamps = validFrames.map(\.timestamp)
 
         // 确定输出路径
         let output = outputURL ?? generateOutputURL()
@@ -63,11 +72,8 @@ actor VideoProcessingService {
             try FileManager.default.removeItem(at: output)
         }
 
-        // 读取第一帧确定尺寸
-        guard let firstImage = loadImage(relativePath: sampled[0].path) else {
-            throw VideoError.cannotLoadImage(sampled[0].path)
-        }
-
+        // 从预加载帧确定尺寸
+        let firstImage = validFrames[0].image
         let (videoWidth, videoHeight) = computeSize(
             originalWidth: firstImage.width,
             originalHeight: firstImage.height,
@@ -103,12 +109,10 @@ actor VideoProcessingService {
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
 
-        // 写入帧
+        // 写入帧（使用预加载的有效帧，时间戳与 frameTimestamps 精确对应）
         let frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
 
-        for (index, shot) in sampled.enumerated() {
-            guard let image = loadImage(relativePath: shot.path) else { continue }
-
+        for (index, frame) in validFrames.enumerated() {
             let presentationTime = CMTimeMultiply(frameDuration, multiplier: Int32(index))
 
             while !writerInput.isReadyForMoreMediaData {
@@ -116,7 +120,7 @@ actor VideoProcessingService {
             }
 
             guard let pixelBuffer = createPixelBuffer(
-                from: image,
+                from: frame.image,
                 width: videoWidth,
                 height: videoHeight,
                 pool: adaptor.pixelBufferPool
@@ -134,7 +138,7 @@ actor VideoProcessingService {
 
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: output.path)[.size] as? Int) ?? 0
         let sizeMB = String(format: "%.1f", Double(fileSize) / 1_048_576.0)
-        Logger.info("🎬 视频合成完成: \(sampled.count) 帧, \(sizeMB)MB → \(output.lastPathComponent)")
+        Logger.info("🎬 视频合成完成: \(validFrames.count)/\(sampled.count) 帧, \(sizeMB)MB → \(output.lastPathComponent)")
 
         return VideoResult(url: output, frameTimestamps: frameTimestamps)
     }

@@ -9,8 +9,8 @@ final class AIClient {
     init(config: AgentConfig) {
         self.config = config
         let sessionConfig = URLSessionConfiguration.default
-        sessionConfig.timeoutIntervalForRequest = 120
-        sessionConfig.timeoutIntervalForResource = 300
+        sessionConfig.timeoutIntervalForRequest = 300
+        sessionConfig.timeoutIntervalForResource = 600
         self.session = URLSession(configuration: sessionConfig)
     }
 
@@ -24,10 +24,11 @@ final class AIClient {
 
     // MARK: - Phase 1: Video Transcription
 
-    /// 分析视频，生成逐段活动转录（基于视频秒数，由调用方映射回真实时间）
+    /// 分析视频，生成逐段活动转录（AI 直接使用帧→时间映射表输出真实时间）
     func transcribeVideo(
         videoData: Data,
-        videoDurationSeconds: Int
+        videoDurationSeconds: Int,
+        frameTimeMapping: String = ""
     ) async -> [[String: Any]]? {
         guard let apiKey = activeApiKey, !apiKey.isEmpty else {
             Self.debugLog("未配置 \(config.aiProvider) API Key，跳过视频转录")
@@ -35,7 +36,8 @@ final class AIClient {
         }
 
         let prompt = PromptTemplates.videoTranscriptionPrompt(
-            videoDurationSeconds: videoDurationSeconds
+            videoDurationSeconds: videoDurationSeconds,
+            frameTimeMapping: frameTimeMapping
         )
 
         Self.debugLog("[\(config.aiProvider)] 开始视频转录, 视频大小: \(videoData.count / 1024)KB, 视频时长: \(videoDurationSeconds)s")
@@ -90,17 +92,20 @@ final class AIClient {
         }
 
         // 格式化已有卡片
+        // 传最近 5 张卡片的完整上下文（含 detailedSummary），让 plus 模型理解衔接
         let existingJson: String
         if existingCards.isEmpty {
             existingJson = ""
         } else {
-            let cardDicts = existingCards.map { card -> [String: Any] in
+            let recentCards = existingCards.suffix(5)
+            let cardDicts = recentCards.map { card -> [String: Any] in
                 [
                     "title": card.title,
                     "startTime": card.startTime,
                     "endTime": card.endTime,
                     "category": card.category,
                     "summary": card.summary,
+                    "detailedSummary": String(card.detailedSummary.prefix(300)),
                 ]
             }
             if let data = try? JSONSerialization.data(withJSONObject: cardDicts, options: .prettyPrinted),
@@ -120,9 +125,11 @@ final class AIClient {
 
         Self.debugLog("开始生成活动卡片, 转录段数: \(transcription.count)")
 
+        Self.debugLog("开始生成活动卡片 (模型: \(config.openaiCardModel)), 转录段数: \(transcription.count)")
+
         let responseText: String?
         if isOpenAI {
-            responseText = await callOpenAITextAPI(textPrompt: prompt, apiKey: apiKey)
+            responseText = await callOpenAITextAPI(textPrompt: prompt, apiKey: apiKey, model: config.openaiCardModel)
         } else {
             responseText = await callGeminiTextAPI(textPrompt: prompt, apiKey: apiKey)
         }
@@ -261,10 +268,11 @@ final class AIClient {
 
     private func callOpenAITextAPI(
         textPrompt: String,
-        apiKey: String
+        apiKey: String,
+        model: String? = nil
     ) async -> String? {
         let payload: [String: Any] = [
-            "model": config.openaiModel,
+            "model": model ?? config.openaiModel,
             "messages": [
                 [
                     "role": "user",
@@ -417,6 +425,153 @@ final class AIClient {
         case serializationFailed
     }
 
+    /// 流式视频转录 — 返回 AsyncThrowingStream，逐 token yield
+    func streamTranscribeVideo(
+        videoData: Data,
+        videoDurationSeconds: Int,
+        frameTimeMapping: String = ""
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task { @MainActor in
+                guard let apiKey = activeApiKey, !apiKey.isEmpty else {
+                    continuation.finish(throwing: AIStreamError.noApiKey)
+                    return
+                }
+
+                let prompt = PromptTemplates.videoTranscriptionPrompt(
+                    videoDurationSeconds: videoDurationSeconds,
+                    frameTimeMapping: frameTimeMapping
+                )
+
+                Self.debugLog("[Streaming] 开始流式视频转录, 视频大小: \(videoData.count / 1024)KB, 时长: \(videoDurationSeconds)s")
+
+                if isOpenAI {
+                    await streamOpenAIVideoAPI(videoData: videoData, prompt: prompt, apiKey: apiKey, continuation: continuation)
+                } else {
+                    // Gemini 暂不支持流式视频，fallback 到非流式
+                    if let result = await callGeminiAPI(videoData: videoData, textPrompt: prompt, apiKey: apiKey) {
+                        continuation.yield(result)
+                    }
+                    continuation.finish()
+                }
+            }
+        }
+    }
+
+    /// OpenAI 流式视频请求 — stream: true, SSE 解析
+    private func streamOpenAIVideoAPI(
+        videoData: Data,
+        prompt: String,
+        apiKey: String,
+        continuation: AsyncThrowingStream<String, Error>.Continuation
+    ) async {
+        let baseURL = config.openaiApiBase.hasSuffix("/")
+            ? String(config.openaiApiBase.dropLast())
+            : config.openaiApiBase
+        let urlString = "\(baseURL)/v1/chat/completions"
+
+        guard let url = URL(string: urlString) else {
+            continuation.finish(throwing: AIStreamError.invalidURL)
+            return
+        }
+
+        let base64Video = videoData.base64EncodedString()
+        let payload: [String: Any] = [
+            "model": config.openaiModel,
+            "messages": [
+                [
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "video_url",
+                            "video_url": [
+                                "url": "data:video/mp4;base64,\(base64Video)"
+                            ] as [String: String]
+                        ] as [String: Any],
+                        [
+                            "type": "text",
+                            "text": prompt,
+                        ] as [String: String],
+                    ] as [[String: Any]]
+                ] as [String: Any]
+            ] as [[String: Any]],
+            "temperature": 0.3,
+            "max_tokens": 4096,
+            "stream": true,
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("solo-leveling-system/2.0", forHTTPHeaderField: "User-Agent")
+
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
+            continuation.finish(throwing: AIStreamError.serializationFailed)
+            return
+        }
+        request.httpBody = body
+
+        Self.debugLog("[Streaming] 发送 OpenAI 流式视频请求: \(urlString), body: \(body.count / 1024)KB")
+
+        do {
+            let (bytes, response) = try await session.bytes(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                continuation.finish(throwing: AIStreamError.httpError(0, "非 HTTP 响应"))
+                return
+            }
+            guard httpResponse.statusCode == 200 else {
+                var errorBody = ""
+                for try await line in bytes.lines { errorBody += line; if errorBody.count > 500 { break } }
+                Self.debugLog("[Streaming] OpenAI 视频转录 HTTP \(httpResponse.statusCode): \(errorBody.prefix(500))")
+                continuation.finish(throwing: AIStreamError.httpError(httpResponse.statusCode, errorBody))
+                return
+            }
+
+            for try await line in bytes.lines {
+                guard line.hasPrefix("data: ") else { continue }
+                let data = String(line.dropFirst(6))
+                if data == "[DONE]" { break }
+
+                guard let jsonData = data.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                      let choices = json["choices"] as? [[String: Any]],
+                      let delta = choices.first?["delta"] as? [String: Any],
+                      let content = delta["content"] as? String else {
+                    continue
+                }
+
+                continuation.yield(content)
+            }
+            continuation.finish()
+            Self.debugLog("[Streaming] OpenAI 流式视频转录完成")
+        } catch {
+            Self.debugLog("[Streaming] OpenAI 流式视频转录错误: \(error)")
+            continuation.finish(throwing: error)
+        }
+    }
+
+    /// 纯 prompt 流式请求（用 cardModel）— 用于卡片整理等场景
+    func streamGenerateActivityCardsFromPrompt(_ prompt: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task { @MainActor in
+                guard let apiKey = activeApiKey, !apiKey.isEmpty else {
+                    continuation.finish(throwing: AIStreamError.noApiKey)
+                    return
+                }
+
+                Self.debugLog("[Streaming] 纯 prompt 流式请求 (模型: \(config.openaiCardModel))")
+
+                if isOpenAI {
+                    await streamOpenAITextAPI(prompt: prompt, apiKey: apiKey, continuation: continuation, model: config.openaiCardModel)
+                } else {
+                    await streamGeminiTextAPI(prompt: prompt, apiKey: apiKey, continuation: continuation)
+                }
+            }
+        }
+    }
+
     /// 流式生成活动卡片 — 返回 AsyncThrowingStream，逐 token yield
     func streamGenerateActivityCards(
         transcription: [[String: Any]],
@@ -443,13 +598,15 @@ final class AIClient {
                 if existingCards.isEmpty {
                     existingJson = ""
                 } else {
-                    let cardDicts = existingCards.map { card -> [String: Any] in
+                    let recentCards = existingCards.suffix(5)
+                    let cardDicts = recentCards.map { card -> [String: Any] in
                         [
                             "title": card.title,
                             "startTime": card.startTime,
                             "endTime": card.endTime,
                             "category": card.category,
                             "summary": card.summary,
+                            "detailedSummary": String(card.detailedSummary.prefix(300)),
                         ]
                     }
                     if let data = try? JSONSerialization.data(withJSONObject: cardDicts, options: .prettyPrinted),
@@ -482,7 +639,8 @@ final class AIClient {
     private func streamOpenAITextAPI(
         prompt: String,
         apiKey: String,
-        continuation: AsyncThrowingStream<String, Error>.Continuation
+        continuation: AsyncThrowingStream<String, Error>.Continuation,
+        model: String? = nil
     ) async {
         let baseURL = config.openaiApiBase.hasSuffix("/")
             ? String(config.openaiApiBase.dropLast())
@@ -495,7 +653,7 @@ final class AIClient {
         }
 
         let payload: [String: Any] = [
-            "model": config.openaiModel,
+            "model": model ?? config.openaiCardModel,
             "messages": [
                 ["role": "user", "content": prompt] as [String: Any]
             ] as [[String: Any]],
