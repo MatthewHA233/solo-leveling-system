@@ -17,11 +17,11 @@ class CaptureStrategy {
     /// 活跃状态: 每 10 秒截一次 (视频批次分析需要更高频率)
     var activeInterval: TimeInterval = 10
 
-    /// 空闲状态: 每 30 秒截一次
-    var idleInterval: TimeInterval = 30
+    /// 空闲状态: 停止截屏 (用户没在操作，截了也是重复画面浪费 tokens)
+    var idleInterval: TimeInterval = 0
 
-    /// 深度空闲: 每 2 分钟截一次
-    var deepIdleInterval: TimeInterval = 120
+    /// 深度空闲: 停止截屏
+    var deepIdleInterval: TimeInterval = 0
     
     /// 空闲阈值 (秒): 超过此时间无输入视为空闲
     var idleThreshold: TimeInterval = 60

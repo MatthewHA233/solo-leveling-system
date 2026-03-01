@@ -83,7 +83,8 @@ struct ChronosCellDetailView: View {
                   let eh = ec.hour, let em = ec.minute else { return false }
             let cardStart = sh * 60 + sm
             var cardEnd = eh * 60 + em
-            if cardEnd <= cardStart { cardEnd = 1440 }
+            if cardEnd == cardStart { cardEnd = cardStart + 1 }
+            if cardEnd < cardStart { cardEnd = 1440 }
             return cardStart < endMin && cardEnd > startMin
         }
     }

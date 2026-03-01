@@ -26,15 +26,15 @@ actor VideoProcessingService {
 
     // MARK: - Public API
 
+    /// 视频合成结果
+    struct VideoResult {
+        let url: URL
+        /// 帧→真实时间戳映射：frameTimestamps[i] = 视频第 i 秒对应的 Unix timestamp
+        let frameTimestamps: [Int]
+    }
+
     /// 从截图序列生成延时摄影视频
-    /// - Parameters:
-    ///   - screenshots: 截图列表 (相对路径 + Unix timestamp)
-    ///   - outputURL: 输出文件 URL，nil 则自动生成
-    ///   - fps: 帧率 (默认 1fps)
-    ///   - maxHeight: 最大高度 (降低分辨率)
-    ///   - bitRate: 视频码率
-    ///   - frameStride: 帧采样步长 (每 N 帧取 1 帧)
-    /// - Returns: 生成的视频文件 URL
+    /// - Returns: VideoResult 包含视频 URL 和帧时间戳映射表
     func generateVideo(
         screenshots: [(path: String, timestamp: Int)],
         outputURL: URL? = nil,
@@ -42,12 +42,14 @@ actor VideoProcessingService {
         maxHeight: Int = 720,
         bitRate: Int = 300_000,
         frameStride: Int = 2
-    ) async throws -> URL {
+    ) async throws -> VideoResult {
         // 帧采样
         let sampled = stride(from: 0, to: screenshots.count, by: frameStride).map { screenshots[$0] }
         guard !sampled.isEmpty else {
             throw VideoError.noFrames
         }
+        // 构建帧→时间戳映射（视频第 i 秒 = sampled[i].timestamp）
+        let frameTimestamps = sampled.map(\.timestamp)
 
         // 确定输出路径
         let output = outputURL ?? generateOutputURL()
@@ -134,7 +136,7 @@ actor VideoProcessingService {
         let sizeMB = String(format: "%.1f", Double(fileSize) / 1_048_576.0)
         Logger.info("🎬 视频合成完成: \(sampled.count) 帧, \(sizeMB)MB → \(output.lastPathComponent)")
 
-        return output
+        return VideoResult(url: output, frameTimestamps: frameTimestamps)
     }
 
     // MARK: - Helpers

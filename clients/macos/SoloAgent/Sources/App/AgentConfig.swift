@@ -93,6 +93,17 @@ struct AgentConfig: Codable {
     /// 宽泛动机 (如 "自我提升", "赚钱", "探索AI")
     var motivations: [String]?
 
+    // MARK: - Server / Sync Settings
+    
+    /// 服务器 API 地址
+    var serverURL: String = "http://127.0.0.1:8000"
+    
+    /// 服务器 WebSocket 地址
+    var wsURL: String = "ws://127.0.0.1:8000/ws"
+    
+    /// 服务器验证 API Key
+    var apiKey: String?
+    
     // MARK: - Privacy
     
     /// 排除的应用 (不截图)

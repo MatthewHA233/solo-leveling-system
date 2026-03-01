@@ -369,6 +369,24 @@ final class PersistenceManager {
     
     // MARK: - Screenshot Records (批次分析)
 
+    /// 查询指定日期的所有截图记录，按 capturedAt 升序
+    func screenshotsForDate(_ date: Date) -> [ScreenshotRecord] {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: date)
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay) ?? date
+        let startTs = Int(startOfDay.timeIntervalSince1970)
+        let endTs = Int(endOfDay.timeIntervalSince1970)
+
+        let predicate = #Predicate<ScreenshotRecord> { record in
+            record.capturedAt >= startTs && record.capturedAt < endTs
+        }
+        let descriptor = FetchDescriptor<ScreenshotRecord>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.capturedAt)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
     func saveScreenshotRecord(filePath: String, fileSize: Int, capturedAt: Int) {
         let record = ScreenshotRecord(
             capturedAt: capturedAt,
@@ -403,6 +421,24 @@ final class PersistenceManager {
     }
 
     // MARK: - Batch Records
+
+    /// 查询指定日期的所有批次记录，按 startTs 升序
+    func batchesForDate(_ date: Date) -> [BatchRecord] {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: date)
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay) ?? date
+        let startTs = Int(startOfDay.timeIntervalSince1970)
+        let endTs = Int(endOfDay.timeIntervalSince1970)
+
+        let predicate = #Predicate<BatchRecord> { record in
+            record.startTs >= startTs && record.startTs < endTs
+        }
+        let descriptor = FetchDescriptor<BatchRecord>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.startTs)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
+    }
 
     func saveBatch(_ batch: BatchRecord) {
         context.insert(batch)
@@ -480,6 +516,19 @@ final class PersistenceManager {
 
     func allActivityCardsToday() -> [ActivityCardRecord] {
         activityCards(for: Date())
+    }
+
+    func deleteActivityCards(forBatch batchId: String) {
+        let targetBatchId = batchId
+        let predicate = #Predicate<ActivityCardRecord> { card in
+            card.batchId == targetBatchId
+        }
+        let descriptor = FetchDescriptor<ActivityCardRecord>(predicate: predicate)
+        guard let cards = try? context.fetch(descriptor) else { return }
+        for card in cards {
+            context.delete(card)
+        }
+        save()
     }
 
     // MARK: - Storage Info

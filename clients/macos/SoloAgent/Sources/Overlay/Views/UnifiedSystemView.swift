@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import AVFoundation
 
 /// 全域网监控 — 标准 macOS 窗口
 /// 收起: 左侧栏(VesselMatrix+Directives) + 昼夜表(当前附近列) + 右栏(日志/详情)
@@ -16,10 +18,12 @@ struct UnifiedSystemView: View {
     }
 
     @EnvironmentObject var agentManager: AgentManager
-    @State private var selectedCell: CellKey?
+    @State private var selectedBatchId: String?
     @State private var selectedDate: Date = Date()
     @State private var isChartExpanded: Bool = false
     @State private var sidebarTab: SidebarTab = .status
+    @State private var isVideoExpanded: Bool = false
+    @State private var batchPlayer: AVPlayer?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,12 +49,27 @@ struct UnifiedSystemView: View {
                     sidebarHandle(expand: false)
                 }
 
-                // Center: DayNightChart
-                DayNightChartView(
-                    selectedCell: $selectedCell,
-                    isExpanded: $isChartExpanded
-                )
-                .environmentObject(agentManager)
+                // Center: DayNightChart or Expanded Video
+                if isVideoExpanded, let player = batchPlayer {
+                    ExpandedVideoPlayerView(
+                        player: player,
+                        batchId: selectedBatchId ?? "",
+                        onCollapse: {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                isVideoExpanded = false
+                            }
+                        }
+                    )
+                    .transition(.scale(scale: 0.3, anchor: .trailing).combined(with: .opacity))
+                } else {
+                    DayNightChartView(
+                        selectedBatchId: $selectedBatchId,
+                        selectedDate: $selectedDate,
+                        isExpanded: $isChartExpanded
+                    )
+                    .environmentObject(agentManager)
+                    .transition(.opacity)
+                }
 
                 NeonDivider(.vertical)
 
@@ -59,9 +78,19 @@ struct UnifiedSystemView: View {
                     .frame(width: 280)
             }
         }
-        .background(NeonBrutalismTheme.background)
+        .background(
+            ZStack {
+                VisualEffectBackground(material: NSVisualEffectView.Material.hudWindow, blendingMode: NSVisualEffectView.BlendingMode.behindWindow, state: NSVisualEffectView.State.active)
+                NeonBrutalismTheme.background.opacity(0.85)
+            }
+        )
+        .overlay(NoiseOverlay().allowsHitTesting(false))
         .overlay(NeonScanlineOverlay().allowsHitTesting(false))
         .animation(.easeInOut(duration: 0.3), value: isChartExpanded)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: isVideoExpanded)
+        .onChange(of: selectedBatchId) { _ in
+            setupBatchPlayer()
+        }
     }
 
     // MARK: - Title Bar
@@ -82,9 +111,57 @@ struct UnifiedSystemView: View {
             Text("\u{00B7}")
                 .foregroundColor(NeonBrutalismTheme.textSecondary)
 
-            Text(DayNightChartView.dateString(selectedDate))
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(NeonBrutalismTheme.textSecondary)
+            // 日期导航
+            HStack(spacing: 6) {
+                Button(action: {
+                    selectedDate = Calendar.current.date(byAdding: .day, value: -1, to: selectedDate) ?? selectedDate
+                }) {
+                    Text("\u{25C0}")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(NeonBrutalismTheme.electricBlue)
+                        .frame(width: 22, height: 18)
+                        .background(NeonBrutalismTheme.electricBlue.opacity(0.08))
+                        .cornerRadius(3)
+                }
+                .buttonStyle(.plain)
+
+                Text(DayNightChartView.dateString(selectedDate))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(NeonBrutalismTheme.textSecondary)
+
+                Button(action: {
+                    let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: selectedDate) ?? selectedDate
+                    if tomorrow <= Date() { selectedDate = tomorrow }
+                }) {
+                    Text("\u{25B6}")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(
+                            Calendar.current.isDateInToday(selectedDate)
+                                ? NeonBrutalismTheme.textSecondary.opacity(0.3)
+                                : NeonBrutalismTheme.electricBlue
+                        )
+                        .frame(width: 22, height: 18)
+                        .background(NeonBrutalismTheme.electricBlue.opacity(0.08))
+                        .cornerRadius(3)
+                }
+                .buttonStyle(.plain)
+                .disabled(Calendar.current.isDateInToday(selectedDate))
+
+                Button(action: { selectedDate = Date() }) {
+                    Text("今")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(
+                            Calendar.current.isDateInToday(selectedDate)
+                                ? NeonBrutalismTheme.textSecondary.opacity(0.3)
+                                : NeonBrutalismTheme.electricBlue
+                        )
+                        .frame(width: 22, height: 18)
+                        .background(NeonBrutalismTheme.electricBlue.opacity(0.08))
+                        .cornerRadius(3)
+                }
+                .buttonStyle(.plain)
+                .disabled(Calendar.current.isDateInToday(selectedDate))
+            }
 
             Spacer()
         }
@@ -113,7 +190,7 @@ struct UnifiedSystemView: View {
                                     : Color.clear
                             )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(NeonMagneticButtonStyle())
                 }
             }
             .overlay(alignment: .bottom) {
@@ -177,7 +254,7 @@ struct UnifiedSystemView: View {
         .buttonStyle(.plain)
         .onHover { hovering in
             if hovering {
-                NSCursor.resizeLeftRight.push()
+                NSCursor.pointingHand.push()
             } else {
                 NSCursor.pop()
             }
@@ -188,12 +265,23 @@ struct UnifiedSystemView: View {
 
     @ViewBuilder
     private var rightColumn: some View {
-        if let cell = selectedCell {
-            ChronosCellDetailView(
-                col: cell.col,
-                row: cell.row,
+        if let batchId = selectedBatchId {
+            BatchDetailView(
+                batchId: batchId,
                 selectedDate: selectedDate,
-                onClose: { selectedCell = nil }
+                player: batchPlayer,
+                onVideoTap: {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        isVideoExpanded.toggle()
+                    }
+                },
+                onSeekToTime: { timeStr in
+                    seekPlayerToTime(timeStr)
+                },
+                onClose: {
+                    isVideoExpanded = false
+                    selectedBatchId = nil
+                }
             )
             .environmentObject(agentManager)
             .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -203,6 +291,62 @@ struct UnifiedSystemView: View {
                 isCapturing: agentManager.isCapturing
             )
             .transition(.opacity)
+        }
+    }
+
+    // MARK: - Batch Player
+
+    private func setupBatchPlayer() {
+        isVideoExpanded = false
+        guard let batchId = selectedBatchId,
+              let batch = agentManager.persistence.batchRecord(for: batchId),
+              let path = batch.videoPath,
+              FileManager.default.fileExists(atPath: path) else {
+            batchPlayer = nil
+            return
+        }
+        batchPlayer = AVPlayer(url: URL(fileURLWithPath: path))
+    }
+
+    private func seekPlayerToTime(_ timeStr: String) {
+        guard let batchId = selectedBatchId,
+              let batch = agentManager.persistence.batchRecord(for: batchId),
+              let player = batchPlayer else { return }
+
+        // Parse "HH:mm" → Unix timestamp for selectedDate
+        let parts = timeStr.split(separator: ":")
+        guard parts.count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]) else { return }
+
+        let cal = Calendar.current
+        var comps = cal.dateComponents([.year, .month, .day], from: selectedDate)
+        comps.hour = hour
+        comps.minute = minute
+        comps.second = 0
+        guard let targetDate = cal.date(from: comps) else { return }
+        let targetTs = targetDate.timeIntervalSince1970
+
+        let batchStart = Double(batch.startTs)
+        let batchEnd = Double(batch.endTs)
+        guard batchEnd > batchStart else { return }
+
+        let ratio = max(0, min(1, (targetTs - batchStart) / (batchEnd - batchStart)))
+
+        // Get video duration and seek
+        let duration = player.currentItem?.duration ?? .zero
+        guard duration.isNumeric, duration.seconds > 0 else { return }
+
+        let seekSeconds = ratio * duration.seconds
+        let seekTime = CMTime(seconds: seekSeconds, preferredTimescale: 600)
+        player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero)
+        player.play()
+
+        // Auto-expand if not already
+        if !isVideoExpanded {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                isVideoExpanded = true
+            }
         }
     }
 }

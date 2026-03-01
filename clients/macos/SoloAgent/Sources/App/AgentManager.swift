@@ -19,6 +19,9 @@ final class AgentManager: ObservableObject {
     @Published var activeQuests: [Quest] = []
     @Published var activeBuffs: [ActiveBuff] = []
     @Published var activityCardsUpdated: Date = Date(timeIntervalSince1970: 0)
+    @Published var batchProgress: [String: String] = [:]
+    @Published var streamingText: [String: String] = [:]
+    @Published var isStreaming: [String: Bool] = [:]
 
     // MARK: - Sub-systems
     private(set) var config: AgentConfig
@@ -71,7 +74,25 @@ final class AgentManager: ObservableObject {
         if config.aiEnabled, let key = activeKey, !key.isEmpty {
             let client = AIClient(config: config)
             self.aiClient = client
-            self.batchManager = BatchManager(config: config, persistence: persistence, aiClient: client)
+            let bm = BatchManager(config: config, persistence: persistence, aiClient: client)
+            bm.onProgress = { [weak self] batchId, message in
+                self?.batchProgress[batchId] = message
+            }
+            bm.onStreamingToken = { [weak self] batchId, token in
+                guard let self else { return }
+                self.streamingText[batchId, default: ""] += token
+                self.isStreaming[batchId] = true
+            }
+            bm.onStreamingComplete = { [weak self] batchId, _ in
+                guard let self else { return }
+                self.isStreaming[batchId] = false
+                // 延迟清理流式文本，让 UI 有时间过渡到卡片
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(1.5))
+                    self?.streamingText.removeValue(forKey: batchId)
+                }
+            }
+            self.batchManager = bm
             let model = config.aiProvider == "openai" ? config.openaiModel : config.geminiModel
             Logger.info("🤖 AI 分析已启用 (\(config.aiProvider): \(model))")
         }
@@ -368,11 +389,20 @@ final class AgentManager: ObservableObject {
 
     // MARK: - Core Loop
 
-    /// 主捕捉循环 — 根据策略动态调整间隔
+    /// 主捕捉循环 — active 时截屏，idle/锁屏 时停止并立刻触发 AI 分析
+    private var wasCapturing = false
+    /// 当前批次计时器起点 — 伴随录屏启动，每到 batchTargetDuration 自动切一刀
+    private var batchTimerStart: Date?
+
     private func captureLoop() async {
         while !Task.isCancelled {
             // 隐私模式下跳过
             if isPaused {
+                if wasCapturing {
+                    wasCapturing = false
+                    batchTimerStart = nil
+                    await triggerSessionBatch()
+                }
                 try? await Task.sleep(for: .seconds(5))
                 continue
             }
@@ -381,25 +411,53 @@ final class AgentManager: ObservableObject {
             let activityState = windowMonitor.currentActivityState
             let interval = captureStrategy.getInterval(for: activityState)
 
-            // 锁屏不截图
-            if activityState == .screenLocked {
-                // 但仍记录锁屏状态
-                persistence.saveActivityRecord(
-                    windowInfo: .empty,
-                    idleSeconds: windowMonitor.idleSeconds,
-                    isScreenLocked: true,
-                    activityState: "locked"
-                )
-                try? await Task.sleep(for: .seconds(60))
+            // idle / 锁屏 / 深度空闲 → 不截图
+            if interval <= 0 {
+                if wasCapturing {
+                    // 活跃期结束 → 立刻发送这段活跃期的截图给 AI
+                    wasCapturing = false
+                    batchTimerStart = nil
+                    Logger.info("📦 活跃期结束 (\(activityState))，触发批次处理")
+                    await triggerSessionBatch()
+                }
+                try? await Task.sleep(for: .seconds(5))
                 continue
             }
 
-            // 执行捕捉 + 上报
+            // 活跃状态 — 开始/继续录屏
+            if !wasCapturing {
+                batchTimerStart = Date()
+            }
+            wasCapturing = true
             await performCapture()
+
+            // 批次计时器到期 → 自动切割当前批次
+            if let start = batchTimerStart,
+               Date().timeIntervalSince(start) >= config.batchTargetDuration {
+                Logger.info("📦 批次计时器到期 (\(Int(config.batchTargetDuration))s)，自动切割批次")
+                await triggerSessionBatch()
+                batchTimerStart = Date()  // 重置计时器，开始下一个批次
+            }
 
             // 等待下一次捕捉
             try? await Task.sleep(for: .seconds(interval))
         }
+    }
+
+    /// 活跃期结束时触发：将积累的截图合成视频并发给 AI
+    private func triggerSessionBatch() async {
+        await batchManager?.processCurrentSession()
+        // 清理所有已完成批次的进度文字
+        let completedKeys = batchProgress.keys.filter { key in
+            if let record = persistence.batchRecord(for: key) {
+                return record.status != "processing"
+            }
+            return true
+        }
+        for key in completedKeys {
+            batchProgress.removeValue(forKey: key)
+        }
+        await processBatchActivityCards()
     }
 
     /// 执行一次捕捉 — 保存截图用于批次视频分析
@@ -564,6 +622,23 @@ final class AgentManager: ObservableObject {
     }
 
 
+    // MARK: - Re-analyze Batch
+
+    /// 供 View 调用：重新分析指定批次
+    /// 返回 true 表示调用成功（不代表 AI 一定成功），false 表示无 batchManager
+    @discardableResult
+    func reanalyzeBatch(_ batchId: String) async -> Bool {
+        guard let bm = batchManager else { return false }
+        // 开始时刷新一次，让 view 看到 status="processing"
+        activityCardsUpdated = Date()
+        await bm.reanalyzeBatch(batchId)
+        // 清理进度文字
+        batchProgress.removeValue(forKey: batchId)
+        // 结束时再刷新，让 view 看到最终 status
+        activityCardsUpdated = Date()
+        return true
+    }
+
     // MARK: - Game Tick Loop
 
     /// 游戏引擎定期检查 — 过期任务、buff 清理、状态持久化
@@ -630,7 +705,24 @@ final class AgentManager: ObservableObject {
                 // batchManager 之前未创建（如切换了 provider），补创建
                 let client = AIClient(config: newConfig)
                 self.aiClient = client
-                self.batchManager = BatchManager(config: newConfig, persistence: persistence, aiClient: client)
+                let newBM = BatchManager(config: newConfig, persistence: persistence, aiClient: client)
+                newBM.onProgress = { [weak self] batchId, message in
+                    self?.batchProgress[batchId] = message
+                }
+                newBM.onStreamingToken = { [weak self] batchId, token in
+                    guard let self else { return }
+                    self.streamingText[batchId, default: ""] += token
+                    self.isStreaming[batchId] = true
+                }
+                newBM.onStreamingComplete = { [weak self] batchId, _ in
+                    guard let self else { return }
+                    self.isStreaming[batchId] = false
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .seconds(1.5))
+                        self?.streamingText.removeValue(forKey: batchId)
+                    }
+                }
+                self.batchManager = newBM
                 startBatchProcessingLoop()
                 let model = newConfig.aiProvider == "openai" ? newConfig.openaiModel : newConfig.geminiModel
                 Logger.info("🤖 AI 分析: 热启用 (\(newConfig.aiProvider): \(model))")

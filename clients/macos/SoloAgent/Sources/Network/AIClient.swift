@@ -24,12 +24,10 @@ final class AIClient {
 
     // MARK: - Phase 1: Video Transcription
 
-    /// 分析视频，生成逐段活动转录
+    /// 分析视频，生成逐段活动转录（基于视频秒数，由调用方映射回真实时间）
     func transcribeVideo(
         videoData: Data,
-        startTimestamp: Int,
-        endTimestamp: Int,
-        screenshotCount: Int
+        videoDurationSeconds: Int
     ) async -> [[String: Any]]? {
         guard let apiKey = activeApiKey, !apiKey.isEmpty else {
             Self.debugLog("未配置 \(config.aiProvider) API Key，跳过视频转录")
@@ -37,12 +35,10 @@ final class AIClient {
         }
 
         let prompt = PromptTemplates.videoTranscriptionPrompt(
-            startTimestamp: startTimestamp,
-            endTimestamp: endTimestamp,
-            screenshotCount: screenshotCount
+            videoDurationSeconds: videoDurationSeconds
         )
 
-        Self.debugLog("[\(config.aiProvider)] 开始视频转录, 视频大小: \(videoData.count / 1024)KB, 时间: \(startTimestamp)-\(endTimestamp)")
+        Self.debugLog("[\(config.aiProvider)] 开始视频转录, 视频大小: \(videoData.count / 1024)KB, 视频时长: \(videoDurationSeconds)s")
 
         let responseText: String?
         if isOpenAI {
@@ -409,6 +405,237 @@ final class AIClient {
             Logger.error("[AIClient] 网络请求失败: \(error.localizedDescription)")
             Self.debugLog("网络错误: \(error)")
             return nil
+        }
+    }
+
+    // MARK: - Phase 2 Streaming: Activity Card Generation
+
+    enum AIStreamError: Error {
+        case noApiKey
+        case invalidURL
+        case httpError(Int, String)
+        case serializationFailed
+    }
+
+    /// 流式生成活动卡片 — 返回 AsyncThrowingStream，逐 token yield
+    func streamGenerateActivityCards(
+        transcription: [[String: Any]],
+        existingCards: [ActivityCardRecord]
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task { @MainActor in
+                guard let apiKey = activeApiKey, !apiKey.isEmpty else {
+                    continuation.finish(throwing: AIStreamError.noApiKey)
+                    return
+                }
+
+                // 复用 prompt 构建逻辑
+                let transcriptionJson: String
+                if let data = try? JSONSerialization.data(withJSONObject: transcription, options: .prettyPrinted),
+                   let str = String(data: data, encoding: .utf8) {
+                    transcriptionJson = str
+                } else {
+                    continuation.finish(throwing: AIStreamError.serializationFailed)
+                    return
+                }
+
+                let existingJson: String
+                if existingCards.isEmpty {
+                    existingJson = ""
+                } else {
+                    let cardDicts = existingCards.map { card -> [String: Any] in
+                        [
+                            "title": card.title,
+                            "startTime": card.startTime,
+                            "endTime": card.endTime,
+                            "category": card.category,
+                            "summary": card.summary,
+                        ]
+                    }
+                    if let data = try? JSONSerialization.data(withJSONObject: cardDicts, options: .prettyPrinted),
+                       let str = String(data: data, encoding: .utf8) {
+                        existingJson = str
+                    } else {
+                        existingJson = ""
+                    }
+                }
+
+                let prompt = PromptTemplates.activityCardPrompt(
+                    transcription: transcriptionJson,
+                    existingCards: existingJson,
+                    mainQuest: config.mainQuest ?? "",
+                    motivations: config.motivations ?? []
+                )
+
+                Self.debugLog("[Streaming] 开始流式生成活动卡片, 转录段数: \(transcription.count)")
+
+                if isOpenAI {
+                    await streamOpenAITextAPI(prompt: prompt, apiKey: apiKey, continuation: continuation)
+                } else {
+                    await streamGeminiTextAPI(prompt: prompt, apiKey: apiKey, continuation: continuation)
+                }
+            }
+        }
+    }
+
+    /// OpenAI 流式请求 — stream: true, SSE 解析
+    private func streamOpenAITextAPI(
+        prompt: String,
+        apiKey: String,
+        continuation: AsyncThrowingStream<String, Error>.Continuation
+    ) async {
+        let baseURL = config.openaiApiBase.hasSuffix("/")
+            ? String(config.openaiApiBase.dropLast())
+            : config.openaiApiBase
+        let urlString = "\(baseURL)/v1/chat/completions"
+
+        guard let url = URL(string: urlString) else {
+            continuation.finish(throwing: AIStreamError.invalidURL)
+            return
+        }
+
+        let payload: [String: Any] = [
+            "model": config.openaiModel,
+            "messages": [
+                ["role": "user", "content": prompt] as [String: Any]
+            ] as [[String: Any]],
+            "temperature": 0.3,
+            "max_tokens": 8192,
+            "stream": true,
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("solo-leveling-system/2.0", forHTTPHeaderField: "User-Agent")
+
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
+            continuation.finish(throwing: AIStreamError.serializationFailed)
+            return
+        }
+        request.httpBody = body
+
+        Self.debugLog("[Streaming] 发送 OpenAI 流式请求: \(urlString)")
+
+        do {
+            let (bytes, response) = try await session.bytes(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                continuation.finish(throwing: AIStreamError.httpError(0, "非 HTTP 响应"))
+                return
+            }
+            guard httpResponse.statusCode == 200 else {
+                var errorBody = ""
+                for try await line in bytes.lines { errorBody += line; if errorBody.count > 500 { break } }
+                Self.debugLog("[Streaming] OpenAI HTTP \(httpResponse.statusCode): \(errorBody.prefix(500))")
+                continuation.finish(throwing: AIStreamError.httpError(httpResponse.statusCode, errorBody))
+                return
+            }
+
+            for try await line in bytes.lines {
+                guard line.hasPrefix("data: ") else { continue }
+                let data = String(line.dropFirst(6))
+                if data == "[DONE]" { break }
+
+                guard let jsonData = data.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                      let choices = json["choices"] as? [[String: Any]],
+                      let delta = choices.first?["delta"] as? [String: Any],
+                      let content = delta["content"] as? String else {
+                    continue
+                }
+
+                continuation.yield(content)
+            }
+            continuation.finish()
+            Self.debugLog("[Streaming] OpenAI 流式完成")
+        } catch {
+            Self.debugLog("[Streaming] OpenAI 流式错误: \(error)")
+            continuation.finish(throwing: error)
+        }
+    }
+
+    /// Gemini 流式请求 — streamGenerateContent?alt=sse
+    private func streamGeminiTextAPI(
+        prompt: String,
+        apiKey: String,
+        continuation: AsyncThrowingStream<String, Error>.Continuation
+    ) async {
+        let baseURL = config.geminiApiBase.hasSuffix("/")
+            ? String(config.geminiApiBase.dropLast())
+            : config.geminiApiBase
+        let urlString = "\(baseURL)/v1beta/models/\(config.geminiModel):streamGenerateContent?alt=sse"
+
+        guard let url = URL(string: urlString) else {
+            continuation.finish(throwing: AIStreamError.invalidURL)
+            return
+        }
+
+        let payload: [String: Any] = [
+            "contents": [
+                [
+                    "role": "user",
+                    "parts": [
+                        ["text": prompt] as [String: String]
+                    ] as [[String: String]]
+                ] as [String: Any]
+            ] as [[String: Any]],
+            "generationConfig": [
+                "temperature": 0.3,
+                "maxOutputTokens": 8192,
+            ] as [String: Any],
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("solo-leveling-system/2.0", forHTTPHeaderField: "User-Agent")
+
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
+            continuation.finish(throwing: AIStreamError.serializationFailed)
+            return
+        }
+        request.httpBody = body
+
+        Self.debugLog("[Streaming] 发送 Gemini 流式请求: \(urlString)")
+
+        do {
+            let (bytes, response) = try await session.bytes(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                continuation.finish(throwing: AIStreamError.httpError(0, "非 HTTP 响应"))
+                return
+            }
+            guard httpResponse.statusCode == 200 else {
+                var errorBody = ""
+                for try await line in bytes.lines { errorBody += line; if errorBody.count > 500 { break } }
+                Self.debugLog("[Streaming] Gemini HTTP \(httpResponse.statusCode): \(errorBody.prefix(500))")
+                continuation.finish(throwing: AIStreamError.httpError(httpResponse.statusCode, errorBody))
+                return
+            }
+
+            for try await line in bytes.lines {
+                guard line.hasPrefix("data: ") else { continue }
+                let data = String(line.dropFirst(6))
+
+                guard let jsonData = data.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                      let candidates = json["candidates"] as? [[String: Any]],
+                      let content = candidates.first?["content"] as? [String: Any],
+                      let parts = content["parts"] as? [[String: Any]],
+                      let text = parts.first?["text"] as? String else {
+                    continue
+                }
+
+                continuation.yield(text)
+            }
+            continuation.finish()
+            Self.debugLog("[Streaming] Gemini 流式完成")
+        } catch {
+            Self.debugLog("[Streaming] Gemini 流式错误: \(error)")
+            continuation.finish(throwing: error)
         }
     }
 

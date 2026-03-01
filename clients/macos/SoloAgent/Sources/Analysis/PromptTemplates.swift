@@ -5,37 +5,31 @@ enum PromptTemplates {
 
     // MARK: - Phase 1: Video Transcription
 
-    /// 视频转录 prompt — 逐段描述用户行为
+    /// 视频转录 prompt — 逐段描述用户行为（基于视频秒数，由调用方映射回真实时间）
     static func videoTranscriptionPrompt(
-        startTimestamp: Int,
-        endTimestamp: Int,
-        screenshotCount: Int
+        videoDurationSeconds: Int
     ) -> String {
-        let startTime = formatTimestamp(startTimestamp)
-        let endTime = formatTimestamp(endTimestamp)
-
         return """
-        你是一个屏幕活动分析引擎。你会看到一段延时摄影视频，记录了用户 \(startTime) 到 \(endTime) 的屏幕活动。
+        你是一个屏幕活动分析引擎。你会看到一段延时摄影视频，共 \(videoDurationSeconds) 秒，1fps 播放。
 
         ## 任务
         仔细观察视频中的每一帧，按时间顺序描述用户的屏幕活动。
 
         ## 输出要求
-        - 将视频分成 3-8 个连续的时间段
+        - 将视频分成若干个连续的时间段
         - 每个时间段描述用户在做什么
         - 注意观察：应用名称、窗口标题、网页内容、代码编辑、文档编写等
         - 如果用户切换了应用或任务，标记为新的时间段
-        - 时间戳基于视频起始时间 \(startTimestamp) (Unix timestamp)
-        - 每帧间隔约 10-20 秒，视频以 1fps 播放
+        - 使用视频秒数（0 到 \(videoDurationSeconds)）标记时间段
 
         ## 输出格式
         严格 JSON 数组，不要多余文字：
         ```json
         [
           {
-            "startTimestamp": \(startTimestamp),
-            "endTimestamp": <结束Unix时间戳>,
-            "description": "用户在 VS Code 中编辑 Swift 文件 AgentManager.swift，正在修改 performCapture 方法中的 AI 调用逻辑"
+            "startSecond": 0,
+            "endSecond": 15,
+            "description": "用户在 VS Code 中编辑 Swift 文件 AgentManager.swift，正在修改 performCapture 方法"
           },
           ...
         ]
@@ -44,7 +38,8 @@ enum PromptTemplates {
         注意：
         - description 要具体，提及应用名称、文件名、网站等可见信息
         - 如果看不清内容，描述可见的 UI 布局和操作
-        - 覆盖完整时间线，不要遗漏任何时间段
+        - 覆盖完整视频时间线，不要遗漏任何时间段
+        - startSecond 和 endSecond 不能超出 0~\(videoDurationSeconds) 范围
         """
     }
 
@@ -139,9 +134,11 @@ enum PromptTemplates {
         ```
 
         注意：
-        - startTs 和 endTs 必须严格在转录内容的时间范围内，不要超出转录的起止时间
+        - 转录内容的每个段落已包含 startTs、endTs、startTime、endTime 字段，这些是精确的真实时间
+        - 你必须直接使用转录中提供的 startTs / endTs 值，不要自己计算或从截图画面中读取时间
+        - startTime / endTime 同样从转录中获取，不要自行推断
         - 不要凭空扩展时间范围，只用转录中实际出现的时间戳
-        - 如果活动连续且一致，合成一张大卡片
+        - 如果活动连续且一致，合成一张大卡片（取第一段的 startTs 和最后一段的 endTs）
         - 如果用户切换了完全不同的任务，分成多张卡片
         """
     }

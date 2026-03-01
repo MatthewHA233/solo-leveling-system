@@ -10,15 +10,25 @@ final class BatchManager {
 
     private var isProcessing = false
 
+    /// 进度回调：(batchId, 阶段描述)
+    var onProgress: (@MainActor (String, String) -> Void)?
+
+    /// 流式 token 回调：(batchId, token)
+    var onStreamingToken: (@MainActor (String, String) -> Void)?
+
+    /// 流式完成回调：(batchId, fullText)
+    var onStreamingComplete: (@MainActor (String, String) -> Void)?
+
     init(config: AgentConfig, persistence: PersistenceManager, aiClient: AIClient) {
         self.config = config
         self.persistence = persistence
         self.aiClient = aiClient
     }
 
-    // MARK: - Main Entry (每 60 秒调用)
+    // MARK: - Main Entry
 
-    func checkAndProcessBatches() async {
+    /// 将当前所有未处理截图作为一个批次处理
+    func processCurrentSession() async {
         guard !isProcessing else {
             AIClient.debugLog("[BatchManager] 已有处理中的批次，跳过")
             return
@@ -26,28 +36,36 @@ final class BatchManager {
         isProcessing = true
         defer { isProcessing = false }
 
-        // 1. 获取未分配批次的截图
         let unprocessed = persistence.unprocessedScreenshots()
-        guard unprocessed.count >= 5 else {
-            AIClient.debugLog("[BatchManager] 未处理截图不足 (\(unprocessed.count))，等待更多")
+        let minFrames = max(5, config.videoFrameStride * 3)
+        guard unprocessed.count >= minFrames else {
+            AIClient.debugLog("[BatchManager] 截图不足 (\(unprocessed.count)/\(minFrames))，跳过")
             return
         }
 
-        // 2. 分割为批次
-        let batches = createBatches(from: unprocessed)
-        AIClient.debugLog("[BatchManager] 创建了 \(batches.count) 个批次")
+        let startTs = unprocessed.first!.capturedAt
+        let endTs = unprocessed.last!.capturedAt
+        let durationSec = endTs - startTs
 
-        // 3. 处理每个批次
-        for batch in batches {
-            do {
-                try await processBatch(batch)
-            } catch {
-                AIClient.debugLog("[BatchManager] 批次处理失败: \(error.localizedDescription)")
-            }
+        guard durationSec >= Int(config.batchMinDuration) else {
+            AIClient.debugLog("[BatchManager] 时长不足 (\(durationSec)s < \(Int(config.batchMinDuration))s)，跳过")
+            return
+        }
+
+        let batch = PendingBatch(screenshots: unprocessed, startTs: startTs, endTs: endTs)
+        AIClient.debugLog("[BatchManager] 处理批次: \(unprocessed.count) 截图, \(durationSec)s")
+
+        do {
+            try await processBatch(batch)
+        } catch {
+            AIClient.debugLog("[BatchManager] 批次处理失败: \(error.localizedDescription)")
         }
     }
 
-    // MARK: - Batch Creation
+    /// 定期安全网 — 兼容旧的定时调用入口
+    func checkAndProcessBatches() async {
+        await processCurrentSession()
+    }
 
     private struct PendingBatch {
         let screenshots: [ScreenshotRecord]
@@ -55,79 +73,72 @@ final class BatchManager {
         let endTs: Int
     }
 
-    private func createBatches(from screenshots: [ScreenshotRecord]) -> [PendingBatch] {
-        guard !screenshots.isEmpty else { return [] }
+    // MARK: - Re-analyze
 
-        var batches: [PendingBatch] = []
-        var currentBatch: [ScreenshotRecord] = []
-        var batchStartTs: Int = screenshots[0].capturedAt
-
-        for (index, shot) in screenshots.enumerated() {
-            if currentBatch.isEmpty {
-                currentBatch.append(shot)
-                batchStartTs = shot.capturedAt
-                continue
-            }
-
-            let lastTs = currentBatch.last!.capturedAt
-            let gap = shot.capturedAt - lastTs
-            let batchDuration = shot.capturedAt - batchStartTs
-
-            // 间隔超过阈值 → 断开新批次
-            if Double(gap) > config.batchMaxGap {
-                if let batch = finalizeBatch(currentBatch, startTs: batchStartTs) {
-                    batches.append(batch)
-                }
-                currentBatch = [shot]
-                batchStartTs = shot.capturedAt
-                continue
-            }
-
-            // 达到目标时长 → 完成当前批次
-            if Double(batchDuration) >= config.batchTargetDuration {
-                currentBatch.append(shot)
-                if let batch = finalizeBatch(currentBatch, startTs: batchStartTs) {
-                    batches.append(batch)
-                }
-                currentBatch = []
-                continue
-            }
-
-            currentBatch.append(shot)
+    /// 重新分析已有批次：删除旧卡片 → 读视频 → 转录 → 生成卡片 → 保存
+    func reanalyzeBatch(_ batchId: String) async {
+        guard let batch = persistence.batchRecord(for: batchId),
+              let videoPath = batch.videoPath else {
+            AIClient.debugLog("[BatchManager] reanalyze: 找不到批次或无视频 \(batchId)")
+            return
         }
 
-        // 处理剩余截图
-        // 如果最后一个截图距现在超过目标时长，才处理（否则等待更多截图）
-        if !currentBatch.isEmpty {
-            let lastTs = currentBatch.last!.capturedAt
-            let now = Int(Date().timeIntervalSince1970)
-            let sinceLastShot = now - lastTs
+        AIClient.debugLog("[BatchManager] 重新分析批次 \(batchId)")
 
-            if Double(sinceLastShot) > config.batchMaxGap ||
-               Double(lastTs - batchStartTs) >= config.batchTargetDuration {
-                if let batch = finalizeBatch(currentBatch, startTs: batchStartTs) {
-                    batches.append(batch)
-                }
-            }
+        // 1. 删除旧卡片
+        persistence.deleteActivityCards(forBatch: batchId)
+
+        // 2. 标记 processing
+        persistence.updateBatchStatus(batchId, status: "processing", errorMessage: nil)
+
+        // 3. 读取视频文件
+        await onProgress?(batchId, "正在读取视频...")
+        let videoURL = URL(fileURLWithPath: videoPath)
+        guard let videoData = try? Data(contentsOf: videoURL) else {
+            persistence.updateBatchStatus(batchId, status: "failed", errorMessage: "无法读取视频文件")
+            return
         }
 
-        return batches
-    }
-
-    private func finalizeBatch(_ screenshots: [ScreenshotRecord], startTs: Int) -> PendingBatch? {
-        guard !screenshots.isEmpty else { return nil }
-        let endTs = screenshots.last!.capturedAt
-        let duration = Double(endTs - startTs)
-
-        // 低于最小有效时长 → 跳过
-        // 最小时长不能超过目标时长的一半，否则短批次永远无法处理
-        let effectiveMinDuration = min(config.batchMinDuration, config.batchTargetDuration * 0.5)
-        if duration < effectiveMinDuration {
-            AIClient.debugLog("[BatchManager] 批次时长不足 (\(Int(duration))s < \(Int(effectiveMinDuration))s)，跳过")
-            return nil
+        // 4. 重建帧时间戳（从 batch 关联的截图中恢复）
+        let screenshots = persistence.screenshotsForBatch(batchId)
+        let frameTimestamps: [Int]
+        if !screenshots.isEmpty {
+            let stride = max(1, config.videoFrameStride)
+            frameTimestamps = stride > 1
+                ? screenshots.enumerated().compactMap { $0.offset.isMultiple(of: stride) ? $0.element.capturedAt : nil }
+                : screenshots.map { $0.capturedAt }
+        } else {
+            // fallback: 均匀分布
+            let count = max(1, (batch.endTs - batch.startTs))
+            frameTimestamps = (0..<count).map { batch.startTs + $0 }
         }
 
-        return PendingBatch(screenshots: screenshots, startTs: startTs, endTs: endTs)
+        // 5. Phase 1: 视频转录
+        await onProgress?(batchId, "正在转录视频...")
+        guard let rawTranscription = await aiClient.transcribeVideo(
+            videoData: videoData,
+            videoDurationSeconds: frameTimestamps.count
+        ) else {
+            persistence.updateBatchStatus(batchId, status: "failed", errorMessage: "视频转录失败")
+            return
+        }
+
+        // 6. 秒数 → 时间戳映射
+        let transcription = mapSecondsToTimestamps(rawTranscription, frameTimestamps: frameTimestamps)
+
+        // 7. Phase 2: 流式生成活动卡片
+        await onProgress?(batchId, "正在生成活动卡片...")
+        let existingCards = persistence.allActivityCardsToday()
+        let cards = await streamGenerateCards(batchId: batchId, transcription: transcription, existingCards: existingCards)
+
+        if !cards.isEmpty {
+            persistence.saveActivityCards(cards)
+            AIClient.debugLog("[BatchManager] 重新分析完成: \(cards.count) 张卡片")
+        }
+
+        // 8. 标记完成
+        persistence.updateBatchStatus(batchId, status: "completed")
+        await onProgress?(batchId, "分析完成，共 \(cards.count) 张卡片")
     }
 
     // MARK: - Batch Processing
@@ -151,14 +162,15 @@ final class BatchManager {
         // 2. 标记截图为已分配
         persistence.markScreenshotsAsBatched(pending.screenshots, batchId: batchId)
 
-        // 3. 合成视频
+        // 3. 合成视频 + 获取帧→时间戳映射表
+        await onProgress?(batchId, "正在合成视频...")
         let screenshotPairs: [(path: String, timestamp: Int)] = pending.screenshots.map {
             (path: $0.filePath, timestamp: $0.capturedAt)
         }
 
-        let videoURL: URL
+        let videoResult: VideoProcessingService.VideoResult
         do {
-            videoURL = try await videoService.generateVideo(
+            videoResult = try await videoService.generateVideo(
                 screenshots: screenshotPairs,
                 fps: 1,
                 maxHeight: config.videoMaxHeight,
@@ -170,48 +182,152 @@ final class BatchManager {
             throw error
         }
 
-        persistence.updateBatchStatus(batchId, status: "processing", videoPath: videoURL.path)
+        let frameTimestamps = videoResult.frameTimestamps
+        persistence.updateBatchStatus(batchId, status: "processing", videoPath: videoResult.url.path)
 
         // 4. 读取视频数据
-        guard let videoData = try? Data(contentsOf: videoURL) else {
+        guard let videoData = try? Data(contentsOf: videoResult.url) else {
             persistence.updateBatchStatus(batchId, status: "failed", errorMessage: "无法读取视频文件")
             return
         }
 
         let videoSizeMB = String(format: "%.1f", Double(videoData.count) / 1_048_576.0)
-        AIClient.debugLog("[BatchManager] 视频大小: \(videoSizeMB)MB")
+        AIClient.debugLog("[BatchManager] 视频大小: \(videoSizeMB)MB, \(frameTimestamps.count) 帧")
+        await onProgress?(batchId, "正在读取视频 (\(videoSizeMB) MB)...")
 
-        // 5. Phase 1: 视频转录
-        guard let transcription = await aiClient.transcribeVideo(
+        // 5. Phase 1: 视频转录（AI 返回视频秒数，非真实时间戳）
+        await onProgress?(batchId, "正在转录视频...")
+        guard let rawTranscription = await aiClient.transcribeVideo(
             videoData: videoData,
-            startTimestamp: pending.startTs,
-            endTimestamp: pending.endTs,
-            screenshotCount: pending.screenshots.count
+            videoDurationSeconds: frameTimestamps.count
         ) else {
             persistence.updateBatchStatus(batchId, status: "failed", errorMessage: "视频转录失败")
             return
         }
 
-        // 6. Phase 2: 生成活动卡片
-        let existingCards = persistence.allActivityCardsToday()
-        guard let cardDicts = await aiClient.generateActivityCards(
-            transcription: transcription,
-            existingCards: existingCards
-        ) else {
-            persistence.updateBatchStatus(batchId, status: "failed", errorMessage: "活动卡片生成失败")
-            return
-        }
+        // 6. 将 AI 返回的秒数映射为真实 Unix 时间戳
+        let transcription = mapSecondsToTimestamps(rawTranscription, frameTimestamps: frameTimestamps)
 
-        // 7. 解析并保存活动卡片
-        let cards = parseActivityCards(cardDicts, batchId: batchId)
+        // 7. Phase 2: 流式生成活动卡片
+        await onProgress?(batchId, "正在生成活动卡片...")
+        let existingCards = persistence.allActivityCardsToday()
+        let cards = await streamGenerateCards(batchId: batchId, transcription: transcription, existingCards: existingCards)
+
+        // 8. 保存活动卡片
         if !cards.isEmpty {
             persistence.saveActivityCards(cards)
             AIClient.debugLog("[BatchManager] 保存了 \(cards.count) 张活动卡片")
         }
 
-        // 8. 标记批次完成
+        // 9. 标记批次完成
         persistence.updateBatchStatus(batchId, status: "completed")
+        await onProgress?(batchId, "分析完成，共 \(cards.count) 张卡片")
         AIClient.debugLog("[BatchManager] 批次 \(batchId) 处理完成")
+    }
+
+    // MARK: - Streaming Card Generation
+
+    /// 消费 AsyncThrowingStream，累积文本，逐 token 回调；失败时 fallback 到非流式
+    private func streamGenerateCards(
+        batchId: String,
+        transcription: [[String: Any]],
+        existingCards: [ActivityCardRecord]
+    ) async -> [ActivityCardRecord] {
+        let stream = aiClient.streamGenerateActivityCards(
+            transcription: transcription,
+            existingCards: existingCards
+        )
+
+        var fullText = ""
+        do {
+            for try await token in stream {
+                fullText += token
+                await onStreamingToken?(batchId, token)
+            }
+
+            AIClient.debugLog("[BatchManager] 流式完成, 总长度: \(fullText.count)")
+            await onStreamingComplete?(batchId, fullText)
+
+            // 解析 JSON
+            guard let cardDicts = parseJSONArrayFromStream(fullText) else {
+                AIClient.debugLog("[BatchManager] 流式 JSON 解析失败, 内容: \(fullText.prefix(500))")
+                persistence.updateBatchStatus(batchId, status: "failed", errorMessage: "活动卡片 JSON 解析失败")
+                return []
+            }
+
+            return parseActivityCards(cardDicts, batchId: batchId)
+
+        } catch {
+            AIClient.debugLog("[BatchManager] 流式失败: \(error), fallback 到非流式")
+            await onStreamingComplete?(batchId, "")
+
+            // Fallback 到非流式
+            guard let cardDicts = await aiClient.generateActivityCards(
+                transcription: transcription,
+                existingCards: existingCards
+            ) else {
+                persistence.updateBatchStatus(batchId, status: "failed", errorMessage: "活动卡片生成失败（流式+非流式均失败）")
+                return []
+            }
+
+            return parseActivityCards(cardDicts, batchId: batchId)
+        }
+    }
+
+    /// 从流式累积文本中解析 JSON 数组
+    private func parseJSONArrayFromStream(_ content: String) -> [[String: Any]]? {
+        // 尝试直接解析
+        if let data = content.data(using: .utf8),
+           let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            return array
+        }
+
+        // 尝试从 ```json ... ``` 代码块提取
+        let pattern = "```(?:json)?\\s*\\n?(.*?)\\n?```"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .dotMatchesLineSeparators) else {
+            return nil
+        }
+        let range = NSRange(content.startIndex..., in: content)
+        if let match = regex.firstMatch(in: content, range: range),
+           let jsonRange = Range(match.range(at: 1), in: content) {
+            let jsonStr = String(content[jsonRange])
+            if let data = jsonStr.data(using: .utf8),
+               let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                return array
+            }
+        }
+
+        return nil
+    }
+
+    // MARK: - 秒数 → 时间戳映射
+
+    /// 将 AI 返回的视频秒数转换为真实 Unix 时间戳，字段名与 Phase 2 输出对齐
+    private func mapSecondsToTimestamps(
+        _ transcription: [[String: Any]],
+        frameTimestamps: [Int]
+    ) -> [[String: Any]] {
+        guard !frameTimestamps.isEmpty else { return transcription }
+
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+
+        return transcription.map { segment -> [String: Any] in
+            var mapped = segment
+            if let startSec = segment["startSecond"] as? Int {
+                let idx = min(max(startSec, 0), frameTimestamps.count - 1)
+                let ts = frameTimestamps[idx]
+                mapped["startTs"] = ts
+                mapped["startTime"] = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(ts)))
+            }
+            if let endSec = segment["endSecond"] as? Int {
+                let idx = min(max(endSec, 0), frameTimestamps.count - 1)
+                let ts = frameTimestamps[idx]
+                mapped["endTs"] = ts
+                mapped["endTime"] = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(ts)))
+            }
+            return mapped
+        }
     }
 
     // MARK: - Card Parsing

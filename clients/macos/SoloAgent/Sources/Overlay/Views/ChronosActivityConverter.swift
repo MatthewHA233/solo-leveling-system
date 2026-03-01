@@ -28,12 +28,17 @@ enum ChronosActivityConverter {
         let startMinute = sh * 60 + sm
         var endMinute   = eh * 60 + em
 
-        // 跨日处理: cap at 1440
-        if endMinute <= startMinute {
+        // 同分钟内（秒级差异）→ 至少占1分钟
+        if endMinute == startMinute {
+            endMinute = startMinute + 1
+        }
+
+        // 真正的跨日（endMinute < startMinute）: cap at 1440
+        if endMinute < startMinute {
             endMinute = 1440
         }
 
-        // 至少 1 分钟
+        // 安全兜底
         if endMinute <= startMinute {
             return nil
         }

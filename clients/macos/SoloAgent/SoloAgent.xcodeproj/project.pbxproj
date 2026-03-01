@@ -7,72 +7,72 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C1D2E3F4A5B6C7D800000001 /* MotivationBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F3A4B5C6D7E800000001 /* MotivationBarView.swift */; };
-		C1D2E3F4A5B6C7D800000002 /* DayNightChartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F3A4B5C6D7E800000002 /* DayNightChartView.swift */; };
-		C1D2E3F4A5B6C7D800000003 /* ChronosActivityConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F3A4B5C6D7E800000003 /* ChronosActivityConverter.swift */; };
-		C1D2E3F4A5B6C7D800000004 /* ChronosCellDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F3A4B5C6D7E800000004 /* ChronosCellDetailView.swift */; };
+		0257A3B1C4D8E9F2A1B3C5D7 /* BatchDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* BatchDetailView.swift */; };
+		0258B4C2D5E9FAAB2C4D6E8F /* ExpandedVideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6071829A3B4C5D6 /* ExpandedVideoPlayerView.swift */; };
+		02D747736D2758EBF3B6B971 /* OmniscienceLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A60D7E6BBE446827160103C0 /* OmniscienceLogView.swift */; };
 		040533CFDAFFD15E04D7FF64 /* ExpEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69789686CF6C057C9C1FF29C /* ExpEngine.swift */; };
+		0671BA20B62402363A07337D /* NeonBrutalismTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F2D474FCB146A3439DD8C6D /* NeonBrutalismTheme.swift */; };
 		07393F9815DC629AEB0E7477 /* OverlayManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB5310630BB8F33153AB893D /* OverlayManager.swift */; };
 		08DAEB8616644929F1FAE3C5 /* NotificationPopupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF4E7D001F072C71ED97737 /* NotificationPopupView.swift */; };
 		0C98FA86CE5A8E5F69C62013 /* RuleClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26F34E477ADA7B786C986020 /* RuleClassifier.swift */; };
-		B1C2D3E4F5A6B7C800000001 /* NeonBrutalismTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E4F5A6B7C800000001 /* NeonBrutalismTheme.swift */; };
-		B1C2D3E4F5A6B7C800000002 /* NeonBrutalismModifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E4F5A6B7C800000002 /* NeonBrutalismModifiers.swift */; };
-		B1C2D3E4F5A6B7C800000003 /* UnifiedSystemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E4F5A6B7C800000003 /* UnifiedSystemView.swift */; };
-		B1C2D3E4F5A6B7C800000004 /* VesselMatrixView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E4F5A6B7C800000004 /* VesselMatrixView.swift */; };
-		B1C2D3E4F5A6B7C800000005 /* DirectivesHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E4F5A6B7C800000005 /* DirectivesHubView.swift */; };
-		B1C2D3E4F5A6B7C800000006 /* OmniscienceLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E4F5A6B7C800000006 /* OmniscienceLogView.swift */; };
 		1645A1811F29CFB44DAFB6A3 /* WindowMonitorService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4368E5A4D5BC39C781D51A0 /* WindowMonitorService.swift */; };
 		1981B75962791F1572A4EC79 /* QuestEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 592CE4CBAE7419DCF3B31E20 /* QuestEngine.swift */; };
+		1C5E31637D82B8D5D8483FD6 /* CinematicEffects.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93CA62ABED2E79C6EF92ED46 /* CinematicEffects.swift */; };
 		22400C01BCC32769C78AA377 /* PersistenceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0D571005D3102072E96F37F /* PersistenceManager.swift */; };
+		3A990A154B1E2740E1D83A5C /* NetworkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23D817712B272F8044AD62D3 /* NetworkClient.swift */; };
 		3B969412D8FF401B902C671C /* SystemMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28E9EECCB8A30D7AE498E83A /* SystemMessages.swift */; };
 		4522BD76B81069EB3EA40B75 /* GamePersistenceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC6A6489391F4DFDC45E10E8 /* GamePersistenceModels.swift */; };
 		4CEEE2F8B4C01479E8FAAD37 /* PersistenceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11B09502D1314C2E442A68B8 /* PersistenceModels.swift */; };
+		4F7D63F67CC82955DE27FB65 /* DayNightChartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F94A6A09970C0A974011FDD7 /* DayNightChartView.swift */; };
+		50C5D9B8ADBAF194B902FFA1 /* UnifiedSystemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93DFD647DFEF6429879A415D /* UnifiedSystemView.swift */; };
 		578DF7A6DEA6F7608C97EB75 /* AIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F70D29DD64069D2B4CC8820 /* AIClient.swift */; };
 		5AFFF48F73AD022D5721A02E /* OverlayWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 198612E301B5068AEDF0067D /* OverlayWindowController.swift */; };
 		61797A01B3D84E5C66D97C04 /* EventBus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 826451833F00F5CCD0702E29 /* EventBus.swift */; };
 		620EE32E6C6EC957C493100D /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98682C7B79E11765ABFE8CCD /* MenuBarView.swift */; };
+		6690D1D39E759D28C0D59577 /* VideoProcessingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DC279C93C2FBB44323E081 /* VideoProcessingService.swift */; };
 		682CFF3047F6C2C77E400562 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6182732D0BF96EE97E425EF7 /* Logger.swift */; };
+		68B14D74F0CCFB0CFF3E1EC7 /* ChronosCellDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F72A8D9788BFA3F287AB3EB5 /* ChronosCellDetailView.swift */; };
 		6E0BA8DA9BD52C5280C9C539 /* CaptureStrategy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8771CCB262BE1C1421D4B0A4 /* CaptureStrategy.swift */; };
 		7208B1A1080F4E8931E94562 /* ScreenshotStorageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9964A9D871FC496803FE7840 /* ScreenshotStorageManager.swift */; };
+		7695AAE191F2FD00A2CFC31A /* SidebarSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09DDA55F2E071BB5EF77853E /* SidebarSettingsView.swift */; };
 		82489D5AAF13D2AE17D0CCF8 /* SoloAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FFF867D5777688341F17DDE /* SoloAgentApp.swift */; };
 		8F96DF04522E87618C4574D8 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01A2F6663BE41D9A2EF88A61 /* Models.swift */; };
 		97A823104B0AA30CFE990F72 /* AIAnalysisResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8690B377BA5F152143303981 /* AIAnalysisResult.swift */; };
+		98184E13FC2CA04C4DF1D868 /* VesselMatrixView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5415814632715C561AE8128 /* VesselMatrixView.swift */; };
+		9DD00577A4ED59B2DB239DE5 /* NeonBrutalismModifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98D4922923E44CF5F7EB9C63 /* NeonBrutalismModifiers.swift */; };
 		9FDC614F0F77E530984CFFAB /* AgentManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9400DE96EE2EE1F935D6C35 /* AgentManager.swift */; };
 		A10C8B11D49DEC96F5A29EDD /* MiniStatusBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0D0EE6515C68F11E2444D8C /* MiniStatusBarView.swift */; };
+		AFF38A9A8705C8C81FC76E2B /* ChronosActivityConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5658DF965870E305204456A /* ChronosActivityConverter.swift */; };
 		B5225CF2DB1B3AD4C8C6AFE6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3ADC7D43620F53ABD1620F5 /* SettingsView.swift */; };
+		B5B172703207D11874EA40A9 /* BatchManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB2ED20FDCFA1A425631F3D6 /* BatchManager.swift */; };
 		B7DA014DB3F001E867B1BEAB /* ScreenCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 767E8CE5EBCB796BEA0812B8 /* ScreenCaptureService.swift */; };
+		B7E9254C8474A285D66D6700 /* PromptTemplates.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DC96C364A0D89E6E272A4EF /* PromptTemplates.swift */; };
+		C5F47C989BB8A3CEDCD4CA23 /* DirectivesHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03AFC75D45B20E1E42DD1954 /* DirectivesHubView.swift */; };
 		D10344AD6527AE666A89B077 /* AgentConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96BC2C3BD6CCA2E32794D2A4 /* AgentConfig.swift */; };
 		D1C675D230576A31594FF609 /* PlayerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2BAF8513241837D67082D36 /* PlayerManager.swift */; };
+		D8ADA5252D2FF1DC317C8801 /* MotivationBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85DD3BA1FF2219726C80D9B7 /* MotivationBarView.swift */; };
 		E4C49DFBECE48B2F37502083 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE8601B442069D3F89D289A7 /* NotificationService.swift */; };
 		E82940D8D320DC8837372ACB /* GameModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 083E0C39BC220B59845C592C /* GameModels.swift */; };
 		F2C24D2F227308DDBCACCCE2 /* ActivityFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75B46C44DF58F5C6E7FE510F /* ActivityFeed.swift */; };
 		FBE861B5DDA9737969B5097F /* ImageProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2FA64E49AF2E272C18B5C39 /* ImageProcessor.swift */; };
 		FED54C8EE7042B3E30D2E1A9 /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 322CC0D8F2CC6E668D6D0ED3 /* HotkeyManager.swift */; };
-		AA1B2C3D4E5F6A7B8C9D0E1F /* VideoProcessingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2C3D4E5F6A7B8C9D0E1F2A /* VideoProcessingService.swift */; };
-		CC3D4E5F6A7B8C9D0E1F2A3B /* BatchManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD4E5F6A7B8C9D0E1F2A3B4C /* BatchManager.swift */; };
-		EE5F6A7B8C9D0E1F2A3B4C5D /* PromptTemplates.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF6A7B8C9D0E1F2A3B4C5D6E /* PromptTemplates.swift */; };
-		A1C2D3E4F5A6B7C800000007 /* SidebarSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E4F5A6B7C800000008 /* SidebarSettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		01A2F6663BE41D9A2EF88A61 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5C /* BatchDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchDetailView.swift; sourceTree = "<group>"; };
+		B2C3D4E5F6071829A3B4C5D6 /* ExpandedVideoPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpandedVideoPlayerView.swift; sourceTree = "<group>"; };
+		03AFC75D45B20E1E42DD1954 /* DirectivesHubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectivesHubView.swift; sourceTree = "<group>"; };
 		083E0C39BC220B59845C592C /* GameModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameModels.swift; sourceTree = "<group>"; };
+		09DDA55F2E071BB5EF77853E /* SidebarSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarSettingsView.swift; sourceTree = "<group>"; };
 		11B09502D1314C2E442A68B8 /* PersistenceModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceModels.swift; sourceTree = "<group>"; };
 		198612E301B5068AEDF0067D /* OverlayWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayWindowController.swift; sourceTree = "<group>"; };
-		A1C2D3E4F5A6B7C800000001 /* NeonBrutalismTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeonBrutalismTheme.swift; sourceTree = "<group>"; };
-		A1C2D3E4F5A6B7C800000002 /* NeonBrutalismModifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeonBrutalismModifiers.swift; sourceTree = "<group>"; };
-		A1C2D3E4F5A6B7C800000003 /* UnifiedSystemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedSystemView.swift; sourceTree = "<group>"; };
-		A1C2D3E4F5A6B7C800000004 /* VesselMatrixView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VesselMatrixView.swift; sourceTree = "<group>"; };
-		A1C2D3E4F5A6B7C800000005 /* DirectivesHubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectivesHubView.swift; sourceTree = "<group>"; };
-		A1C2D3E4F5A6B7C800000006 /* OmniscienceLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmniscienceLogView.swift; sourceTree = "<group>"; };
-		D1E2F3A4B5C6D7E800000001 /* MotivationBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotivationBarView.swift; sourceTree = "<group>"; };
-		D1E2F3A4B5C6D7E800000002 /* DayNightChartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DayNightChartView.swift; sourceTree = "<group>"; };
-		D1E2F3A4B5C6D7E800000003 /* ChronosActivityConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChronosActivityConverter.swift; sourceTree = "<group>"; };
-		D1E2F3A4B5C6D7E800000004 /* ChronosCellDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChronosCellDetailView.swift; sourceTree = "<group>"; };
 		23D817712B272F8044AD62D3 /* NetworkClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkClient.swift; sourceTree = "<group>"; };
 		26F34E477ADA7B786C986020 /* RuleClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuleClassifier.swift; sourceTree = "<group>"; };
 		28E9EECCB8A30D7AE498E83A /* SystemMessages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMessages.swift; sourceTree = "<group>"; };
+		2F2D474FCB146A3439DD8C6D /* NeonBrutalismTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeonBrutalismTheme.swift; sourceTree = "<group>"; };
 		322CC0D8F2CC6E668D6D0ED3 /* HotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyManager.swift; sourceTree = "<group>"; };
+		4DC96C364A0D89E6E272A4EF /* PromptTemplates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptTemplates.swift; sourceTree = "<group>"; };
 		592CE4CBAE7419DCF3B31E20 /* QuestEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestEngine.swift; sourceTree = "<group>"; };
 		6182732D0BF96EE97E425EF7 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
 		69789686CF6C057C9C1FF29C /* ExpEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpEngine.swift; sourceTree = "<group>"; };
@@ -81,12 +81,18 @@
 		767E8CE5EBCB796BEA0812B8 /* ScreenCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCaptureService.swift; sourceTree = "<group>"; };
 		7FFF867D5777688341F17DDE /* SoloAgentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoloAgentApp.swift; sourceTree = "<group>"; };
 		826451833F00F5CCD0702E29 /* EventBus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventBus.swift; sourceTree = "<group>"; };
+		85DD3BA1FF2219726C80D9B7 /* MotivationBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotivationBarView.swift; sourceTree = "<group>"; };
 		8690B377BA5F152143303981 /* AIAnalysisResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIAnalysisResult.swift; sourceTree = "<group>"; };
 		8771CCB262BE1C1421D4B0A4 /* CaptureStrategy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureStrategy.swift; sourceTree = "<group>"; };
+		93CA62ABED2E79C6EF92ED46 /* CinematicEffects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CinematicEffects.swift; sourceTree = "<group>"; };
+		93DFD647DFEF6429879A415D /* UnifiedSystemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedSystemView.swift; sourceTree = "<group>"; };
 		96BC2C3BD6CCA2E32794D2A4 /* AgentConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConfig.swift; sourceTree = "<group>"; };
 		98682C7B79E11765ABFE8CCD /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		98D4922923E44CF5F7EB9C63 /* NeonBrutalismModifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeonBrutalismModifiers.swift; sourceTree = "<group>"; };
 		9964A9D871FC496803FE7840 /* ScreenshotStorageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotStorageManager.swift; sourceTree = "<group>"; };
+		A60D7E6BBE446827160103C0 /* OmniscienceLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmniscienceLogView.swift; sourceTree = "<group>"; };
 		AC6A6489391F4DFDC45E10E8 /* GamePersistenceModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GamePersistenceModels.swift; sourceTree = "<group>"; };
+		B5415814632715C561AE8128 /* VesselMatrixView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VesselMatrixView.swift; sourceTree = "<group>"; };
 		C2BAF8513241837D67082D36 /* PlayerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerManager.swift; sourceTree = "<group>"; };
 		C9400DE96EE2EE1F935D6C35 /* AgentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentManager.swift; sourceTree = "<group>"; };
 		CFF4E7D001F072C71ED97737 /* NotificationPopupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPopupView.swift; sourceTree = "<group>"; };
@@ -95,13 +101,14 @@
 		E0D571005D3102072E96F37F /* PersistenceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceManager.swift; sourceTree = "<group>"; };
 		E2FA64E49AF2E272C18B5C39 /* ImageProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageProcessor.swift; sourceTree = "<group>"; };
 		E3ADC7D43620F53ABD1620F5 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		EB2ED20FDCFA1A425631F3D6 /* BatchManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchManager.swift; sourceTree = "<group>"; };
 		EB5310630BB8F33153AB893D /* OverlayManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayManager.swift; sourceTree = "<group>"; };
 		ECE8BD2F7BC151AD2AB43377 /* SoloAgent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SoloAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F0DC279C93C2FBB44323E081 /* VideoProcessingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoProcessingService.swift; sourceTree = "<group>"; };
+		F5658DF965870E305204456A /* ChronosActivityConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChronosActivityConverter.swift; sourceTree = "<group>"; };
+		F72A8D9788BFA3F287AB3EB5 /* ChronosCellDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChronosCellDetailView.swift; sourceTree = "<group>"; };
+		F94A6A09970C0A974011FDD7 /* DayNightChartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DayNightChartView.swift; sourceTree = "<group>"; };
 		FE8601B442069D3F89D289A7 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
-		BB2C3D4E5F6A7B8C9D0E1F2A /* VideoProcessingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoProcessingService.swift; sourceTree = "<group>"; };
-		DD4E5F6A7B8C9D0E1F2A3B4C /* BatchManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchManager.swift; sourceTree = "<group>"; };
-		FF6A7B8C9D0E1F2A3B4C5D6E /* PromptTemplates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptTemplates.swift; sourceTree = "<group>"; };
-		A1C2D3E4F5A6B7C800000008 /* SidebarSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarSettingsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -153,17 +160,19 @@
 		4AEBF3E8C271D4367FC34151 /* Views */ = {
 			isa = PBXGroup;
 			children = (
-				D1E2F3A4B5C6D7E800000004 /* ChronosCellDetailView.swift */,
-				D1E2F3A4B5C6D7E800000003 /* ChronosActivityConverter.swift */,
-				A1C2D3E4F5A6B7C800000005 /* DirectivesHubView.swift */,
+				A1B2C3D4E5F60718293A4B5C /* BatchDetailView.swift */,
+				F5658DF965870E305204456A /* ChronosActivityConverter.swift */,
+				F72A8D9788BFA3F287AB3EB5 /* ChronosCellDetailView.swift */,
+				F94A6A09970C0A974011FDD7 /* DayNightChartView.swift */,
+				03AFC75D45B20E1E42DD1954 /* DirectivesHubView.swift */,
+				B2C3D4E5F6071829A3B4C5D6 /* ExpandedVideoPlayerView.swift */,
 				E0D0EE6515C68F11E2444D8C /* MiniStatusBarView.swift */,
+				85DD3BA1FF2219726C80D9B7 /* MotivationBarView.swift */,
 				CFF4E7D001F072C71ED97737 /* NotificationPopupView.swift */,
-				A1C2D3E4F5A6B7C800000006 /* OmniscienceLogView.swift */,
-				D1E2F3A4B5C6D7E800000001 /* MotivationBarView.swift */,
-				D1E2F3A4B5C6D7E800000002 /* DayNightChartView.swift */,
-				A1C2D3E4F5A6B7C800000008 /* SidebarSettingsView.swift */,
-				A1C2D3E4F5A6B7C800000003 /* UnifiedSystemView.swift */,
-				A1C2D3E4F5A6B7C800000004 /* VesselMatrixView.swift */,
+				A60D7E6BBE446827160103C0 /* OmniscienceLogView.swift */,
+				09DDA55F2E071BB5EF77853E /* SidebarSettingsView.swift */,
+				93DFD647DFEF6429879A415D /* UnifiedSystemView.swift */,
+				B5415814632715C561AE8128 /* VesselMatrixView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -214,7 +223,7 @@
 		758F4E2C6CE3AD45E898F0AC /* Sources */ = {
 			isa = PBXGroup;
 			children = (
-				A1B2C3D4E5F6A7B800000002 /* Analysis */,
+				FE8B3FF7912DB90D60FD1CAD /* Analysis */,
 				55682F135876DF82FEA4E0A2 /* App */,
 				319C1DDECAD3B2885BEBF78F /* Capture */,
 				526DE04D667095F227058410 /* GameEngine */,
@@ -226,7 +235,7 @@
 				21C5393313AF001AD9630C98 /* Persistence */,
 				66B47229A65D293944AEA66C /* UI */,
 				E0F61FBB971A2A052AB602FE /* Utils */,
-				A1B2C3D4E5F6A7B800000001 /* Video */,
+				9D82E4348433A9511D2EA3CA /* Video */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -242,10 +251,19 @@
 		9646B5963F7700E35F40FFDC /* Style */ = {
 			isa = PBXGroup;
 			children = (
-				A1C2D3E4F5A6B7C800000002 /* NeonBrutalismModifiers.swift */,
-				A1C2D3E4F5A6B7C800000001 /* NeonBrutalismTheme.swift */,
+				93CA62ABED2E79C6EF92ED46 /* CinematicEffects.swift */,
+				98D4922923E44CF5F7EB9C63 /* NeonBrutalismModifiers.swift */,
+				2F2D474FCB146A3439DD8C6D /* NeonBrutalismTheme.swift */,
 			);
 			path = Style;
+			sourceTree = "<group>";
+		};
+		9D82E4348433A9511D2EA3CA /* Video */ = {
+			isa = PBXGroup;
+			children = (
+				F0DC279C93C2FBB44323E081 /* VideoProcessingService.swift */,
+			);
+			path = Video;
 			sourceTree = "<group>";
 		};
 		D6642300DB79EEB4E034689A /* Overlay */ = {
@@ -277,19 +295,11 @@
 			path = Network;
 			sourceTree = "<group>";
 		};
-		A1B2C3D4E5F6A7B800000001 /* Video */ = {
+		FE8B3FF7912DB90D60FD1CAD /* Analysis */ = {
 			isa = PBXGroup;
 			children = (
-				BB2C3D4E5F6A7B8C9D0E1F2A /* VideoProcessingService.swift */,
-			);
-			path = Video;
-			sourceTree = "<group>";
-		};
-		A1B2C3D4E5F6A7B800000002 /* Analysis */ = {
-			isa = PBXGroup;
-			children = (
-				DD4E5F6A7B8C9D0E1F2A3B4C /* BatchManager.swift */,
-				FF6A7B8C9D0E1F2A3B4C5D6E /* PromptTemplates.swift */,
+				EB2ED20FDCFA1A425631F3D6 /* BatchManager.swift */,
+				4DC96C364A0D89E6E272A4EF /* PromptTemplates.swift */,
 			);
 			path = Analysis;
 			sourceTree = "<group>";
@@ -355,22 +365,19 @@
 				97A823104B0AA30CFE990F72 /* AIAnalysisResult.swift in Sources */,
 				578DF7A6DEA6F7608C97EB75 /* AIClient.swift in Sources */,
 				F2C24D2F227308DDBCACCCE2 /* ActivityFeed.swift in Sources */,
-				CC3D4E5F6A7B8C9D0E1F2A3B /* BatchManager.swift in Sources */,
-				EE5F6A7B8C9D0E1F2A3B4C5D /* PromptTemplates.swift in Sources */,
-				AA1B2C3D4E5F6A7B8C9D0E1F /* VideoProcessingService.swift in Sources */,
-				B1C2D3E4F5A6B7C800000005 /* DirectivesHubView.swift in Sources */,
 				D10344AD6527AE666A89B077 /* AgentConfig.swift in Sources */,
 				9FDC614F0F77E530984CFFAB /* AgentManager.swift in Sources */,
+				0257A3B1C4D8E9F2A1B3C5D7 /* BatchDetailView.swift in Sources */,
+				B5B172703207D11874EA40A9 /* BatchManager.swift in Sources */,
 				6E0BA8DA9BD52C5280C9C539 /* CaptureStrategy.swift in Sources */,
+				AFF38A9A8705C8C81FC76E2B /* ChronosActivityConverter.swift in Sources */,
+				68B14D74F0CCFB0CFF3E1EC7 /* ChronosCellDetailView.swift in Sources */,
+				1C5E31637D82B8D5D8483FD6 /* CinematicEffects.swift in Sources */,
+				4F7D63F67CC82955DE27FB65 /* DayNightChartView.swift in Sources */,
+				C5F47C989BB8A3CEDCD4CA23 /* DirectivesHubView.swift in Sources */,
 				61797A01B3D84E5C66D97C04 /* EventBus.swift in Sources */,
+				0258B4C2D5E9FAAB2C4D6E8F /* ExpandedVideoPlayerView.swift in Sources */,
 				040533CFDAFFD15E04D7FF64 /* ExpEngine.swift in Sources */,
-				B1C2D3E4F5A6B7C800000001 /* NeonBrutalismTheme.swift in Sources */,
-				B1C2D3E4F5A6B7C800000002 /* NeonBrutalismModifiers.swift in Sources */,
-				B1C2D3E4F5A6B7C800000006 /* OmniscienceLogView.swift in Sources */,
-				C1D2E3F4A5B6C7D800000001 /* MotivationBarView.swift in Sources */,
-				C1D2E3F4A5B6C7D800000002 /* DayNightChartView.swift in Sources */,
-				C1D2E3F4A5B6C7D800000003 /* ChronosActivityConverter.swift in Sources */,
-				C1D2E3F4A5B6C7D800000004 /* ChronosCellDetailView.swift in Sources */,
 				E82940D8D320DC8837372ACB /* GameModels.swift in Sources */,
 				4522BD76B81069EB3EA40B75 /* GamePersistenceModels.swift in Sources */,
 				FED54C8EE7042B3E30D2E1A9 /* HotkeyManager.swift in Sources */,
@@ -379,23 +386,30 @@
 				620EE32E6C6EC957C493100D /* MenuBarView.swift in Sources */,
 				A10C8B11D49DEC96F5A29EDD /* MiniStatusBarView.swift in Sources */,
 				8F96DF04522E87618C4574D8 /* Models.swift in Sources */,
-					08DAEB8616644929F1FAE3C5 /* NotificationPopupView.swift in Sources */,
+				D8ADA5252D2FF1DC317C8801 /* MotivationBarView.swift in Sources */,
+				9DD00577A4ED59B2DB239DE5 /* NeonBrutalismModifiers.swift in Sources */,
+				0671BA20B62402363A07337D /* NeonBrutalismTheme.swift in Sources */,
+				3A990A154B1E2740E1D83A5C /* NetworkClient.swift in Sources */,
+				08DAEB8616644929F1FAE3C5 /* NotificationPopupView.swift in Sources */,
 				E4C49DFBECE48B2F37502083 /* NotificationService.swift in Sources */,
+				02D747736D2758EBF3B6B971 /* OmniscienceLogView.swift in Sources */,
 				07393F9815DC629AEB0E7477 /* OverlayManager.swift in Sources */,
 				5AFFF48F73AD022D5721A02E /* OverlayWindowController.swift in Sources */,
 				22400C01BCC32769C78AA377 /* PersistenceManager.swift in Sources */,
 				4CEEE2F8B4C01479E8FAAD37 /* PersistenceModels.swift in Sources */,
-				A1C2D3E4F5A6B7C800000007 /* SidebarSettingsView.swift in Sources */,
-				B1C2D3E4F5A6B7C800000003 /* UnifiedSystemView.swift in Sources */,
-				B1C2D3E4F5A6B7C800000004 /* VesselMatrixView.swift in Sources */,
 				D1C675D230576A31594FF609 /* PlayerManager.swift in Sources */,
+				B7E9254C8474A285D66D6700 /* PromptTemplates.swift in Sources */,
 				1981B75962791F1572A4EC79 /* QuestEngine.swift in Sources */,
 				0C98FA86CE5A8E5F69C62013 /* RuleClassifier.swift in Sources */,
 				B7DA014DB3F001E867B1BEAB /* ScreenCaptureService.swift in Sources */,
 				7208B1A1080F4E8931E94562 /* ScreenshotStorageManager.swift in Sources */,
 				B5225CF2DB1B3AD4C8C6AFE6 /* SettingsView.swift in Sources */,
+				7695AAE191F2FD00A2CFC31A /* SidebarSettingsView.swift in Sources */,
 				82489D5AAF13D2AE17D0CCF8 /* SoloAgentApp.swift in Sources */,
 				3B969412D8FF401B902C671C /* SystemMessages.swift in Sources */,
+				50C5D9B8ADBAF194B902FFA1 /* UnifiedSystemView.swift in Sources */,
+				98184E13FC2CA04C4DF1D868 /* VesselMatrixView.swift in Sources */,
+				6690D1D39E759D28C0D59577 /* VideoProcessingService.swift in Sources */,
 				1645A1811F29CFB44DAFB6A3 /* WindowMonitorService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
