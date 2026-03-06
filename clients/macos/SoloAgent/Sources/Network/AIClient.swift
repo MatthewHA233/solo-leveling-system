@@ -808,8 +808,10 @@ final class AIClient {
     // MARK: - Qwen3 Omni Audio Streaming
 
     /// 流式发送音频到 Qwen3 Omni，返回逐 token 文本流
+    /// - historyMessages: 可选的对话历史（user/assistant 文本轮次），注入 system 与 audio 之间
     func streamOmniAudio(
         systemPrompt: String,
+        historyMessages: [[String: Any]] = [],
         audioBase64: String,
         audioFormat: String = "wav"
     ) -> AsyncThrowingStream<String, Error> {
@@ -830,26 +832,27 @@ final class AIClient {
                     return
                 }
 
+                // 构建 messages: system + history + audio
+                var msgs: [[String: Any]] = [
+                    ["role": "system", "content": systemPrompt] as [String: Any],
+                ]
+                msgs.append(contentsOf: historyMessages)
+                msgs.append([
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "input_audio",
+                            "input_audio": [
+                                "data": "data:;base64,\(audioBase64)",
+                                "format": audioFormat,
+                            ] as [String: String]
+                        ] as [String: Any]
+                    ] as [[String: Any]]
+                ] as [String: Any])
+
                 let payload: [String: Any] = [
                     "model": config.voiceModel,
-                    "messages": [
-                        [
-                            "role": "system",
-                            "content": systemPrompt,
-                        ] as [String: Any],
-                        [
-                            "role": "user",
-                            "content": [
-                                [
-                                    "type": "input_audio",
-                                    "input_audio": [
-                                        "data": "data:;base64,\(audioBase64)",
-                                        "format": audioFormat,
-                                    ] as [String: String]
-                                ] as [String: Any]
-                            ] as [[String: Any]]
-                        ] as [String: Any]
-                    ] as [[String: Any]],
+                    "messages": msgs,
                     "modalities": ["text"],
                     "stream": true,
                     "stream_options": ["include_usage": true] as [String: Any],
@@ -903,6 +906,134 @@ final class AIClient {
                     Self.debugLog("[Omni] Qwen3 Omni 流式完成")
                 } catch {
                     Self.debugLog("[Omni] Qwen3 Omni 流式错误: \(error)")
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    // MARK: - Agent Turn Streaming (ReAct Loop)
+
+    /// ReAct 循环的流式 chunk
+    enum AgentTurnChunk {
+        case textDelta(String)
+        case toolCallDelta(index: Int, id: String?, name: String?, argsDelta: String?)
+        case finishReason(String)  // "stop" | "tool_calls"
+    }
+
+    /// 流式发送完整 messages + tools，解析 SSE 增量（text + tool_calls）
+    func streamAgentTurn(
+        messages: [[String: Any]],
+        tools: [[String: Any]]
+    ) -> AsyncThrowingStream<AgentTurnChunk, Error> {
+        AsyncThrowingStream { continuation in
+            Task { @MainActor in
+                guard let apiKey = activeApiKey, !apiKey.isEmpty else {
+                    continuation.finish(throwing: AIStreamError.noApiKey)
+                    return
+                }
+
+                let baseURL = config.openaiApiBase.hasSuffix("/")
+                    ? String(config.openaiApiBase.dropLast())
+                    : config.openaiApiBase
+                let urlString = "\(baseURL)/v1/chat/completions"
+
+                guard let url = URL(string: urlString) else {
+                    continuation.finish(throwing: AIStreamError.invalidURL)
+                    return
+                }
+
+                var payload: [String: Any] = [
+                    "model": config.openaiCardModel,
+                    "messages": messages,
+                    "temperature": 0.3,
+                    "max_tokens": 4096,
+                    "stream": true,
+                ]
+
+                if !tools.isEmpty {
+                    payload["tools"] = tools
+                    payload["tool_choice"] = "auto"
+                }
+
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("solo-leveling-system/2.0", forHTTPHeaderField: "User-Agent")
+
+                guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
+                    continuation.finish(throwing: AIStreamError.serializationFailed)
+                    return
+                }
+                request.httpBody = body
+
+                Self.debugLog("[AgentLoop] 发送 streamAgentTurn 请求，messages=\(messages.count), tools=\(tools.count)")
+
+                do {
+                    let (bytes, response) = try await session.bytes(for: request)
+
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        continuation.finish(throwing: AIStreamError.httpError(0, "非 HTTP 响应"))
+                        return
+                    }
+                    guard httpResponse.statusCode == 200 else {
+                        var errorBody = ""
+                        for try await line in bytes.lines {
+                            errorBody += line
+                            if errorBody.count > 500 { break }
+                        }
+                        Self.debugLog("[AgentLoop] HTTP \(httpResponse.statusCode): \(errorBody.prefix(300))")
+                        continuation.finish(throwing: AIStreamError.httpError(httpResponse.statusCode, errorBody))
+                        return
+                    }
+
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data: ") else { continue }
+                        let data = String(line.dropFirst(6))
+                        if data == "[DONE]" { break }
+
+                        guard let jsonData = data.data(using: .utf8),
+                              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                              let choices = json["choices"] as? [[String: Any]],
+                              let choice = choices.first else {
+                            continue
+                        }
+
+                        // finish_reason
+                        if let finishReason = choice["finish_reason"] as? String, !finishReason.isEmpty {
+                            continuation.yield(.finishReason(finishReason))
+                        }
+
+                        guard let delta = choice["delta"] as? [String: Any] else { continue }
+
+                        // text delta
+                        if let content = delta["content"] as? String {
+                            continuation.yield(.textDelta(content))
+                        }
+
+                        // tool_calls delta
+                        if let toolCallDeltas = delta["tool_calls"] as? [[String: Any]] {
+                            for tc in toolCallDeltas {
+                                let index = tc["index"] as? Int ?? 0
+                                let id = tc["id"] as? String
+                                let funcDict = tc["function"] as? [String: Any]
+                                let name = funcDict?["name"] as? String
+                                let argsDelta = funcDict?["arguments"] as? String
+                                continuation.yield(.toolCallDelta(
+                                    index: index,
+                                    id: id,
+                                    name: name,
+                                    argsDelta: argsDelta
+                                ))
+                            }
+                        }
+                    }
+
+                    continuation.finish()
+                    Self.debugLog("[AgentLoop] streamAgentTurn 完成")
+                } catch {
+                    Self.debugLog("[AgentLoop] streamAgentTurn 错误: \(error)")
                     continuation.finish(throwing: error)
                 }
             }

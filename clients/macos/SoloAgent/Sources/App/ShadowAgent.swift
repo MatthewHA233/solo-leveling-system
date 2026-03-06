@@ -101,6 +101,10 @@ final class ShadowAgent: ObservableObject {
     private let skills: [String: any AgentSkill]
     private weak var agentManager: AgentManager?
 
+    // MARK: ReAct 架构
+    let memory: AgentMemory
+    let agentLoop: AgentLoop
+
     /// 所有可用 skills（供 ChatInputBar 补全用）
     var availableSkills: [any AgentSkill] {
         skills.values.sorted { $0.command < $1.command }
@@ -125,7 +129,22 @@ final class ShadowAgent: ObservableObject {
         }
         self.skills = dict
 
-        // 加载历史对话
+        // 初始化 ReAct 记忆 + 循环
+        let mem = AgentMemory()
+        mem.load()
+        self.memory = mem
+        self.agentLoop = AgentLoop(
+            tools: AgentTools.all,
+            memory: mem,
+            manager: agentManager
+        )
+
+        // 检查是否需要开始新会话（上次活动 > 4 小时前）
+        if mem.shouldStartNewSession() {
+            mem.resetForNewSession()
+        }
+
+        // 加载历史对话（UI 显示用）
         let history = ChatHistoryStore.load()
         if history.isEmpty {
             pushSystem("暗影智能体已上线，输入 /help 查看可用命令", icon: "bolt.fill")
@@ -159,6 +178,13 @@ final class ShadowAgent: ObservableObject {
             let command = "/" + (parts.first.map(String.init) ?? "")
             let args = parts.count > 1 ? String(parts[1]) : ""
 
+            // /new — 重置 ReAct 会话
+            if command == "/new" {
+                memory.resetForNewSession()
+                pushSystem("新会话已开始，记忆已清空", icon: "arrow.counterclockwise")
+                return
+            }
+
             if let skill = skills[command] {
                 let result = await skill.execute(args: args, agent: self, manager: manager)
                 pushAgent(result, icon: skill.icon)
@@ -166,14 +192,8 @@ final class ShadowAgent: ObservableObject {
                 pushAgent("未知命令: \(command)\n输入 /help 查看可用命令", icon: "questionmark.circle")
             }
         } else {
-            // 自然语言 — 先尝试关键词快速匹配
-            if let matched = matchSkillByKeyword(trimmed) {
-                let result = await matched.execute(args: "", agent: self, manager: manager)
-                pushAgent(result, icon: matched.icon)
-            } else {
-                // AI function calling 调度
-                await dispatchViaAI(trimmed, manager: manager)
-            }
+            // 自然语言 → ReAct AgentLoop
+            await runAgentLoop(trimmed, manager: manager)
         }
     }
 
@@ -190,98 +210,96 @@ final class ShadowAgent: ObservableObject {
         ChatHistoryStore.save(messages)
     }
 
-    // MARK: - AI Dispatch
+    // MARK: - ReAct Loop
 
-    private func dispatchViaAI(_ text: String, manager: AgentManager) async {
-        // 构建 tools 定义
-        let tools = buildToolDefinitions()
+    private func runAgentLoop(_ text: String, manager: AgentManager) async {
+        let systemPrompt = buildSystemPrompt(manager: manager)
+        var streamingMsgIdx: Int? = nil
 
-        guard let result = await manager.dispatchAgent(userMessage: text, tools: tools) else {
-            pushAgent("AI 未配置或网络异常，请检查设置\n也可直接用 /command 格式", icon: "exclamationmark.triangle")
-            return
-        }
+        await agentLoop.run(
+            userMessage: text,
+            systemPrompt: systemPrompt,
+            maxIterations: 8
+        ) { [weak self] event in
+            guard let self else { return }
 
-        // 如果 AI 返回了 tool_call → 执行对应 skill
-        if let call = result.toolCall, let skill = skills[call.command] {
-            let output = await skill.execute(args: call.args, agent: self, manager: manager)
-            pushAgent(output, icon: skill.icon)
-            return
-        }
+            switch event {
+            case .textDelta(let delta):
+                if streamingMsgIdx == nil {
+                    let msg = AgentMessage(role: .agent, content: "", icon: "sparkles", isStreaming: true)
+                    self.messages.append(msg)
+                    streamingMsgIdx = self.messages.count - 1
+                }
+                if let idx = streamingMsgIdx {
+                    self.messages[idx].content += delta
+                }
 
-        // 如果 AI 返回了文字回复
-        if let text = result.textResponse {
-            pushAgent(text, icon: "sparkles")
-            return
-        }
+            case .toolCallStarted(let name, _):
+                let display = self.toolDisplayName(name)
+                self.pushSystem("正在调用：\(display)…", icon: "gearshape.2")
 
-        pushAgent("暂时无法处理这个请求，试试 /help 查看可用指令", icon: "info.circle")
-    }
+            case .toolCallResult:
+                break  // 结果已注入 memory，不需额外 UI
 
-    /// 将注册的 Skills 转换为 OpenAI function calling 的 tools 格式
-    private func buildToolDefinitions() -> [[String: Any]] {
-        // 不需要暴露 /help 给 AI
-        let skipCommands: Set<String> = ["/help"]
-
-        return skills.values
-            .filter { !skipCommands.contains($0.command) }
-            .map { skill -> [String: Any] in
-                let name = String(skill.command.dropFirst()) // 去掉 /
-                var properties: [String: Any] = [:]
-                var required: [String] = []
-
-                // 需要参数的命令
-                let needsArgs: Set<String> = ["/analyze", "/regenerate", "/rule"]
-                if needsArgs.contains(skill.command) {
-                    properties["args"] = [
-                        "type": "string",
-                        "description": argDescription(for: skill.command),
-                    ] as [String: Any]
-                    if skill.command != "/rule" {
-                        required.append("args")
+            case .done:
+                if let idx = streamingMsgIdx {
+                    self.messages[idx].isStreaming = false
+                    if self.messages[idx].content.isEmpty {
+                        self.messages[idx].content = "操作完成"
                     }
+                    streamingMsgIdx = nil
                 }
+                ChatHistoryStore.save(self.messages)
 
-                return [
-                    "type": "function",
-                    "function": [
-                        "name": name,
-                        "description": skill.description,
-                        "parameters": [
-                            "type": "object",
-                            "properties": properties,
-                            "required": required,
-                        ] as [String: Any],
-                    ] as [String: Any],
-                ] as [String: Any]
-            }
-    }
-
-    private func argDescription(for command: String) -> String {
-        switch command {
-        case "/analyze": return "批次 ID"
-        case "/regenerate": return "批次 ID"
-        case "/rule": return "子命令，如 'list' 或 'add <pattern> = <interpretation>' 或 'remove <index>'"
-        default: return "参数"
-        }
-    }
-
-    // MARK: - Keyword Matching
-
-    private func matchSkillByKeyword(_ text: String) -> (any AgentSkill)? {
-        let keywords: [(keywords: [String], command: String)] = [
-            (["整理", "合并", "reorganize"], "/reorganize"),
-            (["状态", "诊断", "status"], "/status"),
-            (["上下文", "context"], "/context"),
-            (["规则", "rule"], "/rule"),
-            (["帮助", "help", "命令"], "/help"),
-        ]
-        for entry in keywords {
-            for keyword in entry.keywords {
-                if text.contains(keyword), let skill = skills[entry.command] {
-                    return skill
+            case .error(let msg):
+                if let idx = streamingMsgIdx {
+                    self.messages[idx].isStreaming = false
+                    self.messages[idx].content = "出错：\(msg)"
+                    streamingMsgIdx = nil
+                } else {
+                    self.pushAgent("出错：\(msg)", icon: "exclamationmark.triangle")
                 }
             }
         }
-        return nil
+    }
+
+    // MARK: - System Prompt
+
+    private func buildSystemPrompt(manager: AgentManager) -> String {
+        let now = Int(Date().timeIntervalSince1970)
+        let contextHint = manager.contextAdvisor.buildContextHint(
+            startTs: now - 1800, endTs: now, config: manager.config
+        )
+
+        let questLine = manager.config.mainQuest.map { "用户主线目标：\($0)\n" } ?? ""
+
+        return """
+        你是「暗影智能体」，独自升级系统的 AI 代理。你的职责是理解用户意图，调用合适的工具执行操作，然后给出综合分析和建议。
+
+        \(contextHint.isEmpty ? "" : "## 当前上下文\n\(contextHint)\n")
+        \(questLine)
+        规则：
+        - 优先调用工具获取数据，再综合分析
+        - 回复简洁有力，用中文
+        - 如果用户请求不需要工具，直接回复（不超过 3 句）
+        """
+    }
+
+    // MARK: - Tool Display Names
+
+    private func toolDisplayName(_ name: String) -> String {
+        switch name {
+        case "get_screen_context": return "屏幕上下文"
+        case "get_today_cards": return "今日卡片"
+        case "get_game_status": return "游戏状态"
+        case "get_recent_activity": return "近期活动"
+        case "get_context_rules": return "规则列表"
+        case "reorganize_cards": return "整理卡片"
+        case "analyze_batch": return "重新分析"
+        case "set_main_quest": return "更新主线"
+        case "add_context_rule": return "添加规则"
+        case "remove_context_rule": return "删除规则"
+        default: return name
+        }
     }
 }

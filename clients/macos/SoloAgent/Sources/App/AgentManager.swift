@@ -677,6 +677,34 @@ final class AgentManager: ObservableObject {
         return true
     }
 
+    // MARK: - ReAct Agent Support
+
+    /// 获取当前屏幕上下文字符串（供 GetScreenContextTool 使用）
+    func currentScreenContext() -> String {
+        let info = windowMonitor.currentWindowInfo
+        let state = activityStateString(windowMonitor.currentActivityState)
+        var parts: [String] = []
+        if let app = info.appName { parts.append("应用：\(app)") }
+        if let title = info.windowTitle, !title.isEmpty { parts.append("窗口：\(title)") }
+        parts.append("活动状态：\(state)")
+        parts.append("空闲时间：\(Int(windowMonitor.idleSeconds))秒")
+        return parts.joined(separator: "\n")
+    }
+
+    /// 更新主线目标并持久化
+    func updateMainQuest(_ quest: String) {
+        config.mainQuest = quest
+        config.save()
+    }
+
+    /// 流式 ReAct 转发 — 包装内部 aiClient
+    func streamAgentTurn(
+        messages: [[String: Any]],
+        tools: [[String: Any]]
+    ) -> AsyncThrowingStream<AIClient.AgentTurnChunk, Error>? {
+        return aiClient?.streamAgentTurn(messages: messages, tools: tools)
+    }
+
     // MARK: - Agent Dispatch (Shadow Agent)
 
     /// AI 代理调度 — function calling 让 AI 决定调用哪个 Skill

@@ -186,19 +186,26 @@ final class VoiceService: ObservableObject {
         
         let config = manager.config
 
-        // 1. 构建 system prompt
+        // 1. 构建 system prompt（与文字聊天相同的上下文）
         let systemPrompt = buildVoiceSystemPrompt(config: config, manager: manager)
 
-        // 2. Base64 编码音频
+        // 2. 从 AgentMemory 提取近期对话历史（user/assistant 文本轮次）
+        let historyMessages = buildVoiceHistory(agent: agent)
+
+        // 3. Base64 编码音频
         let audioBase64 = wavData.base64EncodedString()
 
-        // 3. 创建 AI Client 并发送流式请求
+        // 4. 创建 AI Client 并发送流式请求（注入对话历史）
         let aiClient = AIClient(config: config)
         let stream = aiClient.streamOmniAudio(
             systemPrompt: systemPrompt,
+            historyMessages: historyMessages,
             audioBase64: audioBase64,
             audioFormat: "wav"
         )
+
+        // 记录语音输入到 AgentMemory
+        agent.memory.appendUser("（语音输入）")
 
         // 4. 追加 agent 消息占位（流式填充）
         let msgIndex = agent.messages.count
@@ -274,10 +281,14 @@ final class VoiceService: ObservableObject {
             client.flush()
         }
 
-        // 8. 标记流式完成
+        // 8. 标记流式完成 + 写入 AgentMemory
         if msgIndex < agent.messages.count {
             agent.messages[msgIndex].content = fullText.isEmpty ? "（无法识别语音）" : fullText
             agent.messages[msgIndex].isStreaming = false
+        }
+        if !fullText.isEmpty {
+            agent.memory.appendAssistant(text: fullText, toolCalls: nil)
+            agent.memory.save()
         }
         ChatHistoryStore.save(agent.messages)
 
@@ -405,8 +416,16 @@ final class VoiceService: ObservableObject {
         return punctuation.contains(last) && text.count >= 2
     }
 
-    /// 构建语音交互的 system prompt
+    /// 构建语音交互的 system prompt（与文字聊天共享上下文）
     private func buildVoiceSystemPrompt(config: AgentConfig, manager: AgentManager) -> String {
+        // 注入 contextAdvisor 上下文（近 30 分钟活动、规则、主线等）
+        let now = Int(Date().timeIntervalSince1970)
+        let contextHint = manager.contextAdvisor.buildContextHint(
+            startTs: now - 1800, endTs: now, config: config
+        )
+
+        let player = manager.player
+
         var prompt = """
         你是「暗影智能体」，独自升级系统的 AI 语音助手。用户正在通过语音与你对话。
 
@@ -415,16 +434,39 @@ final class VoiceService: ObservableObject {
         - 回答控制在 3-5 句以内
         - 不要输出 Markdown 格式符号（如 ** # - 等）
         - 直接回答问题，不要复述用户说的话
+
+        用户当前等级：Lv.\(player.level) \(player.title)，经验 \(player.exp)/\(player.expToNext)
         """
 
-        if let quest = config.mainQuest {
-            prompt += "\n\n用户主线目标：\(quest)"
+        if let quest = config.mainQuest, !quest.isEmpty {
+            prompt += "\n用户主线目标：\(quest)"
         }
 
-        let player = manager.player
-        prompt += "\n\n用户当前等级：Lv.\(player.level) \(player.title)"
+        if !contextHint.isEmpty {
+            prompt += "\n\n## 当前上下文\n\(contextHint)"
+        }
+
+        // 今日卡片摘要
+        let todayCards = manager.persistence.allActivityCardsToday()
+        if !todayCards.isEmpty {
+            let summary = todayCards.suffix(5).map { "\($0.startTime)-\($0.endTime) \($0.title)" }.joined(separator: "；")
+            prompt += "\n\n今日活动（最近 \(todayCards.count) 张卡片）：\(summary)"
+        }
 
         return prompt
+    }
+
+    /// 从 AgentMemory 提取近期对话历史（仅 user/assistant 文本，跳过 tool 消息）
+    private func buildVoiceHistory(agent: ShadowAgent) -> [[String: Any]] {
+        return agent.memory.messages
+            .filter { msg in
+                (msg.role == "user" || msg.role == "assistant") && msg.toolCalls == nil
+            }
+            .suffix(10)
+            .compactMap { msg -> [String: Any]? in
+                guard let content = msg.content, !content.isEmpty else { return nil }
+                return ["role": msg.role, "content": content] as [String: Any]
+            }
     }
 
     /// Float32 samples → WAV Data (PCM 16-bit, mono)

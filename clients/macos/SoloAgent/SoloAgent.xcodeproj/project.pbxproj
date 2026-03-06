@@ -58,6 +58,9 @@
 		FED54C8EE7042B3E30D2E1A9 /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 322CC0D8F2CC6E668D6D0ED3 /* HotkeyManager.swift */; };
 		1A2B3C4D5E6F708192A3B4C5 /* ShadowAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E4F5061728394A5B6C /* ShadowAgent.swift */; };
 		2B3C4D5E6F7081A2B3C4D5E6 /* SkillRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2D3E4F50617283A4B5C6D7E /* SkillRegistry.swift */; };
+		BB00112233445566778899BB /* AgentTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00112233445566778899AA /* AgentTool.swift */; };
+		BB11223344556677889900CC /* AgentMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11223344556677889900BB /* AgentMemory.swift */; };
+		BB22334455667788990011DD /* AgentLoop.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA22334455667788990011CC /* AgentLoop.swift */; };
 		3C4D5E6F708192A3B4C5D6E7 /* AgentChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E4F5061728394A5B6C7D8E /* AgentChatView.swift */; };
 		4D5E6F7081A2B3C4D5E6F708 /* ChatInputBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F506172839A4B5C6D7E8F0 /* ChatInputBar.swift */; };
 		5E6F708192A3B4C5D6E7F809 /* ShadowAgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5061728394A5B6C7D8E9F0A /* ShadowAgentView.swift */; };
@@ -97,6 +100,9 @@
 		93CA62ABED2E79C6EF92ED46 /* CinematicEffects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CinematicEffects.swift; sourceTree = "<group>"; };
 		93DFD647DFEF6429879A415D /* UnifiedSystemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedSystemView.swift; sourceTree = "<group>"; };
 		96BC2C3BD6CCA2E32794D2A4 /* AgentConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentConfig.swift; sourceTree = "<group>"; };
+		AA00112233445566778899AA /* AgentTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTool.swift; sourceTree = "<group>"; };
+		AA11223344556677889900BB /* AgentMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentMemory.swift; sourceTree = "<group>"; };
+		AA22334455667788990011CC /* AgentLoop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentLoop.swift; sourceTree = "<group>"; };
 		98682C7B79E11765ABFE8CCD /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		98D4922923E44CF5F7EB9C63 /* NeonBrutalismModifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeonBrutalismModifiers.swift; sourceTree = "<group>"; };
 		9964A9D871FC496803FE7840 /* ScreenshotStorageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotStorageManager.swift; sourceTree = "<group>"; };
@@ -233,6 +239,9 @@
 				F6172839A4B5C6D7E8F0A1B2 /* ContextRule.swift */,
 				A1C2D3E4F5061728394A5B6C /* ShadowAgent.swift */,
 				B2D3E4F50617283A4B5C6D7E /* SkillRegistry.swift */,
+				AA22334455667788990011CC /* AgentLoop.swift */,
+				AA11223344556677889900BB /* AgentMemory.swift */,
+				AA00112233445566778899AA /* AgentTool.swift */,
 				7FFF867D5777688341F17DDE /* SoloAgentApp.swift */,
 				1728394A5B6C7D8E9F0A1B2C /* VoiceService.swift */,
 			);
@@ -443,6 +452,9 @@
 				A3B4C5D6E7F8091A2B3C4D5E /* ConsciousnessEntityView.swift in Sources */,
 				7695AAE191F2FD00A2CFC31A /* SidebarSettingsView.swift in Sources */,
 				2B3C4D5E6F7081A2B3C4D5E6 /* SkillRegistry.swift in Sources */,
+				BB22334455667788990011DD /* AgentLoop.swift in Sources */,
+				BB11223344556677889900CC /* AgentMemory.swift in Sources */,
+				BB00112233445566778899BB /* AgentTool.swift in Sources */,
 				82489D5AAF13D2AE17D0CCF8 /* SoloAgentApp.swift in Sources */,
 				3B969412D8FF401B902C671C /* SystemMessages.swift in Sources */,
 				50C5D9B8ADBAF194B902FFA1 /* UnifiedSystemView.swift in Sources */,
