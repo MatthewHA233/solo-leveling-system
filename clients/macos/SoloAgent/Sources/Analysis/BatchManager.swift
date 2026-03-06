@@ -7,6 +7,7 @@ final class BatchManager {
     private let persistence: PersistenceManager
     private let videoService = VideoProcessingService()
     private let aiClient: AIClient
+    var contextAdvisor: ContextAdvisor?
 
     private var isProcessing = false
 
@@ -98,10 +99,15 @@ final class BatchManager {
         persistence.deleteActivityCards(forBatch: batchId)
         persistence.updateBatchStatus(batchId, status: "processing", errorMessage: nil)
 
-        // 2. 直接用缓存转录 → Phase 2 流式生成
+        // 2. 构建上下文提示
+        let contextHint = contextAdvisor?.buildContextHint(
+            startTs: batch.startTs, endTs: batch.endTs, config: config
+        ) ?? ""
+
+        // 3. 直接用缓存转录 → Phase 2 流式生成
         await onProgress?(batchId, "正在重新生成卡片...")
         let existingCards = persistence.allActivityCardsToday()
-        let cards = await streamGenerateCards(batchId: batchId, transcription: transcription, existingCards: existingCards)
+        let cards = await streamGenerateCards(batchId: batchId, transcription: transcription, existingCards: existingCards, contextHint: contextHint)
 
         if !cards.isEmpty {
             persistence.saveActivityCards(cards)
@@ -220,7 +226,12 @@ final class BatchManager {
             frameTimestamps = (0..<count).map { batch.startTs + $0 }
         }
 
-        // 5. Phase 1: 流式视频转录（包含帧→时间映射表，fps 感知）
+        // 5. 构建上下文提示
+        let contextHint = contextAdvisor?.buildContextHint(
+            startTs: batch.startTs, endTs: batch.endTs, config: config
+        ) ?? ""
+
+        // 6. Phase 1: 流式视频转录（包含帧→时间映射表，fps 感知）
         await onProgress?(batchId, "正在转录视频...")
         let fps = config.videoFps
         let videoDurationSeconds = frameTimestamps.count / max(1, fps)
@@ -231,7 +242,8 @@ final class BatchManager {
                 batchId: batchId,
                 videoData: videoData,
                 videoDurationSeconds: videoDurationSeconds,
-                frameTimeMapping: frameMapping
+                frameTimeMapping: frameMapping,
+                contextHint: contextHint
             )
         } catch {
             AIClient.debugLog("[BatchManager] 重分析流式转录失败: \(error)")
@@ -243,7 +255,7 @@ final class BatchManager {
             return
         }
 
-        // 6. 秒数 → 时间戳映射（视频秒 × fps = 帧索引）
+        // 7. 秒数 → 时间戳映射（视频秒 × fps = 帧索引）
         let transcription = mapSecondsToTimestamps(rawTranscription, frameTimestamps: frameTimestamps, fps: fps)
 
         // 缓存转录结果
@@ -252,10 +264,10 @@ final class BatchManager {
             persistence.updateBatchTranscription(batchId, transcriptionJson: jsonStr)
         }
 
-        // 7. Phase 2: 流式生成活动卡片
+        // 8. Phase 2: 流式生成活动卡片
         await onProgress?(batchId, "正在生成活动卡片...")
         let existingCards = persistence.allActivityCardsToday()
-        let cards = await streamGenerateCards(batchId: batchId, transcription: transcription, existingCards: existingCards)
+        let cards = await streamGenerateCards(batchId: batchId, transcription: transcription, existingCards: existingCards, contextHint: contextHint)
 
         if !cards.isEmpty {
             persistence.saveActivityCards(cards)
@@ -326,7 +338,15 @@ final class BatchManager {
         AIClient.debugLog("[BatchManager] 视频大小: \(videoSizeMB)MB, \(frameTimestamps.count) 帧")
         await onProgress?(batchId, "正在读取视频 (\(videoSizeMB) MB)...")
 
-        // 5. Phase 1: 流式视频转录（包含帧→时间映射表提高精度）
+        // 5. 构建上下文提示
+        let contextHint = contextAdvisor?.buildContextHint(
+            startTs: pending.startTs, endTs: pending.endTs, config: config
+        ) ?? ""
+        if !contextHint.isEmpty {
+            AIClient.debugLog("[BatchManager] contextHint: \(contextHint.prefix(200))")
+        }
+
+        // 6. Phase 1: 流式视频转录（包含帧→时间映射表提高精度）
         await onProgress?(batchId, "正在转录视频...")
         let fps = config.videoFps
         let videoDurationSeconds = frameTimestamps.count / max(1, fps)
@@ -337,7 +357,8 @@ final class BatchManager {
                 batchId: batchId,
                 videoData: videoData,
                 videoDurationSeconds: videoDurationSeconds,
-                frameTimeMapping: frameMapping
+                frameTimeMapping: frameMapping,
+                contextHint: contextHint
             )
         } catch {
             AIClient.debugLog("[BatchManager] 流式视频转录失败: \(error)")
@@ -358,18 +379,18 @@ final class BatchManager {
             persistence.updateBatchTranscription(batchId, transcriptionJson: jsonStr)
         }
 
-        // 7. Phase 2: 流式生成活动卡片
+        // 8. Phase 2: 流式生成活动卡片
         await onProgress?(batchId, "正在生成活动卡片...")
         let existingCards = persistence.allActivityCardsToday()
-        let cards = await streamGenerateCards(batchId: batchId, transcription: transcription, existingCards: existingCards)
+        let cards = await streamGenerateCards(batchId: batchId, transcription: transcription, existingCards: existingCards, contextHint: contextHint)
 
-        // 8. 保存活动卡片
+        // 9. 保存活动卡片
         if !cards.isEmpty {
             persistence.saveActivityCards(cards)
             AIClient.debugLog("[BatchManager] 保存了 \(cards.count) 张活动卡片")
         }
 
-        // 9. 标记批次完成
+        // 10. 标记批次完成
         persistence.updateBatchStatus(batchId, status: "completed")
         await onProgress?(batchId, "分析完成，共 \(cards.count) 张卡片")
         AIClient.debugLog("[BatchManager] 批次 \(batchId) 处理完成")
@@ -382,12 +403,14 @@ final class BatchManager {
         batchId: String,
         videoData: Data,
         videoDurationSeconds: Int,
-        frameTimeMapping: String
+        frameTimeMapping: String,
+        contextHint: String = ""
     ) async throws -> [[String: Any]]? {
         let stream = aiClient.streamTranscribeVideo(
             videoData: videoData,
             videoDurationSeconds: videoDurationSeconds,
-            frameTimeMapping: frameTimeMapping
+            frameTimeMapping: frameTimeMapping,
+            contextHint: contextHint
         )
 
         var fullText = ""
@@ -417,7 +440,8 @@ final class BatchManager {
             return await aiClient.transcribeVideo(
                 videoData: videoData,
                 videoDurationSeconds: videoDurationSeconds,
-                frameTimeMapping: frameTimeMapping
+                frameTimeMapping: frameTimeMapping,
+                contextHint: contextHint
             )
         }
     }
@@ -428,11 +452,13 @@ final class BatchManager {
     private func streamGenerateCards(
         batchId: String,
         transcription: [[String: Any]],
-        existingCards: [ActivityCardRecord]
+        existingCards: [ActivityCardRecord],
+        contextHint: String = ""
     ) async -> [ActivityCardRecord] {
         let stream = aiClient.streamGenerateActivityCards(
             transcription: transcription,
-            existingCards: existingCards
+            existingCards: existingCards,
+            contextHint: contextHint
         )
 
         var fullText = ""
@@ -461,7 +487,8 @@ final class BatchManager {
             // Fallback 到非流式
             guard let cardDicts = await aiClient.generateActivityCards(
                 transcription: transcription,
-                existingCards: existingCards
+                existingCards: existingCards,
+                contextHint: contextHint
             ) else {
                 persistence.updateBatchStatus(batchId, status: "failed", errorMessage: "活动卡片生成失败（流式+非流式均失败）")
                 return []

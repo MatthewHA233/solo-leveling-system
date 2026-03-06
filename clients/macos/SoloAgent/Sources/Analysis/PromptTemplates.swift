@@ -8,7 +8,8 @@ enum PromptTemplates {
     /// 视频转录 prompt — 逐段描述用户行为，包含帧→时间映射表以提高时间戳精度
     static func videoTranscriptionPrompt(
         videoDurationSeconds: Int,
-        frameTimeMapping: String = ""
+        frameTimeMapping: String = "",
+        contextHint: String = ""
     ) -> String {
         let mappingSection: String
         if !frameTimeMapping.isEmpty {
@@ -26,9 +27,22 @@ enum PromptTemplates {
             mappingSection = ""
         }
 
+        let contextSection: String
+        if !contextHint.isEmpty {
+            contextSection = """
+
+            ## 重要上下文（来自系统实时观察）
+            \(contextHint)
+            请基于以上上下文来理解视频中的活动。
+
+            """
+        } else {
+            contextSection = ""
+        }
+
         return """
         你是一个屏幕活动分析引擎。你会看到一段延时摄影视频，共 \(videoDurationSeconds) 帧。
-        \(mappingSection)
+        \(mappingSection)\(contextSection)
         ## 任务
         仔细观察视频中的每一帧，按时间顺序描述用户的屏幕活动。
 
@@ -68,7 +82,8 @@ enum PromptTemplates {
         transcription: String,
         existingCards: String,
         mainQuest: String = "",
-        motivations: [String] = []
+        motivations: [String] = [],
+        contextHint: String = ""
     ) -> String {
         let goalContext: String
         if !mainQuest.isEmpty {
@@ -91,9 +106,22 @@ enum PromptTemplates {
             goalContext = ""
         }
 
+        let contextSection: String
+        if !contextHint.isEmpty {
+            contextSection = """
+
+            ## 重要上下文（来自系统实时观察）
+            \(contextHint)
+            请基于以上上下文来理解视频中的活动。
+
+            """
+        } else {
+            contextSection = ""
+        }
+
         return """
         你是用户的个人 AI 伙伴「暗影君主系统」。根据屏幕活动转录，生成结构化的活动卡片。
-        \(goalContext)
+        \(goalContext)\(contextSection)
         ## 转录内容
         \(transcription)
 
