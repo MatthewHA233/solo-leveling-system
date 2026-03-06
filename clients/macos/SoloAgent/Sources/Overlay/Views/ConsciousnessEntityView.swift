@@ -157,11 +157,11 @@ private final class FairyEngine {
         // ── Ball organic float ──
         ballAngle = 142 + sin(tSec * 0.3) * 4 + sin(tSec * 0.47) * 2.5 + sin(tSec * 0.71) * 1.5
 
-        // ── Eye saccade ──
+        // ── Eye saccade（大幅扫视，水平 ±78px 等效）──
         if state == .listening {
             if now > eyeNextMoveTime {
                 let a = Double.random(in: 0 ..< .pi * 2)
-                let r = 3.0 + .random(in: 0.0...7.0)
+                let r = 12.0 + .random(in: 0.0...18.0) // 原 6-20 → 25-60，此处按 0.5 比例换算
                 eyeTargetX = cos(a) * r * 1.3
                 eyeTargetY = sin(a) * r * 0.8
                 eyeNextMoveTime = now + 600 + .random(in: 0.0...1400.0)
@@ -223,13 +223,14 @@ struct ConsciousnessEntityView: View {
                     return CGRect(x: cx + ox - s / 2, y: cy + oy - s / 2, width: s, height: s)
                 }
 
-                // ═══ L1: Glow Halo ═══
+                // ═══ L1: Glow Halo（视差 0.1x）═══
                 context.drawLayer { ctx in
                     var haloOp = e.glowBase + e.wGlowHalo * 4
                     if currentState == .listening { haloOp += e.audioSmooth * 0.1 }
                     if currentState == .speaking  { haloOp += e.audioSmooth * 0.2 }
                     ctx.opacity = min(1, haloOp)
-                    let rect = R(460, 0, 0, e.wGlowHalo)
+                    let ox = ex * 0.1; let oy = ey * 0.1
+                    let rect = R(460, ox, oy, e.wGlowHalo)
                     ctx.fill(Path(ellipseIn: rect), with: .radialGradient(
                         Gradient(stops: [
                             .init(color: .clear, location: 0.78),
@@ -239,15 +240,16 @@ struct ConsciousnessEntityView: View {
                             .init(color: Color(red: 15/255.0, green: 55/255.0, blue: 100/255.0).opacity(0.06), location: 0.90),
                             .init(color: .clear, location: 0.93),
                         ]),
-                        center: CGPoint(x: cx, y: cy), startRadius: 0, endRadius: rect.width / 2
+                        center: CGPoint(x: cx + ox, y: cy + oy), startRadius: 0, endRadius: rect.width / 2
                     ))
                     ctx.addFilter(.blur(radius: 4))
                 }
 
-                // ═══ L2: Glow Halo 2 ═══
+                // ═══ L2: Glow Halo 2（视差 0.1x）═══
                 context.drawLayer { ctx in
                     ctx.opacity = min(1, e.halo2Base + e.wGlowHalo * 3) * 0.7
-                    let rect = R(450, 0, 0, e.wGlowHalo * 0.8)
+                    let ox = ex * 0.1; let oy = ey * 0.1
+                    let rect = R(450, ox, oy, e.wGlowHalo * 0.8)
                     ctx.fill(Path(ellipseIn: rect), with: .radialGradient(
                         Gradient(stops: [
                             .init(color: .clear, location: 0.77),
@@ -256,18 +258,19 @@ struct ConsciousnessEntityView: View {
                             .init(color: Color(red: 20/255.0, green: 68/255.0, blue: 115/255.0).opacity(0.12), location: 0.87),
                             .init(color: .clear, location: 0.91),
                         ]),
-                        center: CGPoint(x: cx, y: cy), startRadius: 0, endRadius: rect.width / 2
+                        center: CGPoint(x: cx + ox, y: cy + oy), startRadius: 0, endRadius: rect.width / 2
                     ))
                     ctx.addFilter(.blur(radius: 5))
                 }
 
-                // ═══ L3: Glow Ring ═══
+                // ═══ L3: Glow Ring（视差 0.2x）═══
                 context.drawLayer { ctx in
                     var ringOp = e.ringBase + e.wGlowRing * 5 + sin(e.totalTimeMs / 2000) * 0.1
                     if currentState == .listening { ringOp += e.audioSmooth * 0.15 }
                     if currentState == .speaking  { ringOp += e.audioSmooth * 0.25 }
                     ctx.opacity = min(1, ringOp)
-                    let rect = R(400, 0, 0, e.wGlowRing)
+                    let ox = ex * 0.2; let oy = ey * 0.2
+                    let rect = R(400, ox, oy, e.wGlowRing)
                     ctx.fill(Path(ellipseIn: rect), with: .radialGradient(
                         Gradient(stops: [
                             .init(color: .clear, location: 0.91),
@@ -275,19 +278,19 @@ struct ConsciousnessEntityView: View {
                             .init(color: Color(red: 30/255.0, green: 85/255.0, blue: 140/255.0).opacity(0.12), location: 0.98),
                             .init(color: .clear, location: 1.0),
                         ]),
-                        center: CGPoint(x: cx, y: cy), startRadius: 0, endRadius: rect.width / 2
+                        center: CGPoint(x: cx + ox, y: cy + oy), startRadius: 0, endRadius: rect.width / 2
                     ))
                     ctx.addFilter(.blur(radius: 1.5))
                 }
 
-                // ═══ L4: BG Disc ═══
+                // ═══ L4: BG Disc（视差 0.4x）═══
                 context.fill(
-                    Path(ellipseIn: R(380, 0, 0, e.wThinRing)),
+                    Path(ellipseIn: R(380, ex * 0.4, ey * 0.4, e.wThinRing)),
                     with: .color(Color(red: 11/255.0, green: 46/255.0, blue: 104/255.0))
                 )
 
-                // ═══ L5: Thin Ring ═══
-                let thinRect = R(380, 0, 0, e.wThinRing)
+                // ═══ L5: Thin Ring（视差 0.4x）═══
+                let thinRect = R(380, ex * 0.4, ey * 0.4, e.wThinRing)
                 let bright = min(1.0, e.thinBright)
                 let thinColor = Color(
                     red: (61 + 61 * bright) / 255,
@@ -315,18 +318,18 @@ struct ConsciousnessEntityView: View {
                 }
                 context.fill(gyroPath, with: .color(Color(red: 7/255.0, green: 22/255.0, blue: 72/255.0)))
 
-                // ═══ L7: Thick White ═══
-                let thickRect = R(254, ex * 0.5, ey * 0.5, e.wThickWht)
+                // ═══ L7: Thick White（视差 0.45x）═══
+                let thickRect = R(254, ex * 0.45, ey * 0.45, e.wThickWht)
                 context.drawLayer { ctx in
-                    ctx.fill(Path(ellipseIn: R(264, ex * 0.5, ey * 0.5, e.wThickWht)),
+                    ctx.fill(Path(ellipseIn: R(264, ex * 0.45, ey * 0.45, e.wThickWht)),
                              with: .color(Color(red: 60/255.0, green: 130/255.0, blue: 190/255.0).opacity(0.4)))
                     ctx.addFilter(.blur(radius: 5))
                 }
                 context.fill(Path(ellipseIn: thickRect), with: .color(.white))
 
-                // ═══ L8: Inner Blue ═══
+                // ═══ L8: Inner Blue（视差 0.95x）═══
                 context.fill(
-                    Path(ellipseIn: R(190, ex * 0.7, ey * 0.7, e.wInnerBlue)),
+                    Path(ellipseIn: R(190, ex * 0.95, ey * 0.95, e.wInnerBlue)),
                     with: .color(Color(red: 166/255.0, green: 182/255.0, blue: 219/255.0))
                 )
 
