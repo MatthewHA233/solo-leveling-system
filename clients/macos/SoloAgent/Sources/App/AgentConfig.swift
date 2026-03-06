@@ -25,35 +25,35 @@ struct AgentConfig: Codable {
     // MARK: - AI Provider Settings
 
     /// AI 提供商: "gemini" | "openai"
-    var aiProvider: String = "gemini"
+    var aiProvider: String = "openai"
 
     /// 是否启用 AI 分析
     var aiEnabled: Bool = true
 
-    // MARK: - Gemini AI Settings
+    // MARK: - Gemini AI Settings (legacy)
 
     /// Gemini API Key
     var geminiApiKey: String?
 
     /// Gemini API 基地址
-    var geminiApiBase: String = "https://api.apiyi.com"
+    var geminiApiBase: String = "https://generativelanguage.googleapis.com"
 
     /// Gemini 模型名
-    var geminiModel: String = "gemini-3-flash-preview"
+    var geminiModel: String = "gemini-2.0-flash"
 
-    // MARK: - OpenAI Compatible Settings
+    // MARK: - OpenAI Compatible Settings (千问)
 
-    /// OpenAI API Key
+    /// API Key（阿里百炼 / OpenAI 兼容）
     var openaiApiKey: String?
 
-    /// OpenAI API 基地址
-    var openaiApiBase: String = "https://api.apiyi.com"
+    /// API 基地址（默认阿里百炼）
+    var openaiApiBase: String = "https://dashscope.aliyuncs.com/compatible-mode"
 
-    /// OpenAI 模型名（Phase 1 视频转录，用轻量模型）
-    var openaiModel: String = "qwen3.5-flash-2026-02-23"
+    /// Phase 1 转录模型（轻量快速）
+    var openaiModel: String = "qwen-vl-max"
 
-    /// Phase 2 活动卡片生成模型（用更强的模型确保理解力）
-    var openaiCardModel: String = "qwen3.5-plus-2026-02-15"
+    /// Phase 2 卡片生成模型（理解力强）
+    var openaiCardModel: String = "qwen-plus"
 
     // MARK: - Batch Analysis Settings
 
@@ -82,6 +82,23 @@ struct AgentConfig: Codable {
 
     /// 视频帧采样步长 (每 N 帧取 1 帧)
     var videoFrameStride: Int = 1
+
+    // MARK: - Voice Settings
+
+    /// Fish Audio API Key
+    var fishApiKey: String?
+
+    /// Fish Audio 参考音色 ID (默认: 绝区零 Fairy)
+    var fishReferenceId: String = "235851fae0da43309a9973fe7285a823"
+
+    /// Fish Audio TTS WebSocket 地址
+    var fishApiBase: String = "wss://api.fish.audio/v1/tts/live"
+
+    /// Fish API 代理端口 (0 = 不使用代理)
+    var fishProxyPort: Int = 7890
+
+    /// 语音交互模型 (Qwen3 Omni)
+    var voiceModel: String = "qwen3-omni-flash-2025-12-01"
 
     // MARK: - Overlay Settings
 
