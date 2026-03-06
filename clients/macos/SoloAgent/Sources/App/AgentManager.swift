@@ -43,6 +43,15 @@ final class AgentManager: ObservableObject {
     private var aiClient: AIClient?
     private var batchManager: BatchManager?
 
+    // MARK: - Context Advisor
+    private(set) var contextAdvisor: ContextAdvisor!
+
+    // MARK: - Shadow Agent
+    private(set) var shadowAgent: ShadowAgent!
+
+    // MARK: - Voice Service
+    private(set) var voiceService: VoiceService!
+
     // MARK: - Internal
     private var captureTask: Task<Void, Never>?
     private var cleanupTask: Task<Void, Never>?
@@ -77,6 +86,7 @@ final class AgentManager: ObservableObject {
             let bm = BatchManager(config: config, persistence: persistence, aiClient: client)
             bm.onProgress = { [weak self] batchId, message in
                 self?.batchProgress[batchId] = message
+                self?.shadowAgent?.pushSystem("[\(batchId.prefix(8))] \(message)", icon: "gearshape")
             }
             bm.onStreamingToken = { [weak self] batchId, token in
                 guard let self else { return }
@@ -86,6 +96,7 @@ final class AgentManager: ObservableObject {
             bm.onStreamingComplete = { [weak self] batchId, _ in
                 guard let self else { return }
                 self.isStreaming[batchId] = false
+                self.shadowAgent?.pushSystem("[\(batchId.prefix(8))] AI 分析完成", icon: "checkmark.circle")
                 // 延迟清理流式文本，让 UI 有时间过渡到卡片
                 Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .seconds(1.5))
@@ -97,8 +108,18 @@ final class AgentManager: ObservableObject {
             Logger.info("🤖 AI 分析已启用 (\(config.aiProvider): \(model))")
         }
 
+        // 初始化上下文感知引擎
+        self.contextAdvisor = ContextAdvisor(persistence: persistence, ruleClassifier: ruleClassifier)
+        self.batchManager?.contextAdvisor = self.contextAdvisor
+
         // 初始化游戏引擎
         initGameEngine()
+
+        // 初始化暗影智能体
+        self.shadowAgent = ShadowAgent(agentManager: self)
+
+        // 初始化语音服务
+        self.voiceService = VoiceService()
     }
 
     // MARK: - Game Engine Init
@@ -656,6 +677,40 @@ final class AgentManager: ObservableObject {
         return true
     }
 
+    // MARK: - Agent Dispatch (Shadow Agent)
+
+    /// AI 代理调度 — function calling 让 AI 决定调用哪个 Skill
+    func dispatchAgent(
+        userMessage: String,
+        tools: [[String: Any]]
+    ) async -> AIClient.AgentDispatchResult? {
+        guard let client = aiClient else { return nil }
+
+        // 构建上下文
+        let now = Int(Date().timeIntervalSince1970)
+        let contextHint = contextAdvisor.buildContextHint(
+            startTs: now - 1800, endTs: now, config: config
+        )
+
+        let systemPrompt = """
+        你是「暗影智能体」，独自升级系统的 AI 代理。你的职责是理解用户意图，调用合适的技能执行操作。
+
+        \(contextHint.isEmpty ? "" : "## 当前上下文\n\(contextHint)\n")
+        \(config.mainQuest.map { "用户主线目标：\($0)" } ?? "")
+
+        规则：
+        - 优先使用 tools 中的技能来完成用户请求
+        - 如果用户请求不匹配任何技能，直接用简短中文回复（不超过 3 句）
+        - 用中文回复
+        """
+
+        return await client.agentDispatch(
+            systemPrompt: systemPrompt,
+            userMessage: userMessage,
+            tools: tools
+        )
+    }
+
     // MARK: - Game Tick Loop
 
     /// 游戏引擎定期检查 — 过期任务、buff 清理、状态持久化
@@ -739,6 +794,7 @@ final class AgentManager: ObservableObject {
                         self?.streamingText.removeValue(forKey: batchId)
                     }
                 }
+                newBM.contextAdvisor = self.contextAdvisor
                 self.batchManager = newBM
                 startBatchProcessingLoop()
                 let model = newConfig.aiProvider == "openai" ? newConfig.openaiModel : newConfig.geminiModel

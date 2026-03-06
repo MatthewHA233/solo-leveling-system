@@ -28,7 +28,8 @@ final class AIClient {
     func transcribeVideo(
         videoData: Data,
         videoDurationSeconds: Int,
-        frameTimeMapping: String = ""
+        frameTimeMapping: String = "",
+        contextHint: String = ""
     ) async -> [[String: Any]]? {
         guard let apiKey = activeApiKey, !apiKey.isEmpty else {
             Self.debugLog("未配置 \(config.aiProvider) API Key，跳过视频转录")
@@ -37,7 +38,8 @@ final class AIClient {
 
         let prompt = PromptTemplates.videoTranscriptionPrompt(
             videoDurationSeconds: videoDurationSeconds,
-            frameTimeMapping: frameTimeMapping
+            frameTimeMapping: frameTimeMapping,
+            contextHint: contextHint
         )
 
         Self.debugLog("[\(config.aiProvider)] 开始视频转录, 视频大小: \(videoData.count / 1024)KB, 视频时长: \(videoDurationSeconds)s")
@@ -76,7 +78,8 @@ final class AIClient {
     /// 基于转录生成活动卡片
     func generateActivityCards(
         transcription: [[String: Any]],
-        existingCards: [ActivityCardRecord]
+        existingCards: [ActivityCardRecord],
+        contextHint: String = ""
     ) async -> [[String: Any]]? {
         guard let apiKey = activeApiKey, !apiKey.isEmpty else {
             return nil
@@ -120,7 +123,8 @@ final class AIClient {
             transcription: transcriptionJson,
             existingCards: existingJson,
             mainQuest: config.mainQuest ?? "",
-            motivations: config.motivations ?? []
+            motivations: config.motivations ?? [],
+            contextHint: contextHint
         )
 
         Self.debugLog("开始生成活动卡片, 转录段数: \(transcription.count)")
@@ -429,7 +433,8 @@ final class AIClient {
     func streamTranscribeVideo(
         videoData: Data,
         videoDurationSeconds: Int,
-        frameTimeMapping: String = ""
+        frameTimeMapping: String = "",
+        contextHint: String = ""
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             Task { @MainActor in
@@ -440,7 +445,8 @@ final class AIClient {
 
                 let prompt = PromptTemplates.videoTranscriptionPrompt(
                     videoDurationSeconds: videoDurationSeconds,
-                    frameTimeMapping: frameTimeMapping
+                    frameTimeMapping: frameTimeMapping,
+                    contextHint: contextHint
                 )
 
                 Self.debugLog("[Streaming] 开始流式视频转录, 视频大小: \(videoData.count / 1024)KB, 时长: \(videoDurationSeconds)s")
@@ -575,7 +581,8 @@ final class AIClient {
     /// 流式生成活动卡片 — 返回 AsyncThrowingStream，逐 token yield
     func streamGenerateActivityCards(
         transcription: [[String: Any]],
-        existingCards: [ActivityCardRecord]
+        existingCards: [ActivityCardRecord],
+        contextHint: String = ""
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             Task { @MainActor in
@@ -621,7 +628,8 @@ final class AIClient {
                     transcription: transcriptionJson,
                     existingCards: existingJson,
                     mainQuest: config.mainQuest ?? "",
-                    motivations: config.motivations ?? []
+                    motivations: config.motivations ?? [],
+                    contextHint: contextHint
                 )
 
                 Self.debugLog("[Streaming] 开始流式生成活动卡片, 转录段数: \(transcription.count)")
@@ -794,6 +802,209 @@ final class AIClient {
         } catch {
             Self.debugLog("[Streaming] Gemini 流式错误: \(error)")
             continuation.finish(throwing: error)
+        }
+    }
+
+    // MARK: - Qwen3 Omni Audio Streaming
+
+    /// 流式发送音频到 Qwen3 Omni，返回逐 token 文本流
+    func streamOmniAudio(
+        systemPrompt: String,
+        audioBase64: String,
+        audioFormat: String = "wav"
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task { @MainActor in
+                guard let apiKey = activeApiKey, !apiKey.isEmpty else {
+                    continuation.finish(throwing: AIStreamError.noApiKey)
+                    return
+                }
+
+                let baseURL = config.openaiApiBase.hasSuffix("/")
+                    ? String(config.openaiApiBase.dropLast())
+                    : config.openaiApiBase
+                let urlString = "\(baseURL)/v1/chat/completions"
+
+                guard let url = URL(string: urlString) else {
+                    continuation.finish(throwing: AIStreamError.invalidURL)
+                    return
+                }
+
+                let payload: [String: Any] = [
+                    "model": config.voiceModel,
+                    "messages": [
+                        [
+                            "role": "system",
+                            "content": systemPrompt,
+                        ] as [String: Any],
+                        [
+                            "role": "user",
+                            "content": [
+                                [
+                                    "type": "input_audio",
+                                    "input_audio": [
+                                        "data": "data:;base64,\(audioBase64)",
+                                        "format": audioFormat,
+                                    ] as [String: String]
+                                ] as [String: Any]
+                            ] as [[String: Any]]
+                        ] as [String: Any]
+                    ] as [[String: Any]],
+                    "modalities": ["text"],
+                    "stream": true,
+                    "stream_options": ["include_usage": true] as [String: Any],
+                ]
+
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("solo-leveling-system/2.0", forHTTPHeaderField: "User-Agent")
+
+                guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
+                    continuation.finish(throwing: AIStreamError.serializationFailed)
+                    return
+                }
+                request.httpBody = body
+
+                Self.debugLog("[Omni] 发送 Qwen3 Omni 音频流式请求, 音频大小: \(audioBase64.count / 1024)KB")
+
+                do {
+                    let (bytes, response) = try await session.bytes(for: request)
+
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        continuation.finish(throwing: AIStreamError.httpError(0, "非 HTTP 响应"))
+                        return
+                    }
+                    guard httpResponse.statusCode == 200 else {
+                        var errorBody = ""
+                        for try await line in bytes.lines { errorBody += line; if errorBody.count > 500 { break } }
+                        Self.debugLog("[Omni] HTTP \(httpResponse.statusCode): \(errorBody.prefix(500))")
+                        continuation.finish(throwing: AIStreamError.httpError(httpResponse.statusCode, errorBody))
+                        return
+                    }
+
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data: ") else { continue }
+                        let data = String(line.dropFirst(6))
+                        if data == "[DONE]" { break }
+
+                        guard let jsonData = data.data(using: .utf8),
+                              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                              let choices = json["choices"] as? [[String: Any]],
+                              let delta = choices.first?["delta"] as? [String: Any],
+                              let content = delta["content"] as? String else {
+                            continue
+                        }
+
+                        continuation.yield(content)
+                    }
+                    continuation.finish()
+                    Self.debugLog("[Omni] Qwen3 Omni 流式完成")
+                } catch {
+                    Self.debugLog("[Omni] Qwen3 Omni 流式错误: \(error)")
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    // MARK: - Agent Dispatch (Function Calling)
+
+    /// AI 代理调度结果
+    struct AgentDispatchResult {
+        var toolCall: (command: String, args: String)?
+        var textResponse: String?
+    }
+
+    /// AI 代理调度 — function calling 让 AI 决定调用哪个 Skill 或直接回复
+    func agentDispatch(
+        systemPrompt: String,
+        userMessage: String,
+        tools: [[String: Any]]
+    ) async -> AgentDispatchResult? {
+        guard let apiKey = activeApiKey, !apiKey.isEmpty else {
+            Self.debugLog("[Agent] 无 API Key")
+            return nil
+        }
+
+        let baseURL = config.openaiApiBase.hasSuffix("/")
+            ? String(config.openaiApiBase.dropLast())
+            : config.openaiApiBase
+        let urlString = "\(baseURL)/v1/chat/completions"
+
+        guard let url = URL(string: urlString) else { return nil }
+
+        var payload: [String: Any] = [
+            "model": config.openaiCardModel,
+            "messages": [
+                ["role": "system", "content": systemPrompt] as [String: Any],
+                ["role": "user", "content": userMessage] as [String: Any],
+            ] as [[String: Any]],
+            "temperature": 0.3,
+            "max_tokens": 512,
+        ]
+
+        if !tools.isEmpty {
+            payload["tools"] = tools
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
+        request.httpBody = body
+
+        Self.debugLog("[Agent] 调度请求: \(userMessage.prefix(80))")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                let errorBody = String(data: data, encoding: .utf8) ?? ""
+                Self.debugLog("[Agent] HTTP 错误: \(errorBody.prefix(300))")
+                return nil
+            }
+
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any] else {
+                Self.debugLog("[Agent] 响应格式异常")
+                return nil
+            }
+
+            var result = AgentDispatchResult()
+
+            // 检查 tool_calls
+            if let toolCalls = message["tool_calls"] as? [[String: Any]],
+               let firstCall = toolCalls.first,
+               let function = firstCall["function"] as? [String: Any],
+               let name = function["name"] as? String {
+                let arguments = function["arguments"] as? String ?? "{}"
+                // 解析 arguments JSON 获取 args
+                var args = ""
+                if let argsData = arguments.data(using: .utf8),
+                   let argsJson = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] {
+                    args = argsJson["args"] as? String ?? ""
+                }
+                result.toolCall = (command: "/\(name)", args: args)
+                Self.debugLog("[Agent] tool_call: /\(name) args=\(args)")
+            }
+
+            // 检查 content
+            if let content = message["content"] as? String, !content.isEmpty {
+                result.textResponse = content
+                Self.debugLog("[Agent] text: \(content.prefix(100))")
+            }
+
+            return result
+
+        } catch {
+            Self.debugLog("[Agent] 网络错误: \(error)")
+            return nil
         }
     }
 
