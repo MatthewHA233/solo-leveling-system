@@ -5,13 +5,10 @@ struct SidebarSettingsView: View {
     @EnvironmentObject var agentManager: AgentManager
 
     // AI (编辑态，不自动保存)
-    @State private var aiProvider: String = "gemini"
-    @State private var geminiApiKey: String = ""
-    @State private var geminiApiBase: String = ""
-    @State private var geminiModel: String = ""
-    @State private var openaiApiKey: String = ""
-    @State private var openaiApiBase: String = ""
-    @State private var openaiModel: String = ""
+    @State private var apiKey: String = ""
+    @State private var apiBase: String = ""
+    @State private var transcribeModel: String = ""
+    @State private var cardModel: String = ""
 
     // Capture (自动保存)
     @State private var jpegQuality: Double = 0.6
@@ -19,6 +16,11 @@ struct SidebarSettingsView: View {
 
     // Privacy (自动保存)
     @State private var excludedApps: String = ""
+
+    // Voice (编辑态，和 AI 一起保存)
+    @State private var fishApiKey: String = ""
+    @State private var fishReferenceId: String = ""
+    @State private var fishProxyPort: String = "7890"
 
     // UI state
     @State private var aiDirty: Bool = false
@@ -32,6 +34,8 @@ struct SidebarSettingsView: View {
                 aiSection
                 NeonDivider(.horizontal)
                 captureSection
+                NeonDivider(.horizontal)
+                voiceSection
                 NeonDivider(.horizontal)
                 privacySection
             }
@@ -49,21 +53,10 @@ struct SidebarSettingsView: View {
             // 当前生效状态
             activeModelBadge
 
-            // Provider picker
-            HStack(spacing: 4) {
-                providerButton("Gemini", id: "gemini")
-                providerButton("OpenAI", id: "openai")
-            }
-
-            if aiProvider == "gemini" {
-                settingsField("API 密钥", secure: true, text: $geminiApiKey)
-                settingsField("接口地址", text: $geminiApiBase)
-                settingsField("模型", text: $geminiModel)
-            } else {
-                settingsField("API 密钥", secure: true, text: $openaiApiKey)
-                settingsField("接口地址", text: $openaiApiBase)
-                settingsField("模型", text: $openaiModel)
-            }
+            settingsField("API 密钥", secure: true, text: $apiKey)
+            settingsField("接口地址", text: $apiBase)
+            settingsField("转录模型", text: $transcribeModel)
+            settingsField("卡片模型", text: $cardModel)
 
             // 确认并应用 + 测试连接
             HStack(spacing: 4) {
@@ -137,17 +130,13 @@ struct SidebarSettingsView: View {
 
     private var activeModelBadge: some View {
         let c = agentManager.config
-        let provider = c.aiProvider == "openai" ? "OpenAI" : "Gemini"
-        let model = c.aiProvider == "openai" ? c.openaiModel : c.geminiModel
-        let hasKey = c.aiProvider == "openai"
-            ? (c.openaiApiKey != nil && !c.openaiApiKey!.isEmpty)
-            : (c.geminiApiKey != nil && !c.geminiApiKey!.isEmpty)
+        let hasKey = c.openaiApiKey != nil && !c.openaiApiKey!.isEmpty
 
         return HStack(spacing: 5) {
             Circle()
                 .fill(hasKey ? NeonBrutalismTheme.expGreen : NeonBrutalismTheme.dangerRed)
                 .frame(width: 6, height: 6)
-            Text("\(provider) · \(model)")
+            Text("\(c.openaiModel) / \(c.openaiCardModel)")
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundColor(NeonBrutalismTheme.textSecondary)
                 .lineLimit(1)
@@ -156,6 +145,37 @@ struct SidebarSettingsView: View {
         .padding(.vertical, 3)
         .background(Color.white.opacity(0.03))
         .cornerRadius(3)
+    }
+
+    // MARK: - Voice Section
+
+    private var voiceSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("语音", icon: "waveform")
+
+            // 状态指示
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(
+                        (agentManager.config.fishApiKey != nil && !agentManager.config.fishApiKey!.isEmpty)
+                            ? NeonBrutalismTheme.expGreen
+                            : NeonBrutalismTheme.dangerRed
+                    )
+                    .frame(width: 6, height: 6)
+                Text("右Cmd 长按 1s 说话")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(NeonBrutalismTheme.textSecondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.white.opacity(0.03))
+            .cornerRadius(3)
+
+            settingsField("Fish API Key", secure: true, text: $fishApiKey)
+            settingsField("音色 ID", text: $fishReferenceId)
+            settingsField("代理端口", text: $fishProxyPort)
+        }
     }
 
     // MARK: - Capture Section
@@ -237,39 +257,6 @@ struct SidebarSettingsView: View {
         }
     }
 
-    private func providerButton(_ label: String, id: String) -> some View {
-        Button(action: {
-            aiProvider = id
-            markAIDirty()
-        }) {
-            Text(label)
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 5)
-                .background(
-                    aiProvider == id
-                        ? NeonBrutalismTheme.electricBlue.opacity(0.2)
-                        : Color.white.opacity(0.03)
-                )
-                .foregroundColor(
-                    aiProvider == id
-                        ? NeonBrutalismTheme.electricBlue
-                        : NeonBrutalismTheme.textSecondary
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 3)
-                        .stroke(
-                            aiProvider == id
-                                ? NeonBrutalismTheme.electricBlue.opacity(0.5)
-                                : NeonBrutalismTheme.electricBlue.opacity(0.1),
-                            lineWidth: 1
-                        )
-                )
-                .cornerRadius(3)
-        }
-        .buttonStyle(.plain)
-    }
-
     @ViewBuilder
     private func settingsField(
         _ label: String,
@@ -311,13 +298,14 @@ struct SidebarSettingsView: View {
 
     private func applyAISettings() {
         var c = AgentConfig.load()
-        c.aiProvider = aiProvider
-        c.geminiApiKey = geminiApiKey.isEmpty ? nil : geminiApiKey
-        c.geminiApiBase = geminiApiBase
-        c.geminiModel = geminiModel
-        c.openaiApiKey = openaiApiKey.isEmpty ? nil : openaiApiKey
-        c.openaiApiBase = openaiApiBase
-        c.openaiModel = openaiModel
+        c.aiProvider = "openai"
+        c.openaiApiKey = apiKey.isEmpty ? nil : apiKey
+        c.openaiApiBase = apiBase
+        c.openaiModel = transcribeModel
+        c.openaiCardModel = cardModel
+        c.fishApiKey = fishApiKey.isEmpty ? nil : fishApiKey
+        c.fishReferenceId = fishReferenceId.isEmpty ? "235851fae0da43309a9973fe7285a823" : fishReferenceId
+        c.fishProxyPort = Int(fishProxyPort) ?? 7890
         c.save()
         agentManager.reloadConfig()
         aiDirty = false
@@ -344,16 +332,16 @@ struct SidebarSettingsView: View {
 
     private func loadFromConfig() {
         let c = agentManager.config
-        aiProvider = c.aiProvider
-        geminiApiKey = c.geminiApiKey ?? ""
-        geminiApiBase = c.geminiApiBase
-        geminiModel = c.geminiModel
-        openaiApiKey = c.openaiApiKey ?? ""
-        openaiApiBase = c.openaiApiBase
-        openaiModel = c.openaiModel
+        apiKey = c.openaiApiKey ?? ""
+        apiBase = c.openaiApiBase
+        transcribeModel = c.openaiModel
+        cardModel = c.openaiCardModel
         jpegQuality = c.captureJpegQuality
         screenshotInterval = c.screenshotInterval
         excludedApps = c.excludedApps.joined(separator: "\n")
+        fishApiKey = c.fishApiKey ?? ""
+        fishReferenceId = c.fishReferenceId
+        fishProxyPort = String(c.fishProxyPort)
     }
 
     private func testConnection() {

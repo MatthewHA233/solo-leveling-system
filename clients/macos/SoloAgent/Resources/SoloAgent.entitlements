@@ -5,5 +5,9 @@
 	<!-- App Sandbox: 开发阶段关闭，发布时再开启 -->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
+
+	<!-- 麦克风权限 (语音交互) -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>

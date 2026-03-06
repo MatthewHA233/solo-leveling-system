@@ -221,7 +221,7 @@ struct BatchDetailView: View {
     @ViewBuilder
     private func regenerateButton() -> some View {
         HStack(spacing: 8) {
-            // 重新生成卡片（只跑 Phase 2，快速）
+            // 重新生成卡片（通过暗影智能体，只跑 Phase 2）
             actionButton(
                 icon: "arrow.clockwise",
                 label: "重新生成卡片",
@@ -229,15 +229,12 @@ struct BatchDetailView: View {
             ) {
                 isRegenerating = true
                 Task {
-                    let success = await agent.regenerateCards(batchId)
+                    await agent.shadowAgent.send("/regenerate \(batchId)")
                     isRegenerating = false
-                    if !success {
-                        AIClient.debugLog("[UI] regenerateCards 失败：AI 未配置")
-                    }
                 }
             }
 
-            // 完整重新分析（Phase 1 + Phase 2，耗时）
+            // 完整重新分析（通过暗影智能体，Phase 1 + Phase 2）
             actionButton(
                 icon: "film",
                 label: "重新转录视频",
@@ -245,11 +242,8 @@ struct BatchDetailView: View {
             ) {
                 isRegenerating = true
                 Task {
-                    let success = await agent.reanalyzeBatch(batchId)
+                    await agent.shadowAgent.send("/analyze \(batchId)")
                     isRegenerating = false
-                    if !success {
-                        AIClient.debugLog("[UI] reanalyzeBatch 失败：AI 未配置")
-                    }
                 }
             }
         }

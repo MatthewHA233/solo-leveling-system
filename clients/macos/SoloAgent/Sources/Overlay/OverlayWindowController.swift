@@ -35,6 +35,7 @@ final class OverlayWindowController {
 
     private var miniBarPanel: HolographicPanel?
     private var notificationPanel: HolographicPanel?
+    private var consciousnessPanel: HolographicPanel?
 
     // MARK: - Mini Status Bar
 
@@ -96,6 +97,33 @@ final class OverlayWindowController {
         notificationPanel = nil
     }
 
+    // MARK: - Consciousness View
+
+    func showConsciousness<Content: View>(content: Content) {
+        if consciousnessPanel == nil {
+            let screen = NSScreen.main ?? NSScreen.screens.first!
+            let size: CGFloat = 350
+            let x = screen.visibleFrame.midX - size / 2
+            let y = screen.visibleFrame.midY - size / 2
+
+            let panel = HolographicPanel(contentRect: NSRect(
+                x: x, y: y, width: size, height: size
+            ))
+            panel.ignoresMouseEvents = true // 必须穿透鼠标事件
+            panel.contentView = NSHostingView(rootView: content)
+            consciousnessPanel = panel
+        } else {
+            consciousnessPanel?.contentView = NSHostingView(rootView: content)
+        }
+
+        consciousnessPanel?.orderFrontRegardless()
+    }
+
+    func hideConsciousness() {
+        consciousnessPanel?.orderOut(nil)
+        consciousnessPanel = nil
+    }
+
     // MARK: - Cleanup
 
     func closeAll() {
@@ -103,5 +131,7 @@ final class OverlayWindowController {
         miniBarPanel = nil
         notificationPanel?.orderOut(nil)
         notificationPanel = nil
+        consciousnessPanel?.orderOut(nil)
+        consciousnessPanel = nil
     }
 }

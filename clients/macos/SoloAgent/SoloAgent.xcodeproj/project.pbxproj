@@ -56,6 +56,16 @@
 		F2C24D2F227308DDBCACCCE2 /* ActivityFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75B46C44DF58F5C6E7FE510F /* ActivityFeed.swift */; };
 		FBE861B5DDA9737969B5097F /* ImageProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2FA64E49AF2E272C18B5C39 /* ImageProcessor.swift */; };
 		FED54C8EE7042B3E30D2E1A9 /* HotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 322CC0D8F2CC6E668D6D0ED3 /* HotkeyManager.swift */; };
+		1A2B3C4D5E6F708192A3B4C5 /* ShadowAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E4F5061728394A5B6C /* ShadowAgent.swift */; };
+		2B3C4D5E6F7081A2B3C4D5E6 /* SkillRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2D3E4F50617283A4B5C6D7E /* SkillRegistry.swift */; };
+		3C4D5E6F708192A3B4C5D6E7 /* AgentChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E4F5061728394A5B6C7D8E /* AgentChatView.swift */; };
+		4D5E6F7081A2B3C4D5E6F708 /* ChatInputBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F506172839A4B5C6D7E8F0 /* ChatInputBar.swift */; };
+		5E6F708192A3B4C5D6E7F809 /* ShadowAgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5061728394A5B6C7D8E9F0A /* ShadowAgentView.swift */; };
+		A3B4C5D6E7F8091A2B3C4D5E /* ConsciousnessEntityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4C5D6E7F8091A2B3C4D5E6F /* ConsciousnessEntityView.swift */; };
+		6F7081A2B3C4D5E6F7081A2B /* ContextRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6172839A4B5C6D7E8F0A1B2 /* ContextRule.swift */; };
+		708192A3B4C5D6E7F8091A2B /* ContextAdvisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0617283A4B5C6D7E8F0A1B2C /* ContextAdvisor.swift */; };
+		8192A3B4C5D6E7F8091A2B3C /* VoiceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1728394A5B6C7D8E9F0A1B2C /* VoiceService.swift */; };
+		92A3B4C5D6E7F8091A2B3C4D /* FishTTSClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2839A4B5C6D7E8F0A1B2C3D4 /* FishTTSClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -109,6 +119,16 @@
 		F72A8D9788BFA3F287AB3EB5 /* ChronosCellDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChronosCellDetailView.swift; sourceTree = "<group>"; };
 		F94A6A09970C0A974011FDD7 /* DayNightChartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DayNightChartView.swift; sourceTree = "<group>"; };
 		FE8601B442069D3F89D289A7 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
+		A1C2D3E4F5061728394A5B6C /* ShadowAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShadowAgent.swift; sourceTree = "<group>"; };
+		B2D3E4F50617283A4B5C6D7E /* SkillRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillRegistry.swift; sourceTree = "<group>"; };
+		C3E4F5061728394A5B6C7D8E /* AgentChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentChatView.swift; sourceTree = "<group>"; };
+		D4F506172839A4B5C6D7E8F0 /* ChatInputBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatInputBar.swift; sourceTree = "<group>"; };
+		E5061728394A5B6C7D8E9F0A /* ShadowAgentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShadowAgentView.swift; sourceTree = "<group>"; };
+		F6172839A4B5C6D7E8F0A1B2 /* ContextRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextRule.swift; sourceTree = "<group>"; };
+		0617283A4B5C6D7E8F0A1B2C /* ContextAdvisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextAdvisor.swift; sourceTree = "<group>"; };
+		1728394A5B6C7D8E9F0A1B2C /* VoiceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceService.swift; sourceTree = "<group>"; };
+		2839A4B5C6D7E8F0A1B2C3D4 /* FishTTSClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FishTTSClient.swift; sourceTree = "<group>"; };
+		F4C5D6E7F8091A2B3C4D5E6F /* ConsciousnessEntityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsciousnessEntityView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -160,7 +180,10 @@
 		4AEBF3E8C271D4367FC34151 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				C3E4F5061728394A5B6C7D8E /* AgentChatView.swift */,
+				F4C5D6E7F8091A2B3C4D5E6F /* ConsciousnessEntityView.swift */,
 				A1B2C3D4E5F60718293A4B5C /* BatchDetailView.swift */,
+				D4F506172839A4B5C6D7E8F0 /* ChatInputBar.swift */,
 				F5658DF965870E305204456A /* ChronosActivityConverter.swift */,
 				F72A8D9788BFA3F287AB3EB5 /* ChronosCellDetailView.swift */,
 				F94A6A09970C0A974011FDD7 /* DayNightChartView.swift */,
@@ -170,6 +193,7 @@
 				85DD3BA1FF2219726C80D9B7 /* MotivationBarView.swift */,
 				CFF4E7D001F072C71ED97737 /* NotificationPopupView.swift */,
 				A60D7E6BBE446827160103C0 /* OmniscienceLogView.swift */,
+				E5061728394A5B6C7D8E9F0A /* ShadowAgentView.swift */,
 				09DDA55F2E071BB5EF77853E /* SidebarSettingsView.swift */,
 				93DFD647DFEF6429879A415D /* UnifiedSystemView.swift */,
 				B5415814632715C561AE8128 /* VesselMatrixView.swift */,
@@ -206,7 +230,11 @@
 			children = (
 				96BC2C3BD6CCA2E32794D2A4 /* AgentConfig.swift */,
 				C9400DE96EE2EE1F935D6C35 /* AgentManager.swift */,
+				F6172839A4B5C6D7E8F0A1B2 /* ContextRule.swift */,
+				A1C2D3E4F5061728394A5B6C /* ShadowAgent.swift */,
+				B2D3E4F50617283A4B5C6D7E /* SkillRegistry.swift */,
 				7FFF867D5777688341F17DDE /* SoloAgentApp.swift */,
+				1728394A5B6C7D8E9F0A1B2C /* VoiceService.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -290,6 +318,7 @@
 			isa = PBXGroup;
 			children = (
 				6F70D29DD64069D2B4CC8820 /* AIClient.swift */,
+				2839A4B5C6D7E8F0A1B2C3D4 /* FishTTSClient.swift */,
 				23D817712B272F8044AD62D3 /* NetworkClient.swift */,
 			);
 			path = Network;
@@ -299,6 +328,7 @@
 			isa = PBXGroup;
 			children = (
 				EB2ED20FDCFA1A425631F3D6 /* BatchManager.swift */,
+				0617283A4B5C6D7E8F0A1B2C /* ContextAdvisor.swift */,
 				4DC96C364A0D89E6E272A4EF /* PromptTemplates.swift */,
 			);
 			path = Analysis;
@@ -364,12 +394,16 @@
 			files = (
 				97A823104B0AA30CFE990F72 /* AIAnalysisResult.swift in Sources */,
 				578DF7A6DEA6F7608C97EB75 /* AIClient.swift in Sources */,
+				708192A3B4C5D6E7F8091A2B /* ContextAdvisor.swift in Sources */,
+				6F7081A2B3C4D5E6F7081A2B /* ContextRule.swift in Sources */,
 				F2C24D2F227308DDBCACCCE2 /* ActivityFeed.swift in Sources */,
+				3C4D5E6F708192A3B4C5D6E7 /* AgentChatView.swift in Sources */,
 				D10344AD6527AE666A89B077 /* AgentConfig.swift in Sources */,
 				9FDC614F0F77E530984CFFAB /* AgentManager.swift in Sources */,
 				0257A3B1C4D8E9F2A1B3C5D7 /* BatchDetailView.swift in Sources */,
 				B5B172703207D11874EA40A9 /* BatchManager.swift in Sources */,
 				6E0BA8DA9BD52C5280C9C539 /* CaptureStrategy.swift in Sources */,
+				4D5E6F7081A2B3C4D5E6F708 /* ChatInputBar.swift in Sources */,
 				AFF38A9A8705C8C81FC76E2B /* ChronosActivityConverter.swift in Sources */,
 				68B14D74F0CCFB0CFF3E1EC7 /* ChronosCellDetailView.swift in Sources */,
 				1C5E31637D82B8D5D8483FD6 /* CinematicEffects.swift in Sources */,
@@ -404,13 +438,19 @@
 				B7DA014DB3F001E867B1BEAB /* ScreenCaptureService.swift in Sources */,
 				7208B1A1080F4E8931E94562 /* ScreenshotStorageManager.swift in Sources */,
 				B5225CF2DB1B3AD4C8C6AFE6 /* SettingsView.swift in Sources */,
+				1A2B3C4D5E6F708192A3B4C5 /* ShadowAgent.swift in Sources */,
+				5E6F708192A3B4C5D6E7F809 /* ShadowAgentView.swift in Sources */,
+				A3B4C5D6E7F8091A2B3C4D5E /* ConsciousnessEntityView.swift in Sources */,
 				7695AAE191F2FD00A2CFC31A /* SidebarSettingsView.swift in Sources */,
+				2B3C4D5E6F7081A2B3C4D5E6 /* SkillRegistry.swift in Sources */,
 				82489D5AAF13D2AE17D0CCF8 /* SoloAgentApp.swift in Sources */,
 				3B969412D8FF401B902C671C /* SystemMessages.swift in Sources */,
 				50C5D9B8ADBAF194B902FFA1 /* UnifiedSystemView.swift in Sources */,
 				98184E13FC2CA04C4DF1D868 /* VesselMatrixView.swift in Sources */,
 				6690D1D39E759D28C0D59577 /* VideoProcessingService.swift in Sources */,
+				8192A3B4C5D6E7F8091A2B3C /* VoiceService.swift in Sources */,
 				1645A1811F29CFB44DAFB6A3 /* WindowMonitorService.swift in Sources */,
+				92A3B4C5D6E7F8091A2B3C4D /* FishTTSClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

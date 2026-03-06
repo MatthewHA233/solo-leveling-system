@@ -33,12 +33,44 @@ final class OverlayManager: ObservableObject {
                 }
             }
         }
+        // 右 Command 长按 → 语音交互
+        hotkeyManager.onVoiceStart = { [weak agentManager] in
+            guard let manager = agentManager else { return }
+            manager.voiceService.startRecording()
+            manager.shadowAgent?.pushSystem("语音录制中...", icon: "mic.fill")
+        }
+        hotkeyManager.onVoiceStop = { [weak agentManager] in
+            guard let manager = agentManager else { return }
+            guard let wavData = manager.voiceService.stopRecording() else {
+                manager.shadowAgent?.pushSystem("录音过短或无声，已取消", icon: "mic.slash")
+                return
+            }
+            // 保存语音文件 + 计算时长
+            let filename = VoiceFileStore.save(wavData)
+            let duration = Double(wavData.count - 44) / (16000.0 * 2.0) // 16kHz 16-bit mono
+            // 追加用户语音消息（可回放）
+            manager.shadowAgent?.messages.append(
+                AgentMessage(role: .user, content: "语音消息", icon: "mic.fill",
+                             voiceFile: filename, voiceDuration: duration)
+            )
+            Task {
+                await manager.voiceService.processVoice(
+                    wavData: wavData,
+                    agent: manager.shadowAgent,
+                    manager: manager
+                )
+            }
+        }
+
         hotkeyManager.register()
 
         // Show mini bar
         if agentManager.config.overlayEnabled {
             showMiniBar(agentManager: agentManager)
         }
+        
+        // 意识结构体视图始终初始化（悬浮透明）
+        windowController.showConsciousness(content: ConsciousnessEntityView(voiceService: agentManager.voiceService))
 
         // Listen for game events that should trigger notifications
         agentManager.gameEventBus.on(.levelUp) { [weak self] event in

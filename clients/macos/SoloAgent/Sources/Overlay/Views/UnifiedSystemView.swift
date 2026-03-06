@@ -26,7 +26,6 @@ struct UnifiedSystemView: View {
     @State private var batchPlayer: AVPlayer?
     @State private var loopStartTime: String?
     @State private var loopEndTime: String?
-    @State private var isReorganizing: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -179,32 +178,22 @@ struct UnifiedSystemView: View {
 
             Spacer()
 
-            // 一键整理今日卡片
+            // 一键整理今日卡片（通过暗影智能体执行）
             Button(action: {
-                guard !isReorganizing else { return }
-                isReorganizing = true
-                Task {
-                    await agentManager.reorganizeTodayCards()
-                    isReorganizing = false
-                }
+                Task { await agentManager.shadowAgent.send("/reorganize") }
             }) {
                 HStack(spacing: 4) {
-                    if isReorganizing {
-                        ProgressView()
-                            .controlSize(.mini)
-                    } else {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 10))
-                    }
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10))
                     Text("整理卡片")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                 }
-                .foregroundColor(isReorganizing ? NeonBrutalismTheme.textSecondary : .orange)
+                .foregroundColor(.orange)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.orange.opacity(isReorganizing ? 0.03 : 0.08))
+                        .fill(Color.orange.opacity(0.08))
                         .overlay(
                             RoundedRectangle(cornerRadius: 4)
                                 .strokeBorder(Color.orange.opacity(0.2), lineWidth: 0.5)
@@ -212,7 +201,6 @@ struct UnifiedSystemView: View {
                 )
             }
             .buttonStyle(.plain)
-            .disabled(isReorganizing)
         }
     }
 
@@ -335,9 +323,9 @@ struct UnifiedSystemView: View {
             .environmentObject(agentManager)
             .transition(.move(edge: .trailing).combined(with: .opacity))
         } else {
-            OmniscienceLogView(
-                activityFeed: agentManager.activityFeed,
-                isCapturing: agentManager.isCapturing
+            ShadowAgentView(
+                agent: agentManager.shadowAgent,
+                activityFeed: agentManager.activityFeed
             )
             .transition(.opacity)
         }
