@@ -421,6 +421,7 @@ final class BatchManager {
             }
 
             AIClient.debugLog("[BatchManager] 流式视频转录完成, 总长度: \(fullText.count)")
+            AIClient.debugLog("[RESPONSE Phase1] fullText=\(fullText)")
             await onStreamingComplete?(batchId, fullText)
 
             // 解析 JSON
@@ -469,6 +470,7 @@ final class BatchManager {
             }
 
             AIClient.debugLog("[BatchManager] 流式完成, 总长度: \(fullText.count)")
+            AIClient.debugLog("[RESPONSE Phase2] fullText=\(fullText)")
             await onStreamingComplete?(batchId, fullText)
 
             // 解析 JSON

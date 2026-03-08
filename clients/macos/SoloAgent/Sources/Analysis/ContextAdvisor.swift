@@ -105,7 +105,46 @@ final class ContextAdvisor {
             sections.append("用户教学规则匹配：\(matchedRules.joined(separator: "；"))")
         }
 
-        // 5. 主线目标
+        // 5. 操作状态时间线
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm:ss"
+        var stateTimeline: [String] = []
+        for record in records {
+            let time = timeFmt.string(from: record.timestamp)
+            let idle = Int(record.idleSeconds)
+            let state: String
+            if record.activityState == "active" && idle < 3 {
+                state = "主动操作"
+            } else if record.activityState == "active" && idle < 15 {
+                state = "阅览"
+            } else if record.activityState == "active" && idle < 60 {
+                state = "等待"
+            } else {
+                state = "放置"
+            }
+            stateTimeline.append("[\(time)] \(state)(idle=\(idle)s) \(record.appName ?? "")")
+        }
+        if !stateTimeline.isEmpty {
+            sections.append("操作状态时间线：\n\(stateTimeline.joined(separator: "\n"))")
+        }
+
+        // 6. 应用切换时间线
+        var switchEvents: [String] = []
+        var prevApp: String? = nil
+        for record in records {
+            let app = record.appName ?? "Unknown"
+            if app != prevApp {
+                let time = timeFmt.string(from: record.timestamp)
+                let title = String((record.windowTitle ?? "").prefix(40))
+                switchEvents.append("[\(time)] → \(app): \(title)")
+                prevApp = app
+            }
+        }
+        if !switchEvents.isEmpty {
+            sections.append("应用切换时间线：\n\(switchEvents.joined(separator: "\n"))")
+        }
+
+        // 7. 主线目标
         if let quest = config.mainQuest, !quest.isEmpty {
             sections.append("用户当前主线目标：\(quest)")
         }

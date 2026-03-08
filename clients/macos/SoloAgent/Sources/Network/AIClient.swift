@@ -450,6 +450,7 @@ final class AIClient {
                 )
 
                 Self.debugLog("[Streaming] 开始流式视频转录, 视频大小: \(videoData.count / 1024)KB, 时长: \(videoDurationSeconds)s")
+                Self.debugLog("[REQUEST Phase1] model=\(config.openaiModel)\n--- PROMPT ---\n\(prompt)\n--- END PROMPT ---")
 
                 if isOpenAI {
                     await streamOpenAIVideoAPI(videoData: videoData, prompt: prompt, apiKey: apiKey, continuation: continuation)
@@ -633,6 +634,7 @@ final class AIClient {
                 )
 
                 Self.debugLog("[Streaming] 开始流式生成活动卡片, 转录段数: \(transcription.count)")
+                Self.debugLog("[REQUEST Phase2] model=\(config.openaiCardModel)\n--- PROMPT ---\n\(prompt)\n--- END PROMPT ---")
 
                 if isOpenAI {
                     await streamOpenAITextAPI(prompt: prompt, apiKey: apiKey, continuation: continuation)
@@ -968,7 +970,12 @@ final class AIClient {
                 }
                 request.httpBody = body
 
-                Self.debugLog("[AgentLoop] 发送 streamAgentTurn 请求，messages=\(messages.count), tools=\(tools.count)")
+                if let msgData = try? JSONSerialization.data(withJSONObject: messages, options: .prettyPrinted),
+                   let msgStr = String(data: msgData, encoding: .utf8) {
+                    Self.debugLog("[REQUEST AgentTurn] model=\(config.openaiCardModel) messages=\(messages.count) tools=\(tools.count)\n--- MESSAGES ---\n\(msgStr.prefix(4000))\n--- END MESSAGES ---")
+                } else {
+                    Self.debugLog("[REQUEST AgentTurn] model=\(config.openaiCardModel) messages=\(messages.count) tools=\(tools.count)")
+                }
 
                 do {
                     let (bytes, response) = try await session.bytes(for: request)
