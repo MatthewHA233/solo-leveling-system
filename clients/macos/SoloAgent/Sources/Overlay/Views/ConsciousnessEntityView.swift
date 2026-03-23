@@ -89,6 +89,10 @@ private final class FairyEngine {
             targetGyroSpeed = 1.2
             targetGlowBase = 0.80; targetHalo2Base = 0.80
             targetRingBase = 0.85; targetThinBright = 0.5
+        case .inquiring:
+            targetGyroSpeed = 0.8
+            targetGlowBase = 0.78; targetHalo2Base = 0.78
+            targetRingBase = 0.82; targetThinBright = 0.3
         }
 
         // ── Lerp ──
@@ -184,12 +188,13 @@ private final class FairyEngine {
 struct ConsciousnessEntityView: View {
     @ObservedObject var voiceService: VoiceService
 
-    enum EntityState: Equatable { case idle, listening, thinking, speaking }
+    enum EntityState: Equatable { case idle, listening, thinking, speaking, inquiring }
 
     var currentState: EntityState {
         if voiceService.isRecording { return .listening }
         if voiceService.isPlaying { return .speaking }
         if voiceService.isThinking { return .thinking }
+        if voiceService.inquiryText != nil { return .inquiring }
         return .idle
     }
 
@@ -199,6 +204,48 @@ struct ConsciousnessEntityView: View {
     private let S: CGFloat = 0.4 // 700 → 280
 
     var body: some View {
+        VStack(spacing: 0) {
+            fairyCanvas
+                .frame(width: viewSize, height: viewSize)
+                .drawingGroup()
+
+            // 主动询问气泡 + 按键提示
+            if let text = voiceService.inquiryText {
+                VStack(spacing: 6) {
+                    Text(text)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color(red: 11/255.0, green: 46/255.0, blue: 104/255.0).opacity(0.85))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color(red: 60/255.0, green: 140/255.0, blue: 200/255.0).opacity(0.4), lineWidth: 0.5)
+                                )
+                        )
+                        .shadow(color: Color(red: 36/255.0, green: 102/255.0, blue: 157/255.0).opacity(0.3), radius: 8)
+
+                    HStack(spacing: 4) {
+                        Image(systemName: "command")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("按住回应")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(Color(red: 100/255.0, green: 180/255.0, blue: 255/255.0).opacity(0.7))
+                }
+                .transition(.opacity.combined(with: .offset(y: -8)))
+                .animation(.easeOut(duration: 0.3), value: voiceService.inquiryText != nil)
+                .padding(.top, 4)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var fairyCanvas: some View {
         TimelineView(.animation) { timeline in
             Canvas { context, size in
                 let now = timeline.date
@@ -206,7 +253,7 @@ struct ConsciousnessEntityView: View {
                 if let last = engine.lastDate { dt = min(now.timeIntervalSince(last), 0.05) }
                 else { dt = 0.016 }
                 engine.lastDate = now
-                let active = voiceService.isRecording || voiceService.isPlaying || voiceService.isThinking
+                let active = voiceService.isRecording || voiceService.isPlaying || voiceService.isThinking || voiceService.inquiryText != nil
                 engine.tick(dt: dt, state: currentState, audioLevel: voiceService.audioLevel, active: active)
 
                 let e = engine
@@ -399,9 +446,6 @@ struct ConsciousnessEntityView: View {
                 context.fill(Path(ellipseIn: ballRect), with: .color(.white))
             }
         }
-        .frame(width: viewSize, height: viewSize)
-        .drawingGroup()
-        .allowsHitTesting(false)
     }
 
     // MARK: - Gyroscope Path

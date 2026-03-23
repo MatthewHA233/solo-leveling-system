@@ -52,6 +52,9 @@ final class AgentManager: ObservableObject {
     // MARK: - Voice Service
     private(set) var voiceService: VoiceService!
 
+    // MARK: - Proactive Inquiry
+    private(set) var inquiryEngine: ProactiveInquiryEngine!
+
     // MARK: - Internal
     private var captureTask: Task<Void, Never>?
     private var cleanupTask: Task<Void, Never>?
@@ -120,6 +123,14 @@ final class AgentManager: ObservableObject {
 
         // 初始化语音服务
         self.voiceService = VoiceService()
+
+        // 初始化主动询问引擎
+        self.inquiryEngine = ProactiveInquiryEngine(persistence: persistence)
+        self.inquiryEngine.onInquiry = { [weak self] trigger in
+            guard let self else { return }
+            // fairy 动画激活 + 气泡文字 + 按住 ⌘ 提示
+            self.voiceService.showInquiry(trigger.spokenText, context: trigger.systemPrompt)
+        }
     }
 
     // MARK: - Game Engine Init
@@ -309,13 +320,15 @@ final class AgentManager: ObservableObject {
         // 2. 初始化窗口监控
         windowMonitor.startMonitoring()
 
-        // 3. 监听窗口切换 → 记录到数据库
+        // 3. 监听窗口切换 → 记录到数据库 + 主动询问检查
         windowMonitor.onWindowSwitch = { [weak self] oldInfo, newInfo in
             guard let self = self else { return }
             Task { @MainActor in
                 if let bundleId = newInfo.bundleId, let appName = newInfo.appName {
                     self.persistence.recordAppActivation(bundleId: bundleId, appName: appName)
                 }
+                // 检查新窗口是否有映射，无则触发询问
+                self.inquiryEngine.handleWindowSwitch(from: oldInfo, to: newInfo)
             }
         }
 
@@ -467,7 +480,7 @@ final class AgentManager: ObservableObject {
 
     /// 活跃期结束时触发：将积累的截图合成视频并发给 AI
     private func triggerSessionBatch() async {
-        await batchManager?.processCurrentSession()
+        await batchManager?.checkAndProcessBatches()
         // 清理所有已完成批次的进度文字
         let completedKeys = batchProgress.keys.filter { key in
             if let record = persistence.batchRecord(for: key) {
@@ -588,7 +601,10 @@ final class AgentManager: ObservableObject {
         }
 
         batchProcessingTask = Task {
-            // 初始延迟 30 秒，等待足够截图积累
+            // 启动时先处理遗留截图（上次退出前未来得及处理的）
+            await batchManager?.processOrphanedScreenshots()
+
+            // 初始延迟 30 秒，等待足够新截图积累
             try? await Task.sleep(for: .seconds(30))
 
             while !Task.isCancelled {
@@ -724,6 +740,16 @@ final class AgentManager: ObservableObject {
                 if let pm = playerManager {
                     persistence.savePlayer(pm.player)
                 }
+
+                // 主动询问定时检查（过期映射刷新）
+                inquiryEngine.periodicCheck()
+
+                // idle 检测
+                let idle = windowMonitor.idleSeconds
+                inquiryEngine.handleIdleChange(
+                    idleSeconds: idle,
+                    isScreenLocked: windowMonitor.isScreenLocked
+                )
 
                 syncGameState()
             }

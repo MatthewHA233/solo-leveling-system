@@ -6,10 +6,21 @@ struct MiniStatusBarView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            // Level badge
+            // Level badge — tap to open 全域网监控
             Text("Lv.\(agentManager.player.level)")
                 .font(NeonBrutalismTheme.miniLevelFont)
                 .brutalGlow()
+                .onTapGesture {
+                    if let window = NSApp.windows.first(where: { $0.title == "全域网监控" }) {
+                        window.makeKeyAndOrderFront(nil)
+                        NSApp.activate(ignoringOtherApps: true)
+                    } else {
+                        NotificationCenter.default.post(name: .openOmniscienceWindow, object: nil)
+                    }
+                }
+                .onHover { hovering in
+                    if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                }
 
             // Exp bar -> 动机进度条 (Mock)
             MotivationBarView(

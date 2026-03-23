@@ -21,8 +21,18 @@ struct ExpandedVideoPlayerView: View {
 
     @EnvironmentObject var agent: AgentManager
     @State private var currentSubtitle: String = ""
+    @State private var currentMappedTime: String = ""
     @State private var subtitles: [VideoSubtitle] = []
     @State private var isPlayerEnded: Bool = false
+    @State private var cachedBatch: BatchRecord? = nil
+    /// 从 transcriptionJson 解析的分段时间控制点：(视频秒, 真实Unix时间戳)
+    @State private var timeMapping: [(videoSec: Double, realTs: Double)] = []
+
+    private static let timeFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
 
     private var isLooping: Bool { loopStartTime != nil && loopEndTime != nil }
 
@@ -100,6 +110,28 @@ struct ExpandedVideoPlayerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color.black)
 
+                // 右上角：映射真实时间
+                if !currentMappedTime.isEmpty {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Text(currentMappedTime)
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color.black.opacity(0.65))
+                                )
+                                .padding(.top, 8)
+                                .padding(.trailing, 8)
+                        }
+                        Spacer()
+                    }
+                    .allowsHitTesting(false)
+                }
+
                 // 字幕叠加
                 if !currentSubtitle.isEmpty {
                     Text(currentSubtitle)
@@ -145,7 +177,11 @@ struct ExpandedVideoPlayerView: View {
             .padding(.vertical, 6)
         }
         .background(NeonBrutalismTheme.background)
-        .onAppear { computeSubtitles() }
+        .onAppear {
+            cachedBatch = agent.persistence.batchRecord(for: batchId)
+            buildTimeMapping()
+            computeSubtitles()
+        }
         .onReceive(Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()) { _ in
             updatePlayback()
         }
@@ -175,6 +211,22 @@ struct ExpandedVideoPlayerView: View {
         // 获取视频总时长
         let videoDuration = player.currentItem?.duration.seconds ?? 0
 
+        // 更新右上角映射时间（分段线性插值，基于 transcriptionJson 的实际帧时间戳）
+        if videoDuration > 0 {
+            if let mapped = interpolateMappedTime(videoSec: seconds) {
+                if currentMappedTime != mapped { currentMappedTime = mapped }
+            } else if let batch = cachedBatch {
+                // fallback：线性插值（transcriptionJson 未就绪时）
+                let batchDuration = Double(batch.endTs - batch.startTs)
+                if batchDuration > 0 {
+                    let ratio = max(0, min(1, seconds / videoDuration))
+                    let realTs = Double(batch.startTs) + ratio * batchDuration
+                    let mapped = Self.timeFmt.string(from: Date(timeIntervalSince1970: realTs))
+                    if currentMappedTime != mapped { currentMappedTime = mapped }
+                }
+            }
+        }
+
         // 更新字幕 — 视频暂停在末尾时清除字幕
         let isAtEnd = videoDuration > 0 && seconds >= videoDuration - 0.1
         let isPlaying = player.rate > 0
@@ -194,6 +246,26 @@ struct ExpandedVideoPlayerView: View {
                 player.play()
             }
         }
+    }
+
+    // MARK: - Time Mapping (分段线性插值)
+
+    /// 从 BatchRecord.frameTimestampsJson 解析帧时间戳数组（与发给 AI 的映射表完全一致）
+    private func buildTimeMapping() {
+        guard let jsonStr = cachedBatch?.frameTimestampsJson,
+              let data = jsonStr.data(using: .utf8),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [Int] else {
+            return
+        }
+        // timeMapping[i].realTs = 视频第 i 秒对应的 Unix 时间戳（与 AI 看到的映射表完全一致）
+        timeMapping = arr.enumerated().map { (videoSec: Double($0.offset), realTs: Double($0.element)) }
+    }
+
+    /// 给定视频播放秒数，直接查表返回真实时间；无数据时返回 nil
+    private func interpolateMappedTime(videoSec: Double) -> String? {
+        guard !timeMapping.isEmpty else { return nil }
+        let idx = max(0, min(timeMapping.count - 1, Int(videoSec)))
+        return Self.timeFmt.string(from: Date(timeIntervalSince1970: timeMapping[idx].realTs))
     }
 
     // MARK: - Subtitle Computation

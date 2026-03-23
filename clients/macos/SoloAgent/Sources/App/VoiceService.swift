@@ -10,6 +10,13 @@ final class VoiceService: ObservableObject {
     /// 实时音量 (0~1)，供意识体 UI 做音频响应
     @Published var audioLevel: Float = 0
 
+    /// 主动询问文本（非 nil 时 fairy 激活并显示气泡）
+    @Published var inquiryText: String? = nil
+    /// 主动询问上下文（注入到下次语音处理的 system prompt）
+    var pendingInquiryContext: String? = nil
+    /// 自动消失计时器
+    private var inquiryDismissTask: Task<Void, Never>?
+
     private var audioEngine: AVAudioEngine?
     /// 原始录音缓冲 — 收集麦克风原生格式的 PCM buffer
     private var rawBuffers: [AVAudioPCMBuffer] = []
@@ -31,6 +38,14 @@ final class VoiceService: ObservableObject {
     /// 开始录音 — 收集麦克风原生格式，停止时统一转换
     func startRecording() {
         guard !isRecording else { return }
+
+        // 如果有主动询问气泡，用户开始录音意味着正在回应，收起气泡
+        if inquiryText != nil {
+            inquiryDismissTask?.cancel()
+            inquiryDismissTask = nil
+            inquiryText = nil
+            // pendingInquiryContext 保留，在 processVoice 中注入
+        }
 
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
@@ -175,6 +190,30 @@ final class VoiceService: ObservableObject {
         let wavData = samplesToWAV(samples, sampleRate: Int(targetSampleRate))
         AIClient.debugLog("[Voice] WAV: \(wavData.count / 1024)KB")
         return wavData
+    }
+
+    // MARK: - Proactive Inquiry (主动询问 fairy 交互)
+
+    /// 显示主动询问 — fairy 激活 + 文字气泡 + 自动 20s 后消失
+    func showInquiry(_ text: String, context: String) {
+        inquiryText = text
+        pendingInquiryContext = context
+        AIClient.debugLog("[Voice] 主动询问: \(text.prefix(30))")
+
+        // 20s 后自动消失
+        inquiryDismissTask?.cancel()
+        inquiryDismissTask = Task {
+            try? await Task.sleep(for: .seconds(20))
+            dismissInquiry()
+        }
+    }
+
+    /// 清除主动询问状态
+    func dismissInquiry() {
+        inquiryDismissTask?.cancel()
+        inquiryDismissTask = nil
+        inquiryText = nil
+        pendingInquiryContext = nil
     }
 
     // MARK: - Full Pipeline
@@ -444,6 +483,13 @@ final class VoiceService: ObservableObject {
 
         if !contextHint.isEmpty {
             prompt += "\n\n## 当前上下文\n\(contextHint)"
+        }
+
+        // 如果有主动询问上下文，注入到 prompt
+        if let inquiryCtx = pendingInquiryContext {
+            prompt += "\n\n## 主动询问背景\n\(inquiryCtx)\n用户刚刚通过语音回应了你的主动询问。请根据他的回答，用 set_window_task 或 record_away 工具记录信息，然后简短确认。"
+            // 消费后清除
+            pendingInquiryContext = nil
         }
 
         // 今日卡片摘要

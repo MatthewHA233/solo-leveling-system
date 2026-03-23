@@ -26,6 +26,8 @@ final class PersistenceManager {
             ScreenshotRecord.self,
             BatchRecord.self,
             ActivityCardRecord.self,
+            WindowTaskRecord.self,
+            AwayRecord.self,
         ])
         
         let config = ModelConfiguration(
@@ -468,6 +470,37 @@ final class PersistenceManager {
         save()
     }
 
+    /// 保存视频帧时间戳序列（用于前端精确时间映射）
+    func updateBatchFrameTimestamps(_ batchId: String, timestamps: [Int]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: timestamps),
+              let json = String(data: data, encoding: .utf8) else { return }
+        let predicate = #Predicate<BatchRecord> { record in record.id == batchId }
+        let descriptor = FetchDescriptor<BatchRecord>(predicate: predicate)
+        guard let batch = try? context.fetch(descriptor).first else { return }
+        batch.frameTimestampsJson = json
+        save()
+    }
+
+    /// 保存 Phase 1/2 的 prompt 和原始 response（调试用）
+    func updateBatchDebugLogs(
+        _ batchId: String,
+        phase1Prompt: String? = nil,
+        phase1Response: String? = nil,
+        phase2Prompt: String? = nil,
+        phase2Response: String? = nil
+    ) {
+        let predicate = #Predicate<BatchRecord> { record in
+            record.id == batchId
+        }
+        let descriptor = FetchDescriptor<BatchRecord>(predicate: predicate)
+        guard let batch = try? context.fetch(descriptor).first else { return }
+        if let v = phase1Prompt   { batch.phase1Prompt   = v }
+        if let v = phase1Response { batch.phase1Response = v }
+        if let v = phase2Prompt   { batch.phase2Prompt   = v }
+        if let v = phase2Response { batch.phase2Response = v }
+        save()
+    }
+
     /// 校正批次 endTs（视频 stride 采样可能导致末尾截断）
     func updateBatchEndTs(_ batchId: String, endTs: Int) {
         let predicate = #Predicate<BatchRecord> { record in
@@ -551,6 +584,103 @@ final class PersistenceManager {
             context.delete(card)
         }
         save()
+    }
+
+    // MARK: - Window Task Records (窗口-任务映射)
+
+    /// 保存或更新窗口-任务映射
+    func saveWindowTask(_ record: WindowTaskRecord) {
+        context.insert(record)
+        save()
+    }
+
+    /// 查找匹配的窗口映射（bundleId 精确匹配 + titlePattern 模糊匹配）
+    func findWindowTask(bundleId: String, windowTitle: String?) -> WindowTaskRecord? {
+        let predicate = #Predicate<WindowTaskRecord> { record in
+            record.bundleId == bundleId
+        }
+        let descriptor = FetchDescriptor<WindowTaskRecord>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.lastConfirmed, order: .reverse)]
+        )
+        guard let candidates = try? context.fetch(descriptor) else { return nil }
+
+        // 优先匹配 titlePattern 包含在 windowTitle 中的记录
+        if let title = windowTitle {
+            let titleLower = title.lowercased()
+            if let matched = candidates.first(where: { titleLower.contains($0.titlePattern.lowercased()) }) {
+                matched.hitCount += 1
+                save()
+                return matched
+            }
+        }
+
+        // 退而求其次：只匹配 bundleId 的第一条
+        if let fallback = candidates.first {
+            fallback.hitCount += 1
+            save()
+            return fallback
+        }
+
+        return nil
+    }
+
+    /// 获取所有窗口映射
+    func allWindowTasks() -> [WindowTaskRecord] {
+        let descriptor = FetchDescriptor<WindowTaskRecord>(
+            sortBy: [SortDescriptor(\.lastConfirmed, order: .reverse)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
+    /// 查找超过指定小时数未确认的映射（用于定时刷新）
+    func staleWindowTasks(olderThan hours: Int = 3) -> [WindowTaskRecord] {
+        let cutoff = Date().addingTimeInterval(-Double(hours) * 3600)
+        let predicate = #Predicate<WindowTaskRecord> { record in
+            record.lastConfirmed < cutoff
+        }
+        let descriptor = FetchDescriptor<WindowTaskRecord>(predicate: predicate)
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
+    /// 删除窗口映射
+    func deleteWindowTask(_ record: WindowTaskRecord) {
+        context.delete(record)
+        save()
+    }
+
+    // MARK: - Away Records (离开记录)
+
+    /// 保存离开记录
+    func saveAwayRecord(_ record: AwayRecord) {
+        context.insert(record)
+        save()
+    }
+
+    /// 结束当前未关闭的离开记录
+    func endCurrentAwayRecord() {
+        let predicate = #Predicate<AwayRecord> { record in
+            record.endedAt == nil
+        }
+        let descriptor = FetchDescriptor<AwayRecord>(predicate: predicate)
+        guard let records = try? context.fetch(descriptor) else { return }
+        for record in records {
+            record.endedAt = Date()
+        }
+        save()
+    }
+
+    /// 获取今日离开记录
+    func todayAwayRecords() -> [AwayRecord] {
+        let startOfDay = Calendar.current.startOfDay(for: Date())
+        let predicate = #Predicate<AwayRecord> { record in
+            record.startedAt >= startOfDay
+        }
+        let descriptor = FetchDescriptor<AwayRecord>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        return (try? context.fetch(descriptor)) ?? []
     }
 
     // MARK: - Storage Info

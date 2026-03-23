@@ -13,8 +13,8 @@ struct SoloAgentApp: App {
             MenuBarView()
                 .environmentObject(agentManager)
         } label: {
-            Image(systemName: agentManager.isCapturing ? "bolt.fill" : "bolt.slash")
-            Text(agentManager.statusText)
+            // 抽成独立 View，常驻内存，负责监听 openOmniscienceWindow 通知
+            MenuBarLabelView(agentManager: agentManager)
         }
         .menuBarExtraStyle(.window)
 
@@ -25,6 +25,23 @@ struct SoloAgentApp: App {
         }
         .defaultSize(width: 1600, height: 1000)
         .defaultPosition(.center)
+    }
+}
+
+/// 菜单栏图标 View — 常驻内存，监听 openOmniscienceWindow 通知
+private struct MenuBarLabelView: View {
+    @ObservedObject var agentManager: AgentManager
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: agentManager.isCapturing ? "bolt.fill" : "bolt.slash")
+            Text(agentManager.statusText)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openOmniscienceWindow)) { _ in
+            openWindow(id: "omniscience")
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 }
 

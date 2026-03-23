@@ -203,6 +203,78 @@ final class ShadowAgent: ObservableObject {
         messages.append(AgentMessage(role: .system, content: text, icon: icon))
     }
 
+    // MARK: - Proactive Inquiry (主动询问)
+
+    /// 主动发起一轮对话 — AI 根据 systemInstruction 生成首条消息并等待用户回复
+    func proactiveInquiry(_ instruction: String) async {
+        guard !isProcessing else { return }
+        guard let manager = agentManager else { return }
+
+        isProcessing = true
+        defer { isProcessing = false }
+
+        // 在聊天记录中标注这是主动询问
+        pushSystem("主动询问触发", icon: "questionmark.bubble")
+
+        // 构建 system prompt，将 inquiry 指令融入
+        let basePrompt = buildSystemPrompt(manager: manager)
+        let fullPrompt = """
+        \(basePrompt)
+
+        ## 主动询问指令
+        \(instruction)
+        请直接向用户提问，不要解释你为什么要问。语气简短友好。
+        """
+
+        var streamingMsgIdx: Int? = nil
+
+        await agentLoop.run(
+            userMessage: "[系统触发：主动询问]",
+            systemPrompt: fullPrompt,
+            maxIterations: 3
+        ) { [weak self] event in
+            guard let self else { return }
+
+            switch event {
+            case .textDelta(let delta):
+                if streamingMsgIdx == nil {
+                    let msg = AgentMessage(role: .agent, content: "", icon: "questionmark.bubble", isStreaming: true)
+                    self.messages.append(msg)
+                    streamingMsgIdx = self.messages.count - 1
+                }
+                if let idx = streamingMsgIdx {
+                    self.messages[idx].content += delta
+                }
+
+            case .toolCallStarted(let name, _):
+                let display = self.toolDisplayName(name)
+                self.pushSystem("正在调用：\(display)…", icon: "gearshape.2")
+
+            case .toolCallResult:
+                break
+
+            case .done:
+                if let idx = streamingMsgIdx {
+                    self.messages[idx].isStreaming = false
+                    if self.messages[idx].content.isEmpty {
+                        self.messages[idx].content = "在做什么呢？"
+                    }
+                    streamingMsgIdx = nil
+                }
+                ChatHistoryStore.save(self.messages)
+
+            case .error(let msg):
+                if let idx = streamingMsgIdx {
+                    self.messages[idx].isStreaming = false
+                    self.messages[idx].content = "出错：\(msg)"
+                    streamingMsgIdx = nil
+                } else {
+                    self.pushAgent("出错：\(msg)", icon: "exclamationmark.triangle")
+                }
+            }
+        }
+    }
+
     // MARK: - Agent Reply
 
     func pushAgent(_ text: String, icon: String = "sparkles") {
@@ -299,6 +371,9 @@ final class ShadowAgent: ObservableObject {
         case "set_main_quest": return "更新主线"
         case "add_context_rule": return "添加规则"
         case "remove_context_rule": return "删除规则"
+        case "set_window_task": return "记录窗口映射"
+        case "get_window_mappings": return "查看映射"
+        case "record_away": return "记录离开"
         default: return name
         }
     }

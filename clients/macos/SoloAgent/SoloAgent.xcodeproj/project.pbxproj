@@ -69,6 +69,8 @@
 		708192A3B4C5D6E7F8091A2B /* ContextAdvisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0617283A4B5C6D7E8F0A1B2C /* ContextAdvisor.swift */; };
 		8192A3B4C5D6E7F8091A2B3C /* VoiceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1728394A5B6C7D8E9F0A1B2C /* VoiceService.swift */; };
 		92A3B4C5D6E7F8091A2B3C4D /* FishTTSClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2839A4B5C6D7E8F0A1B2C3D4 /* FishTTSClient.swift */; };
+		DD33445566778899AABB0022 /* WindowTaskMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC33445566778899AABB0011 /* WindowTaskMapping.swift */; };
+		DD44556677889900AABB2233 /* ProactiveInquiryEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC44556677889900AABB1122 /* ProactiveInquiryEngine.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -135,6 +137,8 @@
 		1728394A5B6C7D8E9F0A1B2C /* VoiceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceService.swift; sourceTree = "<group>"; };
 		2839A4B5C6D7E8F0A1B2C3D4 /* FishTTSClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FishTTSClient.swift; sourceTree = "<group>"; };
 		F4C5D6E7F8091A2B3C4D5E6F /* ConsciousnessEntityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsciousnessEntityView.swift; sourceTree = "<group>"; };
+		CC33445566778899AABB0011 /* WindowTaskMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowTaskMapping.swift; sourceTree = "<group>"; };
+		CC44556677889900AABB1122 /* ProactiveInquiryEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProactiveInquiryEngine.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -338,7 +342,9 @@
 			children = (
 				EB2ED20FDCFA1A425631F3D6 /* BatchManager.swift */,
 				0617283A4B5C6D7E8F0A1B2C /* ContextAdvisor.swift */,
+				CC44556677889900AABB1122 /* ProactiveInquiryEngine.swift */,
 				4DC96C364A0D89E6E272A4EF /* PromptTemplates.swift */,
+				CC33445566778899AABB0011 /* WindowTaskMapping.swift */,
 			);
 			path = Analysis;
 			sourceTree = "<group>";
@@ -461,6 +467,8 @@
 				98184E13FC2CA04C4DF1D868 /* VesselMatrixView.swift in Sources */,
 				6690D1D39E759D28C0D59577 /* VideoProcessingService.swift in Sources */,
 				8192A3B4C5D6E7F8091A2B3C /* VoiceService.swift in Sources */,
+				DD33445566778899AABB0022 /* WindowTaskMapping.swift in Sources */,
+				DD44556677889900AABB2233 /* ProactiveInquiryEngine.swift in Sources */,
 				1645A1811F29CFB44DAFB6A3 /* WindowMonitorService.swift in Sources */,
 				92A3B4C5D6E7F8091A2B3C4D /* FishTTSClient.swift in Sources */,
 			);

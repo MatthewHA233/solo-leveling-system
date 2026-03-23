@@ -58,8 +58,6 @@ actor VideoProcessingService {
         guard !validFrames.isEmpty else {
             throw VideoError.noFrames
         }
-        let frameTimestamps = validFrames.map(\.timestamp)
-
         // 确定输出路径
         let output = outputURL ?? generateOutputURL()
         try? FileManager.default.createDirectory(
@@ -109,12 +107,12 @@ actor VideoProcessingService {
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
 
-        // 写入帧（使用预加载的有效帧，时间戳与 frameTimestamps 精确对应）
+        // 写入帧：只有成功写入的帧才推进 presentationTime，避免时间轴空洞（跳帧）
         let frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
+        var appendedCount: Int32 = 0
+        var appendedTimestamps: [Int] = []
 
-        for (index, frame) in validFrames.enumerated() {
-            let presentationTime = CMTimeMultiply(frameDuration, multiplier: Int32(index))
-
+        for frame in validFrames {
             while !writerInput.isReadyForMoreMediaData {
                 try await Task.sleep(for: .milliseconds(10))
             }
@@ -126,7 +124,10 @@ actor VideoProcessingService {
                 pool: adaptor.pixelBufferPool
             ) else { continue }
 
+            let presentationTime = CMTimeMultiply(frameDuration, multiplier: appendedCount)
             adaptor.append(pixelBuffer, withPresentationTime: presentationTime)
+            appendedTimestamps.append(frame.timestamp)
+            appendedCount += 1
         }
 
         writerInput.markAsFinished()
@@ -138,9 +139,9 @@ actor VideoProcessingService {
 
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: output.path)[.size] as? Int) ?? 0
         let sizeMB = String(format: "%.1f", Double(fileSize) / 1_048_576.0)
-        Logger.info("🎬 视频合成完成: \(validFrames.count)/\(sampled.count) 帧, \(sizeMB)MB → \(output.lastPathComponent)")
+        Logger.info("🎬 视频合成完成: \(appendedCount)/\(validFrames.count) 帧写入, \(sizeMB)MB → \(output.lastPathComponent)")
 
-        return VideoResult(url: output, frameTimestamps: frameTimestamps)
+        return VideoResult(url: output, frameTimestamps: appendedTimestamps)
     }
 
     // MARK: - Helpers

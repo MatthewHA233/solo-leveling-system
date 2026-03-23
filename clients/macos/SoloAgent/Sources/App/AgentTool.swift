@@ -52,6 +52,9 @@ enum AgentTools {
         SetMainQuestTool(),
         AddContextRuleTool(),
         RemoveContextRuleTool(),
+        SetWindowTaskTool(),
+        GetWindowMappingsTool(),
+        RecordAwayTool(),
     ]
 }
 
@@ -318,5 +321,126 @@ struct RemoveContextRuleTool: AgentTool {
         let removed = rules[index]
         manager.contextAdvisor.removeRule(at: index)
         return "已删除规则[\(index)]：\(removed.pattern) → \(removed.interpretation)"
+    }
+}
+
+// MARK: - Window Task Tools (窗口-任务映射)
+
+struct SetWindowTaskTool: AgentTool {
+    let name = "set_window_task"
+    let description = "记录或更新窗口-任务映射：告诉系统某个应用/窗口对应的任务"
+    let parameters: [String: Any] = [
+        "type": "object",
+        "properties": [
+            "bundleId": [
+                "type": "string",
+                "description": "应用的 Bundle ID（如 com.apple.Safari）",
+            ] as [String: Any],
+            "titlePattern": [
+                "type": "string",
+                "description": "窗口标题关键词（用于模糊匹配，如 \"SoloAgent\"、\"claude.ai\"）",
+            ] as [String: Any],
+            "taskDescription": [
+                "type": "string",
+                "description": "用户在这个窗口做的事情描述",
+            ] as [String: Any],
+            "currentStep": [
+                "type": "string",
+                "description": "当前具体步骤（可选）",
+            ] as [String: Any],
+            "category": [
+                "type": "string",
+                "description": "活动类别：coding/writing/research/design/browsing/communication/media/other",
+            ] as [String: Any],
+        ] as [String: Any],
+        "required": ["bundleId", "titlePattern", "taskDescription"],
+    ]
+
+    func execute(args: [String: Any], manager: AgentManager) async throws -> String {
+        guard let bundleId = args["bundleId"] as? String, !bundleId.isEmpty else {
+            throw ToolError.missingArgument("bundleId")
+        }
+        guard let titlePattern = args["titlePattern"] as? String, !titlePattern.isEmpty else {
+            throw ToolError.missingArgument("titlePattern")
+        }
+        guard let taskDescription = args["taskDescription"] as? String, !taskDescription.isEmpty else {
+            throw ToolError.missingArgument("taskDescription")
+        }
+
+        let currentStep = args["currentStep"] as? String
+        let category = args["category"] as? String
+
+        // 查找是否已有同 bundleId + titlePattern 的映射
+        let existing = manager.persistence.findWindowTask(bundleId: bundleId, windowTitle: titlePattern)
+        if let existing = existing {
+            existing.taskDescription = taskDescription
+            existing.currentStep = currentStep
+            existing.category = category
+            existing.lastConfirmed = Date()
+            try? manager.persistence.context.save()
+        } else {
+            let record = WindowTaskRecord(
+                bundleId: bundleId,
+                titlePattern: titlePattern,
+                taskDescription: taskDescription,
+                currentStep: currentStep,
+                category: category,
+                lastConfirmed: Date()
+            )
+            manager.persistence.saveWindowTask(record)
+        }
+
+        // 刷新内存缓存
+        WindowTaskMatcher.shared.invalidateCache()
+
+        return "已记录窗口映射：\(bundleId) / \(titlePattern) → \(taskDescription)"
+    }
+}
+
+struct GetWindowMappingsTool: AgentTool {
+    let name = "get_window_mappings"
+    let description = "获取所有窗口-任务映射列表"
+    let parameters: [String: Any] = [
+        "type": "object",
+        "properties": [:] as [String: Any],
+        "required": [] as [String],
+    ]
+
+    func execute(args: [String: Any], manager: AgentManager) async throws -> String {
+        let records = manager.persistence.allWindowTasks()
+        if records.isEmpty {
+            return "暂无窗口映射"
+        }
+        let lines = records.map { record -> String in
+            let step = record.currentStep.map { " [\($0)]" } ?? ""
+            let cat = record.category.map { " (\($0))" } ?? ""
+            return "\(record.bundleId) / \(record.titlePattern) → \(record.taskDescription)\(step)\(cat) (引用\(record.hitCount)次)"
+        }
+        return "窗口映射（\(records.count) 条）：\n\(lines.joined(separator: "\n"))"
+    }
+}
+
+struct RecordAwayTool: AgentTool {
+    let name = "record_away"
+    let description = "记录主人不在电脑前时的活动（如吃饭、看手机、休息等）"
+    let parameters: [String: Any] = [
+        "type": "object",
+        "properties": [
+            "description": [
+                "type": "string",
+                "description": "主人说的活动描述（如\"吃午饭\"、\"在看手机\"）",
+            ] as [String: Any],
+        ] as [String: Any],
+        "required": ["description"],
+    ]
+
+    func execute(args: [String: Any], manager: AgentManager) async throws -> String {
+        guard let desc = args["description"] as? String, !desc.isEmpty else {
+            throw ToolError.missingArgument("description")
+        }
+
+        let record = AwayRecord(descriptionText: desc)
+        manager.persistence.saveAwayRecord(record)
+        return "已记录离开活动：\(desc)"
     }
 }

@@ -35,6 +35,8 @@ struct BatchDetailView: View {
     var onClose: () -> Void
 
     @State private var isRegenerating = false
+    @State private var isDebugExpanded = false
+    @State private var expandedDebugSection: String? = nil  // "p1prompt" | "p1resp" | "p2prompt" | "p2resp"
 
     private var batch: BatchRecord? {
         agent.persistence.batchRecord(for: batchId)
@@ -101,6 +103,9 @@ struct BatchDetailView: View {
 
                 // 5. AI 摘要区（按 batch.status 分支显示）
                 aiSummarySection()
+
+                // 6. 调试信息（Prompt / Response）
+                debugSection()
 
                 Spacer()
             }
@@ -604,6 +609,97 @@ struct BatchDetailView: View {
         }
 
         return entries
+    }
+
+    // MARK: - Debug Section
+
+    @ViewBuilder
+    private func debugSection() -> some View {
+        let b = batch
+        let hasAny = b?.phase1Prompt != nil || b?.phase1Response != nil
+            || b?.phase2Prompt != nil || b?.phase2Response != nil
+        if hasAny {
+        VStack(alignment: .leading, spacing: 6) {
+            NeonDivider(.horizontal)
+
+            Button(action: { isDebugExpanded.toggle() }) {
+                HStack(spacing: 6) {
+                    Image(systemName: isDebugExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(NeonBrutalismTheme.textSecondary)
+                    Image(systemName: "ladybug")
+                        .font(.system(size: 10))
+                        .foregroundColor(NeonBrutalismTheme.textSecondary)
+                    Text("调试信息")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundColor(NeonBrutalismTheme.textSecondary)
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+
+            if isDebugExpanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let v = b?.phase1Prompt {
+                        debugRow(key: "p1prompt", label: "Phase 1 Prompt", value: v)
+                    }
+                    if let v = b?.phase1Response {
+                        debugRow(key: "p1resp", label: "Phase 1 Response", value: v)
+                    }
+                    if let v = b?.phase2Prompt {
+                        debugRow(key: "p2prompt", label: "Phase 2 Prompt", value: v)
+                    }
+                    if let v = b?.phase2Response {
+                        debugRow(key: "p2resp", label: "Phase 2 Response", value: v)
+                    }
+                }
+            }
+        }
+        }
+    }
+
+    @ViewBuilder
+    private func debugRow(key: String, label: String, value: String) -> some View {
+        let isOpen = expandedDebugSection == key
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: {
+                expandedDebugSection = isOpen ? nil : key
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: isOpen ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8))
+                        .foregroundColor(NeonBrutalismTheme.electricBlue.opacity(0.7))
+                    Text(label)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(NeonBrutalismTheme.electricBlue.opacity(0.8))
+                    Spacer()
+                    Text("\(value.count) 字符")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(NeonBrutalismTheme.textSecondary.opacity(0.6))
+                }
+            }
+            .buttonStyle(.plain)
+
+            if isOpen {
+                ScrollView(.vertical, showsIndicators: true) {
+                    Text(value)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(NeonBrutalismTheme.textPrimary.opacity(0.8))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(maxHeight: 240)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.black.opacity(0.35))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .strokeBorder(NeonBrutalismTheme.electricBlue.opacity(0.12), lineWidth: 0.5)
+                        )
+                )
+            }
+        }
     }
 
     // MARK: - Styling Helpers

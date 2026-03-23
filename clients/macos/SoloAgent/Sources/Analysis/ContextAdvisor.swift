@@ -149,7 +149,13 @@ final class ContextAdvisor {
             sections.append("用户当前主线目标：\(quest)")
         }
 
-        // 6. 组装输出
+        // 8. 窗口记忆（优先级最高的上下文来源）
+        let windowMemoryLines = buildWindowMemoryHint(records: records)
+        if !windowMemoryLines.isEmpty {
+            sections.insert("【窗口记忆（主人确认）】\n\(windowMemoryLines)", at: 0)
+        }
+
+        // 组装输出
         guard !sections.isEmpty else { return "" }
         return sections.joined(separator: "\n")
     }
@@ -200,6 +206,28 @@ final class ContextAdvisor {
         } else {
             for (i, rule) in userRules.enumerated() {
                 lines.append("[\(i)] \(rule.pattern) → \(rule.interpretation)")
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Window Memory
+
+    /// 从活动记录中提取匹配的窗口记忆，作为强上下文注入
+    private func buildWindowMemoryHint(records: [ActivityRecord]) -> String {
+        let matcher = WindowTaskMatcher.shared
+        var seen = Set<String>()
+        var lines: [String] = []
+
+        for record in records {
+            guard let bundleId = record.bundleId else { continue }
+            let key = bundleId + (record.windowTitle ?? "")
+            if seen.contains(key) { continue }
+            seen.insert(key)
+
+            if let summary = matcher.contextSummary(bundleId: bundleId, windowTitle: record.windowTitle) {
+                lines.append(summary)
             }
         }
 

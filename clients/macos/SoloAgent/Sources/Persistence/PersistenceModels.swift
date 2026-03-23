@@ -228,6 +228,21 @@ final class BatchRecord {
     /// Phase 1 转录结果缓存（JSON 字符串），重新生成卡片时无需重新转录视频
     var transcriptionJson: String?
 
+    /// 视频帧时间戳序列（JSON 数组，与视频帧一一对应），供前端时间映射精确查表
+    var frameTimestampsJson: String?
+
+    /// Phase 1 发送给 AI 的完整 prompt
+    var phase1Prompt: String?
+
+    /// Phase 1 AI 返回的完整原始文本（含失败情况）
+    var phase1Response: String?
+
+    /// Phase 2 发送给 AI 的完整 prompt
+    var phase2Prompt: String?
+
+    /// Phase 2 AI 返回的完整原始文本（含失败情况）
+    var phase2Response: String?
+
     init(
         id: String = "batch_\(UUID().uuidString.prefix(8))",
         startTs: Int,
@@ -237,7 +252,12 @@ final class BatchRecord {
         videoPath: String? = nil,
         createdAt: Date = Date(),
         errorMessage: String? = nil,
-        transcriptionJson: String? = nil
+        transcriptionJson: String? = nil,
+        frameTimestampsJson: String? = nil,
+        phase1Prompt: String? = nil,
+        phase1Response: String? = nil,
+        phase2Prompt: String? = nil,
+        phase2Response: String? = nil
     ) {
         self.id = id
         self.startTs = startTs
@@ -248,6 +268,11 @@ final class BatchRecord {
         self.createdAt = createdAt
         self.errorMessage = errorMessage
         self.transcriptionJson = transcriptionJson
+        self.frameTimestampsJson = frameTimestampsJson
+        self.phase1Prompt = phase1Prompt
+        self.phase1Response = phase1Response
+        self.phase2Prompt = phase2Prompt
+        self.phase2Response = phase2Response
     }
 }
 
@@ -332,6 +357,89 @@ final class ActivityCardRecord {
         self.appSitePrimary = appSitePrimary
         self.appSiteSecondary = appSiteSecondary
         self.goalAlignment = goalAlignment
+        self.createdAt = createdAt
+    }
+}
+
+// MARK: - 窗口-任务映射
+
+/// 窗口→主线任务映射记录（主动询问系统的核心数据）
+@Model
+final class WindowTaskRecord {
+    /// bundleId（如 "com.apple.Safari"）
+    var bundleId: String
+
+    /// 窗口标题关键词（用于模糊匹配，如 "SoloAgent"、"claude.ai"）
+    var titlePattern: String
+
+    /// 用户说的任务描述（如 "在用 Claude 调研 AI 编程"）
+    var taskDescription: String
+
+    /// 关联的主线步骤（如 "重构 BatchManager"）
+    var currentStep: String?
+
+    /// 活动类别（coding / writing / research / media ...）
+    var category: String?
+
+    /// 主人在这个窗口的习惯描述（AI 逐步积累）
+    var habitDescription: String?
+
+    /// 上次主人确认时间（用于 3 小时刷新）
+    var lastConfirmed: Date
+
+    /// 被引用的次数
+    var hitCount: Int
+
+    var createdAt: Date
+
+    init(
+        bundleId: String,
+        titlePattern: String,
+        taskDescription: String,
+        currentStep: String? = nil,
+        category: String? = nil,
+        habitDescription: String? = nil,
+        lastConfirmed: Date = Date(),
+        hitCount: Int = 0,
+        createdAt: Date = Date()
+    ) {
+        self.bundleId = bundleId
+        self.titlePattern = titlePattern
+        self.taskDescription = taskDescription
+        self.currentStep = currentStep
+        self.category = category
+        self.habitDescription = habitDescription
+        self.lastConfirmed = lastConfirmed
+        self.hitCount = hitCount
+        self.createdAt = createdAt
+    }
+}
+
+// MARK: - 离开记录
+
+/// 主人不在电脑前时的活动记录
+@Model
+final class AwayRecord {
+    /// 主人说的描述（"吃午饭"、"在看手机"）
+    var descriptionText: String
+
+    /// 开始时间
+    var startedAt: Date
+
+    /// 结束时间
+    var endedAt: Date?
+
+    var createdAt: Date
+
+    init(
+        descriptionText: String,
+        startedAt: Date = Date(),
+        endedAt: Date? = nil,
+        createdAt: Date = Date()
+    ) {
+        self.descriptionText = descriptionText
+        self.startedAt = startedAt
+        self.endedAt = endedAt
         self.createdAt = createdAt
     }
 }

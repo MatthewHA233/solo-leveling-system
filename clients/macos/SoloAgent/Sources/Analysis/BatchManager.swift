@@ -28,8 +28,16 @@ final class BatchManager {
 
     // MARK: - Main Entry
 
-    /// 将当前所有未处理截图作为一个批次处理
-    func processCurrentSession() async {
+    /// 统一批次处理入口 — 检测所有间隔，按 session 切段分别处理
+    ///
+    /// 算法：
+    ///   1. 取所有未处理截图，按 > 5min 间隔切成多个 segment
+    ///   2. 对于「历史段」（最后一帧距现在 > gapThreshold）：立即处理（无论多短，过短打 skipped 标记）
+    ///   3. 对于「当前段」（最后一帧距现在 ≤ gapThreshold）：仅当时长足够才处理
+    ///
+    /// 此设计替代了旧版 processCurrentSession（无间隔检测）+
+    /// processOrphanedScreenshots（只在启动且满足时间条件时才运行）的组合逻辑。
+    func checkAndProcessBatches() async {
         guard !isProcessing else {
             AIClient.debugLog("[BatchManager] 已有处理中的批次，跳过")
             return
@@ -37,35 +45,80 @@ final class BatchManager {
         isProcessing = true
         defer { isProcessing = false }
 
-        let unprocessed = persistence.unprocessedScreenshots()
-        let minFrames = max(5, config.videoFrameStride * 3)
-        guard unprocessed.count >= minFrames else {
-            AIClient.debugLog("[BatchManager] 截图不足 (\(unprocessed.count)/\(minFrames))，跳过")
-            return
+        let all = persistence.unprocessedScreenshots()
+        guard !all.isEmpty else { return }
+
+        let gapThreshold = 5 * 60   // 相邻截图 > 5min → 不同 session
+        let now = Int(Date().timeIntervalSince1970)
+        let minFramesForSkip = max(3, config.videoFrameStride)
+        let minFramesForBatch = max(5, config.videoFrameStride * 3)
+
+        // 1. 按间隔切分所有未处理截图
+        var segments: [[ScreenshotRecord]] = []
+        var cur: [ScreenshotRecord] = [all[0]]
+        for i in 1..<all.count {
+            if all[i].capturedAt - all[i - 1].capturedAt > gapThreshold {
+                segments.append(cur)
+                cur = [all[i]]
+            } else {
+                cur.append(all[i])
+            }
+        }
+        segments.append(cur)
+
+        if segments.count > 1 {
+            AIClient.debugLog("[BatchManager] 未处理截图切分为 \(segments.count) 段（含跨 session 断层）")
         }
 
-        let startTs = unprocessed.first!.capturedAt
-        let endTs = unprocessed.last!.capturedAt
-        let durationSec = endTs - startTs
+        // 2. 依次处理每段
+        for (idx, shots) in segments.enumerated() {
+            let startTs     = shots.first!.capturedAt
+            let endTs       = shots.last!.capturedAt
+            let durationSec = endTs - startTs
+            let isLastSeg   = (idx == segments.count - 1)
+            let ageOfLastShot = now - endTs  // 最后一帧距现在多久
 
-        guard durationSec >= Int(config.batchMinDuration) else {
-            AIClient.debugLog("[BatchManager] 时长不足 (\(durationSec)s < \(Int(config.batchMinDuration))s)，跳过")
-            return
-        }
+            // 当前段（最近 gapThreshold 内仍有新截图）→ 只有时长足够才处理
+            if isLastSeg && ageOfLastShot <= gapThreshold {
+                guard shots.count >= minFramesForBatch,
+                      durationSec >= Int(config.batchMinDuration) else {
+                    AIClient.debugLog("[BatchManager] 当前 session 尚未积累足够（\(shots.count) 张, \(durationSec)s），等下次")
+                    continue
+                }
+            }
 
-        let batch = PendingBatch(screenshots: unprocessed, startTs: startTs, endTs: endTs)
-        AIClient.debugLog("[BatchManager] 处理批次: \(unprocessed.count) 截图, \(durationSec)s")
+            // 过短的段（历史段）→ 打 skipped 标记，清出 unprocessed 队列
+            guard shots.count >= minFramesForSkip,
+                  durationSec >= Int(config.batchMinDuration) else {
+                AIClient.debugLog("[BatchManager] 段 \(idx + 1) 过短 (\(shots.count) 张, \(durationSec)s)，标记跳过")
+                let skipId = "orphan_skip_\(UUID().uuidString.prefix(8))"
+                persistence.saveBatch(BatchRecord(
+                    id: skipId, startTs: startTs, endTs: endTs,
+                    status: "skipped", screenshotCount: shots.count
+                ))
+                persistence.markScreenshotsAsBatched(shots, batchId: skipId)
+                continue
+            }
 
-        do {
-            try await processBatch(batch)
-        } catch {
-            AIClient.debugLog("[BatchManager] 批次处理失败: \(error.localizedDescription)")
+            let srcLabel = isLastSeg && ageOfLastShot <= gapThreshold ? "当前session" : "历史遗留"
+            AIClient.debugLog("[BatchManager] 处理段 \(idx + 1)/\(segments.count) [\(srcLabel)]: \(shots.count) 张, \(durationSec / 60)min")
+
+            let batch = PendingBatch(screenshots: shots, startTs: startTs, endTs: endTs)
+            do {
+                try await processBatch(batch)
+            } catch {
+                AIClient.debugLog("[BatchManager] 段 \(idx + 1) 处理失败: \(error.localizedDescription)")
+            }
         }
     }
 
-    /// 定期安全网 — 兼容旧的定时调用入口
-    func checkAndProcessBatches() async {
-        await processCurrentSession()
+    // MARK: - Orphaned Session Recovery
+
+    /// 启动时调用 — 现在直接复用 checkAndProcessBatches 的统一逻辑
+    /// （旧实现因「now - lastTs > gapThreshold」守卫，快速重启时会漏掉遗留截图）
+    func processOrphanedScreenshots(gapThreshold: Int = 5 * 60) async {
+        AIClient.debugLog("[BatchManager] 启动时检查遗留截图...")
+        await checkAndProcessBatches()
     }
 
     private struct PendingBatch {
@@ -322,6 +375,9 @@ final class BatchManager {
 
         let frameTimestamps = videoResult.frameTimestamps
 
+        // 保存帧时间戳序列（前端精确时间映射用，与发给 AI 的映射表数据一致）
+        persistence.updateBatchFrameTimestamps(batchId, timestamps: frameTimestamps)
+
         // 校正 batch endTs 为视频实际覆盖的最后一帧时间戳（stride 采样可能导致末尾截断）
         if let lastFrameTs = frameTimestamps.last, lastFrameTs != pending.endTs {
             persistence.updateBatchEndTs(batchId, endTs: lastFrameTs)
@@ -406,6 +462,14 @@ final class BatchManager {
         frameTimeMapping: String,
         contextHint: String = ""
     ) async throws -> [[String: Any]]? {
+        // 保存 Phase 1 prompt（与 AIClient 内部构建的 prompt 相同）
+        let p1Prompt = PromptTemplates.videoTranscriptionPrompt(
+            videoDurationSeconds: videoDurationSeconds,
+            frameTimeMapping: frameTimeMapping,
+            contextHint: contextHint
+        )
+        persistence.updateBatchDebugLogs(batchId, phase1Prompt: p1Prompt)
+
         let stream = aiClient.streamTranscribeVideo(
             videoData: videoData,
             videoDurationSeconds: videoDurationSeconds,
@@ -422,6 +486,7 @@ final class BatchManager {
 
             AIClient.debugLog("[BatchManager] 流式视频转录完成, 总长度: \(fullText.count)")
             AIClient.debugLog("[RESPONSE Phase1] fullText=\(fullText)")
+            persistence.updateBatchDebugLogs(batchId, phase1Response: fullText)
             await onStreamingComplete?(batchId, fullText)
 
             // 解析 JSON
@@ -435,6 +500,7 @@ final class BatchManager {
 
         } catch {
             AIClient.debugLog("[BatchManager] 流式转录失败: \(error), fallback 到非流式")
+            persistence.updateBatchDebugLogs(batchId, phase1Response: "流式失败: \(error)")
             await onStreamingComplete?(batchId, "")
 
             // Fallback 到非流式
@@ -456,6 +522,27 @@ final class BatchManager {
         existingCards: [ActivityCardRecord],
         contextHint: String = ""
     ) async -> [ActivityCardRecord] {
+        // 保存 Phase 2 prompt（与 AIClient 内部构建的 prompt 相同）
+        let transcriptionJson = (try? JSONSerialization.data(withJSONObject: transcription, options: .prettyPrinted))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        var existingJson = "[]"
+        if !existingCards.isEmpty {
+            let cardDicts: [[String: Any]] = existingCards.map { c in [
+                "title": c.title, "category": c.category,
+                "startTime": c.startTime, "endTime": c.endTime, "summary": c.summary
+            ]}
+            existingJson = (try? JSONSerialization.data(withJSONObject: cardDicts, options: .prettyPrinted))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        }
+        let p2Prompt = PromptTemplates.activityCardPrompt(
+            transcription: transcriptionJson,
+            existingCards: existingJson,
+            mainQuest: config.mainQuest ?? "",
+            motivations: config.motivations ?? [],
+            contextHint: contextHint
+        )
+        persistence.updateBatchDebugLogs(batchId, phase2Prompt: p2Prompt)
+
         let stream = aiClient.streamGenerateActivityCards(
             transcription: transcription,
             existingCards: existingCards,
@@ -471,6 +558,7 @@ final class BatchManager {
 
             AIClient.debugLog("[BatchManager] 流式完成, 总长度: \(fullText.count)")
             AIClient.debugLog("[RESPONSE Phase2] fullText=\(fullText)")
+            persistence.updateBatchDebugLogs(batchId, phase2Response: fullText)
             await onStreamingComplete?(batchId, fullText)
 
             // 解析 JSON
@@ -484,6 +572,7 @@ final class BatchManager {
 
         } catch {
             AIClient.debugLog("[BatchManager] 流式失败: \(error), fallback 到非流式")
+            persistence.updateBatchDebugLogs(batchId, phase2Response: "流式失败: \(error)")
             await onStreamingComplete?(batchId, "")
 
             // Fallback 到非流式
