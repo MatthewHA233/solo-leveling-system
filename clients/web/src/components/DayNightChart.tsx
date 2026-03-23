@@ -63,31 +63,116 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`
 }
 
+// ── 工具函数 ──
+
+/** 将某分钟映射到 canvas Y 坐标（贯穿行间隙） */
+function minuteToY(minute: number, col: number, p: ReturnType<typeof getGridParams>) {
+  const localMin = minute - col * p.minutesPerCol
+  const row = Math.floor(localMin / 5)
+  const minuteInRow = localMin % 5
+  return p.topPad + row * p.rowStride + minuteInRow * p.minuteH
+}
+
+/** 按字符换行，不超出 maxWidth */
+function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  if (maxWidth <= 0) return []
+  const chars = [...text]
+  const lines: string[] = []
+  let line = ''
+  for (const ch of chars) {
+    const test = line + ch
+    if (ctx.measureText(test).width > maxWidth && line.length > 0) {
+      lines.push(line)
+      line = ch
+    } else {
+      line = test
+    }
+  }
+  if (line) lines.push(line)
+  return lines
+}
+
 // ── Canvas 绘制函数 ──
 
 function drawGrid(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getGridParams>) {
+  const blue = theme.electricBlue
+  const cornerLen = Math.min(8, p.cellW * 0.12, p.cellH * 0.15)
+
   for (let c = 0; c < p.cols; c++) {
     const hourOfCol = Math.floor(c * p.minutesPerCol / 60)
     const isNight = hourOfCol < 6 || hourOfCol >= 22
-    const borderA = isNight ? 0.05 : 0.09
+    const baseA = isNight ? 0.08 : 0.15
 
     for (let r = 0; r < p.rows; r++) {
-      const cx = colX(c, p)
-      const cy = p.topPad + r * p.rowStride
-      ctx.strokeStyle = hexToRgba(theme.electricBlue, borderA)
+      const x = colX(c, p)
+      const y = p.topPad + r * p.rowStride
+      const w = p.cellW
+      const h = p.cellH
+
+      // 底色扫描线（每格交替微亮）
+      if ((c + r) % 2 === 0) {
+        ctx.fillStyle = hexToRgba(blue, 0.02)
+        ctx.fillRect(x, y, w, h)
+      }
+
+      // 边框细线
+      ctx.strokeStyle = hexToRgba(blue, baseA)
       ctx.lineWidth = 0.5
-      ctx.strokeRect(cx, cy, p.cellW, p.cellH)
+      ctx.strokeRect(x, y, w, h)
+
+      // 四角高亮 bracket
+      ctx.strokeStyle = hexToRgba(blue, baseA * 2.5)
+      ctx.lineWidth = 1
+      // 左上
+      ctx.beginPath()
+      ctx.moveTo(x, y + cornerLen)
+      ctx.lineTo(x, y)
+      ctx.lineTo(x + cornerLen, y)
+      ctx.stroke()
+      // 右上
+      ctx.beginPath()
+      ctx.moveTo(x + w - cornerLen, y)
+      ctx.lineTo(x + w, y)
+      ctx.lineTo(x + w, y + cornerLen)
+      ctx.stroke()
+      // 左下
+      ctx.beginPath()
+      ctx.moveTo(x, y + h - cornerLen)
+      ctx.lineTo(x, y + h)
+      ctx.lineTo(x + cornerLen, y + h)
+      ctx.stroke()
+      // 右下
+      ctx.beginPath()
+      ctx.moveTo(x + w - cornerLen, y + h)
+      ctx.lineTo(x + w, y + h)
+      ctx.lineTo(x + w, y + h - cornerLen)
+      ctx.stroke()
     }
   }
-  // 6 小时大分隔线
+
+  // 6 小时大分隔线（带 glow）
   for (let hour = 6; hour <= 18; hour += 6) {
     const c = Math.floor(hour * 60 / p.minutesPerCol)
     if (c < 0 || c >= p.cols) continue
     const x = colX(c, p) - p.colGap / 2
+
+    // glow
+    ctx.save()
+    ctx.shadowColor = blue
+    ctx.shadowBlur = 6
     ctx.beginPath()
     ctx.moveTo(x, p.topPad)
     ctx.lineTo(x, p.topPad + p.gridH)
-    ctx.strokeStyle = hexToRgba(theme.electricBlue, 0.12)
+    ctx.strokeStyle = hexToRgba(blue, 0.2)
+    ctx.lineWidth = 1
+    ctx.stroke()
+    ctx.restore()
+
+    // 实线
+    ctx.beginPath()
+    ctx.moveTo(x, p.topPad)
+    ctx.lineTo(x, p.topPad + p.gridH)
+    ctx.strokeStyle = hexToRgba(blue, 0.3)
     ctx.lineWidth = 0.5
     ctx.stroke()
   }
@@ -100,7 +185,7 @@ function drawTimeLabels(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getG
     const colStartMin = c * p.minutesPerCol
     const major = colStartMin % 360 === 0
     ctx.font = `${major ? 'bold' : '500'} ${major ? 12 : 10}px 'Courier New', monospace`
-    ctx.fillStyle = major ? theme.textPrimary : theme.textSecondary
+    ctx.fillStyle = major ? theme.electricBlue : theme.textPrimary
     ctx.fillText(fmt(colStartMin), x, p.topPad - 8)
   }
   // 行间小标签
@@ -128,22 +213,24 @@ function drawCellFills(
     const a = layout.activity
     const color = getCategoryColor(a.category)
     const hovered = hoveredId === a.id
-    const opacity = hovered ? 0.25 : 0.15
-    let m = a.startMinute
-    while (m < a.endMinute) {
-      const c = Math.floor(m / p.minutesPerCol)
-      const r = Math.floor((m % p.minutesPerCol) / 5)
-      if (c >= p.cols || r >= p.rows) break
-      const cellStart = c * p.minutesPerCol + r * 5
-      const cx = colX(c, p)
-      const cy = p.topPad + r * p.rowStride
-      const localStart = Math.max(a.startMinute, cellStart) - cellStart
-      const localEnd = Math.min(a.endMinute, cellStart + 5) - cellStart
-      const fillY = cy + localStart * p.minuteH
-      const fillH = (localEnd - localStart) * p.minuteH
+    const opacity = hovered ? 0.75 : 0.55
+
+    // 按列绘制连续实心矩形（贯穿行间隙）
+    const startCol = Math.floor(a.startMinute / p.minutesPerCol)
+    const endCol = Math.floor((a.endMinute - 1) / p.minutesPerCol)
+
+    for (let c = startCol; c <= endCol && c < p.cols; c++) {
+      const colStartMin = c * p.minutesPerCol
+      const colEndMin = (c + 1) * p.minutesPerCol
+      const actStart = Math.max(a.startMinute, colStartMin)
+      const actEnd = Math.min(a.endMinute, colEndMin)
+
+      const y0 = minuteToY(actStart, c, p)
+      const y1 = minuteToY(actEnd, c, p)
+      const x = colX(c, p)
+
       ctx.fillStyle = hexToRgba(color, opacity)
-      ctx.fillRect(cx, fillY, p.cellW, fillH)
-      m = cellStart + 5
+      ctx.fillRect(x, y0, p.cellW, y1 - y0)
     }
   }
 }
@@ -206,8 +293,8 @@ function drawTraceSegments(
           ctx.beginPath()
           ctx.moveTo(x, y1)
           ctx.lineTo(x, nextCy)
-          ctx.strokeStyle = hexToRgba(color, 0.25)
-          ctx.lineWidth = 1
+          ctx.strokeStyle = hexToRgba(color, 0.5)
+          ctx.lineWidth = 1.5
           ctx.setLineDash([2, 3])
           ctx.stroke()
           ctx.setLineDash([])
@@ -284,33 +371,51 @@ function drawTitles(
   p: ReturnType<typeof getGridParams>,
   layouts: TraceLayout[],
 ) {
+  // 文字区域：三条竖线右侧到矩形右边
+  const textLeftPad = p.traceBaseX + 3 * p.trackSp + 4
+  const maxTextW = p.cellW - textLeftPad - 4
+  if (maxTextW <= 0) return
+
+  const lineH = 14
+  const fontSize = 11
+
   for (const layout of layouts) {
     const a = layout.activity
-    const color = getCategoryColor(a.category)
+    // 在活动的第一列内绘制标题
     const startCol = Math.floor(a.startMinute / p.minutesPerCol)
-    const endCol = Math.min(Math.floor((a.endMinute - 1) / p.minutesPerCol), p.cols - 1)
-    if (endCol < 0 || startCol >= p.cols) continue
+    if (startCol >= p.cols) continue
 
-    const firstRow = Math.floor((a.startMinute % p.minutesPerCol) / 5)
-    const lastRow = Math.floor(((a.endMinute - 1) % p.minutesPerCol) / 5)
-    const x1 = colX(startCol, p)
-    const x2 = colX(endCol, p) + p.cellW
-    const y1 = p.topPad + firstRow * p.rowStride
-    const y2 = startCol === endCol
-      ? p.topPad + lastRow * p.rowStride + p.cellH
-      : p.topPad + (p.rows - 1) * p.rowStride + p.cellH
+    const colStartMin = startCol * p.minutesPerCol
+    const colEndMin = (startCol + 1) * p.minutesPerCol
+    const actStart = Math.max(a.startMinute, colStartMin)
+    const actEnd = Math.min(a.endMinute, colEndMin)
 
-    const cx = (x1 + x2) / 2
-    const cy = (y1 + y2) / 2
+    const x = colX(startCol, p) + textLeftPad
+    const y0 = minuteToY(actStart, startCol, p)
+    const y1 = minuteToY(actEnd, startCol, p)
+    const availH = y1 - y0
 
-    ctx.textAlign = 'center'
-    ctx.font = `bold 12px 'Courier New', monospace`
-    ctx.fillStyle = color
-    ctx.fillText(a.title, cx, cy - 8)
+    if (availH < lineH) continue
 
-    ctx.font = `10px 'Courier New', monospace`
-    ctx.fillStyle = color
-    ctx.fillText(`${fmt(a.startMinute)} – ${fmt(a.endMinute)}`, cx, cy + 8)
+    // 标题换行
+    ctx.font = `bold ${fontSize}px 'Courier New', monospace`
+    ctx.textAlign = 'left'
+    ctx.fillStyle = theme.textPrimary
+    const titleLines = wrapText(ctx, a.title, maxTextW)
+
+    let drawY = y0 + lineH
+    for (const line of titleLines) {
+      if (drawY > y1) break
+      ctx.fillText(line, x, drawY)
+      drawY += lineH
+    }
+
+    // 时间范围（标题下方，如果还有空间）
+    if (drawY + lineH <= y1) {
+      ctx.font = `${fontSize - 2}px 'Courier New', monospace`
+      ctx.fillStyle = hexToRgba(theme.textPrimary, 0.7)
+      ctx.fillText(`${fmt(a.startMinute)}–${fmt(a.endMinute)}`, x, drawY)
+    }
   }
 }
 
@@ -332,51 +437,134 @@ function drawNowTick(
   const cy = p.topPad + row * p.rowStride
   const y = cy + localMin * p.minuteH
   const blue = theme.electricBlue
+  const cyan = '#00ffff'
 
-  // 扫描线光晕
+  // ── 全列纵向扫描线（淡色垂直光柱） ──
+  const colCenterX = cx + p.cellW / 2
+  const grad = ctx.createLinearGradient(colCenterX, p.topPad, colCenterX, p.topPad + p.gridH)
+  grad.addColorStop(0, 'transparent')
+  grad.addColorStop(Math.max(0, (y - p.topPad - 60) / p.gridH), 'transparent')
+  grad.addColorStop((y - p.topPad) / p.gridH, hexToRgba(cyan, 0.06))
+  grad.addColorStop(Math.min(1, (y - p.topPad + 60) / p.gridH), 'transparent')
+  grad.addColorStop(1, 'transparent')
+  ctx.fillStyle = grad
+  ctx.fillRect(cx, p.topPad, p.cellW, p.gridH)
+
+  // ── 外层宽光晕 ──
   ctx.save()
-  ctx.shadowColor = blue
-  ctx.shadowBlur = 12
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 20
   ctx.beginPath()
-  ctx.moveTo(cx, y)
-  ctx.lineTo(cx + p.cellW, y)
-  ctx.strokeStyle = hexToRgba(blue, 0.5)
-  ctx.lineWidth = 8
+  ctx.moveTo(cx - 12, y)
+  ctx.lineTo(cx + p.cellW + 12, y)
+  ctx.strokeStyle = hexToRgba(cyan, 0.25)
+  ctx.lineWidth = 10
   ctx.stroke()
   ctx.restore()
 
-  // 主横线
+  // ── 内层锐利光晕 ──
+  ctx.save()
+  ctx.shadowColor = blue
+  ctx.shadowBlur = 8
   ctx.beginPath()
   ctx.moveTo(cx, y)
   ctx.lineTo(cx + p.cellW, y)
-  ctx.strokeStyle = blue
+  ctx.strokeStyle = hexToRgba(blue, 0.6)
+  ctx.lineWidth = 4
+  ctx.stroke()
+  ctx.restore()
+
+  // ── 主扫描线（渐变） ──
+  const lineGrad = ctx.createLinearGradient(cx, y, cx + p.cellW, y)
+  lineGrad.addColorStop(0, cyan)
+  lineGrad.addColorStop(0.5, blue)
+  lineGrad.addColorStop(1, cyan)
+  ctx.beginPath()
+  ctx.moveTo(cx, y)
+  ctx.lineTo(cx + p.cellW, y)
+  ctx.strokeStyle = lineGrad
   ctx.lineWidth = 2
-  ctx.lineCap = 'round'
+  ctx.lineCap = 'butt'
   ctx.stroke()
 
-  // 左侧三角箭头
-  const arrowW = 6, arrowH = 8
+  // ── 左侧菱形指针 ──
+  const dW = 7, dH = 10
+  const dx = cx - dW - 2
   ctx.beginPath()
-  ctx.moveTo(cx - arrowW, y - arrowH / 2)
-  ctx.lineTo(cx, y)
-  ctx.lineTo(cx - arrowW, y + arrowH / 2)
+  ctx.moveTo(dx, y)
+  ctx.lineTo(dx + dW / 2, y - dH / 2)
+  ctx.lineTo(dx + dW, y)
+  ctx.lineTo(dx + dW / 2, y + dH / 2)
+  ctx.closePath()
+  // 菱形 glow
+  ctx.save()
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 10
+  ctx.fillStyle = blue
+  ctx.fill()
+  ctx.restore()
+  // 菱形边框
+  ctx.strokeStyle = cyan
+  ctx.lineWidth = 1
+  ctx.stroke()
+
+  // ── 右侧小三角 ──
+  const triW = 5, triH = 6
+  const tx = cx + p.cellW + 2
+  ctx.beginPath()
+  ctx.moveTo(tx, y - triH / 2)
+  ctx.lineTo(tx + triW, y)
+  ctx.lineTo(tx, y + triH / 2)
   ctx.closePath()
   ctx.fillStyle = blue
   ctx.fill()
 
-  // 时间标签
+  // ── 端点光点 ──
+  for (const px of [cx, cx + p.cellW]) {
+    ctx.beginPath()
+    ctx.arc(px, y, 3, 0, Math.PI * 2)
+    ctx.fillStyle = cyan
+    ctx.fill()
+    ctx.beginPath()
+    ctx.arc(px, y, 1.5, 0, Math.PI * 2)
+    ctx.fillStyle = '#fff'
+    ctx.fill()
+  }
+
+  // ── 时间标签（六边形科技风） ──
   const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  const labelW = 38, labelH = 14
-  const labelX = cx - arrowW - labelW - 2
-  const labelY = y - labelH / 2
-  ctx.fillStyle = blue
+  const labelW = 44, labelH = 16
+  const notch = 4
+  const labelX = dx - labelW - 2
+  const labelY2 = y
+
+  // 六边形背景
   ctx.beginPath()
-  ctx.roundRect(labelX, labelY, labelW, labelH, 3)
+  ctx.moveTo(labelX + notch, labelY2 - labelH / 2)
+  ctx.lineTo(labelX + labelW - notch, labelY2 - labelH / 2)
+  ctx.lineTo(labelX + labelW, labelY2)
+  ctx.lineTo(labelX + labelW - notch, labelY2 + labelH / 2)
+  ctx.lineTo(labelX + notch, labelY2 + labelH / 2)
+  ctx.lineTo(labelX, labelY2)
+  ctx.closePath()
+
+  ctx.save()
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 12
+  ctx.fillStyle = blue
   ctx.fill()
-  ctx.font = `900 9px 'Courier New', monospace`
+  ctx.restore()
+
+  // 六边形边框
+  ctx.strokeStyle = cyan
+  ctx.lineWidth = 1
+  ctx.stroke()
+
+  // 时间文字
+  ctx.font = `900 10px 'Courier New', monospace`
   ctx.fillStyle = '#000'
   ctx.textAlign = 'center'
-  ctx.fillText(timeStr, labelX + labelW / 2, y + 3)
+  ctx.fillText(timeStr, labelX + labelW / 2, labelY2 + 3.5)
 }
 
 // ── 主组件 ──
@@ -436,8 +624,8 @@ export default function DayNightChart({ activities, isExpanded, selectedDate }: 
     ctx.fillRect(0, 0, p.totalW, p.totalH)
 
     drawGrid(ctx, p)
-    drawTimeLabels(ctx, p)
     drawCellFills(ctx, p, layouts, hoveredId)
+    drawTimeLabels(ctx, p)
 
     // Glow 层（直接贴预渲染的缓存，不再做 blur）
     if (glowImageRef.current) {

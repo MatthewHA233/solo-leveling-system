@@ -3,8 +3,8 @@ export const theme = {
   electricBlue: '#00b4ff',
   shadowPurple: '#9b59b6',
   expGreen: '#00ff88',
-  textPrimary: '#f0f0ff',
-  textSecondary: '#99a0bb',
+  textPrimary: '#ffffff',
+  textSecondary: '#c0c8e0',
 }
 
 export const categoryColors: Record<string, string> = {
