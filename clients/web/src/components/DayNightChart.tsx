@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback } from 'react'
+import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import type { ChronosActivity, TraceLayout } from '../types'
 import { theme, getCategoryColor, getCategoryLabel } from '../theme'
 
@@ -112,7 +112,7 @@ function drawTimeLabels(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getG
       const gapY = p.topPad + r * p.rowStride + p.cellH + p.rowGap / 2
       const isMajor = boundaryMin % 10 === 0
       ctx.font = `${isMajor ? 'bold' : 'normal'} ${isMajor ? 10 : 9}px 'Courier New', monospace`
-      ctx.fillStyle = hexToRgba(theme.textSecondary, isMajor ? 1.0 : 0.5)
+      ctx.fillStyle = theme.textSecondary
       ctx.fillText(fmt(boundaryMin), cx, gapY + 3)
     }
   }
@@ -178,7 +178,7 @@ function drawTraceSegments(
       const y1 = cy + localEnd * p.minuteH
 
       const lw = glow ? traceW + 2 : (hovered ? traceW + 0.5 : traceW)
-      const op = glow ? 1.0 : (hovered ? 1.0 : 0.75)
+      const op = glow ? 1.0 : 1.0
       ctx.beginPath()
       ctx.moveTo(x, y0)
       ctx.lineTo(x, y1)
@@ -252,7 +252,7 @@ function drawStepNodes(
       const ringR = lit ? 5.5 : 4.5
       ctx.beginPath()
       ctx.arc(x, y, ringR, 0, Math.PI * 2)
-      ctx.strokeStyle = hexToRgba(color, lit ? 1.0 : 0.6)
+      ctx.strokeStyle = color
       ctx.lineWidth = lit ? 2 : 1.5
       ctx.stroke()
 
@@ -265,7 +265,7 @@ function drawStepNodes(
 
       // 序号
       ctx.font = `500 10px 'Courier New', monospace`
-      ctx.fillStyle = hexToRgba(color, lit ? 1.0 : 0.5)
+      ctx.fillStyle = color
       ctx.textAlign = 'left'
       ctx.fillText(step.label, x + 9, y + 3)
 
@@ -309,7 +309,7 @@ function drawTitles(
     ctx.fillText(a.title, cx, cy - 8)
 
     ctx.font = `10px 'Courier New', monospace`
-    ctx.fillStyle = hexToRgba(color, 0.5)
+    ctx.fillStyle = color
     ctx.fillText(`${fmt(a.startMinute)} – ${fmt(a.endMinute)}`, cx, cy + 8)
   }
 }
@@ -384,16 +384,36 @@ function drawNowTick(
 export default function DayNightChart({ activities, isExpanded, selectedDate }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const [hoveredId, setHoveredId] = useState<string | null>(null)
-  const [hoveredCell, setHoveredCell] = useState<{ col: number; row: number } | null>(null)
+  const hoveredIdRef = useRef<string | null>(null)
+  const hoveredCellRef = useRef<{ col: number; row: number } | null>(null)
+  const rafRef = useRef<number>(0)
+  const glowImageRef = useRef<ImageBitmap | HTMLCanvasElement | null>(null)
+  const glowKeyRef = useRef<string>('')
 
-  const p = getGridParams(isExpanded)
-  const layouts = computeLayouts(activities)
+  const dpr = window.devicePixelRatio || 1
+  const p = useMemo(() => getGridParams(isExpanded), [isExpanded])
+  const layouts = useMemo(() => computeLayouts(activities), [activities])
 
   const isToday = (() => {
     const now = new Date()
     return selectedDate.toDateString() === now.toDateString()
   })()
+
+  // 预渲染 glow 层（只在 layouts/params 变化时重建，blur 很贵）
+  useEffect(() => {
+    const key = `${p.totalW}-${p.totalH}-${layouts.length}-${dpr}`
+    if (glowKeyRef.current === key) return
+    glowKeyRef.current = key
+
+    const offscreen = document.createElement('canvas')
+    offscreen.width = p.totalW * dpr
+    offscreen.height = p.totalH * dpr
+    const ctx = offscreen.getContext('2d')!
+    ctx.scale(dpr, dpr)
+    ctx.filter = 'blur(5px)'
+    drawTraceSegments(ctx, p, layouts, null, true)
+    glowImageRef.current = offscreen
+  }, [p, layouts, dpr])
 
   // 绘制
   const draw = useCallback(() => {
@@ -402,7 +422,14 @@ export default function DayNightChart({ activities, isExpanded, selectedDate }: 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    ctx.clearRect(0, 0, p.totalW, p.totalH)
+    const hoveredId = hoveredIdRef.current
+    const hoveredCell = hoveredCellRef.current
+
+    ctx.clearRect(0, 0, p.totalW * dpr, p.totalH * dpr)
+
+    // HiDPI 缩放
+    ctx.save()
+    ctx.scale(dpr, dpr)
 
     // 背景
     ctx.fillStyle = theme.background
@@ -412,32 +439,41 @@ export default function DayNightChart({ activities, isExpanded, selectedDate }: 
     drawTimeLabels(ctx, p)
     drawCellFills(ctx, p, layouts, hoveredId)
 
-    // Glow 层（在独立 offscreen canvas 上模糊后叠加）
-    const glowCanvas = document.createElement('canvas')
-    glowCanvas.width = p.totalW
-    glowCanvas.height = p.totalH
-    const glowCtx = glowCanvas.getContext('2d')!
-    glowCtx.filter = 'blur(5px)'
-    drawTraceSegments(glowCtx, p, layouts, hoveredId, true)
-    ctx.globalAlpha = 0.3
-    ctx.drawImage(glowCanvas, 0, 0)
-    ctx.globalAlpha = 1.0
+    // Glow 层（直接贴预渲染的缓存，不再做 blur）
+    if (glowImageRef.current) {
+      ctx.globalAlpha = 0.3
+      ctx.drawImage(glowImageRef.current, 0, 0, p.totalW, p.totalH)
+      ctx.globalAlpha = 1.0
+    }
 
     drawTraceSegments(ctx, p, layouts, hoveredId, false)
     drawStepNodes(ctx, p, layouts, hoveredCell)
     drawTitles(ctx, p, layouts)
     drawNowTick(ctx, p, isToday)
-  }, [p, layouts, hoveredId, hoveredCell, isToday]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    ctx.restore()
+  }, [p, layouts, isToday, dpr]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     draw()
     // 今天每分钟刷新一次扫描线
     if (!isToday) return
     const id = setInterval(draw, 60_000)
-    return () => clearInterval(id)
+    return () => {
+      clearInterval(id)
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    }
   }, [draw, isToday])
 
-  // 鼠标事件
+  // 鼠标事件（用 rAF 节流，避免每像素都重绘）
+  const scheduleRedraw = useCallback(() => {
+    if (rafRef.current) return
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0
+      draw()
+    })
+  }, [draw])
+
   function handleMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
     const rect = canvasRef.current!.getBoundingClientRect()
     const x = e.clientX - rect.left
@@ -445,21 +481,23 @@ export default function DayNightChart({ activities, isExpanded, selectedDate }: 
     const c = Math.floor((x - p.hPad) / p.colStride)
     const rBlock = Math.floor((y - p.topPad) / p.rowStride)
     if (c >= 0 && c < p.cols && rBlock >= 0 && rBlock < p.rows) {
-      setHoveredCell({ col: c, row: rBlock })
+      hoveredCellRef.current = { col: c, row: rBlock }
       const localY = y - p.topPad - rBlock * p.rowStride
       const extraMin = Math.min(Math.floor(localY / p.minuteH), 4)
       const m = c * p.minutesPerCol + rBlock * 5 + extraMin
       const hit = activities.find((a) => m >= a.startMinute && m < a.endMinute)
-      setHoveredId(hit?.id ?? null)
+      hoveredIdRef.current = hit?.id ?? null
     } else {
-      setHoveredCell(null)
-      setHoveredId(null)
+      hoveredCellRef.current = null
+      hoveredIdRef.current = null
     }
+    scheduleRedraw()
   }
 
   function handleMouseLeave() {
-    setHoveredCell(null)
-    setHoveredId(null)
+    hoveredCellRef.current = null
+    hoveredIdRef.current = null
+    scheduleRedraw()
   }
 
   // 自动滚动到当前时间 / 最早活动
@@ -494,11 +532,11 @@ export default function DayNightChart({ activities, isExpanded, selectedDate }: 
       >
         <canvas
           ref={canvasRef}
-          width={p.totalW}
-          height={p.totalH}
+          width={p.totalW * dpr}
+          height={p.totalH * dpr}
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
-          style={{ display: 'block' }}
+          style={{ display: 'block', width: p.totalW, height: p.totalH }}
         />
       </div>
 
