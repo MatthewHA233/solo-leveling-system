@@ -2,7 +2,9 @@
 
 ## 构建
 
-macOS 客户端位于 `clients/macos/SoloAgent/`。
+### macOS 客户端
+
+位于 `clients/macos/SoloAgent/`。
 
 **构建 + 部署命令（必须使用固定签名 + Release）：**
 
@@ -18,6 +20,38 @@ rm -rf /Applications/SoloAgent.app && cp -R ~/Library/Developer/Xcode/DerivedDat
 
 - 必须用 `-configuration Release`（Debug 模式的 stub executor + debug dylib 与自签证书有 Team ID 校验冲突）
 - 必须用 `CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="SoloAgent Dev"`（ad-hoc 签名会导致重新授权隐私权限）
+
+### Windows Tauri 客户端（关键！）
+
+位于 `clients/win/`。**无 Visual Studio，使用 `cargo-xwin` 交叉编译。**
+
+**绝对禁止的操作：**
+
+| 操作 | 原因 |
+|------|------|
+| `cargo check` / `cargo xwin check` | 生成 ~5.5 GB 无用 debug 产物，且不产出可执行文件 |
+| `cargo build` | 没有 VS 工具链会失败 |
+| 自动运行 `npm run dev` | 用户自行启动 |
+| 自主使用 `cargo xwin build --release` | 除非用户明确要求 |
+
+**开发模式（两个终端分开跑）：**
+
+```bash
+# 终端 1：前端 Vite 热更新（用户自己启动）
+npm run dev
+
+# 终端 2：Rust 后端编译
+cd clients/win/src-tauri && cargo xwin build
+```
+
+**产物路径：**
+- 可执行文件：`target/x86_64-pc-windows-msvc/debug/solo-agent.exe`
+- 不是 `target/debug/`（那是 host target 残留，无用）
+
+**正式打包：**
+```bash
+npx tauri build --runner cargo-xwin
+```
 
 ## 架构概览
 

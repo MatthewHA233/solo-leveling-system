@@ -1,25 +1,46 @@
 export const theme = {
-  background: '#0a0a0f',
-  electricBlue: '#00b4ff',
-  shadowPurple: '#9b59b6',
-  expGreen: '#00ff88',
-  textPrimary: '#ffffff',
-  textSecondary: '#c0c8e0',
+  // ── Core ──
+  background:    '#050505',
+  electricBlue:  '#00E5FF',
+  shadowPurple:  '#7000FF',
+  expGreen:      '#00FF88',
+  dangerRed:     '#FF4444',
+  warningOrange: '#FF9933',
+  textPrimary:   '#E0F0FF',
+  textSecondary: '#8AABB0',
+  textMuted:     '#506070',
+  // ── Surfaces ──
+  glass:         'rgba(255,255,255,0.04)',
+  glassHover:    'rgba(0,229,255,0.06)',
+  glassBorder:   'rgba(0,229,255,0.12)',
+  panel:         'rgba(2, 8, 18, 0.9)',
+  // ── Neon Divider ──
+  divider:       'rgba(0,229,255,0.12)',
+  // ── Typography ──
+  fontDisplay:   "'Orbitron', sans-serif",
+  fontBody:      "'Exo 2', sans-serif",
+  fontMono:      "'JetBrains Mono', 'Courier New', monospace",
+}
+
+// ── Difficulty Colors ──
+export const difficultyColors: Record<string, string> = {
+  E: '#7f8c8d', D: '#2ecc71', C: '#00E5FF',
+  B: '#7000FF', A: '#FF9933', S: '#FF4444',
 }
 
 export const categoryColors: Record<string, string> = {
-  coding:        '#00b4ff',  // electricBlue
-  writing:       '#9b59b6',  // shadowPurple
-  learning:      '#00ff88',  // expGreen
-  browsing:      '#f39c12',  // orange
-  design:        '#2ecc71',  // mint
-  research:      '#f1c40f',  // yellow
-  communication: '#1abc9c',  // teal
-  reading:       '#9b7653',  // brown
-  meeting:       '#7f8c8d',  // gray
-  media:         '#e91e8c',  // pink
-  social:        '#00ffff',  // cyan
-  idle:          '#666688',  // textSecondary
+  coding:        '#00b4ff',
+  writing:       '#9b59b6',
+  learning:      '#00ff88',
+  browsing:      '#f39c12',
+  design:        '#2ecc71',
+  research:      '#f1c40f',
+  communication: '#1abc9c',
+  reading:       '#9b7653',
+  meeting:       '#7f8c8d',
+  media:         '#e91e8c',
+  social:        '#00ffff',
+  idle:          '#666688',
 }
 
 export const categoryLabels: Record<string, string> = {

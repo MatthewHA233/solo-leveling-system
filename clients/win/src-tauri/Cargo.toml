@@ -8,8 +8,6 @@ repository = ""
 edition = "2021"
 rust-version = "1.77.2"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -23,3 +21,22 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.10.3" }
 tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
+
+# WebSocket
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "io-util"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+tokio-native-tls = "0.3"
+native-tls = "0.2"
+futures-util = "0.3"
+rmp-serde = "1.3"
+base64 = "0.22"
+
+# Local Database & HTTP Server
+rusqlite = { version = "0.33", features = ["bundled"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"

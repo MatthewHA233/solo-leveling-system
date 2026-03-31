@@ -1,2 +1,63 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: #0a0a0f; }
+body { background: #050505; }
+
+/* ── Custom Scrollbar ── */
+::-webkit-scrollbar { width: 3px; height: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0,229,255,0.18); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,229,255,0.4); }
+
+/* ── Time input calendar icon ── */
+input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.5) sepia(1) saturate(2) hue-rotate(160deg);
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+/* ── Animations ── */
+@keyframes glowPulse {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1; }
+}
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes typingPulse {
+  0%, 100% { opacity: 0.2; transform: scale(0.8); }
+  50%       { opacity: 1;   transform: scale(1.2); }
+}
+@keyframes scanLine {
+  0%   { transform: translateY(-8px); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(100vh); opacity: 0; }
+}
+@keyframes borderGlow {
+  0%, 100% { box-shadow: 0 0 4px rgba(0,229,255,0.2); }
+  50%       { box-shadow: 0 0 12px rgba(0,229,255,0.5); }
+}
+
+/* ── Focus glow for inputs ── */
+input:focus, textarea:focus {
+  outline: none;
+}
+
+/* ── Input autofill dark override ── */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #E0F0FF;
+  -webkit-box-shadow: 0 0 0px 1000px #050505 inset;
+}
+
+/* ── Topbar scanline effect ── */
+.topbar-scan::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(0,229,255,0.4) 50%, transparent 100%);
+  animation: scanLine 4s linear infinite;
+  pointer-events: none;
+}
