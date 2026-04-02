@@ -4,7 +4,7 @@
 
 import { useState, useEffect } from 'react'
 import { X, ArrowRight, Plus, Trash2 } from 'lucide-react'
-import type { ChronosActivity, ChronosStep } from '../types'
+import type { ChronosActivity, ChronosEvent } from '../types'
 import { theme, categoryColors, categoryLabels } from '../theme'
 
 interface Props {
@@ -128,8 +128,8 @@ export default function ActivityFormPanel({
   const [startTime, setStartTime] = useState(minutesToTime(init?.startMinute ?? initialStartMinute))
   const [endTime, setEndTime] = useState(minutesToTime(defaultEnd))
   const [goalAlignment, setGoalAlignment] = useState(init?.goalAlignment ?? '')
-  const [steps, setSteps] = useState<Omit<ChronosStep, 'id'>[]>(
-    init?.steps.map(s => ({ minute: s.minute, label: s.label, title: s.title })) ?? []
+  const [events, setEvents] = useState<Omit<ChronosEvent, 'id'>[]>(
+    init?.events.map(e => ({ minute: e.minute, label: e.label, title: e.title })) ?? []
   )
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -159,19 +159,19 @@ export default function ActivityFormPanel({
     onTimeChange?.(s, e)
   }
 
-  const addStep = () => {
-    const stepMin = steps.length > 0
-      ? Math.min(steps[steps.length - 1].minute + 15, endMinute - 5)
+  const addEvent = () => {
+    const evMin = events.length > 0
+      ? Math.min(events[events.length - 1].minute + 15, endMinute - 5)
       : startMinute
-    setSteps(prev => [...prev, { minute: Math.max(stepMin, startMinute), label: String(prev.length + 1), title: '' }])
+    setEvents(prev => [...prev, { minute: Math.max(evMin, startMinute), label: String(prev.length + 1), title: '' }])
   }
 
-  const updateStep = (i: number, field: 'minute' | 'title', val: string | number) => {
-    setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, [field]: val } : s))
+  const updateEvent = (i: number, field: 'minute' | 'title', val: string | number) => {
+    setEvents(prev => prev.map((e, idx) => idx === i ? { ...e, [field]: val } : e))
   }
 
-  const removeStep = (i: number) => {
-    setSteps(prev => prev.filter((_, idx) => idx !== i).map((s, idx) => ({ ...s, label: String(idx + 1) })))
+  const removeEvent = (i: number) => {
+    setEvents(prev => prev.filter((_, idx) => idx !== i).map((e, idx) => ({ ...e, label: String(idx + 1) })))
   }
 
   const handleSave = async () => {
@@ -187,7 +187,7 @@ export default function ActivityFormPanel({
         startMinute,
         endMinute,
         goalAlignment: goalAlignment.trim() || undefined,
-        steps: steps.map((s, i) => ({ ...s, id: `step-${i}`, label: String(i + 1) })),
+        events: events.map((e, i) => ({ ...e, id: `event-${i}`, label: String(i + 1) })),
       })
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败')
@@ -361,38 +361,38 @@ export default function ActivityFormPanel({
           />
         </div>
 
-        {/* 里程碑 */}
+        {/* 事件 */}
         <div>
           <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
               <div style={{ width: 2, height: 12, background: theme.electricBlue, borderRadius: 1 }} />
               <span style={{ fontSize: 10, fontWeight: 600, fontFamily: theme.fontBody, color: theme.textSecondary, letterSpacing: 2, textTransform: 'uppercase' }}>
-                里程碑
+                事件
               </span>
             </div>
-            <button className="chip-btn" onClick={addStep}
+            <button className="chip-btn" onClick={addEvent}
               style={{ ...chipStyle, padding: '3px 10px', color: theme.electricBlue, borderColor: `${theme.electricBlue}40`, display: 'flex', alignItems: 'center', gap: 4 }}>
               <Plus size={11} /> 添加
             </button>
           </div>
-          {steps.length === 0 && (
+          {events.length === 0 && (
             <div style={{ fontSize: 12, color: theme.textMuted, textAlign: 'center', padding: '8px 0', fontFamily: theme.fontBody }}>
-              — 暂无里程碑 —
+              — 暂无事件 —
             </div>
           )}
-          {steps.map((step, i) => (
+          {events.map((ev, i) => (
             <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 7 }}>
-              <span style={{ fontSize: 11, color: color, minWidth: 16, textAlign: 'right', fontFamily: theme.fontMono }}>{step.label}</span>
-              <input type="time" value={minutesToTime(step.minute)}
+              <span style={{ fontSize: 11, color: color, minWidth: 16, textAlign: 'right', fontFamily: theme.fontMono }}>{ev.label}</span>
+              <input type="time" value={minutesToTime(ev.minute)}
                 className="act-time-input"
-                onChange={e => updateStep(i, 'minute', timeToMinutes(e.target.value))}
+                onChange={e => updateEvent(i, 'minute', timeToMinutes(e.target.value))}
                 style={{ ...timeInputStyle, flex: '0 0 90px', fontSize: 11 }} />
-              <input value={step.title}
+              <input value={ev.title}
                 className="act-input"
-                onChange={e => updateStep(i, 'title', e.target.value)}
+                onChange={e => updateEvent(i, 'title', e.target.value)}
                 placeholder="描述..."
                 style={{ ...textInputStyle, flex: 1 }} />
-              <button onClick={() => removeStep(i)}
+              <button onClick={() => removeEvent(i)}
                 style={{ background: 'none', border: 'none', color: theme.textMuted, cursor: 'pointer', padding: '2px', lineHeight: 1, display: 'flex', transition: 'color 0.15s' }}>
                 <X size={12} />
               </button>

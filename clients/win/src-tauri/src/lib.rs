@@ -10,6 +10,8 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use fish_tts::{FishTTSConfig, FishTTSConnection};
 use db::Database;
+use api::BiliState;
+use tauri::Manager;
 
 // ── 全局状态 ──
 
@@ -83,6 +85,88 @@ async fn fish_tts_stop(
     } else {
         Ok(())
     }
+}
+
+// ── B站命令 ──
+
+#[tauri::command]
+async fn open_bili_login(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("bili-login") {
+        // 窗口已存在（后台隐藏中），显示并聚焦让用户登录
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+    } else {
+        // 极少数情况（窗口被关掉了），重新创建并显示
+        tauri::WebviewWindowBuilder::new(
+            &app,
+            "bili-login",
+            tauri::WebviewUrl::External(
+                "https://www.bilibili.com".parse().map_err(|e: url::ParseError| e.to_string())?
+            ),
+        )
+        .title("B站 — 登录后可关闭此窗口")
+        .inner_size(1200.0, 800.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct BiliSyncResult {
+    upserted: usize,
+    cursor_max: i64,
+    cursor_view_at: i64,
+}
+
+#[tauri::command]
+async fn fetch_bili_history(
+    app: tauri::AppHandle,
+    bili: tauri::State<'_, Arc<BiliState>>,
+    ps: Option<u32>,
+    cursor_max: Option<i64>,
+    cursor_view_at: Option<i64>,
+) -> Result<BiliSyncResult, String> {
+    let win = app.get_webview_window("bili-login")
+        .ok_or_else(|| "BILI_WIN_CLOSED".to_string())?;
+
+    let ps  = ps.unwrap_or(20).min(50);
+    let max = cursor_max.unwrap_or(0);
+    let vat = cursor_view_at.unwrap_or(0);
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut guard = bili.pending.lock().await;
+        *guard = Some(tx);
+    }
+
+    let js = format!(
+        r#"(async()=>{{
+try{{
+  const r=await fetch('https://api.bilibili.com/x/web-interface/history/cursor?max={max}&view_at={vat}&ps={ps}&business=archive',{{credentials:'include'}});
+  const d=await r.json();
+  await fetch('http://localhost:3000/api/bilibili/result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{ok:d}})}});
+}}catch(e){{
+  await fetch('http://localhost:3000/api/bilibili/result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{error:e.message||String(e)}})}});
+}}
+}})();"#
+    );
+
+    win.eval(&js).map_err(|e| e.to_string())?;
+
+    let raw = match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+        Ok(Ok(result)) => result?,
+        Ok(Err(_)) => return Err("请求已取消".to_string()),
+        Err(_) => return Err("请求超时".to_string()),
+    };
+
+    // 提取 cursor（供前端加载更早历史时使用）
+    let cursor_max_out  = raw.get("data").and_then(|d| d.get("cursor")).and_then(|c| c.get("max")).and_then(|v| v.as_i64()).unwrap_or(0);
+    let cursor_vat_out  = raw.get("data").and_then(|d| d.get("cursor")).and_then(|c| c.get("view_at")).and_then(|v| v.as_i64()).unwrap_or(0);
+    let upserted        = raw.get("data").and_then(|d| d.get("list")).and_then(|l| l.as_array()).map(|a| a.len()).unwrap_or(0);
+
+    Ok(BiliSyncResult { upserted, cursor_max: cursor_max_out, cursor_view_at: cursor_vat_out })
 }
 
 // ── 数据库命令 ──
@@ -171,14 +255,18 @@ pub fn run() {
         db_path: Arc::new(RwLock::new(db_path)),
     });
 
+    let bili_state = Arc::new(BiliState::new());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
-        .setup(|app| {
+        .manage(bili_state.clone())
+        .setup(move |app| {
             // 启动 HTTP 服务器（在 Tauri runtime 内）
             if let Some(db_clone) = db {
+                let bili_clone = bili_state.clone();
                 tauri::async_runtime::spawn(async move {
-                    api::start_server(db_clone, 3000).await;
+                    api::start_server(db_clone, bili_clone, 3000).await;
                 });
             }
 
@@ -189,6 +277,25 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            // 启动时在后台静默创建 bilibili WebView（隐藏窗口）
+            // WebView2 会复用之前的登录 session（cookies 持久化在用户 profile 目录）
+            let bili_win = tauri::WebviewWindowBuilder::new(
+                app,
+                "bili-login",
+                tauri::WebviewUrl::External(
+                    "https://www.bilibili.com".parse().expect("valid url")
+                ),
+            )
+            .title("B站 — 登录后可关闭此窗口")
+            .inner_size(1200.0, 800.0)
+            .visible(false)   // 后台隐藏，不打扰用户
+            .build();
+
+            match bili_win {
+                Ok(_) => log::info!("[Bili] 后台 WebView 已创建"),
+                Err(e) => log::warn!("[Bili] 后台 WebView 创建失败: {}", e),
+            }
+
             log::info!("[App] Solo Agent 启动完成");
             Ok(())
         })
@@ -199,6 +306,8 @@ pub fn run() {
             fish_tts_stop,
             get_db_info,
             migrate_database,
+            open_bili_login,
+            fetch_bili_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

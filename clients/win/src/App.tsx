@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ChevronLeft, ChevronRight, Maximize2, Minimize2, Settings } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Maximize2, Minimize2, Settings, Tv2, Mic } from 'lucide-react'
 import { fetchActivities } from './lib/chronos-api'
 import { createActivity, updateActivity, deleteActivity } from './lib/local-api'
 import type { ChronosActivity } from './types'
@@ -13,10 +13,11 @@ import { theme } from './theme'
 // Agent
 import { loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
-import { loadMemory, saveMemory } from './lib/agent/agent-memory'
+import { loadMemory, initChatSession } from './lib/agent/agent-memory'
 import type { AgentMemoryState } from './lib/agent/agent-memory'
 import { runAgentLoop } from './lib/agent/agent-loop'
 import type { ToolContext } from './lib/agent/agent-tools'
+import { shadowAgentSystemPrompt } from './lib/ai/prompt-templates'
 
 // Voice
 import { createVoiceService } from './lib/voice'
@@ -27,6 +28,11 @@ import DayNightChart from './components/DayNightChart'
 import ChatPanel from './components/ChatPanel'
 import SettingsPanel from './components/SettingsPanel'
 import ActivityFormPanel from './components/ActivityFormPanel'
+import BiliHistoryMonitor from './components/BiliHistoryMonitor'
+import { useBiliHistory } from './lib/bilibili/useHistory'
+import { dbBiliItemToActivity } from './lib/bilibili/api'
+import { linkBiliToEvent, mergeActivities } from './lib/local-api'
+import type { DbBiliItem } from './lib/local-api'
 import FairyHUD from './components/FairyHUD'
 import type { FairyState } from './components/FairyHUD'
 import { NeonDivider, NeonBadge, MagneticButton } from './components/NeonUI'
@@ -38,6 +44,51 @@ export interface ChatMessage {
   readonly timestamp: string
 }
 
+// 区间合并「看B站视频」活动
+// 使用 mergeActivities API：移动事件而非删重建，event_id 不变，bvid 链接天然保留
+async function mergeOverlappingBili(date: Date) {
+  const all = await fetchActivities(date)
+  const bili = all.filter((a) => a.title === '看B站视频').sort((a, b) => a.startMinute - b.startMinute)
+  if (bili.length <= 1) return
+
+  // 找出所有需要合并的 group（overlapping）
+  type Group = { survivorId: string; absorbedIds: string[]; newStart: number; newEnd: number }
+  const mergeGroups: Group[] = []
+  let cur = bili[0]
+  let absorbed: ChronosActivity[] = []
+
+  for (let i = 1; i < bili.length; i++) {
+    const next = bili[i]
+    if (next.startMinute <= cur.endMinute + 1) {
+      absorbed.push(next)
+      cur = { ...cur, endMinute: Math.max(cur.endMinute, next.endMinute) }
+    } else {
+      if (absorbed.length > 0) {
+        mergeGroups.push({
+          survivorId: cur.id,
+          absorbedIds: absorbed.map((a) => a.id),
+          newStart: cur.startMinute,
+          newEnd: cur.endMinute,
+        })
+      }
+      cur = next
+      absorbed = []
+    }
+  }
+  if (absorbed.length > 0) {
+    mergeGroups.push({
+      survivorId: cur.id,
+      absorbedIds: absorbed.map((a) => a.id),
+      newStart: cur.startMinute,
+      newEnd: cur.endMinute,
+    })
+  }
+
+  for (const g of mergeGroups) {
+    await mergeActivities(g.survivorId, g.absorbedIds, g.newStart, g.newEnd).catch(() => {})
+  }
+}
+
 export default function App() {
   // ── Data ──
   const [selectedDate, setSelectedDate] = useState(new Date())
@@ -47,6 +98,7 @@ export default function App() {
   // ── Layout ──
   const [isExpanded, setIsExpanded] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showBili, setShowBili] = useState(false)
 
   // ── Activity Editor ──
   type EditMode =
@@ -60,11 +112,25 @@ export default function App() {
   const [pushedTime, setPushedTime] = useState<{ start: number; end: number } | null>(null)
   const [pushedVersion, setPushedVersion] = useState(0)
 
+  // ── Bilibili 后台持久监控 ──
+  const [config, setConfig] = useState<AgentConfig>(loadConfig)
+
+  const {
+    newItems: biliNewItems,
+    isLoading: biliLoading, error: biliError,
+    lastUpdated: biliLastUpdated, countdown: biliCountdown,
+    intervalSeconds: biliIntervalSec, isPaused: biliPaused,
+    windowClosed: biliWinClosed, cursor: biliCursor, hasMoreRemote: biliHasMoreRemote,
+    pause: pauseBili, resume: resumeBili,
+    refresh: refreshBili, loadOlderHistory: biliLoadOlder, clearNew: clearBiliNew,
+    setIntervalSeconds: setBiliInterval,
+  } = useBiliHistory({ intervalSeconds: config.biliIntervalSeconds })
+
   // ── Chat ──
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
-  const [config, setConfig] = useState<AgentConfig>(loadConfig)
   const memoryRef = useRef<AgentMemoryState>(loadMemory())
+  const sessionIdRef = useRef<string | null>(null)
 
   // ── Voice / Fairy ──
   const [fairyState, setFairyState] = useState<FairyState>('idle')
@@ -74,6 +140,16 @@ export default function App() {
   const fairyStateRef = useRef<FairyState>('idle')
   const voiceServiceRef = useRef<VoiceService | null>(null)
   const LONG_PRESS_MS = 600
+
+  // ── Init Chat Session ──
+  useEffect(() => {
+    initChatSession()
+      .then(({ sessionId, state }) => {
+        sessionIdRef.current = sessionId
+        memoryRef.current = state
+      })
+      .catch((err) => console.error('[App] 会话初始化失败，降级到内存模式:', err))
+  }, [])
 
   // ── Fetch Activities ──
   useEffect(() => {
@@ -227,9 +303,45 @@ export default function App() {
       .catch(() => {})
   }, [selectedDate])
 
+  // ── Bilibili 新视频自动写入昼夜表 ──
+  useEffect(() => {
+    if (!config.biliAutoCreate || biliNewItems.length === 0) return
+
+    const toLocalDateStr = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+    const sync = async () => {
+      const affectedDates = new Map<string, Date>()
+
+      for (const item of biliNewItems) {
+        try {
+          const { bvid, date, activity } = dbBiliItemToActivity(item)
+          const { eventIds } = await createActivity(date, activity)
+          affectedDates.set(toLocalDateStr(date), date)
+          if (eventIds[0]) await linkBiliToEvent([bvid], eventIds[0]).catch(() => {})
+        } catch (err) {
+          console.error('[Bili] 活动写入失败:', err)
+        }
+      }
+      for (const date of affectedDates.values()) {
+        try {
+          await mergeOverlappingBili(date)
+        } catch (err) {
+          console.error('[Bili] 合并失败:', err)
+        }
+      }
+      if (affectedDates.has(toLocalDateStr(selectedDate))) {
+        refreshActivities()
+      }
+      clearBiliNew()
+    }
+    sync()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [biliNewItems])
+
   const handleActivitySave = useCallback(async (activity: Omit<ChronosActivity, 'id'>) => {
     if (editMode?.type === 'add') {
-      await createActivity(selectedDate, activity)
+      await createActivity(selectedDate, activity)  // 普通新建，不需要 eventIds
     } else if (editMode?.type === 'edit') {
       await updateActivity(editMode.activity.id, activity)
     }
@@ -248,6 +360,7 @@ export default function App() {
 
   const handleTimeSelect = useCallback((start: number, end: number) => {
     setShowSettings(false)
+    setShowBili(false)
     setChartSelection({ startMinute: start, endMinute: end })
     setPushedTime({ start, end })
     setPushedVersion((v) => v + 1)
@@ -260,6 +373,42 @@ export default function App() {
     setPushedTime(null)
     setPushedVersion((v) => v + 1)
   }, [])
+
+  const handleActivityResize = useCallback(async (id: string, newStart: number, newEnd: number) => {
+    const activity = activities.find((a) => a.id === id)
+    if (!activity) return
+    await updateActivity(id, { ...activity, startMinute: newStart, endMinute: newEnd })
+    refreshActivities()
+  }, [activities, refreshActivities])
+
+  // 手动从 BiliHistoryMonitor 加入活动（多选）
+  const handleAddBiliToActivity = useCallback(async (items: DbBiliItem[]) => {
+    const toLocalDateStr = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+    const affectedDates = new Map<string, Date>()
+
+    // 只处理真正未入档的视频，跳过已有 event_id 的
+    const unlinked = items.filter((i) => i.event_id === null)
+    for (const item of unlinked) {
+      try {
+        const { bvid, date, activity } = dbBiliItemToActivity(item)
+        const { eventIds } = await createActivity(date, activity)
+        affectedDates.set(toLocalDateStr(date), date)
+        if (eventIds[0]) await linkBiliToEvent([bvid], eventIds[0]).catch(() => {})
+      } catch { /* ignore */ }
+    }
+    for (const date of affectedDates.values()) {
+      await mergeOverlappingBili(date).catch(() => {})
+    }
+    if (affectedDates.has(toLocalDateStr(selectedDate))) refreshActivities()
+  }, [selectedDate, refreshActivities])
+
+  const handleDeleteMinuteRange = useCallback(async (startMin: number, endMin: number) => {
+    const toDelete = activities.filter((a) => a.startMinute < endMin && a.endMinute > startMin)
+    await Promise.all(toDelete.map((a) => deleteActivity(a.id)))
+    refreshActivities()
+  }, [activities, refreshActivities])
 
   // ── Send Message ──
   const handleSend = useCallback(async (text: string) => {
@@ -285,10 +434,10 @@ export default function App() {
       reorganizeCards: async () => false,
     }
 
-    const systemPrompt = `你是「暗影君主系统」——用户的个人 AI 助手。
-你帮助用户整理和分析每日活动，管理昼夜表数据。
-语气简洁、专业、略带关心。称呼用户为「主人」。
-回复简短有力，不超过 3-5 句话。`
+    const systemPrompt = shadowAgentSystemPrompt(
+      1, 'E级猎人', config.mainQuest,
+      config.agentName, config.agentPersona, config.agentCallUser,
+    )
 
     let agentText = ''
     const agentMsgId = crypto.randomUUID()
@@ -317,8 +466,9 @@ export default function App() {
             }])
           }
         },
+        8,
+        sessionIdRef.current,
       )
-      saveMemory(memoryRef.current)
     } catch (err) {
       setChatMessages((prev) => [...prev, {
         id: crypto.randomUUID(), role: 'system' as const,
@@ -340,8 +490,8 @@ export default function App() {
     }}>
       {/* ── Top Bar ── */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '0 16px', height: 42, flexShrink: 0,
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: '0 12px', height: 36, flexShrink: 0,
         background: 'rgba(0,10,20,0.7)',
         borderBottom: `1px solid ${theme.divider}`,
         position: 'relative',
@@ -404,33 +554,41 @@ export default function App() {
           onClick={() => setIsExpanded(!isExpanded)}
           style={{
             ...navBtn,
-            fontFamily: theme.fontBody,
-            fontSize: 11, fontWeight: 500,
             color: isExpanded ? theme.electricBlue : theme.textSecondary,
-            padding: '3px 8px',
+            padding: '3px 5px',
             border: `1px solid ${isExpanded ? theme.electricBlue + '40' : 'transparent'}`,
             borderRadius: 3,
           }}
           title={isExpanded ? '收缩昼夜表' : '展开昼夜表'}
         >
-          {isExpanded
-            ? <><Minimize2 size={12} style={{ verticalAlign: 'middle' }} /> 收缩</>
-            : <><Maximize2 size={12} style={{ verticalAlign: 'middle' }} /> 展开</>
-          }
+          {isExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
         </button>
 
         <div style={{ flex: 1 }} />
 
         {/* Voice hint */}
-        <span style={{ fontSize: 11, color: theme.textMuted, fontFamily: theme.fontBody }}>
-          长按右 Alt 呼唤
-        </span>
+        <button style={{ ...navBtn, color: theme.textMuted, padding: '2px 4px' }} title="长按右 Alt 呼唤语音助手">
+          <Mic size={13} />
+        </button>
 
         <NeonDivider vertical />
 
+        {/* B站历史 */}
+        <button
+          onClick={() => { setShowBili(!showBili); if (!showBili) setShowSettings(false) }}
+          style={{
+            ...navBtn,
+            color: showBili ? theme.electricBlue : theme.textSecondary,
+            textShadow: showBili ? `0 0 6px ${theme.electricBlue}` : undefined,
+          }}
+          title="B站历史记录"
+        >
+          <Tv2 size={14} />
+        </button>
+
         {/* Settings */}
         <button
-          onClick={() => setShowSettings(!showSettings)}
+          onClick={() => { setShowSettings(!showSettings); if (!showSettings) setShowBili(false) }}
           style={{
             ...navBtn,
             fontSize: 15,
@@ -455,6 +613,8 @@ export default function App() {
             onActivityClick={(a) => { setShowSettings(false); setChartSelection(null); setEditMode({ type: 'edit', activity: a }) }}
             onTimeSelect={handleTimeSelect}
             onClearSelection={handleClearSelection}
+            onActivityResize={handleActivityResize}
+            onDeleteMinuteRange={handleDeleteMinuteRange}
           />
         </div>
 
@@ -470,6 +630,26 @@ export default function App() {
               config={config}
               onUpdate={handleConfigUpdate}
               onClose={() => setShowSettings(false)}
+            />
+          ) : showBili ? (
+            <BiliHistoryMonitor
+              dbStatus={dbStatus}
+              isLoading={biliLoading}
+              error={biliError}
+              lastUpdated={biliLastUpdated}
+              countdown={biliCountdown}
+              intervalSeconds={biliIntervalSec}
+              isPaused={biliPaused}
+              windowClosed={biliWinClosed}
+              cursor={biliCursor}
+              hasMoreRemote={biliHasMoreRemote}
+              onLoadOlderHistory={biliLoadOlder}
+              onPause={pauseBili}
+              onResume={resumeBili}
+              onRefresh={refreshBili}
+              onSetInterval={setBiliInterval}
+              onAddToActivity={handleAddBiliToActivity}
+              onClose={() => setShowBili(false)}
             />
           ) : editMode !== null ? (
             <ActivityFormPanel

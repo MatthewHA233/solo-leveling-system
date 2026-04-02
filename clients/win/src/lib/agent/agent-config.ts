@@ -40,6 +40,11 @@ export interface AgentConfig {
   readonly overlayEnabled: boolean
   readonly miniBarPosition: 'right' | 'left'
 
+  // ── AI 人设 ──
+  readonly agentName: string
+  readonly agentPersona: string
+  readonly agentCallUser: string
+
   // ── Main Quest ──
   readonly mainQuest: string | null
   readonly motivations: readonly string[]
@@ -47,6 +52,10 @@ export interface AgentConfig {
   // ── Privacy ──
   readonly excludedApps: readonly string[]
   readonly excludedTitleKeywords: readonly string[]
+
+  // ── Bilibili ──
+  readonly biliIntervalSeconds: number
+  readonly biliAutoCreate: boolean
 }
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -78,6 +87,10 @@ export const DEFAULT_CONFIG: AgentConfig = {
   overlayEnabled: true,
   miniBarPosition: 'right',
 
+  agentName: '暗影君主系统',
+  agentPersona: '你是独自升级世界观中的系统精灵，语气冷静、简洁、略带威严，偶尔展现关心。使用「」包裹关键系统通知。',
+  agentCallUser: '主人',
+
   mainQuest: null,
   motivations: [],
 
@@ -87,6 +100,9 @@ export const DEFAULT_CONFIG: AgentConfig = {
     '银行', 'bank', 'Bank',
     '支付', 'payment', 'Payment',
   ],
+
+  biliIntervalSeconds: 60,
+  biliAutoCreate: true,
 }
 
 // ── Load / Save ──

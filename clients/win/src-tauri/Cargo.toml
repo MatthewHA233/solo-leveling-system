@@ -24,7 +24,7 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 
 # WebSocket
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 tokio-native-tls = "0.3"
 native-tls = "0.2"
@@ -40,3 +40,5 @@ tower-http = { version = "0.6", features = ["cors"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }

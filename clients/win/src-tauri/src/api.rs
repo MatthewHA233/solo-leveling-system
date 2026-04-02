@@ -5,21 +5,40 @@
 
 use axum::{
     extract::{Path, Query, State},
-    response::Json,
-    routing::{delete, get},
+    http::StatusCode,
+    response::{IntoResponse, Json, Response},
+    routing::{delete, get, patch, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::sync::{oneshot, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::db::{ChronosActivity, CreateActivityRequest, Database, UpdateActivityRequest};
+use crate::db::{
+    AppendChatMessagesRequest, ChatMessage, ChatSession,
+    ChronosActivity, CreateActivityRequest, Database, UpdateActivityRequest, UpdateChatSessionRequest,
+    BiliHistoryRow, UpsertBiliItem, MergeActivitiesRequest,
+};
+
+// ── Bilibili 回调状态 ──
+
+pub struct BiliState {
+    pub pending: Mutex<Option<oneshot::Sender<Result<serde_json::Value, String>>>>,
+}
+
+impl BiliState {
+    pub fn new() -> Self {
+        Self { pending: Mutex::new(None) }
+    }
+}
 
 // ── API State ──
 
 #[derive(Clone)]
 pub struct ApiState {
     pub db: Arc<Database>,
+    pub bili: Arc<BiliState>,
 }
 
 // ── Response Types ──
@@ -48,6 +67,38 @@ struct DateQuery {
     date: String,
 }
 
+#[derive(Deserialize)]
+struct LimitQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct BiliResultPayload {
+    ok: Option<serde_json::Value>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BiliHistoryQuery {
+    page: Option<i64>,
+    page_size: Option<i64>,
+    unlinked_only: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct BiliHistoryPageResult {
+    items: Vec<BiliHistoryRow>,
+    total: i64,
+    page: i64,
+    page_size: i64,
+}
+
+#[derive(Deserialize)]
+struct LinkBiliPayload {
+    bvids: Vec<String>,
+    event_id: String,
+}
+
 // ── Handlers ──
 
 /// GET /api/health
@@ -66,13 +117,19 @@ async fn get_activities(
     }
 }
 
+#[derive(Serialize)]
+struct CreateActivityResult {
+    id: String,
+    event_ids: Vec<String>,
+}
+
 /// POST /api/activities
 async fn create_activity(
     State(state): State<ApiState>,
     Json(body): Json<CreateActivityRequest>,
-) -> Json<ApiResponse<String>> {
+) -> Json<ApiResponse<CreateActivityResult>> {
     match state.db.create_activity(body).await {
-        Ok(id) => Json(ApiResponse::ok(id)),
+        Ok((id, event_ids)) => Json(ApiResponse::ok(CreateActivityResult { id, event_ids })),
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -100,15 +157,237 @@ async fn update_activity(
     }
 }
 
+/// GET /api/sessions?limit=N
+async fn list_chat_sessions(
+    State(state): State<ApiState>,
+    Query(query): Query<LimitQuery>,
+) -> Json<ApiResponse<Vec<ChatSession>>> {
+    let limit = query.limit.unwrap_or(20).min(100);
+    match state.db.get_recent_chat_sessions(limit).await {
+        Ok(sessions) => Json(ApiResponse::ok(sessions)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/sessions
+async fn create_chat_session(
+    State(state): State<ApiState>,
+) -> Json<ApiResponse<ChatSession>> {
+    match state.db.create_chat_session().await {
+        Ok(session) => Json(ApiResponse::ok(session)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// GET /api/sessions/:id/messages
+async fn get_chat_messages(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Json<ApiResponse<Vec<ChatMessage>>> {
+    match state.db.get_chat_messages(&id).await {
+        Ok(messages) => Json(ApiResponse::ok(messages)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/sessions/:id/messages
+async fn append_chat_messages(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<AppendChatMessagesRequest>,
+) -> Json<ApiResponse<()>> {
+    match state.db.append_chat_messages(&id, body).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// PATCH /api/sessions/:id
+async fn update_chat_session(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateChatSessionRequest>,
+) -> Json<ApiResponse<()>> {
+    match state.db.update_chat_session(&id, body).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// 从 Bilibili API JSON 响应中提取可 upsert 的条目
+fn extract_bili_items(data: &serde_json::Value) -> Vec<UpsertBiliItem> {
+    let list = data
+        .get("data").and_then(|d| d.get("list"))
+        .and_then(|l| l.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    list.iter().filter_map(|item| {
+        let history = item.get("history")?;
+        let bvid = history.get("bvid")?.as_str().unwrap_or("").to_string();
+        if bvid.is_empty() { return None; }
+        Some(UpsertBiliItem {
+            bvid,
+            oid:         history.get("oid").and_then(|v| v.as_i64()).unwrap_or(0),
+            title:       item.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            author_name: item.get("author_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            cover:       item.get("cover").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            duration:    item.get("duration").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+            progress:    item.get("progress").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+            view_at:     item.get("view_at").and_then(|v| v.as_i64()).unwrap_or(0),
+        })
+    }).collect()
+}
+
+/// POST /api/bilibili/result — 接收 bilibili 内嵌 WebView 注入 JS 的回调结果，同时入库
+async fn recv_bili_result(
+    State(state): State<ApiState>,
+    Json(body): Json<BiliResultPayload>,
+) -> Json<ApiResponse<()>> {
+    let result = if let Some(ref data) = body.ok {
+        // 解析并入库
+        let items = extract_bili_items(data);
+        if !items.is_empty() {
+            if let Err(e) = state.db.upsert_bili_history(&items).await {
+                log::warn!("[Bili] upsert 失败: {}", e);
+            } else {
+                log::info!("[Bili] upsert {} 条历史", items.len());
+            }
+        }
+        Ok(body.ok.unwrap())
+    } else {
+        Err(body.error.unwrap_or_else(|| "未知错误".to_string()))
+    };
+
+    let mut guard = state.bili.pending.lock().await;
+    if let Some(tx) = guard.take() {
+        let _ = tx.send(result);
+    }
+
+    Json(ApiResponse::ok(()))
+}
+
+/// GET /api/bilibili/history?page=0&page_size=50&unlinked_only=false
+async fn get_bili_history(
+    State(state): State<ApiState>,
+    Query(query): Query<BiliHistoryQuery>,
+) -> Json<ApiResponse<BiliHistoryPageResult>> {
+    let page      = query.page.unwrap_or(0).max(0);
+    let page_size = query.page_size.unwrap_or(50).clamp(1, 200);
+    let unlinked  = query.unlinked_only.unwrap_or(false);
+
+    match state.db.get_bili_history(page, page_size, unlinked).await {
+        Ok((items, total)) => Json(ApiResponse::ok(BiliHistoryPageResult { items, total, page, page_size })),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// PUT /api/bilibili/history/link — 将 bvids 关联到事件
+async fn link_bili_to_event(
+    State(state): State<ApiState>,
+    Json(body): Json<LinkBiliPayload>,
+) -> Json<ApiResponse<()>> {
+    match state.db.link_bili_to_event(&body.bvids, &body.event_id).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/activities/merge — 合并活动（移动事件，不删重建）
+async fn merge_activities(
+    State(state): State<ApiState>,
+    Json(body): Json<MergeActivitiesRequest>,
+) -> Json<ApiResponse<()>> {
+    match state.db.merge_activities(body).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+// ── Bilibili 封面图片代理 ──
+
+#[derive(Deserialize)]
+struct CoverQuery {
+    url: String,
+}
+
+/// GET /api/bilibili/cover?url=https://i0.hdslb.com/...
+/// 带正确 Referer 头代理请求 B站图片，绕过防盗链
+async fn proxy_bili_cover(
+    Query(query): Query<CoverQuery>,
+) -> Response {
+    // 只允许 B站 CDN 域名，防止 SSRF
+    let allowed = ["i0.hdslb.com", "i1.hdslb.com", "i2.hdslb.com", "hdslb.com"];
+    let is_allowed = url::Url::parse(&query.url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .map(|host| allowed.iter().any(|a| host == *a || host.ends_with(&format!(".{}", a))))
+        .unwrap_or(false);
+
+    if !is_allowed {
+        return (StatusCode::FORBIDDEN, "不允许的图片域名").into_response();
+    }
+
+    let client = match reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let resp = match client
+        .get(&query.url)
+        .header("Referer", "https://www.bilibili.com/")
+        .header("Origin", "https://www.bilibili.com")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    };
+
+    if !resp.status().is_success() {
+        return (StatusCode::BAD_GATEWAY, format!("上游返回 {}", resp.status())).into_response();
+    }
+
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("image/jpeg")
+        .to_string();
+
+    let bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    };
+
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, content_type),
+         (axum::http::header::CACHE_CONTROL, "public, max-age=86400".to_string())],
+        bytes,
+    ).into_response()
+}
+
 // ── Server ──
 
-pub fn create_router(db: Arc<Database>) -> Router {
-    let state = ApiState { db };
+pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>) -> Router {
+    let state = ApiState { db, bili };
 
     Router::new()
         .route("/api/health", get(health))
         .route("/api/activities", get(get_activities).post(create_activity))
         .route("/api/activities/{id}", delete(delete_activity).put(update_activity))
+        .route("/api/sessions", get(list_chat_sessions).post(create_chat_session))
+        .route("/api/sessions/{id}/messages", get(get_chat_messages).post(append_chat_messages))
+        .route("/api/sessions/{id}", patch(update_chat_session))
+        .route("/api/bilibili/result", post(recv_bili_result))
+        .route("/api/bilibili/history", get(get_bili_history))
+        .route("/api/bilibili/history/link", axum::routing::put(link_bili_to_event))
+        .route("/api/activities/merge", post(merge_activities))
+        .route("/api/bilibili/cover", get(proxy_bili_cover))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -118,8 +397,8 @@ pub fn create_router(db: Arc<Database>) -> Router {
         .with_state(state)
 }
 
-pub async fn start_server(db: Arc<Database>, port: u16) {
-    let app = create_router(db);
+pub async fn start_server(db: Arc<Database>, bili: Arc<BiliState>, port: u16) {
+    let app = create_router(db, bili);
     let addr = format!("0.0.0.0:{}", port);
 
     log::info!("[API] HTTP 服务器启动: http://{}", addr);

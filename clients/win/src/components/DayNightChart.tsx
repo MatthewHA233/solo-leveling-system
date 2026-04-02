@@ -10,6 +10,8 @@ interface Props {
   onActivityClick?: (activity: ChronosActivity) => void
   onTimeSelect?: (startMinute: number, endMinute: number) => void
   onClearSelection?: () => void
+  onActivityResize?: (activityId: string, newStart: number, newEnd: number) => void
+  onDeleteMinuteRange?: (startMin: number, endMin: number) => void
 }
 
 // ── Grid 参数 ──
@@ -26,8 +28,8 @@ function getGridParams(isExpanded: boolean, cellHOverride?: number) {
   const topPad = 28
   const bottomPad = 8
   const minuteH = cellH / 5   // 每分钟高度随 cellH 等比例缩放
-  const traceBaseX = isExpanded ? 10 : 20
-  const trackSp = isExpanded ? 10 : 18
+  const traceBaseX = isExpanded ? 3 : 5
+  const trackSp = isExpanded ? 7 : 8
   const colStride = cellW + colGap
   const rowStride = cellH + rowGap
   const gridH = rows * rowStride - rowGap
@@ -310,7 +312,7 @@ function drawTraceSegments(
   }
 }
 
-function drawStepNodes(
+function drawEventNodes(
   ctx: CanvasRenderingContext2D,
   p: ReturnType<typeof getGridParams>,
   layouts: TraceLayout[],
@@ -320,7 +322,7 @@ function drawStepNodes(
     const color = getCategoryColor(layout.activity.category)
     const trackX = p.traceBaseX + layout.trackIndex * p.trackSp
 
-    for (const step of layout.activity.steps) {
+    for (const step of layout.activity.events) {
       const c = Math.floor(step.minute / p.minutesPerCol)
       const r = Math.floor((step.minute % p.minutesPerCol) / 5)
       if (c >= p.cols || r >= p.rows) continue
@@ -709,7 +711,7 @@ function drawDragSelection(
 
 // ── 主组件 ──
 
-export default function DayNightChart({ activities, isExpanded, selectedDate, selection, onActivityClick, onTimeSelect, onClearSelection }: Props) {
+export default function DayNightChart({ activities, isExpanded, selectedDate, selection, onActivityClick, onTimeSelect, onClearSelection, onActivityResize, onDeleteMinuteRange }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const hoveredIdRef = useRef<string | null>(null)
@@ -722,8 +724,17 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
   const dragStartMinRef = useRef<number | null>(null)
   const dragCurMinRef = useRef<number | null>(null)
   const hoverMinRef = useRef<number | null>(null)
+  // 边缘拖拽调整时间
+  const edgeDragRef = useRef<{
+    activity: ChronosActivity
+    edge: 'start' | 'end'
+    currentMinute: number
+  } | null>(null)
 
   const dpr = window.devicePixelRatio || 1
+
+  // 列首右键菜单
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; startMin: number; endMin: number } | null>(null)
 
   // ── 响应式高度：监听可用高度，等比缩放 cellH ──
   const [chartAreaH, setChartAreaH] = useState(0)
@@ -781,6 +792,16 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
     const hoveredId = hoveredIdRef.current
     const hoveredCell = hoveredCellRef.current
 
+    // Edge resize 时用修改后的 activity 实时更新视觉
+    const edgeRef = edgeDragRef.current
+    const activeLayouts = edgeRef ? (() => {
+      const a = edgeRef.activity
+      const newStart = edgeRef.edge === 'start' ? edgeRef.currentMinute : a.startMinute
+      const newEnd   = edgeRef.edge === 'end'   ? edgeRef.currentMinute : a.endMinute
+      const modified = { ...a, startMinute: newStart, endMinute: newEnd }
+      return layouts.map(l => l.activity.id === a.id ? { ...l, activity: modified } : l)
+    })() : layouts
+
     ctx.clearRect(0, 0, p.totalW * dpr, p.totalH * dpr)
 
     // HiDPI 缩放
@@ -795,10 +816,10 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
 
     // 空格 hover 高亮（在活动层之下）
     if (!isDraggingRef.current) {
-      drawHoverHighlight(ctx, p, hoverMinRef.current, layouts)
+      drawHoverHighlight(ctx, p, hoverMinRef.current, activeLayouts)
     }
 
-    drawCellFills(ctx, p, layouts, hoveredId)
+    drawCellFills(ctx, p, activeLayouts, hoveredId)
     drawTimeLabels(ctx, p)
 
     // Glow 层（直接贴预渲染的缓存，不再做 blur）
@@ -808,9 +829,9 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
       ctx.globalAlpha = 1.0
     }
 
-    drawTraceSegments(ctx, p, layouts, hoveredId, false)
-    drawStepNodes(ctx, p, layouts, hoveredCell)
-    drawTitles(ctx, p, layouts)
+    drawTraceSegments(ctx, p, activeLayouts, hoveredId, false)
+    drawEventNodes(ctx, p, activeLayouts, hoveredCell)
+    drawTitles(ctx, p, activeLayouts)
     drawNowTick(ctx, p, isToday)
 
     // 选区（最顶层）：拖拽中显示拖拽选区，松手后显示常驻选区
@@ -820,6 +841,32 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
       drawDragSelection(ctx, p, selStart, Math.max(selEnd, selStart + 5))
     } else if (selection) {
       drawDragSelection(ctx, p, selection.startMinute, selection.endMinute)
+    }
+
+    // Edge resize 指示器：边框高亮 + 时间标签（bar 已由 activeLayouts 实时更新）
+    if (edgeRef) {
+      const a = edgeRef.activity
+      const color = getCategoryColor(a.category)
+      const newStart = edgeRef.edge === 'start' ? edgeRef.currentMinute : a.startMinute
+      const newEnd   = edgeRef.edge === 'end'   ? edgeRef.currentMinute : a.endMinute
+      // 拖拽边缘画亮边框
+      const edgeMin = edgeRef.edge === 'start' ? newStart : newEnd
+      const edgeCol = Math.min(Math.floor(edgeMin / p.minutesPerCol), p.cols - 1)
+      const ex = colX(edgeCol, p)
+      const ey = minuteToY(edgeMin, edgeCol, p)
+      ctx.strokeStyle = color
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(ex, ey)
+      ctx.lineTo(ex + p.cellW, ey)
+      ctx.stroke()
+      // 时间标签
+      const fmt = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+      const labelY = ey + (edgeRef.edge === 'end' ? 13 : -4)
+      ctx.font = `bold 10px 'JetBrains Mono', monospace`
+      ctx.fillStyle = color
+      ctx.textAlign = 'center'
+      ctx.fillText(fmt(edgeMin), ex + p.cellW / 2, labelY)
     }
 
     ctx.restore()
@@ -848,6 +895,65 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
     })
   }, [draw])
 
+  // 检测鼠标是否在活动边缘（±6px）→ 返回 edge 信息
+  function hitTestEdge(e: React.MouseEvent<HTMLCanvasElement>): {
+    activity: ChronosActivity; edge: 'start' | 'end'; minute: number
+  } | null {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    const EDGE_TOL = 6
+    const c = Math.floor((x - p.hPad) / p.colStride)
+    if (c < 0 || c >= p.cols) return null
+
+    for (const a of activities) {
+      // start edge：活动起始列
+      const startCol = Math.floor(a.startMinute / p.minutesPerCol)
+      if (startCol === c) {
+        const sy = minuteToY(a.startMinute, c, p)
+        if (Math.abs(y - sy) <= EDGE_TOL) return { activity: a, edge: 'start', minute: a.startMinute }
+      }
+      // end edge：活动结束列（end 在列边界时归前一列）
+      const endCol = Math.floor(a.endMinute / p.minutesPerCol)
+      const checkCol = (a.endMinute % p.minutesPerCol === 0 && endCol > 0) ? endCol - 1 : endCol
+      if (checkCol === c && checkCol < p.cols) {
+        const ey = minuteToY(a.endMinute, checkCol, p)
+        if (Math.abs(y - ey) <= EDGE_TOL) return { activity: a, edge: 'end', minute: a.endMinute }
+      }
+    }
+    return null
+  }
+
+  // 将鼠标事件坐标转换为分钟（跨列支持，snap to 5 min）
+  function minuteFromEvent(e: React.MouseEvent<HTMLCanvasElement>): number | null {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    const c = Math.floor((x - p.hPad) / p.colStride)
+    const rBlock = Math.floor((y - p.topPad) / p.rowStride)
+    if (c < 0 || c >= p.cols || rBlock < 0 || rBlock >= p.rows) return null
+    const localY = y - p.topPad - rBlock * p.rowStride
+    const extraMin = Math.min(Math.floor(localY / p.minuteH), 4)
+    const m = c * p.minutesPerCol + rBlock * 5 + extraMin
+    return Math.round(m / 5) * 5
+  }
+
+  // 边缘拖拽专用：夹紧坐标，永不返回 null
+  function minuteFromEventClamped(e: React.MouseEvent<HTMLCanvasElement>): number {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    const cRaw = Math.floor((x - p.hPad) / p.colStride)
+    const c = Math.max(0, Math.min(cRaw, p.cols - 1))
+    const relY = y - p.topPad
+    const clampedRelY = Math.max(0, Math.min(relY, p.gridH - 1))
+    const rBlock = Math.max(0, Math.min(Math.floor(clampedRelY / p.rowStride), p.rows - 1))
+    const localY = clampedRelY - rBlock * p.rowStride
+    const extraMin = Math.min(Math.floor(localY / p.minuteH), 4)
+    const m = c * p.minutesPerCol + rBlock * 5 + extraMin
+    return Math.max(0, Math.min(Math.round(m / 5) * 5, 1440))
+  }
+
   function getHitAt(e: React.MouseEvent<HTMLCanvasElement>): { minute: number; snappedEnd: number; hit: ChronosActivity | undefined } | null {
     const rect = canvasRef.current!.getBoundingClientRect()
     const x = e.clientX - rect.left
@@ -866,8 +972,25 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
 
   function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
     e.preventDefault()
+
+    // 1. 优先检测边缘 resize
+    const edgeHit = hitTestEdge(e)
+    if (edgeHit) {
+      edgeDragRef.current = {
+        activity: edgeHit.activity,
+        edge: edgeHit.edge,
+        currentMinute: edgeHit.minute,
+      }
+      canvasRef.current!.style.cursor = 'ns-resize'
+      scheduleRedraw()
+      return
+    }
+
+    // 2. 活动主体 → 由 handleClick 处理，不开始拖拽
     const info = getHitAt(e)
-    if (!info || info.hit) return   // 只在空白处开始拖拽
+    if (!info || info.hit) return
+
+    // 3. 空白区域 → 框选创建
     isDraggingRef.current = true
     dragStartMinRef.current = info.minute
     dragCurMinRef.current = info.snappedEnd
@@ -883,8 +1006,22 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
     const c = Math.floor((x - p.hPad) / p.colStride)
     const rBlock = Math.floor((y - p.topPad) / p.rowStride)
 
+    // Edge resize 拖拽中
+    if (edgeDragRef.current) {
+      const newMin = minuteFromEventClamped(e)
+      const ref = edgeDragRef.current
+      const a = ref.activity
+      if (ref.edge === 'start') {
+        ref.currentMinute = Math.min(newMin, a.endMinute - 5)
+      } else {
+        ref.currentMinute = Math.max(Math.min(newMin, 1440), a.startMinute + 5)
+      }
+      scheduleRedraw()
+      return
+    }
+
     if (isDraggingRef.current) {
-      // 拖拽中：更新选区终点
+      // 框选拖拽中：更新选区终点
       if (c >= 0 && c < p.cols && rBlock >= 0 && rBlock < p.rows) {
         const localY = y - p.topPad - rBlock * p.rowStride
         const extraMin = Math.min(Math.floor(localY / p.minuteH), 4)
@@ -895,7 +1032,17 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
       return
     }
 
-    // 普通 hover
+    // 普通 hover：先检测边缘
+    const edgeHover = hitTestEdge(e)
+    if (edgeHover) {
+      hoveredIdRef.current = edgeHover.activity.id
+      hoveredCellRef.current = null
+      hoverMinRef.current = null
+      canvasRef.current!.style.cursor = 'ns-resize'
+      scheduleRedraw()
+      return
+    }
+
     if (c >= 0 && c < p.cols && rBlock >= 0 && rBlock < p.rows) {
       hoveredCellRef.current = { col: c, row: rBlock }
       const localY = y - p.topPad - rBlock * p.rowStride
@@ -915,6 +1062,19 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
   }
 
   function handleMouseUp(e: React.MouseEvent<HTMLCanvasElement>) {
+    // Edge resize 完成 → 持久化
+    if (edgeDragRef.current) {
+      const ref = edgeDragRef.current
+      const a = ref.activity
+      const newStart = ref.edge === 'start' ? ref.currentMinute : a.startMinute
+      const newEnd = ref.edge === 'end' ? ref.currentMinute : a.endMinute
+      edgeDragRef.current = null
+      canvasRef.current!.style.cursor = 'crosshair'
+      onActivityResize?.(a.id, newStart, newEnd)
+      scheduleRedraw()
+      return
+    }
+
     if (!isDraggingRef.current) return
     isDraggingRef.current = false
     canvasRef.current!.style.cursor = 'crosshair'
@@ -938,7 +1098,11 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
   }
 
   function handleMouseLeave() {
-    // 拖拽中离开：取消拖拽
+    // edge resize 离开 → 取消（不保存）
+    if (edgeDragRef.current) {
+      edgeDragRef.current = null
+    }
+    // 框选拖拽中离开 → 取消
     if (isDraggingRef.current) {
       isDraggingRef.current = false
       dragStartMinRef.current = null
@@ -959,11 +1123,35 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
 
   function handleContextMenu(e: React.MouseEvent<HTMLCanvasElement>) {
     e.preventDefault()
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+
+    // 点击在列首时间标签区（topPad 以上）→ 显示删除菜单
+    if (y <= p.topPad) {
+      const c = Math.floor((x - p.hPad) / p.colStride)
+      if (c >= 0 && c < p.cols) {
+        const startMin = c * p.minutesPerCol
+        const endMin = startMin + p.minutesPerCol
+        const inRange = activities.filter((a) => a.startMinute < endMin && a.endMinute > startMin)
+        if (inRange.length > 0) {
+          setCtxMenu({ x: e.clientX, y: e.clientY, startMin, endMin })
+          return
+        }
+      }
+    }
+    setCtxMenu(null)
     onClearSelection?.()
   }
 
   // 自动滚动到当前时间 / 最早活动
+  // 只在日期切换或展开/收起时触发，不随活动增删重置位置
+  const scrollKeyRef = useRef('')
   useEffect(() => {
+    const key = `${selectedDate.toDateString()}-${isExpanded}`
+    if (scrollKeyRef.current === key) return
+    scrollKeyRef.current = key
+
     const container = containerRef.current
     if (!container) return
     let targetMin: number
@@ -979,14 +1167,55 @@ export default function DayNightChart({ activities, isExpanded, selectedDate, se
     const targetCol = Math.max(0, Math.floor(targetMin / p.minutesPerCol) - 1)
     const scrollX = targetCol * p.colStride
     setTimeout(() => { container.scrollLeft = scrollX }, 100)
-  }, [isToday, activities, p.minutesPerCol, p.colStride])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate, isExpanded, isToday, p.minutesPerCol, p.colStride])
 
   // 图例
   const usedCats = [...new Set(activities.map((a) => a.category))]
   const totalMinutes = activities.reduce((s, a) => s + a.endMinute - a.startMinute, 0)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: theme.background }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: theme.background, position: 'relative' }}
+      onClick={() => setCtxMenu(null)}
+    >
+      {/* 列首右键菜单 */}
+      {ctxMenu && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: 'fixed', left: ctxMenu.x, top: ctxMenu.y,
+            zIndex: 9999,
+            background: 'rgba(2,8,20,0.97)',
+            border: `1px solid ${theme.dangerRed}60`,
+            borderRadius: 4,
+            boxShadow: `0 4px 20px rgba(0,0,0,0.6), 0 0 12px ${theme.dangerRed}20`,
+            minWidth: 180,
+            fontFamily: theme.fontBody,
+          }}
+        >
+          <div style={{ padding: '6px 12px', fontSize: 10, color: theme.textMuted, borderBottom: `1px solid ${theme.divider}` }}>
+            {fmt(ctxMenu.startMin)} — {fmt(ctxMenu.endMin)}
+          </div>
+          <button
+            onClick={() => {
+              onDeleteMinuteRange?.(ctxMenu.startMin, ctxMenu.endMin)
+              setCtxMenu(null)
+            }}
+            style={{
+              display: 'block', width: '100%', textAlign: 'left',
+              padding: '8px 12px', fontSize: 12,
+              background: 'transparent', border: 'none',
+              color: theme.dangerRed, cursor: 'pointer',
+              fontFamily: theme.fontBody,
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = `${theme.dangerRed}18` }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
+          >
+            删除此时段全部活动
+          </button>
+        </div>
+      )}
+
       {/* 图表滚动区：flex-1 填满剩余高度，高度不足时出现滚动条 */}
       <div
         ref={containerRef}

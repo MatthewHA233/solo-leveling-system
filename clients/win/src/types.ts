@@ -1,4 +1,4 @@
-export interface ChronosStep {
+export interface ChronosEvent {
   id: string
   minute: number   // 0-1439
   label: string    // "1", "2", ...
@@ -12,7 +12,7 @@ export interface ChronosActivity {
   startMinute: number  // 0-1439
   endMinute: number    // 0-1440
   goalAlignment?: string
-  steps: ChronosStep[]
+  events: ChronosEvent[]
 }
 
 export interface BatchThumbnail {

@@ -192,7 +192,7 @@ export function trimIfNeeded(state: AgentMemoryState): AgentMemoryState {
   }
 }
 
-// ── Persist ──
+// ── Persist (localStorage fallback) ──
 
 export function saveMemory(state: AgentMemoryState): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
@@ -208,4 +208,115 @@ export function loadMemory(): AgentMemoryState {
     // fall through
   }
   return createAgentMemory()
+}
+
+// ── Session API (SQLite via Axum) ──
+
+const API_BASE = 'http://localhost:3000'
+
+export interface ChatSessionInfo {
+  readonly id: string
+  readonly title: string
+  readonly summary: string | null
+  readonly created_at: string
+  readonly updated_at: string
+}
+
+interface ApiChatMessage {
+  id: string
+  session_id: string
+  role: string
+  content: string | null
+  tool_calls: string | null
+  tool_call_id: string | null
+  name: string | null
+  timestamp: string
+}
+
+function fromApiMessage(m: ApiChatMessage): SessionMessage {
+  return {
+    role: m.role as SessionMessage['role'],
+    content: m.content,
+    toolCalls: m.tool_calls ? (JSON.parse(m.tool_calls) as ToolCallRecord[]) : null,
+    toolCallId: m.tool_call_id,
+    name: m.name,
+    timestamp: m.timestamp,
+  }
+}
+
+export async function createChatSession(): Promise<ChatSessionInfo> {
+  const res = await fetch(`${API_BASE}/api/sessions`, { method: 'POST' })
+  const json = await res.json() as { success: boolean; data: ChatSessionInfo; error?: string }
+  if (!json.success) throw new Error(json.error ?? '创建会话失败')
+  return json.data
+}
+
+export async function getRecentChatSessions(limit = 1): Promise<ChatSessionInfo[]> {
+  const res = await fetch(`${API_BASE}/api/sessions?limit=${limit}`)
+  const json = await res.json() as { success: boolean; data: ChatSessionInfo[] }
+  return json.success ? json.data : []
+}
+
+export async function fetchSessionMessages(sessionId: string): Promise<SessionMessage[]> {
+  const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/messages`)
+  const json = await res.json() as { success: boolean; data: ApiChatMessage[] }
+  return json.success ? json.data.map(fromApiMessage) : []
+}
+
+export async function persistMessages(
+  sessionId: string,
+  messages: readonly SessionMessage[],
+): Promise<void> {
+  const body = {
+    messages: messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      tool_calls: m.toolCalls ? JSON.stringify(m.toolCalls) : null,
+      tool_call_id: m.toolCallId,
+      name: m.name,
+      timestamp: m.timestamp,
+    })),
+  }
+  await fetch(`${API_BASE}/api/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function patchSession(
+  sessionId: string,
+  updates: { title?: string; summary?: string },
+): Promise<void> {
+  await fetch(`${API_BASE}/api/sessions/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  })
+}
+
+/** 应用启动时调用：恢复最近会话（4h内）或创建新会话 */
+export async function initChatSession(): Promise<{
+  sessionId: string
+  state: AgentMemoryState
+}> {
+  const sessions = await getRecentChatSessions(1)
+
+  if (sessions.length > 0) {
+    const recent = sessions[0]
+    const elapsed = Date.now() - new Date(recent.updated_at).getTime()
+    if (elapsed < 4 * 3600 * 1000) {
+      const msgs = await fetchSessionMessages(recent.id)
+      return {
+        sessionId: recent.id,
+        state: {
+          messages: msgs.slice(-MAX_MESSAGES),
+          sessionSummary: recent.summary,
+        },
+      }
+    }
+  }
+
+  const session = await createChatSession()
+  return { sessionId: session.id, state: createAgentMemory() }
 }

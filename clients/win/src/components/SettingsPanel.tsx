@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useCallback, useEffect } from 'react'
-import { X, ChevronRight, Zap, Mic, Lock, Database } from 'lucide-react'
+import { X, ChevronRight, Zap, Mic, Lock, Database, Tv2, Bot } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { theme } from '../theme'
@@ -39,6 +39,11 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
     fishReferenceId: config.fishReferenceId,
     excludedApps: config.excludedApps.join('\n'),
     excludedTitleKeywords: config.excludedTitleKeywords.join('\n'),
+    biliIntervalSeconds: config.biliIntervalSeconds,
+    biliAutoCreate: config.biliAutoCreate,
+    agentName: config.agentName,
+    agentPersona: config.agentPersona,
+    agentCallUser: config.agentCallUser,
   })
 
   const [dirty, setDirty] = useState(false)
@@ -69,6 +74,11 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
       fishReferenceId: draft.fishReferenceId,
       excludedApps: draft.excludedApps.split('\n').map((s) => s.trim()).filter(Boolean),
       excludedTitleKeywords: draft.excludedTitleKeywords.split('\n').map((s) => s.trim()).filter(Boolean),
+      biliIntervalSeconds: draft.biliIntervalSeconds,
+      biliAutoCreate: draft.biliAutoCreate,
+      agentName: draft.agentName || '暗影君主系统',
+      agentPersona: draft.agentPersona,
+      agentCallUser: draft.agentCallUser || '主人',
     })
     setDirty(false)
     setSaved(true)
@@ -143,6 +153,39 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
 
       {/* Scrollable content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+        {/* ── AI 人设 ── */}
+        <Section title="AI 人设" icon={Bot}>
+          <Field label="系统名称"
+            value={draft.agentName}
+            onChange={(v) => update('agentName', v)}
+            placeholder="暗影君主系统"
+          />
+          <Field label="称呼用户为"
+            value={draft.agentCallUser}
+            onChange={(v) => update('agentCallUser', v)}
+            placeholder="主人"
+          />
+          <div style={{ marginBottom: 8 }}>
+            <label style={labelStyle}>人设描述</label>
+            <textarea
+              value={draft.agentPersona}
+              onChange={(e) => update('agentPersona', e.target.value)}
+              rows={4}
+              style={textareaStyle}
+              placeholder="描述 AI 的性格、语气和行为风格..."
+            />
+          </div>
+          <div style={{ marginTop: 4 }}>
+            <MagneticButton
+              onClick={handleApply}
+              color={dirty ? theme.expGreen : theme.textSecondary}
+              disabled={!dirty}
+            >
+              {saved ? '已应用 ✓' : '保存'}
+            </MagneticButton>
+          </div>
+        </Section>
+
         {/* ── AI 模型 ── */}
         <Section title="AI 模型" icon={Zap}>
           <Field label="API Key" type="password"
@@ -222,6 +265,53 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
             rows={4}
             style={textareaStyle}
           />
+          <div style={{ marginTop: 4 }}>
+            <MagneticButton
+              onClick={handleApply}
+              color={dirty ? theme.expGreen : theme.textSecondary}
+              disabled={!dirty}
+            >
+              保存
+            </MagneticButton>
+          </div>
+        </Section>
+
+        {/* ── B站 ── */}
+        <Section title="B站历史" icon={Tv2}>
+          <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 10 }}>
+            点击顶栏 B站图标打开监控面板，在面板内登录即可自动抓取历史记录。
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <label style={labelStyle}>轮询间隔（秒）</label>
+            <input
+              type="number"
+              min={30}
+              max={3600}
+              value={draft.biliIntervalSeconds}
+              onChange={(e) => {
+                setDraft((prev) => ({ ...prev, biliIntervalSeconds: Number(e.target.value) }))
+                setDirty(true)
+                setSaved(false)
+              }}
+              style={{ ...inputStyle, width: 60 }}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+            <input
+              type="checkbox"
+              id="biliAutoCreate"
+              checked={draft.biliAutoCreate}
+              onChange={(e) => {
+                setDraft((prev) => ({ ...prev, biliAutoCreate: e.target.checked }))
+                setDirty(true)
+                setSaved(false)
+              }}
+              style={{ cursor: 'pointer' }}
+            />
+            <label htmlFor="biliAutoCreate" style={{ ...labelStyle, marginBottom: 0, cursor: 'pointer' }}>
+              自动同步新视频为活动
+            </label>
+          </div>
           <div style={{ marginTop: 4 }}>
             <MagneticButton
               onClick={handleApply}

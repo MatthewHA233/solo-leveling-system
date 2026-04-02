@@ -6,7 +6,7 @@
 import type { ToolCallRecord, AgentMemoryState } from './agent-memory'
 import {
   appendUser, appendAssistant, appendToolResult,
-  trimIfNeeded, buildLLMMessages, saveMemory,
+  trimIfNeeded, buildLLMMessages, persistMessages, patchSession,
 } from './agent-memory'
 import type { ToolContext } from './agent-tools'
 import { ALL_TOOLS, toToolDefinition, executeTool } from './agent-tools'
@@ -33,7 +33,9 @@ export async function runAgentLoop(
   toolContext: ToolContext,
   onEvent: (event: AgentLoopEvent) => void,
   maxIterations = 8,
+  sessionId: string | null = null,
 ): Promise<AgentMemoryState> {
+  const initialCount = memory.messages.length
   let state = appendUser(memory, userMessage)
   state = trimIfNeeded(state)
 
@@ -123,7 +125,20 @@ export async function runAgentLoop(
     }
   }
 
-  saveMemory(state)
+  if (sessionId) {
+    const newMessages = state.messages.slice(initialCount)
+    if (newMessages.length > 0) {
+      persistMessages(sessionId, newMessages).catch((err) =>
+        console.error('[AgentLoop] 消息持久化失败:', err),
+      )
+      // 用第一条用户消息作为标题（截断至 30 字）
+      const firstUser = newMessages.find((m) => m.role === 'user')
+      if (firstUser?.content && initialCount === 0) {
+        patchSession(sessionId, { title: firstUser.content.slice(0, 30) }).catch(() => {})
+      }
+    }
+  }
+
   onEvent({ type: 'done' })
   return state
 }
