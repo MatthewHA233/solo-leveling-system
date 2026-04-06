@@ -6,7 +6,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ChevronLeft, ChevronRight, Maximize2, Minimize2, Settings, Tv2, Mic } from 'lucide-react'
 import { fetchActivities } from './lib/chronos-api'
-import { createActivity, updateActivity, deleteActivity } from './lib/local-api'
+import { createActivity, updateActivity, deleteActivity, fetchManicTimeSpans } from './lib/local-api'
+import type { MtSpan } from './lib/local-api'
 import type { ChronosActivity } from './types'
 import { theme } from './theme'
 
@@ -27,7 +28,8 @@ import type { VoiceService } from './lib/voice'
 import DayNightChart from './components/DayNightChart'
 import ChatPanel from './components/ChatPanel'
 import SettingsPanel from './components/SettingsPanel'
-import ActivityFormPanel from './components/ActivityFormPanel'
+import SpanDetailPanel from './components/SpanDetailPanel'
+import AppHoverPanel from './components/AppHoverPanel'
 import BiliHistoryMonitor from './components/BiliHistoryMonitor'
 import { useBiliHistory } from './lib/bilibili/useHistory'
 import { dbBiliItemToActivity } from './lib/bilibili/api'
@@ -93,6 +95,12 @@ export default function App() {
   // ── Data ──
   const [selectedDate, setSelectedDate] = useState(new Date())
   const [activities, setActivities] = useState<ChronosActivity[]>([])
+  const [mtSpans, setMtSpans] = useState<MtSpan[]>([])
+  // 悬浮预览（hover 触发）
+  const [hoveredTagSpan, setHoveredTagSpan] = useState<MtSpan | null>(null)
+  const [hoveredAppSpan, setHoveredAppSpan] = useState<MtSpan | null>(null)
+  // 固定横线位置
+  const [pinnedPos, setPinnedPos] = useState<{ col: number; y: number; minute: number } | null>(null)
   const [dbStatus, setDbStatus] = useState<'loading' | 'live' | 'error'>('loading')
 
   // ── Layout ──
@@ -151,20 +159,34 @@ export default function App() {
       .catch((err) => console.error('[App] 会话初始化失败，降级到内存模式:', err))
   }, [])
 
-  // ── Fetch Activities ──
+  // ── Fetch Activities + ManicTime Spans ──
+  const isToday = useCallback((date: Date) => {
+    const now = new Date()
+    return date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate()
+  }, [])
+
+  const refreshMtSpans = useCallback(() => {
+    fetchManicTimeSpans(selectedDate)
+      .then(setMtSpans)
+      .catch(() => {})
+  }, [selectedDate])
+
   useEffect(() => {
     setDbStatus('loading')
     fetchActivities(selectedDate)
-      .then((data) => {
-        setActivities(data)
-        setDbStatus('live')
-      })
-      .catch((err) => {
-        console.error('获取活动失败:', err)
-        setActivities([])
-        setDbStatus('error')
-      })
+      .then((data) => { setActivities(data); setDbStatus('live') })
+      .catch((err) => { console.error('获取活动失败:', err); setActivities([]); setDbStatus('error') })
+    refreshMtSpans()
   }, [selectedDate])
+
+  // 今天的数据实时轮询（15 秒）
+  useEffect(() => {
+    if (!isToday(selectedDate)) return
+    const timer = setInterval(refreshMtSpans, 15000)
+    return () => clearInterval(timer)
+  }, [selectedDate, refreshMtSpans, isToday])
 
   // 同步 fairyState 到 ref，供事件回调读取
   useEffect(() => { fairyStateRef.current = fairyState }, [fairyState])
@@ -607,10 +629,15 @@ export default function App() {
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <DayNightChart
             activities={activities}
+            mtSpans={mtSpans}
             isExpanded={isExpanded}
             selectedDate={selectedDate}
             selection={chartSelection}
-            onActivityClick={(a) => { setShowSettings(false); setChartSelection(null); setEditMode({ type: 'edit', activity: a }) }}
+            onSpanClick={() => {}}
+            onSpanHover={setHoveredTagSpan}
+            onAppSpanHover={setHoveredAppSpan}
+            pinnedPos={pinnedPos}
+            onPinPos={setPinnedPos}
             onTimeSelect={handleTimeSelect}
             onClearSelection={handleClearSelection}
             onActivityResize={handleActivityResize}
@@ -625,6 +652,7 @@ export default function App() {
           display: 'flex', flexDirection: 'column',
           background: 'rgba(2,6,14,0.6)',
         }}>
+          {/* 右侧栏内容：Settings / Bili 优先；否则面板覆盖 Chat */}
           {showSettings ? (
             <SettingsPanel
               config={config}
@@ -651,27 +679,35 @@ export default function App() {
               onAddToActivity={handleAddBiliToActivity}
               onClose={() => setShowBili(false)}
             />
-          ) : editMode !== null ? (
-            <ActivityFormPanel
-              mode={editMode.type}
-              initialActivity={editMode.type === 'edit' ? editMode.activity : undefined}
-              initialStartMinute={editMode.type === 'add' ? (pushedTime?.start) : undefined}
-              initialEndMinute={editMode.type === 'add' ? (pushedTime?.end) : undefined}
-              pushedStart={editMode.type === 'add' ? (pushedTime?.start ?? null) : undefined}
-              pushedEnd={editMode.type === 'add' ? (pushedTime?.end ?? null) : undefined}
-              pushedVersion={editMode.type === 'add' ? pushedVersion : 0}
-              onTimeChange={(s, e) => { setChartSelection({ startMinute: s, endMinute: e }) }}
-              onSave={handleActivitySave}
-              onDelete={editMode.type === 'edit' ? handleActivityDelete : undefined}
-              onClose={() => { setEditMode(null); setChartSelection(null) }}
-            />
-          ) : (
-            <ChatPanel
-              messages={chatMessages}
-              isProcessing={isProcessing}
-              onSend={handleSend}
-            />
-          )}
+          ) : (() => {
+            // 固定时用 pinnedPos.minute 查对应 span，否则用 hover span
+            const pm = pinnedPos?.minute ?? null
+            const pinnedTagSpan = pm != null
+              ? mtSpans.find((s) => s.track === 'tags' && pm >= (() => { const [h,m] = (s.start_at.split(' ')[1]??'').split(':').map(Number); return h*60+m })() && pm < (() => { const [h,m] = (s.end_at.split(' ')[1]??'').split(':').map(Number); return h*60+m })()) ?? null
+              : null
+            const pinnedAppSpan = pm != null
+              ? mtSpans.find((s) => s.track === 'apps' && pm >= (() => { const [h,m] = (s.start_at.split(' ')[1]??'').split(':').map(Number); return h*60+m })() && pm < (() => { const [h,m] = (s.end_at.split(' ')[1]??'').split(':').map(Number); return h*60+m })()) ?? null
+              : null
+            const tagSpan = pinnedTagSpan ?? hoveredTagSpan
+            const appSpan = pinnedAppSpan ?? hoveredAppSpan
+
+            if (!tagSpan && !appSpan) {
+              return (
+                <ChatPanel
+                  messages={chatMessages}
+                  isProcessing={isProcessing}
+                  onSend={handleSend}
+                />
+              )
+            }
+            return (
+              <div style={{ height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+                {tagSpan && <SpanDetailPanel span={tagSpan} />}
+                {appSpan && <AppHoverPanel span={appSpan} date={selectedDate} />}
+                <div style={{ flex: 1 }} />
+              </div>
+            )
+          })()}
         </div>
       </div>
 

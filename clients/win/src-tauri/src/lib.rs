@@ -5,6 +5,7 @@
 mod db;
 mod api;
 mod fish_tts;
+mod manictime;
 
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};

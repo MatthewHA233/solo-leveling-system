@@ -164,6 +164,27 @@ export async function mergeActivities(
   if (!json.success) throw new Error(json.error || '合并失败')
 }
 
+// ── ManicTime API ──
+
+export interface MtSpan {
+  id: number
+  track: string         // "apps" | "tags"
+  start_at: string      // "2026-04-04 13:00:00"
+  end_at: string
+  title: string
+  group_name: string | null
+  color: string | null  // "#F9BA00"
+}
+
+/** 查询某天的 ManicTime spans（apps + tags） */
+export async function fetchManicTimeSpans(date: Date): Promise<MtSpan[]> {
+  const dateStr = toLocalDateStr(date)
+  const res = await fetch(`${API_BASE}/api/manictime/spans?date=${dateStr}`)
+  const json: ApiResponse<MtSpan[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '获取 ManicTime 数据失败')
+  return json.data
+}
+
 // ── Bilibili 历史 DB API ──
 
 export interface DbBiliItem {

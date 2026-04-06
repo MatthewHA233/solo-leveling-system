@@ -106,6 +106,70 @@ async fn health() -> Json<ApiResponse<&'static str>> {
     Json(ApiResponse::ok("ok"))
 }
 
+/// GET /api/manictime/screenshot?date=2026-04-04&time=13:30:00
+async fn get_manictime_screenshot(
+    Query(query): Query<ScreenshotQuery>,
+) -> Response {
+    let path = tokio::task::spawn_blocking(move || {
+        crate::manictime::find_screenshot_near(&query.date, &query.time)
+    }).await.ok().flatten();
+
+    match path {
+        None => (StatusCode::NOT_FOUND, "no screenshot").into_response(),
+        Some(p) => {
+            match tokio::fs::read(&p).await {
+                Err(_) => (StatusCode::NOT_FOUND, "file unreadable").into_response(),
+                Ok(bytes) => {
+                    let mime = p.extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| if e.eq_ignore_ascii_case("png") { "image/png" } else { "image/jpeg" })
+                        .unwrap_or("image/jpeg");
+                    ([(axum::http::header::CONTENT_TYPE, mime)], bytes).into_response()
+                }
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ScreenshotQuery {
+    date: String,
+    time: String,
+}
+
+/// GET /api/manictime/app-icon?name=<group_name>
+async fn get_manictime_app_icon(
+    Query(query): Query<AppIconQuery>,
+) -> Response {
+    let name = query.name.clone();
+    let bytes = tokio::task::spawn_blocking(move || {
+        crate::manictime::get_app_icon_png(&name)
+    }).await.ok().flatten();
+
+    match bytes {
+        None => (StatusCode::NOT_FOUND, "no icon").into_response(),
+        Some(b) => ([(axum::http::header::CONTENT_TYPE, "image/png")], b).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct AppIconQuery {
+    name: String,
+}
+
+/// GET /api/manictime/spans?date=2026-04-04
+async fn get_manictime_spans(
+    Query(query): Query<DateQuery>,
+) -> Json<ApiResponse<Vec<crate::manictime::MtSpan>>> {
+    match tokio::task::spawn_blocking(move || {
+        crate::manictime::query_spans_for_date(&query.date)
+    }).await {
+        Ok(Ok(spans)) => Json(ApiResponse::ok(spans)),
+        Ok(Err(e))    => Json(ApiResponse::error(&e)),
+        Err(e)        => Json(ApiResponse::error(&e.to_string())),
+    }
+}
+
 /// GET /api/activities?date=2024-01-15
 async fn get_activities(
     State(state): State<ApiState>,
@@ -388,6 +452,9 @@ pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>) -> Router {
         .route("/api/bilibili/history/link", axum::routing::put(link_bili_to_event))
         .route("/api/activities/merge", post(merge_activities))
         .route("/api/bilibili/cover", get(proxy_bili_cover))
+        .route("/api/manictime/spans", get(get_manictime_spans))
+        .route("/api/manictime/screenshot", get(get_manictime_screenshot))
+        .route("/api/manictime/app-icon", get(get_manictime_app_icon))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
