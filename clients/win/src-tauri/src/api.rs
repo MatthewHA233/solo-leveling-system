@@ -18,7 +18,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::db::{
     AppendChatMessagesRequest, ChatMessage, ChatSession,
     ChronosActivity, CreateActivityRequest, Database, UpdateActivityRequest, UpdateChatSessionRequest,
-    BiliHistoryRow, UpsertBiliItem, MergeActivitiesRequest,
+    BiliHistoryRow, UpsertBiliItem, MergeActivitiesRequest, BiliSpan,
 };
 
 // ── Bilibili 回调状态 ──
@@ -331,6 +331,17 @@ async fn recv_bili_result(
     Json(ApiResponse::ok(()))
 }
 
+/// GET /api/bilibili/spans/day?date=2026-04-06
+async fn get_bili_spans_day(
+    State(state): State<ApiState>,
+    Query(query): Query<DateQuery>,
+) -> Json<ApiResponse<Vec<BiliSpan>>> {
+    match state.db.get_bili_spans_for_date(&query.date).await {
+        Ok(spans) => Json(ApiResponse::ok(spans)),
+        Err(e)    => Json(ApiResponse::error(&e)),
+    }
+}
+
 /// GET /api/bilibili/history?page=0&page_size=50&unlinked_only=false
 async fn get_bili_history(
     State(state): State<ApiState>,
@@ -452,6 +463,7 @@ pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>) -> Router {
         .route("/api/bilibili/history/link", axum::routing::put(link_bili_to_event))
         .route("/api/activities/merge", post(merge_activities))
         .route("/api/bilibili/cover", get(proxy_bili_cover))
+        .route("/api/bilibili/spans/day", get(get_bili_spans_day))
         .route("/api/manictime/spans", get(get_manictime_spans))
         .route("/api/manictime/screenshot", get(get_manictime_screenshot))
         .route("/api/manictime/app-icon", get(get_manictime_app_icon))

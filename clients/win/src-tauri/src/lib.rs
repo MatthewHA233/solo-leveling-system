@@ -197,6 +197,15 @@ struct DbInfo {
 }
 
 #[tauri::command]
+async fn open_url_in_browser(url: String) -> Result<(), String> {
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "", &url])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn migrate_database(
     new_path: String,
     state: tauri::State<'_, Arc<AppState>>,
@@ -301,6 +310,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            open_url_in_browser,
             fish_tts_connect,
             fish_tts_send_text,
             fish_tts_flush,

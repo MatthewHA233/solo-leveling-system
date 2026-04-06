@@ -1,17 +1,21 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import type { ChronosActivity, TraceLayout } from '../types'
-import type { MtSpan } from '../lib/local-api'
+import type { MtSpan, BiliSpan } from '../lib/local-api'
 import { theme, getCategoryColor, getCategoryLabel } from '../theme'
 
 interface Props {
   activities: ChronosActivity[]
   mtSpans?: MtSpan[]
+  biliSpans?: BiliSpan[]
   isExpanded: boolean
   selectedDate: Date
   selection?: { startMinute: number; endMinute: number } | null
   onSpanClick?: (span: MtSpan) => void
   onSpanHover?: (span: MtSpan | null) => void
   onAppSpanHover?: (span: MtSpan | null) => void
+  onBiliSpanHover?: (span: BiliSpan | null) => void
+  trackMode?: 'apps' | 'bili'
+  onTrackModeChange?: (mode: 'apps' | 'bili') => void
   pinnedPos?: { col: number; y: number; minute: number } | null
   onPinPos?: (pos: { col: number; y: number; minute: number } | null) => void
   onTimeSelect?: (startMinute: number, endMinute: number) => void
@@ -162,6 +166,15 @@ function drawZoneBands(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getGr
 
 // ── ManicTime 感知轨道 ──
 
+/** 从逗号分隔标签路径中分离路径部分和标记（以 : 开头为标记） */
+function parseTagTitle(title: string): { parts: string[]; markers: string[] } {
+  const all = title.split(',').map((s) => s.trim()).filter(Boolean)
+  return {
+    parts:   all.filter((s) => !s.startsWith(':')),
+    markers: all.filter((s) => s.startsWith(':')).map((s) => s.slice(1)),
+  }
+}
+
 /** "2026-04-04 13:30:00" → 分钟数（810） */
 function dtToMinute(dt: string): number {
   const parts = dt.split(' ')
@@ -224,7 +237,7 @@ function drawTagFills(
 const PIPE_LEFT  = 0   // 左轨相对 traceBaseX 的偏移
 const PIPE_RIGHT = 6   // 右轨相对 traceBaseX 的偏移（管道宽 6px）
 
-/** ManicTime 应用层 → 双轨管线（左轨：app色；右轨：白色反光） */
+/** ManicTime 应用层 → 双轨管线（按列连续，穿越行间隙） */
 function drawAppTraces(
   ctx: CanvasRenderingContext2D,
   p: ReturnType<typeof getGridParams>,
@@ -237,45 +250,67 @@ function drawAppTraces(
     if (endMin <= startMin) continue
 
     const color = span.color ?? '#888888'
-    let m = startMin
+    const startCol = Math.floor(startMin / p.minutesPerCol)
+    const endCol   = Math.floor((endMin - 1) / p.minutesPerCol)
 
-    while (m < endMin) {
-      const c = Math.floor(m / p.minutesPerCol)
-      const r = Math.floor((m % p.minutesPerCol) / 5)
-      if (c >= p.cols || r >= p.rows) break
-
-      const cellStart  = c * p.minutesPerCol + r * 5
-      const cellEnd    = cellStart + 5
-      const localStart = Math.max(startMin, cellStart) - cellStart
-      const localEnd   = Math.min(endMin, cellEnd) - cellStart
-
+    for (let c = startCol; c <= endCol && c < p.cols; c++) {
+      const segStart = Math.max(startMin, c * p.minutesPerCol)
+      const segEnd   = Math.min(endMin, (c + 1) * p.minutesPerCol)
       const cx = colX(c, p)
-      const cy = p.topPad + r * p.rowStride
       const lx = cx + p.traceBaseX + PIPE_LEFT
       const rx = cx + p.traceBaseX + PIPE_RIGHT
-      const y0 = cy + localStart * p.minuteH
-      const y1 = cy + localEnd   * p.minuteH
-      if (y1 <= y0) { m = cellEnd; continue }
+      const y0 = minuteToY(segStart, c, p)
+      const y1 = minuteToY(segEnd, c, p)
+      if (y1 <= y0) continue
 
-      // 左轨：app 颜色，主色
       ctx.beginPath()
-      ctx.moveTo(lx, y0)
-      ctx.lineTo(lx, y1)
+      ctx.moveTo(lx, y0); ctx.lineTo(lx, y1)
       ctx.strokeStyle = hexToRgba(color, 0.85)
-      ctx.lineWidth = 1.5
-      ctx.lineCap = 'butt'
-      ctx.stroke()
+      ctx.lineWidth = 1.5; ctx.lineCap = 'butt'; ctx.stroke()
 
-      // 右轨：白色反光，像管子右侧高光
       ctx.beginPath()
-      ctx.moveTo(rx, y0)
-      ctx.lineTo(rx, y1)
+      ctx.moveTo(rx, y0); ctx.lineTo(rx, y1)
       ctx.strokeStyle = 'rgba(255,255,255,0.18)'
-      ctx.lineWidth = 1
-      ctx.lineCap = 'butt'
-      ctx.stroke()
+      ctx.lineWidth = 1; ctx.lineCap = 'butt'; ctx.stroke()
+    }
+  }
+}
 
-      m = cellEnd
+/** B站观看历史 → 双轨管线（按列连续，穿越行间隙，左轨粉/黄交替） */
+function drawBiliTracesInPipe(
+  ctx: CanvasRenderingContext2D,
+  p: ReturnType<typeof getGridParams>,
+  spans: BiliSpan[],
+) {
+  for (let si = 0; si < spans.length; si++) {
+    const span = spans[si]
+    const startMin = dtToMinute(span.start_at)
+    const endMin   = dtToMinute(span.end_at)
+    if (endMin <= startMin) continue
+
+    const railColor = si % 2 === 0 ? BILI_COLOR : BILI_YELLOW
+    const startCol = Math.floor(startMin / p.minutesPerCol)
+    const endCol   = Math.floor((endMin - 1) / p.minutesPerCol)
+
+    for (let c = startCol; c <= endCol && c < p.cols; c++) {
+      const segStart = Math.max(startMin, c * p.minutesPerCol)
+      const segEnd   = Math.min(endMin, (c + 1) * p.minutesPerCol)
+      const cx = colX(c, p)
+      const lx = cx + p.traceBaseX + PIPE_LEFT
+      const rx = cx + p.traceBaseX + PIPE_RIGHT
+      const y0 = minuteToY(segStart, c, p)
+      const y1 = minuteToY(segEnd, c, p)
+      if (y1 <= y0) continue
+
+      ctx.beginPath()
+      ctx.moveTo(lx, y0); ctx.lineTo(lx, y1)
+      ctx.strokeStyle = hexToRgba(railColor, 0.85)
+      ctx.lineWidth = 1.5; ctx.lineCap = 'butt'; ctx.stroke()
+
+      ctx.beginPath()
+      ctx.moveTo(rx, y0); ctx.lineTo(rx, y1)
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)'
+      ctx.lineWidth = 1; ctx.lineCap = 'butt'; ctx.stroke()
     }
   }
 }
@@ -311,9 +346,11 @@ function drawTagTitles(
     const y1 = minuteToY(segEnd, startCol, p)
     if (y1 - y0 < lineH) continue
 
-    // 取标签路径最后一段
-    const parts = span.title.split(',')
-    const label = parts[parts.length - 1].trim()
+    // 取标签路径最后一段（排除 :xxx 标记）
+    const { parts, markers } = parseTagTitle(span.title)
+    const label = parts[parts.length - 1] ?? ''
+    if (!label) continue
+    const markerStr = markers.length ? ` [${markers.join('·')}]` : ''
 
     ctx.font = `bold ${fontSize}px 'JetBrains Mono', 'Courier New', monospace`
     ctx.textAlign = 'left'
@@ -326,11 +363,19 @@ function drawTagTitles(
       ctx.fillText(line, x, drawY)
       drawY += lineH
     }
+    // 标记徽章（:billable 等），小字追加
+    if (markerStr && drawY <= y1) {
+      ctx.font = `500 8px 'JetBrains Mono', 'Courier New', monospace`
+      ctx.fillStyle = 'rgba(255,220,100,0.75)'
+      ctx.fillText(markerStr, x, drawY)
+    }
   }
 }
 
-const traceWidth = 8   // tag fill 区起始偏移（保持不变）
-const APP_TRACE_W = 3  // 应用管线实际渲染宽度
+const traceWidth = 8      // tag fill 区起始偏移（保持不变）
+const APP_TRACE_W = 3     // ManicTime 应用管线渲染宽度
+const BILI_COLOR    = '#FB7299'
+const BILI_YELLOW   = '#F5C842'
 
 // ── Canvas 绘制函数 ──
 
@@ -953,6 +998,8 @@ function drawCrosshair(
   spans: MtSpan[],
   isPinned: boolean,
   getIcon?: (name: string) => HTMLImageElement | null,
+  trackMode: 'apps' | 'bili' = 'apps',
+  biliSpans: BiliSpan[] = [],
 ): { x: number; y: number; w: number; h: number } | null {
   if (col < 0 || col >= p.cols) return null
   const relY = mouseY - p.topPad
@@ -989,55 +1036,74 @@ function drawCrosshair(
     ctx.restore()
   }
 
-  // 高亮该列内的 app trace + 管口端盖 + 横线图标标签
-  let hoveredAppSpan: MtSpan | null = null
-  for (const span of spans) {
-    if (span.track !== 'apps') continue
-    const startMin = dtToMinute(span.start_at)
-    const endMin = dtToMinute(span.end_at)
-    if (minute < startMin || minute >= endMin) continue
-    hoveredAppSpan = span
-    const segStart = Math.max(startMin, col * p.minutesPerCol)
-    const segEnd   = Math.min(endMin, (col + 1) * p.minutesPerCol)
-    const sy0 = minuteToY(segStart, col, p)
-    const sy1 = minuteToY(segEnd, col, p)
-    const color = span.color ?? '#888888'
-    const lx = x0 + p.traceBaseX + PIPE_LEFT
-    const rx = x0 + p.traceBaseX + PIPE_RIGHT
+  // 高亮该列内的管线 + 管口端盖 + 横线标签
+  let pipeLabel: string | null = null    // 管线标签文本
+  let pipeLabelIcon: HTMLImageElement | null = null
 
-    // 亮化左右轨
-    ctx.save()
-    ctx.shadowColor = color
-    ctx.shadowBlur = 10
-    ctx.beginPath()
-    ctx.moveTo(lx, sy0); ctx.lineTo(lx, sy1)
-    ctx.strokeStyle = hexToRgba(color, 1.0)
-    ctx.lineWidth = 3.5
-    ctx.lineCap = 'butt'
-    ctx.stroke()
-    ctx.beginPath()
-    ctx.moveTo(rx, sy0); ctx.lineTo(rx, sy1)
-    ctx.strokeStyle = 'rgba(255,255,255,0.45)'
-    ctx.lineWidth = 1.5
-    ctx.stroke()
-    ctx.restore()
+  // 跨列高亮管线辅助
+  function highlightPipeSpan(startMin: number, endMin: number, color: string) {
+    const hStartCol = Math.floor(startMin / p.minutesPerCol)
+    const hEndCol   = Math.floor((endMin - 1) / p.minutesPerCol)
+    for (let hc = hStartCol; hc <= hEndCol && hc < p.cols; hc++) {
+      const hcx  = colX(hc, p)
+      const segS = Math.max(startMin, hc * p.minutesPerCol)
+      const segE = Math.min(endMin, (hc + 1) * p.minutesPerCol)
+      const sy0  = minuteToY(segS, hc, p)
+      const sy1  = minuteToY(segE, hc, p)
+      const lx   = hcx + p.traceBaseX + PIPE_LEFT
+      const rx   = hcx + p.traceBaseX + PIPE_RIGHT
 
-    // 顶部端盖（管口）
-    ctx.save()
-    ctx.shadowColor = color
-    ctx.shadowBlur = 6
-    ctx.strokeStyle = hexToRgba(color, 0.9)
-    ctx.lineWidth = 1.5
-    ctx.lineCap = 'square'
-    ctx.beginPath()
-    ctx.moveTo(lx - 1, sy0); ctx.lineTo(rx + 1, sy0)
-    ctx.stroke()
-    // 底部端盖
-    ctx.beginPath()
-    ctx.moveTo(lx - 1, sy1); ctx.lineTo(rx + 1, sy1)
-    ctx.stroke()
-    ctx.restore()
-    break
+      ctx.save()
+      ctx.shadowColor = color; ctx.shadowBlur = 10
+      ctx.beginPath(); ctx.moveTo(lx, sy0); ctx.lineTo(lx, sy1)
+      ctx.strokeStyle = hexToRgba(color, 1.0)
+      ctx.lineWidth = 3.5; ctx.lineCap = 'butt'; ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(rx, sy0); ctx.lineTo(rx, sy1)
+      ctx.strokeStyle = 'rgba(255,255,255,0.45)'
+      ctx.lineWidth = 1.5; ctx.stroke()
+      ctx.restore()
+
+      ctx.save()
+      ctx.shadowColor = color; ctx.shadowBlur = 6
+      ctx.strokeStyle = hexToRgba(color, 0.9)
+      ctx.lineWidth = 1.5; ctx.lineCap = 'square'
+      if (hc === hStartCol) {
+        ctx.beginPath(); ctx.moveTo(lx - 1, sy0); ctx.lineTo(rx + 1, sy0); ctx.stroke()
+      }
+      if (hc === hEndCol) {
+        ctx.beginPath(); ctx.moveTo(lx - 1, sy1); ctx.lineTo(rx + 1, sy1); ctx.stroke()
+      }
+      ctx.restore()
+    }
+  }
+
+  if (trackMode === 'bili') {
+    const hovBiliIdx = biliSpans.findIndex(s => {
+      const s0 = dtToMinute(s.start_at), s1 = dtToMinute(s.end_at)
+      return minute >= s0 && minute < s1
+    })
+    const hovBili = hovBiliIdx >= 0 ? biliSpans[hovBiliIdx] : null
+    if (hovBili) {
+      const railColor = hovBiliIdx % 2 === 0 ? BILI_COLOR : BILI_YELLOW
+      highlightPipeSpan(dtToMinute(hovBili.start_at), dtToMinute(hovBili.end_at), railColor)
+      pipeLabel = hovBili.title
+    }
+  } else {
+    let hoveredAppSpan: MtSpan | null = null
+    for (const span of spans) {
+      if (span.track !== 'apps') continue
+      const startMin = dtToMinute(span.start_at)
+      const endMin   = dtToMinute(span.end_at)
+      if (minute < startMin || minute >= endMin) continue
+      hoveredAppSpan = span
+      highlightPipeSpan(startMin, endMin, span.color ?? '#888888')
+      break
+    }
+    if (hoveredAppSpan) {
+      const appName = hoveredAppSpan.group_name ?? hoveredAppSpan.title
+      pipeLabel = appName
+      pipeLabelIcon = getIcon?.(appName) ?? null
+    }
   }
 
   // 横线颜色：固定时橙色，悬浮时白色
@@ -1054,29 +1120,27 @@ function drawCrosshair(
   ctx.stroke()
   ctx.restore()
 
-  // ── 图标 + 程序名标签（管线右侧到列右边缘，支持换行） ──
-  if (hoveredAppSpan) {
-    const appName  = hoveredAppSpan.group_name ?? hoveredAppSpan.title
-    const iconImg  = getIcon?.(appName) ?? null
+  // ── 管线标签（图标+文本，管线右侧到列右边缘，支持换行） ──
+  if (pipeLabel) {
+    const hasIcon  = pipeLabelIcon !== null
     const iconSize = 14
     const gap      = 4
     const padX     = 4, padY = 3
     const lineH    = 11
 
     const labelX     = x0 + p.traceBaseX + PIPE_RIGHT + 6
-    const maxLabelW  = x1 - labelX - 2          // 撑到列右边缘
-    const availTextW = maxLabelW - padX * 2 - iconSize - gap
+    const maxLabelW  = x1 - labelX - 2
+    const availTextW = maxLabelW - padX * 2 - (hasIcon ? iconSize + gap : 0)
 
     ctx.font = `500 9px 'JetBrains Mono', 'Courier New', monospace`
-    const lines     = availTextW > 10 ? wrapText(ctx, appName, availTextW).slice(0, 3) : [appName]
-    const textBlock = Math.max(iconSize, lines.length * lineH)
+    const lines     = availTextW > 10 ? wrapText(ctx, pipeLabel, availTextW).slice(0, 3) : [pipeLabel]
+    const textBlock = hasIcon ? Math.max(iconSize, lines.length * lineH) : lines.length * lineH
     const labelH    = padY * 2 + textBlock
     const labelY    = mouseY - labelH / 2
 
-    // 背景
     ctx.save()
     ctx.fillStyle   = 'rgba(4,8,18,0.80)'
-    ctx.strokeStyle = isPinned ? 'rgba(255,180,60,0.5)' : 'rgba(255,255,255,0.18)'
+    ctx.strokeStyle = isPinned ? 'rgba(255,180,60,0.5)' : (trackMode === 'bili' ? 'rgba(251,114,153,0.3)' : 'rgba(255,255,255,0.18)')
     ctx.lineWidth   = 0.75
     ctx.beginPath()
     ctx.roundRect(labelX, labelY, maxLabelW, labelH, 3)
@@ -1084,27 +1148,16 @@ function drawCrosshair(
     ctx.stroke()
     ctx.restore()
 
-    // 图标
-    const iconY = labelY + padY + (textBlock - iconSize) / 2
-    if (iconImg) {
-      ctx.drawImage(iconImg, labelX + padX, iconY, iconSize, iconSize)
-    } else {
-      const ac = hoveredAppSpan.color ?? '#888'
-      ctx.fillStyle = hexToRgba(ac, 0.85)
-      ctx.beginPath()
-      ctx.roundRect(labelX + padX, iconY, iconSize, iconSize, 2)
-      ctx.fill()
-      ctx.font      = `bold 8px 'JetBrains Mono', monospace`
-      ctx.fillStyle = 'rgba(0,0,0,0.8)'
-      ctx.textAlign = 'center'
-      ctx.fillText(appName.charAt(0).toUpperCase(), labelX + padX + iconSize / 2, iconY + iconSize / 2 + 3)
+    let textX = labelX + padX
+    if (hasIcon && pipeLabelIcon) {
+      const iconY = labelY + padY + (textBlock - iconSize) / 2
+      ctx.drawImage(pipeLabelIcon, labelX + padX, iconY, iconSize, iconSize)
+      textX = labelX + padX + iconSize + gap
     }
 
-    // 程序名（换行）
     ctx.font      = `500 9px 'JetBrains Mono', 'Courier New', monospace`
     ctx.fillStyle = 'rgba(255,255,255,0.85)'
     ctx.textAlign = 'left'
-    const textX = labelX + padX + iconSize + gap
     const textStartY = labelY + padY + lineH - 1
     lines.forEach((line, i) => {
       ctx.fillText(line, textX, textStartY + i * lineH)
@@ -1145,7 +1198,7 @@ function drawCrosshair(
 
 // ── 主组件 ──
 
-export default function DayNightChart({ activities, mtSpans = [], isExpanded, selectedDate, selection, onSpanClick, onSpanHover, onAppSpanHover, pinnedPos, onPinPos, onTimeSelect, onClearSelection, onActivityResize, onDeleteMinuteRange }: Props) {
+export default function DayNightChart({ activities, mtSpans = [], biliSpans = [], isExpanded, selectedDate, selection, onSpanClick, onSpanHover, onAppSpanHover, onBiliSpanHover, trackMode = 'apps', onTrackModeChange, pinnedPos, onPinPos, onTimeSelect, onClearSelection, onActivityResize, onDeleteMinuteRange }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const hoveredIdRef = useRef<string | null>(null)
@@ -1181,6 +1234,9 @@ export default function DayNightChart({ activities, mtSpans = [], isExpanded, se
 
   const dpr = window.devicePixelRatio || 1
 
+  // 悬浮的 bili span
+  const hoveredBiliSpanRef = useRef<BiliSpan | null>(null)
+
   // 列首右键菜单
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; startMin: number; endMin: number } | null>(null)
 
@@ -1208,6 +1264,30 @@ export default function DayNightChart({ activities, mtSpans = [], isExpanded, se
     return getGridParams(isExpanded, scaledCellH)
   }, [isExpanded, chartAreaH])
   const layouts = useMemo(() => computeLayouts(activities), [activities])
+
+  // Bili span 时间重叠修正：后者开始时间衔接前者结束时间
+  const adjustedBiliSpans = useMemo((): BiliSpan[] => {
+    if (!biliSpans.length) return biliSpans
+    const sorted = [...biliSpans].sort((a, b) => dtToMinute(a.start_at) - dtToMinute(b.start_at))
+    const result: BiliSpan[] = []
+    let prevEndMin = -Infinity
+    for (const span of sorted) {
+      const startMin = dtToMinute(span.start_at)
+      const endMin   = dtToMinute(span.end_at)
+      if (endMin <= startMin) continue
+      const adjStart = Math.max(startMin, prevEndMin)
+      if (adjStart >= endMin) continue
+      if (adjStart !== startMin) {
+        const datePart = span.start_at.split(' ')[0] ?? ''
+        const h = Math.floor(adjStart / 60), m = adjStart % 60
+        result.push({ ...span, start_at: `${datePart} ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00` })
+      } else {
+        result.push(span)
+      }
+      prevEndMin = endMin
+    }
+    return result
+  }, [biliSpans])
 
   const isToday = (() => {
     const now = new Date()
@@ -1273,7 +1353,8 @@ export default function DayNightChart({ activities, mtSpans = [], isExpanded, se
       ctx.globalAlpha = 1.0
     }
 
-    drawAppTraces(ctx, p, mtSpans)
+    if (trackMode === 'apps') drawAppTraces(ctx, p, mtSpans)
+    else drawBiliTracesInPipe(ctx, p, adjustedBiliSpans)
     drawTagTitles(ctx, p, mtSpans)
     drawNowTick(ctx, p, isToday)
 
@@ -1305,21 +1386,21 @@ export default function DayNightChart({ activities, mtSpans = [], isExpanded, se
     }
 
     if (pinnedPos != null) {
-      const badge = drawCrosshair(ctx, p, pinnedPos.col, pinnedPos.y, mtSpans, true, getIcon)
+      const badge = drawCrosshair(ctx, p, pinnedPos.col, pinnedPos.y, mtSpans, true, getIcon, trackMode, adjustedBiliSpans)
       pinBadgeRef.current = badge
       if (_mouseY !== null && _hovCol !== null && _hovCol !== pinnedPos.col) {
-        drawCrosshair(ctx, p, _hovCol, _mouseY, mtSpans, false, getIcon)
+        drawCrosshair(ctx, p, _hovCol, _mouseY, mtSpans, false, getIcon, trackMode, adjustedBiliSpans)
       }
     } else {
       if (_mouseY !== null && _hovCol !== null) {
-        pinBadgeRef.current = drawCrosshair(ctx, p, _hovCol, _mouseY, mtSpans, false, getIcon)
+        pinBadgeRef.current = drawCrosshair(ctx, p, _hovCol, _mouseY, mtSpans, false, getIcon, trackMode, adjustedBiliSpans)
       } else {
         pinBadgeRef.current = null
       }
     }
 
     ctx.restore()
-  }, [p, mtSpans, isToday, dpr, selection, pinnedPos]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [p, mtSpans, adjustedBiliSpans, trackMode, isToday, dpr, selection, pinnedPos]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     draw()
@@ -1524,13 +1605,33 @@ export default function DayNightChart({ activities, mtSpans = [], isExpanded, se
           onSpanHover?.(hitSpan ?? null)
         }
 
-        // 检测 app span hover
-        const appSpan = mtSpans.find(
-          (s) => s.track === 'apps' && m >= dtToMinute(s.start_at) && m < dtToMinute(s.end_at)
-        ) ?? null
-        if (appSpan !== hoveredAppSpanRef.current) {
-          hoveredAppSpanRef.current = appSpan
-          onAppSpanHover?.(appSpan)
+        // 检测管线 span hover（按 trackMode 切换）
+        if (trackMode === 'apps') {
+          const appSpan = mtSpans.find(
+            (s) => s.track === 'apps' && m >= dtToMinute(s.start_at) && m < dtToMinute(s.end_at)
+          ) ?? null
+          if (appSpan !== hoveredAppSpanRef.current) {
+            hoveredAppSpanRef.current = appSpan
+            onAppSpanHover?.(appSpan)
+          }
+          // 清除 bili hover
+          if (hoveredBiliSpanRef.current !== null) {
+            hoveredBiliSpanRef.current = null
+            onBiliSpanHover?.(null)
+          }
+        } else {
+          const bSpan = adjustedBiliSpans.find(
+            (s) => m >= dtToMinute(s.start_at) && m < dtToMinute(s.end_at)
+          ) ?? null
+          if (bSpan !== hoveredBiliSpanRef.current) {
+            hoveredBiliSpanRef.current = bSpan
+            onBiliSpanHover?.(bSpan)
+          }
+          // 清除 app hover
+          if (hoveredAppSpanRef.current !== null) {
+            hoveredAppSpanRef.current = null
+            onAppSpanHover?.(null)
+          }
         }
       }
     } else {
@@ -1620,6 +1721,10 @@ export default function DayNightChart({ activities, mtSpans = [], isExpanded, se
       if (hoveredAppSpanRef.current !== null) {
         hoveredAppSpanRef.current = null
         onAppSpanHover?.(null)
+      }
+      if (hoveredBiliSpanRef.current !== null) {
+        hoveredBiliSpanRef.current = null
+        onBiliSpanHover?.(null)
       }
     } else {
       // 固定模式：清 mouseYRef（固定线由 pinnedPos.y 驱动），span 不清（右侧栏由 pinnedPos.minute 驱动）
@@ -1724,7 +1829,8 @@ export default function DayNightChart({ activities, mtSpans = [], isExpanded, se
   const tagLegend = useMemo(() => {
     const map = new Map<string, string>() // name → color
     ;(mtSpans ?? []).filter((s) => s.track === 'tags').forEach((s) => {
-      const firstName = s.title.split(',')[0]?.trim()
+      const { parts } = parseTagTitle(s.title)
+      const firstName = parts[0]
       if (firstName && !map.has(firstName)) {
         map.set(firstName, s.color ?? '#4488ff')
       }
@@ -1783,6 +1889,38 @@ export default function DayNightChart({ activities, mtSpans = [], isExpanded, se
           </button>
         </div>
       )}
+
+      {/* 管线模式切换 */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 2,
+        padding: '3px 8px', flexShrink: 0,
+        borderBottom: `1px solid ${hexToRgba(theme.electricBlue, 0.1)}`,
+      }}>
+        {(['apps', 'bili'] as const).map((mode) => {
+          const active = trackMode === mode
+          const label = mode === 'apps' ? 'Apps' : '哔哩哔哩'
+          const color = mode === 'apps' ? '#888888' : BILI_COLOR
+          return (
+            <button
+              key={mode}
+              onClick={() => onTrackModeChange?.(mode)}
+              style={{
+                background: active ? hexToRgba(color, 0.15) : 'transparent',
+                border: `1px solid ${active ? hexToRgba(color, 0.5) : 'transparent'}`,
+                borderRadius: 3, cursor: 'pointer',
+                padding: '1px 10px',
+                fontFamily: "'JetBrains Mono', 'Courier New', monospace",
+                fontSize: 10, fontWeight: 600,
+                color: active ? color : hexToRgba(color, 0.4),
+                transition: 'all 0.15s',
+                letterSpacing: 1,
+              }}
+            >
+              {label}
+            </button>
+          )
+        })}
+      </div>
 
       {/* 图表滚动区：flex-1 填满剩余高度，高度不足时出现滚动条 */}
       <div

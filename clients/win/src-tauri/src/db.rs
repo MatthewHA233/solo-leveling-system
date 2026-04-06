@@ -129,6 +129,18 @@ pub struct BiliHistoryRow {
     pub event_id: Option<String>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct BiliSpan {
+    pub bvid: String,
+    pub title: String,
+    pub author_name: String,
+    pub cover: String,    // 封面 URL
+    pub start_at: String, // "2026-04-06 13:30:00" 本地时间
+    pub end_at: String,
+    pub duration: i32,    // 总时长（秒）
+    pub progress: i32,    // 已看（秒）
+}
+
 #[derive(Debug, Deserialize)]
 pub struct UpsertBiliItem {
     pub bvid: String,
@@ -712,6 +724,41 @@ impl Database {
         ).map_err(|e| e.to_string())?;
 
         Ok((rows.filter_map(|r| r.ok()).collect(), total))
+    }
+
+    /// 查询某天的 B站观看 spans（用于昼夜表轨道）
+    /// date 格式: "2026-04-06"
+    pub async fn get_bili_spans_for_date(&self, date: &str) -> Result<Vec<BiliSpan>, String> {
+        let conn = self.conn.lock().await;
+        let sql = r#"
+            SELECT
+                bvid, title, author_name, cover, duration, progress,
+                datetime(
+                    view_at - CASE
+                        WHEN progress > 0 THEN MIN(progress, 3600)
+                        ELSE MIN(duration, 3600)
+                    END,
+                    'unixepoch', 'localtime'
+                ) AS start_dt,
+                datetime(view_at, 'unixepoch', 'localtime') AS end_dt
+            FROM bili_history
+            WHERE date(view_at, 'unixepoch', 'localtime') = ?
+            ORDER BY view_at ASC
+        "#;
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![date], |row| {
+            Ok(BiliSpan {
+                bvid:        row.get(0)?,
+                title:       row.get(1)?,
+                author_name: row.get(2)?,
+                cover:       row.get(3)?,
+                duration:    row.get(4)?,
+                progress:    row.get(5)?,
+                start_at:    row.get(6)?,
+                end_at:      row.get(7)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// 将一批 bvid 关联到指定事件 ID

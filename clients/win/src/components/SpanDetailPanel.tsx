@@ -34,8 +34,20 @@ function hexToRgba(hex: string, alpha: number) {
   return `rgba(${r},${g},${b},${alpha})`
 }
 
+function parseTagTitle(title: string): { parts: string[]; markers: string[] } {
+  const all = title.split(',').map((s) => s.trim()).filter(Boolean)
+  return {
+    parts:   all.filter((s) => !s.startsWith(':')),
+    markers: all.filter((s) => s.startsWith(':')).map((s) => s.slice(1)),
+  }
+}
+
+const MARKER_LABELS: Record<string, string> = {
+  billable: '可计费',
+}
+
 export default function SpanDetailPanel({ span }: Props) {
-  const tagParts = span.title.split(',').map((s) => s.trim()).filter(Boolean)
+  const { parts: tagParts, markers } = parseTagTitle(span.title)
   const color = span.color ?? '#4488ff'
 
   return (
@@ -50,7 +62,7 @@ export default function SpanDetailPanel({ span }: Props) {
       </div>
 
       {/* 色条 + 路径 */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: markers.length ? 8 : 12 }}>
         <div style={{
           width: 3, borderRadius: 2, flexShrink: 0, alignSelf: 'stretch',
           background: color,
@@ -69,6 +81,24 @@ export default function SpanDetailPanel({ span }: Props) {
           ))}
         </div>
       </div>
+
+      {/* 属性标记（:billable 等） */}
+      {markers.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, paddingLeft: 11 }}>
+          {markers.map((m) => (
+            <span key={m} style={{
+              fontSize: 10, fontWeight: 600,
+              padding: '2px 7px', borderRadius: 3,
+              background: 'rgba(255,220,100,0.12)',
+              border: '1px solid rgba(255,220,100,0.35)',
+              color: 'rgba(255,220,100,0.9)',
+              letterSpacing: 0.5,
+            }}>
+              {MARKER_LABELS[m] ?? m}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* 时间 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>

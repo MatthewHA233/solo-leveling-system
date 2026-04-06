@@ -6,8 +6,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ChevronLeft, ChevronRight, Maximize2, Minimize2, Settings, Tv2, Mic } from 'lucide-react'
 import { fetchActivities } from './lib/chronos-api'
-import { createActivity, updateActivity, deleteActivity, fetchManicTimeSpans } from './lib/local-api'
-import type { MtSpan } from './lib/local-api'
+import { createActivity, updateActivity, deleteActivity, fetchManicTimeSpans, fetchBiliSpans } from './lib/local-api'
+import type { MtSpan, BiliSpan } from './lib/local-api'
 import type { ChronosActivity } from './types'
 import { theme } from './theme'
 
@@ -30,6 +30,7 @@ import ChatPanel from './components/ChatPanel'
 import SettingsPanel from './components/SettingsPanel'
 import SpanDetailPanel from './components/SpanDetailPanel'
 import AppHoverPanel from './components/AppHoverPanel'
+import BiliVideoPanel from './components/BiliVideoPanel'
 import BiliHistoryMonitor from './components/BiliHistoryMonitor'
 import { useBiliHistory } from './lib/bilibili/useHistory'
 import { dbBiliItemToActivity } from './lib/bilibili/api'
@@ -96,9 +97,13 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState(new Date())
   const [activities, setActivities] = useState<ChronosActivity[]>([])
   const [mtSpans, setMtSpans] = useState<MtSpan[]>([])
+  const [biliSpans, setBiliSpans] = useState<BiliSpan[]>([])
   // 悬浮预览（hover 触发）
   const [hoveredTagSpan, setHoveredTagSpan] = useState<MtSpan | null>(null)
   const [hoveredAppSpan, setHoveredAppSpan] = useState<MtSpan | null>(null)
+  const [hoveredBiliSpan, setHoveredBiliSpan] = useState<BiliSpan | null>(null)
+  // 管线轨道模式
+  const [trackMode, setTrackMode] = useState<'apps' | 'bili'>('apps')
   // 固定横线位置
   const [pinnedPos, setPinnedPos] = useState<{ col: number; y: number; minute: number } | null>(null)
   const [dbStatus, setDbStatus] = useState<'loading' | 'live' | 'error'>('loading')
@@ -170,6 +175,9 @@ export default function App() {
   const refreshMtSpans = useCallback(() => {
     fetchManicTimeSpans(selectedDate)
       .then(setMtSpans)
+      .catch(() => {})
+    fetchBiliSpans(selectedDate)
+      .then(setBiliSpans)
       .catch(() => {})
   }, [selectedDate])
 
@@ -630,12 +638,16 @@ export default function App() {
           <DayNightChart
             activities={activities}
             mtSpans={mtSpans}
+            biliSpans={biliSpans}
             isExpanded={isExpanded}
             selectedDate={selectedDate}
             selection={chartSelection}
             onSpanClick={() => {}}
             onSpanHover={setHoveredTagSpan}
             onAppSpanHover={setHoveredAppSpan}
+            onBiliSpanHover={setHoveredBiliSpan}
+            trackMode={trackMode}
+            onTrackModeChange={setTrackMode}
             pinnedPos={pinnedPos}
             onPinPos={setPinnedPos}
             onTimeSelect={handleTimeSelect}
@@ -682,16 +694,22 @@ export default function App() {
           ) : (() => {
             // 固定时用 pinnedPos.minute 查对应 span，否则用 hover span
             const pm = pinnedPos?.minute ?? null
+            const dtToMin = (dt: string) => { const [h,m] = (dt.split(' ')[1]??'').split(':').map(Number); return h*60+m }
             const pinnedTagSpan = pm != null
-              ? mtSpans.find((s) => s.track === 'tags' && pm >= (() => { const [h,m] = (s.start_at.split(' ')[1]??'').split(':').map(Number); return h*60+m })() && pm < (() => { const [h,m] = (s.end_at.split(' ')[1]??'').split(':').map(Number); return h*60+m })()) ?? null
+              ? mtSpans.find((s) => s.track === 'tags' && pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
               : null
-            const pinnedAppSpan = pm != null
-              ? mtSpans.find((s) => s.track === 'apps' && pm >= (() => { const [h,m] = (s.start_at.split(' ')[1]??'').split(':').map(Number); return h*60+m })() && pm < (() => { const [h,m] = (s.end_at.split(' ')[1]??'').split(':').map(Number); return h*60+m })()) ?? null
+            // 按当前轨道模式只查对应管线 span
+            const pinnedAppSpan = pm != null && trackMode === 'apps'
+              ? mtSpans.find((s) => s.track === 'apps' && pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
+              : null
+            const pinnedBili = pm != null && trackMode === 'bili'
+              ? biliSpans.find((s) => pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
               : null
             const tagSpan = pinnedTagSpan ?? hoveredTagSpan
-            const appSpan = pinnedAppSpan ?? hoveredAppSpan
+            const appSpan = trackMode === 'apps' ? (pinnedAppSpan ?? hoveredAppSpan) : null
+            const biliSpan = trackMode === 'bili' ? (pinnedBili ?? hoveredBiliSpan) : null
 
-            if (!tagSpan && !appSpan) {
+            if (!tagSpan && !appSpan && !biliSpan) {
               return (
                 <ChatPanel
                   messages={chatMessages}
@@ -704,6 +722,7 @@ export default function App() {
               <div style={{ height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
                 {tagSpan && <SpanDetailPanel span={tagSpan} />}
                 {appSpan && <AppHoverPanel span={appSpan} date={selectedDate} />}
+                {biliSpan && <BiliVideoPanel span={biliSpan} />}
                 <div style={{ flex: 1 }} />
               </div>
             )

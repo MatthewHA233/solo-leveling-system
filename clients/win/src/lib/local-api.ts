@@ -185,6 +185,28 @@ export async function fetchManicTimeSpans(date: Date): Promise<MtSpan[]> {
   return json.data
 }
 
+// ── Bilibili 时间轴 Span ──
+
+export interface BiliSpan {
+  bvid: string
+  title: string
+  author_name: string
+  cover: string       // 封面 URL
+  start_at: string    // "2026-04-06 13:30:00"
+  end_at: string
+  duration: number    // 总时长（秒）
+  progress: number    // 已看（秒）
+}
+
+/** 查询某天的 B站观看 spans */
+export async function fetchBiliSpans(date: Date): Promise<BiliSpan[]> {
+  const dateStr = toLocalDateStr(date)
+  const res = await fetch(`${API_BASE}/api/bilibili/spans/day?date=${dateStr}`)
+  const json: ApiResponse<BiliSpan[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '获取B站Span失败')
+  return json.data
+}
+
 // ── Bilibili 历史 DB API ──
 
 export interface DbBiliItem {
