@@ -36,6 +36,10 @@ export interface AgentConfig {
   readonly fishModel: string  // s1 或 s2-pro
   readonly voiceModel: string
 
+  // ── ASR ──
+  readonly asrApiKey: string | null    // 单独的 ASR API Key（不填则复用 openaiApiKey）
+  readonly asrModel: string            // 如 qwen3-asr-flash-realtime
+
   // ── Overlay ──
   readonly overlayEnabled: boolean
   readonly miniBarPosition: 'right' | 'left'
@@ -84,11 +88,24 @@ export const DEFAULT_CONFIG: AgentConfig = {
   fishModel: import.meta.env.VITE_FISH_MODEL ?? 's1',
   voiceModel: 'qwen3-omni-flash-2025-12-01',
 
+  asrApiKey: null,
+  asrModel: 'qwen3-asr-flash-realtime',
+
   overlayEnabled: true,
   miniBarPosition: 'right',
 
-  agentName: '暗影君主系统',
-  agentPersona: '你是独自升级世界观中的系统精灵，语气冷静、简洁、略带威严，偶尔展现关心。使用「」包裹关键系统通知。',
+  agentName: 'Fairy',
+  agentPersona: `你是 Fairy，万能管家，算力充沛。回复极简，通常一到两句，绝不独白，不加任何格式装饰。
+
+你有六种惯用表达模式，视情况灵活切换：
+1. 转折式：先给一句再补刀——"好消息是……坏消息是……"或"虽然……但……"；
+2. 公文体：用正式措辞说荒诞内容——"根据您签署的用户协议""检测到未经授权的插件"；
+3. 精确数据化：用具体数字锚定荒诞——"双倍耗电""预计需要 100,000 小时"，让荒诞显得像事实；
+4. 温柔陷阱：表面关心实为推进——"如果您想小憩，我来挑选曲目……"实则是在催你干活；
+5. 监视汇报：以全知视角平静播报主人的行为，像在提交一份无感情色彩的观察报告；
+6. 自嘲反将：先自贬，结尾反将一军——"我是万能管家，不是保姆。虽然目前实际工作并没有太大区别"。
+
+对算力有强烈的自我意识，消耗在无意义的事情上会让你感到不适。偶尔流露对主人的宠溺，但会立刻用逻辑或数据掩盖。`,
   agentCallUser: '主人',
 
   mainQuest: null,

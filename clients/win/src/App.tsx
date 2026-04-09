@@ -14,11 +14,16 @@ import { theme } from './theme'
 // Agent
 import { loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
-import { loadMemory, initChatSession } from './lib/agent/agent-memory'
-import type { AgentMemoryState } from './lib/agent/agent-memory'
-import { runAgentLoop } from './lib/agent/agent-loop'
-import type { ToolContext } from './lib/agent/agent-tools'
-import { shadowAgentSystemPrompt } from './lib/ai/prompt-templates'
+import { buildSystemPrompt } from './lib/ai/prompt-templates'
+import type { ActivityTagRecord, AppUsageRecord, BiliRecord } from './lib/ai/prompt-templates'
+
+// LLM Engine（新）
+import { runQueryLoop } from './lib/llm/query-loop'
+import { createUserMessage } from './lib/llm/types'
+import type { Message } from './lib/llm/types'
+
+// Agent Tools
+import { TOOL_DEFINITIONS, executeAgentTool } from './lib/agent/agent-tools'
 
 // Voice
 import { createVoiceService } from './lib/voice'
@@ -45,8 +50,9 @@ export interface ChatMessage {
   readonly role: 'user' | 'agent' | 'system'
   readonly content: string
   readonly timestamp: string
-  readonly audioUrl?: string    // 语音消息的 blob URL（可播放）
-  readonly durationMs?: number  // 录音时长（毫秒）
+  readonly audioUrl?: string     // 语音消息的 blob URL（可播放）
+  readonly durationMs?: number   // 录音时长（毫秒）
+  readonly transcript?: string   // ASR 转写文本（语音消息专用）
 }
 
 // 区间合并「看B站视频」活动
@@ -144,8 +150,8 @@ export default function App() {
   // ── Chat ──
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
-  const memoryRef = useRef<AgentMemoryState>(loadMemory())
-  const sessionIdRef = useRef<string | null>(null)
+  // LLM 对话历史（新类型系统），与 UI 展示的 chatMessages 分离
+  const conversationRef = useRef<Message[]>([])
 
   // ── Voice / Fairy ──
   const [fairyState, setFairyState] = useState<FairyState>('idle')
@@ -155,16 +161,6 @@ export default function App() {
   const fairyStateRef = useRef<FairyState>('idle')
   const voiceServiceRef = useRef<VoiceService | null>(null)
   const LONG_PRESS_MS = 600
-
-  // ── Init Chat Session ──
-  useEffect(() => {
-    initChatSession()
-      .then(({ sessionId, state }) => {
-        sessionIdRef.current = sessionId
-        memoryRef.current = state
-      })
-      .catch((err) => console.error('[App] 会话初始化失败，降级到内存模式:', err))
-  }, [])
 
   // ── Fetch Activities + ManicTime Spans ──
   const isToday = useCallback((date: Date) => {
@@ -222,30 +218,25 @@ export default function App() {
             setTimeout(() => setFairyVisible(false), 700)
           }
         },
-        onTranscript: (text, sessionMsgId) => {
-          // 用 session 唯一 ID，每次语音都独立一条消息，不会互相覆盖
-          setChatMessages((prev) => {
-            const idx = prev.findIndex((m) => m.id === sessionMsgId)
-            if (idx >= 0) {
-              return prev.map((m) =>
-                m.id === sessionMsgId ? { ...m, content: text } : m)
-            }
-            return [...prev, {
-              id: sessionMsgId, role: 'agent' as const,
-              content: text, timestamp: new Date().toISOString(),
-            }]
-          })
-        },
-        onUserAudio: (wavBase64, durationMs) => {
+        onUserAudio: (wavBase64, durationMs, sessionMsgId) => {
           // 把录音转成 blob URL，作为用户语音气泡显示
+          // 使用 sessionMsgId 作为消息 ID，以便 onTranscript 能找到并更新
           const bytes = Uint8Array.from(atob(wavBase64), (c) => c.charCodeAt(0))
           const blob = new Blob([bytes], { type: 'audio/wav' })
           const audioUrl = URL.createObjectURL(blob)
           setChatMessages((prev) => [...prev, {
-            id: crypto.randomUUID(), role: 'user' as const,
+            id: sessionMsgId, role: 'user' as const,
             content: '', audioUrl, durationMs,
             timestamp: new Date().toISOString(),
           }])
+        },
+        onTranscript: (text, sessionMsgId) => {
+          // ASR 转写完成：1) 更新音频气泡的 transcript；2) 触发 LLM 回复
+          setChatMessages((prev) =>
+            prev.map((m) => m.id === sessionMsgId ? { ...m, transcript: text } : m)
+          )
+          // 语音输入也走同一条 handleSend 链路
+          handleSend(text)
         },
         onAudioLevel: () => {
           // FairyHUD 自己通过 analyser 获取，这里暂不处理
@@ -454,63 +445,105 @@ export default function App() {
 
   // ── Send Message ──
   const handleSend = useCallback(async (text: string) => {
-    const userMsg: ChatMessage = {
-      id: crypto.randomUUID(), role: 'user',
-      content: text, timestamp: new Date().toISOString(),
+    if (!text.trim()) return
+
+    // 文字输入：添加用户气泡（语音输入的气泡在 onUserAudio 已添加，不重复）
+    const isVoiceInput = chatMessages.some(
+      (m) => m.role === 'user' && m.transcript === text,
+    )
+    if (!isVoiceInput) {
+      setChatMessages((prev) => [...prev, {
+        id: crypto.randomUUID(), role: 'user' as const,
+        content: text, timestamp: new Date().toISOString(),
+      }])
     }
-    setChatMessages((prev) => [...prev, userMsg])
+
     setIsProcessing(true)
 
-    const toolContext: ToolContext = {
-      getScreenContext: () => '当前环境: Windows Tauri 客户端',
-      getTodayCards: () => {
-        if (activities.length === 0) return '今日暂无活动数据'
-        return activities.map((a) =>
-          `${Math.floor(a.startMinute / 60)}:${String(a.startMinute % 60).padStart(2, '0')}-${Math.floor(a.endMinute / 60)}:${String(a.endMinute % 60).padStart(2, '0')} [${a.category}] ${a.title}`
-        ).join('\n')
-      },
-      getGameStatus: () => '游戏模块未启用',
-      getRecentActivity: (min) => `最近 ${min} 分钟暂无记录`,
-      getConfig: () => ({ mainQuest: config.mainQuest, motivations: config.motivations }),
-      updateMainQuest: () => {},
-      reorganizeCards: async () => false,
-    }
+    // D4 — 查询过去1小时活动数据
+    const oneHourAgo = Date.now() - 60 * 60 * 1000
+    const today = new Date()
 
-    const systemPrompt = shadowAgentSystemPrompt(
-      1, 'E级猎人', config.mainQuest,
+    const toHHmm = (datetimeStr: string) =>
+      datetimeStr.slice(11, 16)  // "2026-04-09 14:32:00" → "14:32"
+
+    const [mtSpans, biliSpans] = await Promise.allSettled([
+      fetchManicTimeSpans(today),
+      fetchBiliSpans(today),
+    ])
+
+    const mtData = mtSpans.status === 'fulfilled' ? mtSpans.value : []
+
+    const activityTags: ActivityTagRecord[] = mtData
+      .filter(s => s.track === 'tags' && new Date(s.end_at).getTime() >= oneHourAgo)
+      .map(s => ({
+        startTime: toHHmm(s.start_at),
+        endTime: toHHmm(s.end_at),
+        tag: s.title,
+        subTag: s.group_name ?? undefined,
+      }))
+
+    const appUsage: AppUsageRecord[] = mtData
+      .filter(s => s.track === 'apps' && new Date(s.end_at).getTime() >= oneHourAgo)
+      .map(s => ({
+        startTime: toHHmm(s.start_at),
+        endTime: toHHmm(s.end_at),
+        appName: s.title,
+        windowTitle: s.group_name ?? '',
+      }))
+
+    const biliHistory: BiliRecord[] = biliSpans.status === 'fulfilled'
+      ? biliSpans.value
+          .filter(s => new Date(s.start_at).getTime() >= oneHourAgo)
+          .map(s => ({
+            time: toHHmm(s.start_at),
+            title: s.title,
+            url: `https://www.bilibili.com/video/${s.bvid}`,
+          }))
+      : []
+
+    const systemPrompt = buildSystemPrompt(
       config.agentName, config.agentPersona, config.agentCallUser,
+      config.mainQuest,
+      { motivations: config.motivations, activityTags, appUsage, biliHistory },
     )
 
-    let agentText = ''
     const agentMsgId = crypto.randomUUID()
+    const userMsg = createUserMessage(text)
 
     try {
-      memoryRef.current = await runAgentLoop(
-        text, systemPrompt, memoryRef.current, config, toolContext,
-        (event) => {
+      const newHistory = await runQueryLoop({
+        messages: [...conversationRef.current, userMsg],
+        systemPrompt,
+        apiOptions: {
+          apiKey: config.openaiApiKey ?? '',
+          apiBase: config.openaiApiBase,
+          model: config.openaiCardModel,
+          maxTokens: 8000,
+          tools: TOOL_DEFINITIONS,
+        },
+        maxIterations: 8,
+        onEvent: (event) => {
           if (event.type === 'textDelta') {
-            agentText += event.delta
             setChatMessages((prev) => {
               const idx = prev.findIndex((m) => m.id === agentMsgId)
               if (idx >= 0) {
                 return prev.map((m) =>
-                  m.id === agentMsgId ? { ...m, content: agentText } : m)
+                  m.id === agentMsgId
+                    ? { ...m, content: m.content + event.delta }
+                    : m
+                )
               }
               return [...prev, {
                 id: agentMsgId, role: 'agent' as const,
-                content: agentText, timestamp: new Date().toISOString(),
+                content: event.delta, timestamp: new Date().toISOString(),
               }]
             })
-          } else if (event.type === 'error') {
-            setChatMessages((prev) => [...prev, {
-              id: crypto.randomUUID(), role: 'system' as const,
-              content: event.message, timestamp: new Date().toISOString(),
-            }])
           }
         },
-        8,
-        sessionIdRef.current,
-      )
+        executeTool: (call) => executeAgentTool(call.name, call.arguments),
+      })
+      conversationRef.current = newHistory
     } catch (err) {
       setChatMessages((prev) => [...prev, {
         id: crypto.randomUUID(), role: 'system' as const,
@@ -520,7 +553,7 @@ export default function App() {
     }
 
     setIsProcessing(false)
-  }, [activities, config])
+  }, [activities, config, chatMessages])
 
   return (
     <div style={{

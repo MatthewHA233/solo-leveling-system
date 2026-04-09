@@ -6,6 +6,7 @@ mod db;
 mod api;
 mod fish_tts;
 mod manictime;
+mod qwen_asr;
 
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -241,6 +242,22 @@ async fn migrate_database(
     Ok(new_db_path)
 }
 
+// ── 文件操作命令（供 AI 工具调用） ──
+
+#[tauri::command]
+async fn read_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))
+}
+
+#[tauri::command]
+async fn write_file(path: String, content: String) -> Result<(), String> {
+    // 如父目录不存在则创建
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+    std::fs::write(&path, content).map_err(|e| format!("写入失败: {}", e))
+}
+
 // ── 入口 ──
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -319,6 +336,9 @@ pub fn run() {
             migrate_database,
             open_bili_login,
             fetch_bili_history,
+            qwen_asr::qwen_asr_transcribe,
+            read_file,
+            write_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

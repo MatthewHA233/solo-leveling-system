@@ -362,11 +362,25 @@ function Bubble({ message }: { message: ChatMessage }) {
 
   const isUser = message.role === 'user'
 
-  // 语音消息 → 音频气泡
+  // 语音消息 → 音频气泡 + ASR 转写文字（气泡下方）
   if (isUser && message.audioUrl) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'flex-end', animation: 'fadeSlideIn 0.2s ease' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, animation: 'fadeSlideIn 0.2s ease' }}>
         <AudioBubble audioUrl={message.audioUrl} durationMs={message.durationMs} />
+        {message.transcript && (
+          <div style={{
+            maxWidth: 290,
+            fontSize: 11.5,
+            color: theme.textSecondary,
+            padding: '3px 10px',
+            fontFamily: theme.fontBody,
+            lineHeight: 1.5,
+            textAlign: 'right',
+            fontStyle: 'italic',
+          }}>
+            {message.transcript}
+          </div>
+        )}
       </div>
     )
   }

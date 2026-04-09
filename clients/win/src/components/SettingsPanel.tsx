@@ -37,6 +37,8 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
     openaiCardModel: config.openaiCardModel,
     fishApiKey: config.fishApiKey ?? '',
     fishReferenceId: config.fishReferenceId,
+    asrApiKey: config.asrApiKey ?? '',
+    asrModel: config.asrModel,
     excludedApps: config.excludedApps.join('\n'),
     excludedTitleKeywords: config.excludedTitleKeywords.join('\n'),
     biliIntervalSeconds: config.biliIntervalSeconds,
@@ -44,6 +46,8 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
     agentName: config.agentName,
     agentPersona: config.agentPersona,
     agentCallUser: config.agentCallUser,
+    mainQuest: config.mainQuest ?? '',
+    motivations: config.motivations.join('\n'),
   })
 
   const [dirty, setDirty] = useState(false)
@@ -72,13 +76,17 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
       openaiCardModel: draft.openaiCardModel,
       fishApiKey: draft.fishApiKey || null,
       fishReferenceId: draft.fishReferenceId,
+      asrApiKey: draft.asrApiKey || null,
+      asrModel: draft.asrModel || 'qwen3-asr-flash-realtime',
       excludedApps: draft.excludedApps.split('\n').map((s) => s.trim()).filter(Boolean),
       excludedTitleKeywords: draft.excludedTitleKeywords.split('\n').map((s) => s.trim()).filter(Boolean),
       biliIntervalSeconds: draft.biliIntervalSeconds,
       biliAutoCreate: draft.biliAutoCreate,
-      agentName: draft.agentName || '暗影君主系统',
+      agentName: draft.agentName || 'Fairy',
       agentPersona: draft.agentPersona,
       agentCallUser: draft.agentCallUser || '主人',
+      mainQuest: draft.mainQuest || null,
+      motivations: draft.motivations.split('\n').map(s => s.trim()).filter(Boolean),
     })
     setDirty(false)
     setSaved(true)
@@ -155,15 +163,15 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
         {/* ── AI 人设 ── */}
         <Section title="AI 人设" icon={Bot}>
-          <Field label="系统名称"
-            value={draft.agentName}
-            onChange={(v) => update('agentName', v)}
-            placeholder="暗影君主系统"
-          />
           <Field label="称呼用户为"
             value={draft.agentCallUser}
             onChange={(v) => update('agentCallUser', v)}
             placeholder="主人"
+          />
+          <Field label="名称"
+            value={draft.agentName}
+            onChange={(v) => update('agentName', v)}
+            placeholder="Fairy"
           />
           <div style={{ marginBottom: 8 }}>
             <label style={labelStyle}>人设描述</label>
@@ -173,6 +181,26 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
               rows={4}
               style={textareaStyle}
               placeholder="描述 AI 的性格、语气和行为风格..."
+            />
+          </div>
+          <div style={{ marginBottom: 8 }}>
+            <label style={labelStyle}>主线目标</label>
+            <textarea
+              value={draft.mainQuest}
+              onChange={(e) => update('mainQuest', e.target.value)}
+              rows={2}
+              style={textareaStyle}
+              placeholder="当前最重要的目标，会注入到 AI 上下文中..."
+            />
+          </div>
+          <div style={{ marginBottom: 8 }}>
+            <label style={labelStyle}>大愿景与动机（每行一条）</label>
+            <textarea
+              value={draft.motivations}
+              onChange={(e) => update('motivations', e.target.value)}
+              rows={3}
+              style={textareaStyle}
+              placeholder={'想要有下颌线\n减掉肚子\n...'}
             />
           </div>
           <div style={{ marginTop: 4 }}>
@@ -239,21 +267,25 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
           <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 8 }}>
             右 Alt 长按 &gt; 600ms 开始说话
           </div>
+          <Field label="ASR API Key" type="password"
+            value={draft.asrApiKey}
+            onChange={(v) => update('asrApiKey', v)}
+            placeholder="不填则复用上方 API Key"
+          />
+          <Field label="ASR 模型"
+            value={draft.asrModel}
+            onChange={(v) => update('asrModel', v)}
+            placeholder="qwen3-asr-flash-realtime"
+          />
           <Field label="Fish API Key" type="password"
             value={draft.fishApiKey}
             onChange={(v) => update('fishApiKey', v)}
-            placeholder="Fish Audio API Key"
+            placeholder="Fish Audio API Key（TTS 用）"
           />
           <Field label="音色 ID"
             value={draft.fishReferenceId}
             onChange={(v) => update('fishReferenceId', v)}
           />
-          <div style={{ marginTop: 4, fontSize: 12, color: theme.textSecondary }}>
-            状态: {config.fishApiKey
-              ? <span style={{ color: theme.expGreen }}>● 已配置</span>
-              : <span style={{ color: theme.dangerRed }}>● 未配置</span>
-            }
-          </div>
         </Section>
 
         {/* ── 隐私 ── */}
