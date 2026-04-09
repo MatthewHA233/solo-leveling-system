@@ -51,6 +51,10 @@ export default function ChatPanel({ messages, isProcessing, onSend }: Props) {
         .chat-textarea:focus { outline: none; }
         .send-btn:hover:not(:disabled) { background: ${theme.electricBlue} !important; color: #000 !important; }
         .chat-input-wrap:focus-within { border-color: ${theme.electricBlue}44 !important; box-shadow: 0 0 0 2px ${theme.electricBlue}12; }
+        @keyframes audioPulse {
+          0%,100% { transform: scale(1);   opacity: 0.7; }
+          50%      { transform: scale(1.18); opacity: 0.3; }
+        }
       `}</style>
 
       {/* ── Header ── */}
@@ -174,6 +178,173 @@ export default function ChatPanel({ messages, isProcessing, onSend }: Props) {
   )
 }
 
+// ── Audio Bubble（Telegram 风格）──
+
+const WAVEFORM_BARS = 40
+const BTN = 42
+const RING_R = 18
+const RING_CIRC = 2 * Math.PI * RING_R
+
+function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: number }) {
+  const [playing, setPlaying]   = useState(false)
+  const [progress, setProgress] = useState(0)          // 0–1，rAF 驱动
+  const [duration, setDuration] = useState(            // 从 audio 元素取真实时长
+    durationMs != null ? durationMs / 1000 : 0
+  )
+  const [waveform, setWaveform] = useState<number[]>([])
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const rafRef   = useRef<number>(0)
+
+  // rAF 驱动进度（丝滑 60fps）
+  useEffect(() => {
+    if (!playing) { cancelAnimationFrame(rafRef.current); return }
+    const tick = () => {
+      const el = audioRef.current
+      if (el && el.duration > 0)
+        setProgress(el.currentTime / el.duration)
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafRef.current)
+  }, [playing])
+
+  // 真实时长（onLoadedMetadata）
+  const handleMeta = () => {
+    const el = audioRef.current
+    if (el && isFinite(el.duration) && el.duration > 0)
+      setDuration(el.duration)
+  }
+
+  // 解码真实波形（RMS 采样，更贴近听感）
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const buf   = await (await fetch(audioUrl)).arrayBuffer()
+        const ctx   = new AudioContext()
+        const decoded = await ctx.decodeAudioData(buf)
+        await ctx.close()
+        if (cancelled) return
+        const data  = decoded.getChannelData(0)
+        const block = Math.floor(data.length / WAVEFORM_BARS)
+        const rms   = Array.from({ length: WAVEFORM_BARS }, (_, i) => {
+          let sum = 0
+          const off = i * block
+          for (let j = 0; j < block; j++) sum += data[off + j] ** 2
+          return Math.sqrt(sum / block)
+        })
+        const maxRms = Math.max(...rms, 0.001)
+        setWaveform(rms.map((v) => v / maxRms))
+      } catch {
+        if (!cancelled)
+          setWaveform(Array.from({ length: WAVEFORM_BARS }, () => 0.25 + Math.random() * 0.75))
+      }
+    })()
+    return () => { cancelled = true }
+  }, [audioUrl])
+
+  const toggle = () => {
+    const el = audioRef.current
+    if (!el) return
+    if (playing) { el.pause(); setPlaying(false) }
+    else         { el.play();  setPlaying(true)  }
+  }
+
+  const fmtSec = (s: number) =>
+    `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
+
+  const bars       = waveform.length > 0 ? waveform : Array.from({ length: WAVEFORM_BARS }, () => 0.3)
+  const playedBars = Math.round(progress * WAVEFORM_BARS)
+  const ringFilled = progress * RING_CIRC
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10,
+      padding: '10px 14px',
+      minWidth: 230, maxWidth: 290,
+      background: `linear-gradient(135deg, ${theme.electricBlue}f0, ${theme.electricBlue}b8)`,
+      borderRadius: '18px 18px 4px 18px',
+    }}>
+      <audio
+        ref={audioRef}
+        src={audioUrl}
+        onLoadedMetadata={handleMeta}
+        onEnded={() => { setPlaying(false); setProgress(0) }}
+      />
+
+      {/* ── 圆形按钮 + SVG 进度环 ── */}
+      <div style={{ position: 'relative', width: BTN, height: BTN, flexShrink: 0 }}>
+        {/* pulse 光晕（播放中） */}
+        {playing && (
+          <div style={{
+            position: 'absolute', inset: -4,
+            borderRadius: '50%',
+            background: 'rgba(255,255,255,0.12)',
+            animation: 'audioPulse 1.4s ease-in-out infinite',
+          }} />
+        )}
+
+        {/* SVG 进度环（无 CSS transition，rAF 直接驱动已够丝滑） */}
+        <svg
+          width={BTN} height={BTN}
+          style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
+        >
+          <circle cx={BTN/2} cy={BTN/2} r={RING_R}
+            fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="2.5" />
+          <circle cx={BTN/2} cy={BTN/2} r={RING_R}
+            fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeDasharray={`${ringFilled} ${RING_CIRC}`}
+            transform={`rotate(-90 ${BTN/2} ${BTN/2})`}
+          />
+        </svg>
+
+        {/* 按钮主体 */}
+        <button
+          onClick={toggle}
+          style={{
+            position: 'absolute', inset: 4,
+            borderRadius: '50%',
+            background: 'rgba(0,0,0,0.28)',
+            border: 'none', color: '#fff', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 13, paddingLeft: playing ? 0 : 2,
+          }}
+        >
+          {playing ? '⏸' : '▶'}
+        </button>
+      </div>
+
+      {/* ── 波形 + 时间 ── */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2, height: 32 }}>
+          {bars.map((amp, i) => {
+            const played  = i < playedBars
+            const current = i === playedBars && playing
+            return (
+              <div key={i} style={{
+                flex: 1, borderRadius: 3,
+                height: `${Math.max(14, amp * 100)}%`,
+                background: played ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.30)',
+                transform: current ? 'scaleY(1.2)' : 'scaleY(1)',
+                transformOrigin: 'center',
+              }} />
+            )
+          })}
+        </div>
+
+        <div style={{
+          fontSize: 10, fontWeight: 600,
+          color: 'rgba(255,255,255,0.72)',
+          fontFamily: theme.fontBody, letterSpacing: 0.3,
+        }}>
+          {playing ? fmtSec(progress * duration) : fmtSec(duration)}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Bubble ──
 
 function Bubble({ message }: { message: ChatMessage }) {
@@ -190,6 +361,15 @@ function Bubble({ message }: { message: ChatMessage }) {
   }
 
   const isUser = message.role === 'user'
+
+  // 语音消息 → 音频气泡
+  if (isUser && message.audioUrl) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'flex-end', animation: 'fadeSlideIn 0.2s ease' }}>
+        <AudioBubble audioUrl={message.audioUrl} durationMs={message.durationMs} />
+      </div>
+    )
+  }
 
   return (
     <div style={{

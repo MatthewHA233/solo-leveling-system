@@ -14,9 +14,10 @@ export type VoicePhase = 'idle' | 'listening' | 'thinking' | 'speaking'
 
 export interface VoiceCallbacks {
   readonly onPhaseChange: (phase: VoicePhase) => void
-  readonly onTranscript: (text: string) => void
+  readonly onTranscript: (text: string, sessionMsgId: string) => void
   readonly onAudioLevel: (level: number) => void
   readonly onError: (message: string) => void
+  readonly onUserAudio?: (wavBase64: string, durationMs: number) => void
 }
 
 export interface VoiceService {
@@ -44,6 +45,11 @@ export function createVoiceService(
   let recorder: VoiceRecorder | null = null
   let audioCtx: AudioContext | null = null
   let scheduledTime = 0
+
+  // Session 隔离：每次新录音自增，旧 session 的所有异步回调检查此值后放弃执行
+  let sessionSeq = 0
+  // 当前 in-flight 的 HTTP 流取消控制器
+  let currentAbort: AbortController | null = null
 
   // PCM 播放器
   let activeSources: { source: AudioBufferSourceNode; endTime: number }[] = []
@@ -74,16 +80,17 @@ export function createVoiceService(
     scheduledTime = endTime
 
     // 跟踪活跃的音频源
+    const mySeq = sessionSeq
     activeSources.push({ source, endTime })
 
-    // 清理已结束的源
     source.onended = () => {
+      // 若 session 已被新录音覆盖，忽略此回调
+      if (mySeq !== sessionSeq) return
       activeSources = activeSources.filter(s => s.source !== source)
-      // 如果所有音频都播放完毕且没有新的音频在排队，触发空闲状态
       if (activeSources.length === 0 && phase === 'speaking') {
         setTimeout(() => {
-          if (activeSources.length === 0) {
-            callbacks.onPhaseChange('idle')
+          if (mySeq === sessionSeq && activeSources.length === 0 && phase === 'speaking') {
+            setPhase('idle')
           }
         }, 100)
       }
@@ -96,7 +103,26 @@ export function createVoiceService(
   }
 
   const startRecording = async () => {
-    if (phase !== 'idle') return
+    // ── 新 session 开始：使所有旧 session 的异步回调失效 ──
+    sessionSeq++
+
+    // 取消正在进行的 HTTP 流（防止旧 for-await 继续写入 onTranscript）
+    if (currentAbort) { currentAbort.abort(); currentAbort = null }
+
+    // 停止并释放旧 session 的音频源和 AudioContext
+    for (const { source } of activeSources) {
+      try { source.stop() } catch { /* ignore */ }
+    }
+    activeSources = []
+    if (audioCtx && audioCtx.state !== 'closed') {
+      try { await audioCtx.close() } catch { /* ignore */ }
+    }
+    audioCtx = null
+    scheduledTime = 0
+
+    // phase 兜底
+    if (phase !== 'idle') phase = 'idle'
+
     recorder = createVoiceRecorder()
     try {
       await recorder.start()
@@ -110,14 +136,24 @@ export function createVoiceService(
     if (phase !== 'listening' || !recorder) return
     setPhase('thinking')
 
+    // 每次语音 session 独立的消息 ID 和 session 序号快照
+    const sessionMsgId = crypto.randomUUID()
+    const mySeq = sessionSeq
+
     const result = await recorder.stop()
     recorder = null
+
+    // 若已被新 session 抢占，静默退出
+    if (mySeq !== sessionSeq) return
 
     if (!result) {
       callbacks.onError('录音过短或无声，已取消')
       setPhase('idle')
       return
     }
+
+    // 通知 UI 展示录音气泡
+    callbacks.onUserAudio?.(result.wavBase64, result.durationMs)
 
     const config = getConfig()
     if (!config.openaiApiKey) {
@@ -142,8 +178,9 @@ export function createVoiceService(
           sampleRate: 24000,
           proxyPort: 7890,
         },
-        (pcm) => playPcmChunk(pcm),
+        (pcm) => { if (mySeq === sessionSeq) playPcmChunk(pcm) },
         () => {
+          if (mySeq !== sessionSeq) return
           ttsClient = null
           setPhase('idle')
         },
@@ -157,22 +194,29 @@ export function createVoiceService(
       }
     }
 
-    // Qwen3 Omni 流式请求
+    // Qwen3 Omni 流式请求（绑定 AbortController，可被 startRecording 取消）
+    const abort = new AbortController()
+    currentAbort = abort
+
     try {
-      const stream = streamOmniAudio(config, systemPrompt, result.wavBase64)
+      const stream = streamOmniAudio(config, systemPrompt, result.wavBase64, abort.signal)
       setPhase('speaking')
 
       for await (const token of stream) {
+        // 若 session 已被新录音覆盖，立即停止
+        if (mySeq !== sessionSeq) break
+
         fullText += token
         textBuffer += token
-        callbacks.onTranscript(fullText)
+        callbacks.onTranscript(fullText, sessionMsgId)
 
         if (ttsClient && shouldFlushTTS(textBuffer)) {
-          console.log('[VoiceService] 发送 TTS 文本:', textBuffer)
           await ttsClient.sendText(textBuffer)
           textBuffer = ''
         }
       }
+
+      if (mySeq !== sessionSeq) return  // 被抢占，不做收尾
 
       if (ttsClient && textBuffer.length > 0) {
         await ttsClient.sendText(textBuffer)
@@ -183,9 +227,15 @@ export function createVoiceService(
 
       if (!ttsClient) setPhase('idle')
     } catch (err) {
-      callbacks.onError(`语音处理失败: ${err instanceof Error ? err.message : String(err)}`)
+      if (mySeq !== sessionSeq) return  // abort 导致的错误，忽略
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!msg.includes('abort') && !msg.includes('AbortError')) {
+        callbacks.onError(`语音处理失败: ${msg}`)
+      }
       if (ttsClient) { await ttsClient.stop(); ttsClient = null }
-      setPhase('idle')
+      if (mySeq === sessionSeq) setPhase('idle')
+    } finally {
+      if (currentAbort === abort) currentAbort = null
     }
   }
 
@@ -214,6 +264,7 @@ async function* streamOmniAudio(
   config: AgentConfig,
   systemPrompt: string,
   audioBase64: string,
+  signal?: AbortSignal,
 ): AsyncGenerator<string> {
   const url = `${config.openaiApiBase}/v1/chat/completions`
 
@@ -243,6 +294,7 @@ async function* streamOmniAudio(
       'Authorization': `Bearer ${config.openaiApiKey}`,
     },
     body: JSON.stringify(body),
+    signal,
   })
 
   if (!response.ok) {

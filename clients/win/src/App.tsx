@@ -45,6 +45,8 @@ export interface ChatMessage {
   readonly role: 'user' | 'agent' | 'system'
   readonly content: string
   readonly timestamp: string
+  readonly audioUrl?: string    // 语音消息的 blob URL（可播放）
+  readonly durationMs?: number  // 录音时长（毫秒）
 }
 
 // 区间合并「看B站视频」活动
@@ -220,20 +222,30 @@ export default function App() {
             setTimeout(() => setFairyVisible(false), 700)
           }
         },
-        onTranscript: (text) => {
-          // 语音回复也写入聊天记录
-          const voiceMsgId = 'voice-reply'
+        onTranscript: (text, sessionMsgId) => {
+          // 用 session 唯一 ID，每次语音都独立一条消息，不会互相覆盖
           setChatMessages((prev) => {
-            const idx = prev.findIndex((m) => m.id === voiceMsgId)
+            const idx = prev.findIndex((m) => m.id === sessionMsgId)
             if (idx >= 0) {
               return prev.map((m) =>
-                m.id === voiceMsgId ? { ...m, content: text } : m)
+                m.id === sessionMsgId ? { ...m, content: text } : m)
             }
             return [...prev, {
-              id: voiceMsgId, role: 'agent' as const,
+              id: sessionMsgId, role: 'agent' as const,
               content: text, timestamp: new Date().toISOString(),
             }]
           })
+        },
+        onUserAudio: (wavBase64, durationMs) => {
+          // 把录音转成 blob URL，作为用户语音气泡显示
+          const bytes = Uint8Array.from(atob(wavBase64), (c) => c.charCodeAt(0))
+          const blob = new Blob([bytes], { type: 'audio/wav' })
+          const audioUrl = URL.createObjectURL(blob)
+          setChatMessages((prev) => [...prev, {
+            id: crypto.randomUUID(), role: 'user' as const,
+            content: '', audioUrl, durationMs,
+            timestamp: new Date().toISOString(),
+          }])
         },
         onAudioLevel: () => {
           // FairyHUD 自己通过 analyser 获取，这里暂不处理
