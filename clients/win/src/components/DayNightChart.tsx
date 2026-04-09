@@ -237,11 +237,16 @@ function drawTagFills(
 const PIPE_LEFT  = 0   // 左轨相对 traceBaseX 的偏移
 const PIPE_RIGHT = 6   // 右轨相对 traceBaseX 的偏移（管道宽 6px）
 
-/** ManicTime 应用层 → 双轨管线（按列连续，穿越行间隙） */
+// 图标在管道内的尺寸（左轨右侧 ~ 活动矩形左侧，约 12px 可用）
+const PIPE_ICON_SIZE = 10
+
+/** ManicTime 应用层 → 双轨管线（按列连续，穿越行间隙）+ 管内图标 */
 function drawAppTraces(
   ctx: CanvasRenderingContext2D,
   p: ReturnType<typeof getGridParams>,
   spans: MtSpan[],
+  getIcon?: (name: string) => HTMLImageElement | null,
+  highlightedSpanId?: number | null,
 ) {
   for (const span of spans) {
     if (span.track !== 'apps') continue
@@ -250,6 +255,7 @@ function drawAppTraces(
     if (endMin <= startMin) continue
 
     const color = span.color ?? '#888888'
+    const isHighlighted = highlightedSpanId != null && span.id === highlightedSpanId
     const startCol = Math.floor(startMin / p.minutesPerCol)
     const endCol   = Math.floor((endMin - 1) / p.minutesPerCol)
 
@@ -272,6 +278,20 @@ function drawAppTraces(
       ctx.moveTo(rx, y0); ctx.lineTo(rx, y1)
       ctx.strokeStyle = 'rgba(255,255,255,0.18)'
       ctx.lineWidth = 1; ctx.lineCap = 'butt'; ctx.stroke()
+
+      // 管内图标：非高亮时在左轨右侧绘制（高亮时图标随横线标签显示，视觉上"移位"）
+      if (!isHighlighted && getIcon) {
+        const appName = span.group_name ?? span.title
+        const icon = getIcon(appName)
+        if (icon && y1 - y0 >= PIPE_ICON_SIZE) {
+          const iconX = lx + 1
+          const iconY = y0 + (y1 - y0) / 2 - PIPE_ICON_SIZE / 2
+          ctx.save()
+          ctx.globalAlpha = 0.72
+          ctx.drawImage(icon, iconX, iconY, PIPE_ICON_SIZE, PIPE_ICON_SIZE)
+          ctx.restore()
+        }
+      }
     }
   }
 }
@@ -1353,20 +1373,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
       ctx.globalAlpha = 1.0
     }
 
-    if (trackMode === 'apps') drawAppTraces(ctx, p, mtSpans)
-    else drawBiliTracesInPipe(ctx, p, adjustedBiliSpans)
-    drawTagTitles(ctx, p, mtSpans)
-    drawNowTick(ctx, p, isToday)
-
-    // 选区（最顶层）：拖拽中显示拖拽选区，松手后显示常驻选区
-    if (isDraggingRef.current && dragStartMinRef.current !== null && dragCurMinRef.current !== null) {
-      const selStart = Math.min(dragStartMinRef.current, dragCurMinRef.current)
-      const selEnd = Math.max(dragStartMinRef.current, dragCurMinRef.current)
-      drawDragSelection(ctx, p, selStart, Math.max(selEnd, selStart + 5))
-    } else if (selection) {
-      drawDragSelection(ctx, p, selection.startMinute, selection.endMinute)
-    }
-
     // ── 十字准线 ──
     const _mouseY = mouseYRef.current
     const _hovCol = hoveredColRef.current
@@ -1383,6 +1389,32 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
       img.onerror = () => { cache.set(name, null) }
       img.src = `http://localhost:3000/api/manictime/app-icon?name=${encodeURIComponent(name)}`
       return null
+    }
+
+    // 当前高亮 app span（固定或悬浮），用于管内图标隐藏
+    let highlightedAppSpanId: number | null = null
+    if (trackMode === 'apps') {
+      if (pinnedPos != null) {
+        const pinnedMin = pinnedPos.minute
+        const pinnedSpan = mtSpans.find(s => s.track === 'apps' && pinnedMin >= dtToMinute(s.start_at) && pinnedMin < dtToMinute(s.end_at))
+        highlightedAppSpanId = pinnedSpan?.id ?? null
+      } else {
+        highlightedAppSpanId = hoveredAppSpanRef.current?.id ?? null
+      }
+    }
+
+    if (trackMode === 'apps') drawAppTraces(ctx, p, mtSpans, getIcon, highlightedAppSpanId)
+    else drawBiliTracesInPipe(ctx, p, adjustedBiliSpans)
+    drawTagTitles(ctx, p, mtSpans)
+    drawNowTick(ctx, p, isToday)
+
+    // 选区（最顶层）：拖拽中显示拖拽选区，松手后显示常驻选区
+    if (isDraggingRef.current && dragStartMinRef.current !== null && dragCurMinRef.current !== null) {
+      const selStart = Math.min(dragStartMinRef.current, dragCurMinRef.current)
+      const selEnd = Math.max(dragStartMinRef.current, dragCurMinRef.current)
+      drawDragSelection(ctx, p, selStart, Math.max(selEnd, selStart + 5))
+    } else if (selection) {
+      drawDragSelection(ctx, p, selection.startMinute, selection.endMinute)
     }
 
     if (pinnedPos != null) {
@@ -1898,7 +1930,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
       }}>
         {(['apps', 'bili'] as const).map((mode) => {
           const active = trackMode === mode
-          const label = mode === 'apps' ? 'Apps' : '哔哩哔哩'
+          const label = mode === 'apps' ? '应用程序' : '哔哩哔哩'
           const color = mode === 'apps' ? '#888888' : BILI_COLOR
           return (
             <button
