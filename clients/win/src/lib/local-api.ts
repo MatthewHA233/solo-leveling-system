@@ -252,3 +252,54 @@ export async function linkBiliToEvent(bvids: string[], eventId: string): Promise
   const json: ApiResponse<void> = await res.json()
   if (!json.success) throw new Error(json.error || '关联失败')
 }
+
+// ── Goals ──
+
+export interface Goal {
+  id: string
+  title: string
+  status: 'active' | 'completed' | 'abandoned'
+  tags: string        // JSON array string，如 '["健康","成长"]'
+  created_at: string
+  completed_at: string | null
+}
+
+/** 解析 Goal.tags JSON 字符串为数组 */
+export function parseGoalTags(goal: Goal): string[] {
+  try { return JSON.parse(goal.tags) } catch { return [] }
+}
+
+export async function fetchGoals(status?: 'active' | 'completed' | 'abandoned'): Promise<Goal[]> {
+  const url = status ? `${API_BASE}/api/goals?status=${status}` : `${API_BASE}/api/goals`
+  const res = await fetch(url)
+  const json: ApiResponse<Goal[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '查询目标失败')
+  return json.data
+}
+
+export async function createGoal(title: string, tags: string[] = []): Promise<Goal> {
+  const res = await fetch(`${API_BASE}/api/goals`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, tags }),
+  })
+  const json: ApiResponse<Goal> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '创建目标失败')
+  return json.data
+}
+
+export async function updateGoal(id: string, patch: { title?: string; status?: string; tags?: string[] }): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/goals/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '更新目标失败')
+}
+
+export async function deleteGoal(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/goals/${id}`, { method: 'DELETE' })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '删除目标失败')
+}

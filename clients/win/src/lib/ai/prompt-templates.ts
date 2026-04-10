@@ -279,12 +279,16 @@ export interface BiliRecord {
   url: string
 }
 
+export interface GoalRecord {
+  title: string
+  tags: string[]   // 动机标签，如 ["健康", "成长"]
+}
+
 export interface DynamicContextParams {
   // D1
-  datetime?: string                   // 覆盖自动计算的时间，测试用
-  // D2 — 目前从 AgentConfig 传入，后续改为从 SQLite 查询
-  motivations?: readonly string[]     // 大愿景与动机
-  currentGoals?: string[]             // 当前目标（目标系统建好后填充）
+  datetime?: string
+  // D2 — 从 SQLite goals 表查询
+  goals?: GoalRecord[]          // active 目标列表（动机 = 所有目标 tags 的并集）
   // D4 — 过去1小时活动，每次发消息前查询
   activityTags?: ActivityTagRecord[]  // 最重要：说明在做什么
   appUsage?: AppUsageRecord[]
@@ -302,19 +306,20 @@ export function buildDynamicContext(params: DynamicContextParams = {}): string {
   })
   sections.push(`# 当前环境\n现在是 ${datetime}。`)
 
-  // D2 — 关于主人
-  const d2Lines: string[] = []
+  // D2 — 关于主人（从 SQLite goals 表聚合）
+  if (params.goals && params.goals.length > 0) {
+    const goalLines = params.goals.map(g => {
+      const tagStr = g.tags.length > 0 ? `  [${g.tags.join(' / ')}]` : ''
+      return `- ${g.title}${tagStr}`
+    }).join('\n')
 
-  if (params.motivations && params.motivations.length > 0) {
-    d2Lines.push(`## 大愿景与动机\n${params.motivations.map(m => `- ${m}`).join('\n')}`)
-  }
+    // 动机 = 所有目标 tags 的去重并集
+    const allTags = [...new Set(params.goals.flatMap(g => g.tags))]
+    const motivationLine = allTags.length > 0
+      ? `\n\n## 大愿景与动机\n${allTags.map(t => `- ${t}`).join('\n')}`
+      : ''
 
-  if (params.currentGoals && params.currentGoals.length > 0) {
-    d2Lines.push(`## 当前目标\n${params.currentGoals.map(g => `- ${g}`).join('\n')}`)
-  }
-
-  if (d2Lines.length > 0) {
-    sections.push(`# 关于主人\n${d2Lines.join('\n\n')}`)
+    sections.push(`# 关于主人\n## 当前目标\n${goalLines}${motivationLine}`)
   }
 
   // D4 — 近期活动（过去1小时，每次发消息前查询注入）

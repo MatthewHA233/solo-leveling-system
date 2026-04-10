@@ -47,7 +47,6 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
     agentPersona: config.agentPersona,
     agentCallUser: config.agentCallUser,
     mainQuest: config.mainQuest ?? '',
-    motivations: config.motivations.join('\n'),
   })
 
   const [dirty, setDirty] = useState(false)
@@ -86,7 +85,6 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
       agentPersona: draft.agentPersona,
       agentCallUser: draft.agentCallUser || '主人',
       mainQuest: draft.mainQuest || null,
-      motivations: draft.motivations.split('\n').map(s => s.trim()).filter(Boolean),
     })
     setDirty(false)
     setSaved(true)
@@ -191,16 +189,6 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
               rows={2}
               style={textareaStyle}
               placeholder="当前最重要的目标，会注入到 AI 上下文中..."
-            />
-          </div>
-          <div style={{ marginBottom: 8 }}>
-            <label style={labelStyle}>大愿景与动机（每行一条）</label>
-            <textarea
-              value={draft.motivations}
-              onChange={(e) => update('motivations', e.target.value)}
-              rows={3}
-              style={textareaStyle}
-              placeholder={'想要有下颌线\n减掉肚子\n...'}
             />
           </div>
           <div style={{ marginTop: 4 }}>

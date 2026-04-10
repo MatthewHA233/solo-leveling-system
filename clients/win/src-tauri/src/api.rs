@@ -12,13 +12,14 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use uuid;
 use tokio::sync::{oneshot, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::db::{
     AppendChatMessagesRequest, ChatMessage, ChatSession,
     ChronosActivity, CreateActivityRequest, Database, UpdateActivityRequest, UpdateChatSessionRequest,
-    BiliHistoryRow, UpsertBiliItem, MergeActivitiesRequest, BiliSpan,
+    BiliHistoryRow, UpsertBiliItem, MergeActivitiesRequest, BiliSpan, Goal,
 };
 
 // ── Bilibili 回调状态 ──
@@ -448,6 +449,72 @@ async fn proxy_bili_cover(
 
 // ── Server ──
 
+// ── Goals ──
+
+#[derive(Deserialize)]
+struct GoalStatusQuery { status: Option<String> }
+
+#[derive(Deserialize)]
+struct CreateGoalBody { title: String, tags: Option<Vec<String>> }
+
+#[derive(Deserialize)]
+struct UpdateGoalBody {
+    title: Option<String>,
+    status: Option<String>,
+    tags: Option<Vec<String>>,
+}
+
+async fn get_goals(
+    State(s): State<ApiState>,
+    Query(q): Query<GoalStatusQuery>,
+) -> Json<ApiResponse<Vec<Goal>>> {
+    match s.db.get_goals(q.status.as_deref()).await {
+        Ok(goals) => Json(ApiResponse::ok(goals)),
+        Err(e)    => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn create_goal(
+    State(s): State<ApiState>,
+    Json(body): Json<CreateGoalBody>,
+) -> Json<ApiResponse<Goal>> {
+    let tags_json = serde_json::to_string(&body.tags.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+    let goal = Goal {
+        id: uuid::Uuid::new_v4().to_string(),
+        title: body.title,
+        status: "active".into(),
+        tags: tags_json,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        completed_at: None,
+    };
+    match s.db.create_goal(&goal).await {
+        Ok(_)  => Json(ApiResponse::ok(goal)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn update_goal(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateGoalBody>,
+) -> Json<ApiResponse<()>> {
+    let tags_json = body.tags.as_ref().map(|t| serde_json::to_string(t).unwrap_or_else(|_| "[]".into()));
+    match s.db.update_goal(&id, body.title.as_deref(), body.status.as_deref(), tags_json.as_deref()).await {
+        Ok(_)  => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn delete_goal(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+) -> Json<ApiResponse<()>> {
+    match s.db.delete_goal(&id).await {
+        Ok(_)  => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
 pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>) -> Router {
     let state = ApiState { db, bili };
 
@@ -467,6 +534,8 @@ pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>) -> Router {
         .route("/api/manictime/spans", get(get_manictime_spans))
         .route("/api/manictime/screenshot", get(get_manictime_screenshot))
         .route("/api/manictime/app-icon", get(get_manictime_app_icon))
+        .route("/api/goals", get(get_goals).post(create_goal))
+        .route("/api/goals/{id}", axum::routing::put(update_goal).delete(delete_goal))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

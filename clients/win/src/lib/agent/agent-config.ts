@@ -51,7 +51,6 @@ export interface AgentConfig {
 
   // ── Main Quest ──
   readonly mainQuest: string | null
-  readonly motivations: readonly string[]
 
   // ── Privacy ──
   readonly excludedApps: readonly string[]
@@ -109,7 +108,6 @@ export const DEFAULT_CONFIG: AgentConfig = {
   agentCallUser: '主人',
 
   mainQuest: null,
-  motivations: [],
 
   excludedApps: [],
   excludedTitleKeywords: [

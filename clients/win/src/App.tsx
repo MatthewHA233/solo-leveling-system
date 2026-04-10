@@ -6,7 +6,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ChevronLeft, ChevronRight, Maximize2, Minimize2, Settings, Tv2, Mic } from 'lucide-react'
 import { fetchActivities } from './lib/chronos-api'
-import { createActivity, updateActivity, deleteActivity, fetchManicTimeSpans, fetchBiliSpans } from './lib/local-api'
+import { createActivity, updateActivity, deleteActivity, fetchManicTimeSpans, fetchBiliSpans, fetchGoals, parseGoalTags } from './lib/local-api'
 import type { MtSpan, BiliSpan } from './lib/local-api'
 import type { ChronosActivity } from './types'
 import { theme } from './theme'
@@ -15,7 +15,7 @@ import { theme } from './theme'
 import { loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
 import { buildSystemPrompt } from './lib/ai/prompt-templates'
-import type { ActivityTagRecord, AppUsageRecord, BiliRecord } from './lib/ai/prompt-templates'
+import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from './lib/ai/prompt-templates'
 
 // LLM Engine（新）
 import { runQueryLoop } from './lib/llm/query-loop'
@@ -460,17 +460,22 @@ export default function App() {
 
     setIsProcessing(true)
 
-    // D4 — 查询过去1小时活动数据
+    // D2 + D4 — 并行查询目标和近期活动
     const oneHourAgo = Date.now() - 60 * 60 * 1000
     const today = new Date()
 
     const toHHmm = (datetimeStr: string) =>
       datetimeStr.slice(11, 16)  // "2026-04-09 14:32:00" → "14:32"
 
-    const [mtSpans, biliSpans] = await Promise.allSettled([
+    const [goalsRes, mtSpans, biliSpans] = await Promise.allSettled([
+      fetchGoals('active'),
       fetchManicTimeSpans(today),
       fetchBiliSpans(today),
     ])
+
+    const goals: GoalRecord[] = goalsRes.status === 'fulfilled'
+      ? goalsRes.value.map(g => ({ title: g.title, tags: parseGoalTags(g) }))
+      : []
 
     const mtData = mtSpans.status === 'fulfilled' ? mtSpans.value : []
 
@@ -505,7 +510,7 @@ export default function App() {
     const systemPrompt = buildSystemPrompt(
       config.agentName, config.agentPersona, config.agentCallUser,
       config.mainQuest,
-      { motivations: config.motivations, activityTags, appUsage, biliHistory },
+      { goals, activityTags, appUsage, biliHistory },
     )
 
     const agentMsgId = crypto.randomUUID()

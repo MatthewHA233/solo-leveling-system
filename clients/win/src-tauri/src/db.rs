@@ -353,6 +353,17 @@ impl Database {
                 event_id TEXT REFERENCES chronos_events(id) ON DELETE SET NULL
             );
             CREATE INDEX IF NOT EXISTS idx_bili_view_at ON bili_history(view_at DESC);
+
+            -- 目标表（动机 = 目标上的标签聚合）
+            CREATE TABLE IF NOT EXISTS goals (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                tags TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
         "#).map_err(|e| format!("创建表失败: {}", e))?;
 
         log::info!("[Database] 表初始化完成");
@@ -773,4 +784,76 @@ impl Database {
         Ok(())
     }
 
+    // ── Goals ──
+
+    pub async fn get_goals(&self, status: Option<&str>) -> Result<Vec<Goal>, String> {
+        let conn = self.conn.lock().await;
+        let (sql, param): (&str, &str) = match status {
+            Some(s) => ("SELECT id, title, status, tags, created_at, completed_at FROM goals WHERE status = ? ORDER BY created_at DESC", s),
+            None    => ("SELECT id, title, status, tags, created_at, completed_at FROM goals ORDER BY created_at DESC", ""),
+        };
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = if status.is_some() {
+            stmt.query_map([param], |row| Goal::from_row(row))
+        } else {
+            stmt.query_map([], |row| Goal::from_row(row))
+        }.map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub async fn create_goal(&self, goal: &Goal) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO goals (id, title, status, tags, created_at) VALUES (?, ?, ?, ?, ?)",
+            params![goal.id, goal.title, goal.status, goal.tags, goal.created_at],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn update_goal(&self, id: &str, title: Option<&str>, status: Option<&str>, tags: Option<&str>) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        if let Some(t) = title {
+            conn.execute("UPDATE goals SET title = ? WHERE id = ?", params![t, id]).map_err(|e| e.to_string())?;
+        }
+        if let Some(s) = status {
+            let completed_at = if s == "completed" { Some(chrono::Utc::now().to_rfc3339()) } else { None };
+            conn.execute("UPDATE goals SET status = ?, completed_at = ? WHERE id = ?", params![s, completed_at, id]).map_err(|e| e.to_string())?;
+        }
+        if let Some(t) = tags {
+            conn.execute("UPDATE goals SET tags = ? WHERE id = ?", params![t, id]).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub async fn delete_goal(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute("DELETE FROM goals WHERE id = ?", [id]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+}
+
+// ── Goal ──
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct Goal {
+    pub id: String,
+    pub title: String,
+    pub status: String,         // "active" | "completed" | "abandoned"
+    pub tags: String,           // JSON array，如 ["健康","成长"]
+    pub created_at: String,
+    pub completed_at: Option<String>,
+}
+
+impl Goal {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Goal {
+            id:           row.get(0)?,
+            title:        row.get(1)?,
+            status:       row.get(2)?,
+            tags:         row.get(3)?,
+            created_at:   row.get(4)?,
+            completed_at: row.get(5)?,
+        })
+    }
 }
