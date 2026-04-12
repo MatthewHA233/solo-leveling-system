@@ -641,9 +641,12 @@ export default function App() {
         console.log('[TTS] newHistory tail:', JSON.stringify(newHistory.slice(-2).map(m => ({ type: m.type, keys: Object.keys(m) }))))
         console.log('[TTS] replyText length=', replyText.length, replyText.slice(0, 50))
         if (replyText.trim()) {
-          console.log('[TTS] calling setFairyState speaking')
           setFairyState('speaking')
           setFairyVisible(true)
+          const stopFairy = () => {
+            setFairyState('idle')
+            setTimeout(() => setFairyVisible(false), 700)
+          }
           try {
             await new Promise<void>((resolve, reject) => {
               // PCM 队列播放器（16-bit signed, 24000Hz, mono）
@@ -661,10 +664,17 @@ export default function App() {
                 const src = audioCtx.createBufferSource()
                 src.buffer = buf
                 src.connect(audioCtx.destination)
-                const startAt = Math.max(nextStartTime, audioCtx.currentTime)
+                // 紧接上一块播放，避免漂移
+                const startAt = Math.max(nextStartTime, audioCtx.currentTime + 0.005)
                 src.start(startAt)
                 nextStartTime = startAt + buf.duration
               }
+
+              // 超时保底：30s 内没完成就强制 resolve
+              const timeout = setTimeout(() => {
+                audioCtx.close()
+                resolve()
+              }, 30_000)
 
               const tts = createFishTTSTauri(
                 {
@@ -673,18 +683,18 @@ export default function App() {
                   model: config.fishModel,
                 },
                 playChunk,
-                () => { audioCtx.close(); resolve() },
+                () => { clearTimeout(timeout); audioCtx.close(); resolve() },
               )
               tts.connect()
-                .then(() => { console.log('[TTS] connected, sending text'); return tts.sendText(replyText) })
+                .then(() => tts.sendText(replyText))
                 .then(() => tts.flush())
-                .catch(e => { console.error('[TTS] connect/send error', e); reject(e) })
+                .catch(e => { clearTimeout(timeout); audioCtx.close(); reject(e) })
             })
           } catch {
             // TTS 失败不影响主流程
+          } finally {
+            stopFairy()  // 无论成功/失败/超时都重置 Fairy 状态
           }
-          setFairyState('idle')
-          setTimeout(() => setFairyVisible(false), 700)
         }
       }
     } catch (err) {

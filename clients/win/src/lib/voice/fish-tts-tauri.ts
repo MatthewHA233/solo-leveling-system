@@ -49,6 +49,7 @@ export function createFishTTSTauri(
     unlistenFinish = await listen<void>('fish-tts-finish', () => {
       connected = false
       onFinish?.()
+      cleanup()   // 自动清理监听器，防止下次调用叠音
     })
 
     // 调用 Rust 后端连接
