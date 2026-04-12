@@ -303,3 +303,35 @@ export async function deleteGoal(id: string): Promise<void> {
   const json: ApiResponse<void> = await res.json()
   if (!json.success) throw new Error(json.error || '删除目标失败')
 }
+
+// ── Presence Spans ──
+
+export interface PresenceSpanRecord {
+  readonly id: string
+  readonly start_time: string       // "YYYY-MM-DD HH:MM:SS"
+  readonly end_time: string | null  // null = 仍在进行
+  readonly state: 'present' | 'absent'
+}
+
+export async function fetchPresenceSpans(date: Date): Promise<PresenceSpanRecord[]> {
+  const dateStr = toLocalDateStr(date)
+  const res = await fetch(`${API_BASE}/api/presence/spans?date=${dateStr}`)
+  const json: ApiResponse<PresenceSpanRecord[]> = await res.json()
+  return json.data ?? []
+}
+
+export async function upsertPresenceSpan(span: PresenceSpanRecord): Promise<void> {
+  await fetch(`${API_BASE}/api/presence/spans`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(span),
+  })
+}
+
+export async function closePresenceSpan(id: string, endTime: string): Promise<void> {
+  await fetch(`${API_BASE}/api/presence/spans/${id}/close`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ end_time: endTime }),
+  })
+}
