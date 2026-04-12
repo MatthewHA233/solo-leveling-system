@@ -18,3 +18,18 @@ ecosystem.config.js
 .swiftpm/
 DerivedData/
 xcuserdata/
+
+# Claude Code
+.claude/
+
+# Obsidian
+.obsidian/
+
+# Tauri / Vite 构建产物
+clients/win/dist/
+
+# MediaPipe WASM 本地资源（体积大，运行时按需放置）
+clients/win/public/mediapipe/
+
+# 临时测试脚本
+clients/win/test-asr.mjs
