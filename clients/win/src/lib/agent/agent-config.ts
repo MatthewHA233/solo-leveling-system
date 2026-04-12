@@ -43,6 +43,7 @@ export interface AgentConfig {
   // ── Overlay ──
   readonly overlayEnabled: boolean
   readonly miniBarPosition: 'right' | 'left'
+  readonly ttsEnabled: boolean
 
   // ── AI 人设 ──
   readonly agentName: string
@@ -92,6 +93,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
   overlayEnabled: true,
   miniBarPosition: 'right',
+  ttsEnabled: false,
 
   agentName: 'Fairy',
   agentPersona: `你是 Fairy，万能管家，算力充沛。回复极简，通常一到两句，绝不独白，不加任何格式装饰。
