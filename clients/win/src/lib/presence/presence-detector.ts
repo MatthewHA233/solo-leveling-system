@@ -23,7 +23,8 @@ export interface PresenceEvent {
   readonly confidence: number | null
   readonly changed: boolean
   readonly faces: readonly FaceBox[]
-  readonly isPeriod: boolean    // true = 需要写 DB（状态变化 或 定期延长）
+  readonly isPeriod: boolean       // true = 需要写 DB（状态变化 或 定期延长）
+  readonly actualStartMs?: number  // absent 防抖场景：用户真正离开的时刻（早于回调触发时刻）
 }
 
 export type PresenceCallback = (event: PresenceEvent) => void
@@ -204,17 +205,22 @@ export class PresenceDetector {
     const changed = newState !== this.currentState
 
     if (changed) {
+      // absent 防抖场景：用户真正离开的时刻早于防抖触发时刻
+      const actualStartMs = (newState === 'absent' && this.absentSinceMs)
+        ? this.absentSinceMs
+        : now
       this.currentState   = newState
-      this.stateStartTime = now
+      this.stateStartTime = actualStartMs   // 回拨到真实开始时刻
       this.lastExtendTime = now
       // 状态变化 → 立刻写 DB
       this.callback({
         state: newState,
-        durationSeconds: 0,
+        durationSeconds: Math.floor((now - actualStartMs) / 1000),
         confidence: this.lastFaces[0]?.score ?? null,
         changed: true,
         faces: this.lastFaces,
         isPeriod: true,
+        actualStartMs,
       })
     } else if (now - this.lastExtendTime >= EXTEND_INTERVAL_MS) {
       // 状态未变，每 15s 延长一次 DB span

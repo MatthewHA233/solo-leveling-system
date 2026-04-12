@@ -69,6 +69,13 @@ export function usePresenceDetection(enabled: boolean): {
       return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
     }
 
+    // ms 时间戳 → "YYYY-MM-DD HH:MM:SS" 本地时间字符串
+    const msToStr = (ms: number) => {
+      const d = new Date(ms)
+      const pad = (n: number) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    }
+
     const makeCallback = (): PresenceCallback => (event) => {
       if (cancelled) return
 
@@ -81,6 +88,9 @@ export function usePresenceDetection(enabled: boolean): {
       // 15s 周期事件 → 更新状态 + 写 DB
       const newState = event.state
       const now = nowStr()
+      // absent 防抖：span 的真实开始时间可能早于回调触发时刻
+      const spanStart = event.actualStartMs ? msToStr(event.actualStartMs) : now
+
       if (newState === activeSpanStateRef.current && activeSpanIdRef.current) {
         // 同状态：延长当前 span 的 end_time
         upsertPresenceSpan({
@@ -90,22 +100,22 @@ export function usePresenceDetection(enabled: boolean): {
           state: newState,
         }).catch(() => {})
       } else {
-        // 状态变化：先关闭旧 span（写入真实 end_time），再新建
+        // 状态变化：先关闭旧 span（end_time = 新 span 的真实开始时刻），再新建
         if (activeSpanIdRef.current) {
           upsertPresenceSpan({
             id: activeSpanIdRef.current,
             start_time: activeSpanStartRef.current!,
-            end_time: now,
+            end_time: spanStart,   // 前一段在用户真正离开时结束
             state: activeSpanStateRef.current,
           }).catch(() => {})
         }
         const id = crypto.randomUUID()
         activeSpanIdRef.current    = id
-        activeSpanStartRef.current = now
+        activeSpanStartRef.current = spanStart   // 新 span 从真实开始时刻算起
         activeSpanStateRef.current = newState
         upsertPresenceSpan({
           id,
-          start_time: now,
+          start_time: spanStart,
           end_time: now,
           state: newState,
         }).catch(() => {})
