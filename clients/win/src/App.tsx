@@ -19,8 +19,9 @@ import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from '
 
 // LLM Engine（新）
 import { runQueryLoop } from './lib/llm/query-loop'
-import { createUserMessage } from './lib/llm/types'
+import { createUserMessage, getMessageText, isAssistantMessage } from './lib/llm/types'
 import type { Message } from './lib/llm/types'
+import type { ApiRequestSnapshot } from './lib/llm/api'
 
 // Agent Tools
 import { TOOL_DEFINITIONS, executeAgentTool } from './lib/agent/agent-tools'
@@ -28,6 +29,7 @@ import { TOOL_DEFINITIONS, executeAgentTool } from './lib/agent/agent-tools'
 // Voice
 import { createVoiceService } from './lib/voice'
 import type { VoiceService } from './lib/voice'
+import { createFishTTSTauri } from './lib/voice/fish-tts-tauri'
 
 // UI
 import DayNightChart from './components/DayNightChart'
@@ -44,15 +46,17 @@ import type { DbBiliItem } from './lib/local-api'
 import FairyHUD from './components/FairyHUD'
 import type { FairyState } from './components/FairyHUD'
 import { NeonDivider, NeonBadge, MagneticButton } from './components/NeonUI'
+import { usePresenceDetection } from './hooks/usePresenceDetection'
 
 export interface ChatMessage {
   readonly id: string
   readonly role: 'user' | 'agent' | 'system'
   readonly content: string
   readonly timestamp: string
-  readonly audioUrl?: string     // 语音消息的 blob URL（可播放）
-  readonly durationMs?: number   // 录音时长（毫秒）
-  readonly transcript?: string   // ASR 转写文本（语音消息专用）
+  readonly audioUrl?: string             // 语音消息的 blob URL（可播放）
+  readonly durationMs?: number           // 录音时长（毫秒）
+  readonly transcript?: string           // ASR 转写文本（语音消息专用）
+  readonly debugSnapshots?: ApiRequestSnapshot[]  // 本轮发给 AI 的请求快照
 }
 
 // 区间合并「看B站视频」活动
@@ -121,6 +125,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showBili, setShowBili] = useState(false)
 
+
   // ── Activity Editor ──
   type EditMode =
     | { type: 'add' }
@@ -152,6 +157,53 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false)
   // LLM 对话历史（新类型系统），与 UI 展示的 chatMessages 分离
   const conversationRef = useRef<Message[]>([])
+
+  // ── Presence Detection ──
+  const { presence, videoRef } = usePresenceDetection(config.overlayEnabled)
+
+  // 将人脸框数据实时发送到摄像头子窗口
+  useEffect(() => {
+    import('@tauri-apps/api/event').then(({ emitTo }) => {
+      emitTo('camera-preview', 'face-data', { faces: presence.faces }).catch(() => {
+        // 子窗口未开启时静默忽略
+      })
+    })
+  }, [presence.faces])
+
+  // 摄像头子窗口开关
+  const cameraWinRef = useRef<import('@tauri-apps/api/webviewWindow').WebviewWindow | null>(null)
+  const [cameraWindowOpen, setCameraWindowOpen] = useState(false)
+  const toggleCameraWindow = useCallback(async () => {
+    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+    // 已有窗口 → 关闭
+    if (cameraWinRef.current) {
+      try { await cameraWinRef.current.close() } catch {}
+      cameraWinRef.current = null
+      setCameraWindowOpen(false)
+      return
+    }
+    const url = window.location.href.replace(/#.*$/, '') + '#camera'
+    let win: import('@tauri-apps/api/webviewWindow').WebviewWindow
+    try {
+      win = new WebviewWindow('camera-preview', {
+        url,
+        title: 'Camera Preview',
+        width: 240,
+        height: 220,
+        alwaysOnTop: true,
+        decorations: false,
+        resizable: false,
+        skipTaskbar: true,
+      })
+    } catch (e) {
+      console.error('[camera] WebviewWindow create failed:', e)
+      return
+    }
+    win.once('tauri://error', (e) => console.error('[camera] window error:', e))
+    cameraWinRef.current = win
+    setCameraWindowOpen(true)
+    win.once('destroyed', () => { cameraWinRef.current = null; setCameraWindowOpen(false) })
+  }, [])
 
   // ── Voice / Fairy ──
   const [fairyState, setFairyState] = useState<FairyState>('idle')
@@ -510,15 +562,16 @@ export default function App() {
     const systemPrompt = buildSystemPrompt(
       config.agentName, config.agentPersona, config.agentCallUser,
       config.mainQuest,
-      { goals, activityTags, appUsage, biliHistory },
+      { goals, activityTags, appUsage, biliHistory, presence },
     )
 
     const agentMsgId = crypto.randomUUID()
     const userMsg = createUserMessage(text)
+    const capturedSnapshots: ApiRequestSnapshot[] = []
 
     try {
       const newHistory = await runQueryLoop({
-        messages: [...conversationRef.current, userMsg],
+        messages: [...conversationRef.current.slice(-20), userMsg],
         systemPrompt,
         apiOptions: {
           apiKey: config.openaiApiKey ?? '',
@@ -526,6 +579,7 @@ export default function App() {
           model: config.openaiCardModel,
           maxTokens: 8000,
           tools: TOOL_DEFINITIONS,
+          onRequestSnapshot: (snap) => capturedSnapshots.push(snap),
         },
         maxIterations: 8,
         onEvent: (event) => {
@@ -548,7 +602,91 @@ export default function App() {
         },
         executeTool: (call) => executeAgentTool(call.name, call.arguments),
       })
-      conversationRef.current = newHistory
+      // 只保留 user + 最终 assistant 文本消息，丢弃工具调用/结果链，防止 context 爆炸
+      // 取最后一条 assistant（最终回复）+ 所有 human turn（无工具结果的 user 消息）
+      const compactHistory = newHistory.filter((m) => {
+        if (m.type === 'user') return !('toolUseResult' in m && m.toolUseResult !== undefined)
+        if (m.type === 'assistant') {
+          // 只保留纯文本 assistant 消息（过滤含 tool_use blocks 的中间轮）
+          return isAssistantMessage(m) &&
+            m.message.content.every((b: any) => b.type === 'text')
+        }
+        return false
+      })
+      conversationRef.current = compactHistory.slice(-12) // 最多保留 6 轮对话
+
+      // 把本轮快照 patch 到对应 agent 气泡
+      if (capturedSnapshots.length > 0) {
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === agentMsgId
+              ? { ...m, debugSnapshots: [...capturedSnapshots] }
+              : m
+          )
+        )
+      }
+
+      // ── TTS：AI 回复完成后朗读 ──
+      console.log('[TTS] ttsEnabled=', config.ttsEnabled, 'fishApiKey=', !!config.fishApiKey)
+      if (config.ttsEnabled && config.fishApiKey) {
+        // 取本次 AI 回复的完整文本
+        const replyText = (() => {
+          for (let i = newHistory.length - 1; i >= 0; i--) {
+            const m = newHistory[i]
+            if (isAssistantMessage(m)) return getMessageText(m)
+          }
+          return ''
+        })()
+
+        console.log('[TTS] newHistory tail:', JSON.stringify(newHistory.slice(-2).map(m => ({ type: m.type, keys: Object.keys(m) }))))
+        console.log('[TTS] replyText length=', replyText.length, replyText.slice(0, 50))
+        if (replyText.trim()) {
+          console.log('[TTS] calling setFairyState speaking')
+          setFairyState('speaking')
+          setFairyVisible(true)
+          try {
+            await new Promise<void>((resolve, reject) => {
+              // PCM 队列播放器（16-bit signed, 24000Hz, mono）
+              const audioCtx = new AudioContext({ sampleRate: 24000 })
+              let nextStartTime = audioCtx.currentTime
+
+              const playChunk = (pcm: Uint8Array) => {
+                const samples = pcm.length / 2
+                const buf = audioCtx.createBuffer(1, samples, 24000)
+                const ch = buf.getChannelData(0)
+                const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength)
+                for (let i = 0; i < samples; i++) {
+                  ch[i] = view.getInt16(i * 2, true) / 32768
+                }
+                const src = audioCtx.createBufferSource()
+                src.buffer = buf
+                src.connect(audioCtx.destination)
+                const startAt = Math.max(nextStartTime, audioCtx.currentTime)
+                src.start(startAt)
+                nextStartTime = startAt + buf.duration
+              }
+
+              const tts = createFishTTSTauri(
+                {
+                  apiKey: config.fishApiKey!,
+                  referenceId: config.fishReferenceId,
+                  model: config.fishModel,
+                },
+                playChunk,
+                () => { audioCtx.close(); resolve() },
+              )
+              tts.connect()
+                .then(() => { console.log('[TTS] connected, sending text'); return tts.sendText(replyText) })
+                .then(() => tts.flush())
+                .catch(e => { console.error('[TTS] connect/send error', e); reject(e) })
+            })
+          } catch {
+            // TTS 失败不影响主流程
+          }
+          setFairyState('idle')
+          setTimeout(() => setFairyVisible(false), 700)
+        }
+      }
     } catch (err) {
       setChatMessages((prev) => [...prev, {
         id: crypto.randomUUID(), role: 'system' as const,
@@ -568,6 +706,14 @@ export default function App() {
       fontFamily: theme.fontBody,
       overflow: 'hidden',
     }}>
+      {/* ── 隐藏摄像头（presence detection） ── */}
+      <video
+        ref={videoRef}
+        style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
+        muted
+        playsInline
+      />
+
       {/* ── Top Bar ── */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8,
@@ -759,22 +905,32 @@ export default function App() {
             const appSpan = trackMode === 'apps' ? (pinnedAppSpan ?? hoveredAppSpan) : null
             const biliSpan = trackMode === 'bili' ? (pinnedBili ?? hoveredBiliSpan) : null
 
-            if (!tagSpan && !appSpan && !biliSpan) {
-              return (
-                <ChatPanel
-                  messages={chatMessages}
-                  isProcessing={isProcessing}
-                  onSend={handleSend}
-                />
-              )
-            }
+            const hasDetail = !!(tagSpan || appSpan || biliSpan)
             return (
-              <div style={{ height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
-                {tagSpan && <SpanDetailPanel span={tagSpan} />}
-                {appSpan && <AppHoverPanel span={appSpan} date={selectedDate} />}
-                {biliSpan && <BiliVideoPanel span={biliSpan} />}
-                <div style={{ flex: 1 }} />
-              </div>
+              <>
+                {/* 始终挂载 ChatPanel，避免卸载导致摄像头预览状态丢失 */}
+                <div style={{ display: hasDetail ? 'none' : 'flex', flexDirection: 'column', height: '100%' }}>
+                  <ChatPanel
+                    messages={chatMessages}
+                    isProcessing={isProcessing}
+                    onSend={handleSend}
+                    cameraReady={presence.ready}
+                    cameraPresent={presence.state === 'present'}
+                    cameraWindowOpen={cameraWindowOpen}
+                    onToggleCamera={toggleCameraWindow}
+                    ttsEnabled={config.ttsEnabled}
+                    onToggleTts={() => handleConfigUpdate({ ttsEnabled: !config.ttsEnabled })}
+                  />
+                </div>
+                {hasDetail && (
+                  <div style={{ height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+                    {tagSpan && <SpanDetailPanel span={tagSpan} />}
+                    {appSpan && <AppHoverPanel span={appSpan} date={selectedDate} />}
+                    {biliSpan && <BiliVideoPanel span={biliSpan} />}
+                    <div style={{ flex: 1 }} />
+                  </div>
+                )}
+              </>
             )
           })()}
         </div>
@@ -782,6 +938,7 @@ export default function App() {
 
       {/* ── Fairy Voice HUD Overlay ── */}
       <FairyHUD state={fairyState} visible={fairyVisible} />
+
     </div>
   )
 }

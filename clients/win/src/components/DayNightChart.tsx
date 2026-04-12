@@ -1406,6 +1406,8 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     if (trackMode === 'apps') drawAppTraces(ctx, p, mtSpans, getIcon, highlightedAppSpanId)
     else drawBiliTracesInPipe(ctx, p, adjustedBiliSpans)
     drawTagTitles(ctx, p, mtSpans)
+
+
     drawNowTick(ctx, p, isToday)
 
     // 选区（最顶层）：拖拽中显示拖拽选区，松手后显示常驻选区

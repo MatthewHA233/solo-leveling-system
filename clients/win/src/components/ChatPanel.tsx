@@ -2,21 +2,30 @@
 // Chat Panel — AI 对话面板
 // ══════════════════════════════════════════════
 
-import { useState, useRef, useEffect } from 'react'
-import { Send, MessageSquare } from 'lucide-react'
+import { useRef, useEffect, useState } from 'react'
+import { Send, MessageSquare, Camera, Volume2, VolumeX, Bug } from 'lucide-react'
 import { theme } from '../theme'
 import type { ChatMessage } from '../App'
+import type { ApiRequestSnapshot } from '../lib/llm/api'
+import DebugRequestModal from './DebugRequestModal'
 
 interface Props {
   readonly messages: readonly ChatMessage[]
   readonly isProcessing: boolean
   readonly onSend: (text: string) => void
+  readonly cameraReady?: boolean
+  readonly cameraPresent?: boolean
+  readonly cameraWindowOpen?: boolean
+  readonly onToggleCamera?: () => void
+  readonly ttsEnabled?: boolean
+  readonly onToggleTts?: () => void
 }
 
-export default function ChatPanel({ messages, isProcessing, onSend }: Props) {
+export default function ChatPanel({ messages, isProcessing, onSend, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts }: Props) {
   const [input, setInput] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const [activeDebugSnaps, setActiveDebugSnaps] = useState<ApiRequestSnapshot[] | null>(null)
 
   useEffect(() => {
     const el = scrollRef.current
@@ -55,13 +64,22 @@ export default function ChatPanel({ messages, isProcessing, onSend }: Props) {
           0%,100% { transform: scale(1);   opacity: 0.7; }
           50%      { transform: scale(1.18); opacity: 0.3; }
         }
+        @keyframes camPresent {
+          0%,100% { opacity: 1;   box-shadow: 0 0 0 2px #4ADE8066, 0 0 6px #4ADE80; }
+          50%      { opacity: 0.5; box-shadow: 0 0 0 4px #4ADE8022, 0 0 10px #4ADE80; }
+        }
+        @keyframes camReady {
+          0%,100% { opacity: 0.4; }
+          50%      { opacity: 0.2; }
+        }
       `}</style>
 
       {/* ── Header ── */}
       <div style={{
-        padding: '12px 16px',
+        padding: '8px 12px',
         borderBottom: `1px solid ${theme.divider}`,
         display: 'flex', alignItems: 'center', gap: 8,
+        position: 'relative',   // CameraPreview 定位锚点
       }}>
         <span style={{
           fontSize: 12, fontWeight: 700,
@@ -71,13 +89,45 @@ export default function ChatPanel({ messages, isProcessing, onSend }: Props) {
         }}>
           暗影系统
         </span>
-        <div style={{
-          width: 5, height: 5, borderRadius: '50%',
-          background: theme.expGreen,
-          boxShadow: `0 0 5px ${theme.expGreen}`,
-          animation: 'glowPulse 2s ease-in-out infinite',
-          marginLeft: 'auto',
-        }} />
+
+        {/* 右侧按钮组 */}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
+          {/* TTS 开关 */}
+          {onToggleTts && (
+            <button
+              onClick={onToggleTts}
+              title={ttsEnabled ? '关闭语音朗读' : '开启语音朗读'}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer', padding: 2,
+                display: 'flex', alignItems: 'center',
+                color: ttsEnabled ? '#4ADE80' : 'rgba(255,255,255,0.2)',
+                transition: 'color 0.3s',
+              }}
+            >
+              {ttsEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}
+            </button>
+          )}
+          {onToggleCamera && (
+            <button
+              onClick={onToggleCamera}
+              title={cameraWindowOpen ? '关闭摄像头预览' : cameraPresent ? '检测到人脸 · 点击预览' : '点击打开摄像头预览'}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer', padding: 2,
+                display: 'flex', alignItems: 'center',
+                color: cameraWindowOpen ? '#4ADE80' : cameraReady ? 'rgba(74,222,128,0.4)' : 'rgba(255,255,255,0.2)',
+                transition: 'color 0.3s',
+              }}
+            >
+              <Camera size={13} />
+            </button>
+          )}
+          <div style={{
+            width: 5, height: 5, borderRadius: '50%',
+            background: theme.expGreen,
+            boxShadow: `0 0 5px ${theme.expGreen}`,
+            animation: 'glowPulse 2s ease-in-out infinite',
+          }} />
+        </div>
       </div>
 
       {/* ── Messages ── */}
@@ -116,13 +166,25 @@ export default function ChatPanel({ messages, isProcessing, onSend }: Props) {
         )}
 
         {messages.map((msg) => (
-          <Bubble key={msg.id} message={msg} />
+          <Bubble
+            key={msg.id}
+            message={msg}
+            onDebug={msg.debugSnapshots ? () => setActiveDebugSnaps(msg.debugSnapshots!) : undefined}
+          />
         ))}
 
         {isProcessing && messages[messages.length - 1]?.role !== 'agent' && (
           <TypingDots />
         )}
       </div>
+
+      {/* ── Debug Modal ── */}
+      {activeDebugSnaps && (
+        <DebugRequestModal
+          snapshots={activeDebugSnaps}
+          onClose={() => setActiveDebugSnaps(null)}
+        />
+      )}
 
       {/* ── Input ── */}
       <div style={{
@@ -347,7 +409,7 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
 
 // ── Bubble ──
 
-function Bubble({ message }: { message: ChatMessage }) {
+function Bubble({ message, onDebug }: { message: ChatMessage; onDebug?: () => void }) {
   if (message.role === 'system') {
     return (
       <div style={{
@@ -389,6 +451,8 @@ function Bubble({ message }: { message: ChatMessage }) {
     <div style={{
       display: 'flex',
       justifyContent: isUser ? 'flex-end' : 'flex-start',
+      alignItems: 'flex-end',
+      gap: 4,
       animation: 'fadeSlideIn 0.2s ease',
     }}>
       <div style={{
@@ -414,6 +478,24 @@ function Bubble({ message }: { message: ChatMessage }) {
       }}>
         {message.content}
       </div>
+      {/* Debug 按钮：只在 agent 消息上，有快照时显示 */}
+      {!isUser && onDebug && (
+        <button
+          onClick={onDebug}
+          title="查看本轮 AI 请求"
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: 'rgba(255,255,255,0.15)', padding: 2,
+            display: 'flex', alignItems: 'center',
+            flexShrink: 0,
+            transition: 'color 0.15s',
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.5)')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.15)')}
+        >
+          <Bug size={11} />
+        </button>
+      )}
     </div>
   )
 }
