@@ -21,6 +21,20 @@ export type ApiStreamChunk =
 
 // ── API 请求选项 ──
 
+export interface ApiRequestSnapshot {
+  iteration: number
+  model: string
+  maxTokens: number
+  messages: Array<{
+    role: string
+    content: string | null
+    tool_calls?: unknown[]
+    tool_call_id?: string
+  }>
+  tools?: unknown[]
+  timestamp: string
+}
+
 export interface QueryOptions {
   apiKey: string
   apiBase: string      // e.g. 'https://dashscope.aliyuncs.com/compatible-mode'
@@ -29,6 +43,10 @@ export interface QueryOptions {
   maxTokens?: number   // 默认 8000（Claude Code 的 CAPPED_DEFAULT_MAX_TOKENS 设计：保守槽位保留）
   signal?: AbortSignal
   tools?: readonly ToolDefinition[]  // function calling tools
+  // 调试：每次实际发出 API 请求前调用，传入完整 payload 快照
+  onRequestSnapshot?: (snapshot: ApiRequestSnapshot) => void
+  // 内部：当前 queryLoop 迭代编号（由 query-loop.ts 注入）
+  _iteration?: number
 }
 
 // ── OpenAI 格式消息（发给 API 的） ──
@@ -178,6 +196,16 @@ export function queryModel(
 
       const url = `${options.apiBase}/v1/chat/completions`
       const maxTokens = options.maxTokens ?? 8000
+
+      // 调试快照：发请求前暴露完整 payload（不含 apiKey）
+      options.onRequestSnapshot?.({
+        iteration: options._iteration ?? 0,
+        model: options.model,
+        maxTokens,
+        messages: openAIMessages,
+        tools: options.tools ? [...options.tools] : undefined,
+        timestamp: new Date().toISOString(),
+      })
 
       const response = await fetch(url, {
         method: 'POST',

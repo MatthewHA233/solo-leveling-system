@@ -151,6 +151,7 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
       const stream = queryModel(messages, {
         ...apiOptions,
         systemPrompt,
+        _iteration: turnCount,
       })
 
       // Stream 消费（对应 Claude Code 中的 for await (const part of streamResponse)）
