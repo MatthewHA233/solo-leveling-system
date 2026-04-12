@@ -364,6 +364,14 @@ impl Database {
                 completed_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+
+            CREATE TABLE IF NOT EXISTS presence_spans (
+                id TEXT PRIMARY KEY,
+                start_time TEXT NOT NULL,
+                end_time TEXT,
+                state TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_presence_start ON presence_spans(start_time);
         "#).map_err(|e| format!("创建表失败: {}", e))?;
 
         log::info!("[Database] 表初始化完成");
@@ -788,17 +796,21 @@ impl Database {
 
     pub async fn get_goals(&self, status: Option<&str>) -> Result<Vec<Goal>, String> {
         let conn = self.conn.lock().await;
-        let (sql, param): (&str, &str) = match status {
-            Some(s) => ("SELECT id, title, status, tags, created_at, completed_at FROM goals WHERE status = ? ORDER BY created_at DESC", s),
-            None    => ("SELECT id, title, status, tags, created_at, completed_at FROM goals ORDER BY created_at DESC", ""),
-        };
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-        let rows = if status.is_some() {
-            stmt.query_map([param], |row| Goal::from_row(row))
+        if let Some(s) = status {
+            let mut stmt = conn.prepare(
+                "SELECT id, title, status, tags, created_at, completed_at FROM goals WHERE status = ? ORDER BY created_at DESC"
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([s], |row| Goal::from_row(row))
+                .map_err(|e| e.to_string())?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
         } else {
-            stmt.query_map([], |row| Goal::from_row(row))
-        }.map_err(|e| e.to_string())?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+            let mut stmt = conn.prepare(
+                "SELECT id, title, status, tags, created_at, completed_at FROM goals ORDER BY created_at DESC"
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([], |row| Goal::from_row(row))
+                .map_err(|e| e.to_string())?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
+        }
     }
 
     pub async fn create_goal(&self, goal: &Goal) -> Result<(), String> {
@@ -831,6 +843,58 @@ impl Database {
         Ok(())
     }
 
+    // ── Presence Spans ──
+
+    pub async fn get_presence_spans_by_date(&self, date: &str) -> Result<Vec<PresenceSpan>, String> {
+        let conn = self.conn.lock().await;
+        let date_prefix = format!("{}%", date);
+        let mut stmt = conn.prepare(
+            "SELECT id, start_time, end_time, state FROM presence_spans WHERE start_time LIKE ? ORDER BY start_time"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([&date_prefix], |row| PresenceSpan::from_row(row))
+            .map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub async fn upsert_presence_span(&self, span: &PresenceSpan) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT OR REPLACE INTO presence_spans (id, start_time, end_time, state) VALUES (?, ?, ?, ?)",
+            params![span.id, span.start_time, span.end_time, span.state],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn close_presence_span(&self, id: &str, end_time: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE presence_spans SET end_time = ? WHERE id = ? AND end_time IS NULL",
+            params![end_time, id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+}
+
+// ── PresenceSpan ──
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct PresenceSpan {
+    pub id: String,
+    pub start_time: String,
+    pub end_time: Option<String>,
+    pub state: String,  // "present" | "absent"
+}
+
+impl PresenceSpan {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(PresenceSpan {
+            id:         row.get(0)?,
+            start_time: row.get(1)?,
+            end_time:   row.get(2)?,
+            state:      row.get(3)?,
+        })
+    }
 }
 
 // ── Goal ──

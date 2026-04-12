@@ -19,7 +19,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::db::{
     AppendChatMessagesRequest, ChatMessage, ChatSession,
     ChronosActivity, CreateActivityRequest, Database, UpdateActivityRequest, UpdateChatSessionRequest,
-    BiliHistoryRow, UpsertBiliItem, MergeActivitiesRequest, BiliSpan, Goal,
+    BiliHistoryRow, UpsertBiliItem, MergeActivitiesRequest, BiliSpan, Goal, PresenceSpan,
 };
 
 // ── Bilibili 回调状态 ──
@@ -515,6 +515,62 @@ async fn delete_goal(
     }
 }
 
+// ── Presence Spans ──
+
+#[derive(Deserialize)]
+struct PresenceDateQuery { date: Option<String> }
+
+#[derive(Deserialize)]
+struct UpsertPresenceBody {
+    id: String,
+    start_time: String,
+    end_time: Option<String>,
+    state: String,
+}
+
+#[derive(Deserialize)]
+struct ClosePresenceBody {
+    end_time: String,
+}
+
+async fn get_presence_spans(
+    State(s): State<ApiState>,
+    Query(q): Query<PresenceDateQuery>,
+) -> Json<ApiResponse<Vec<PresenceSpan>>> {
+    let date = q.date.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+    match s.db.get_presence_spans_by_date(&date).await {
+        Ok(spans) => Json(ApiResponse::ok(spans)),
+        Err(e)    => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn upsert_presence_span(
+    State(s): State<ApiState>,
+    Json(body): Json<UpsertPresenceBody>,
+) -> Json<ApiResponse<()>> {
+    let span = PresenceSpan {
+        id: body.id,
+        start_time: body.start_time,
+        end_time: body.end_time,
+        state: body.state,
+    };
+    match s.db.upsert_presence_span(&span).await {
+        Ok(_)  => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn close_presence_span(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<ClosePresenceBody>,
+) -> Json<ApiResponse<()>> {
+    match s.db.close_presence_span(&id, &body.end_time).await {
+        Ok(_)  => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
 pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>) -> Router {
     let state = ApiState { db, bili };
 
@@ -536,6 +592,8 @@ pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>) -> Router {
         .route("/api/manictime/app-icon", get(get_manictime_app_icon))
         .route("/api/goals", get(get_goals).post(create_goal))
         .route("/api/goals/{id}", axum::routing::put(update_goal).delete(delete_goal))
+        .route("/api/presence/spans", get(get_presence_spans).post(upsert_presence_span))
+        .route("/api/presence/spans/{id}/close", axum::routing::put(close_presence_span))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
