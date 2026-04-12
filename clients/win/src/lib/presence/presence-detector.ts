@@ -28,12 +28,13 @@ export interface PresenceEvent {
 
 export type PresenceCallback = (event: PresenceEvent) => void
 
-const WINDOW_MS          = 15_000  // 滑动窗口长度
-const DETECT_INTERVAL_MS = 200     // 人脸检测频率
-const EVAL_INTERVAL_MS   = 1_000   // 状态评估频率（每秒）
-const EXTEND_INTERVAL_MS = 15_000  // 同状态时 DB span 延长间隔
-const MIN_CONFIDENCE     = 0.40
-const MIN_PRESENT_COUNT  = 3       // 窗口内检测到 >= 3 次即视为在席
+const WINDOW_MS           = 15_000  // 滑动窗口长度
+const DETECT_INTERVAL_MS  = 200     // 人脸检测频率
+const EVAL_INTERVAL_MS    = 1_000   // 状态评估频率（每秒）
+const EXTEND_INTERVAL_MS  = 15_000  // 同状态时 DB span 延长间隔
+const ABSENT_DEBOUNCE_MS  = 15_000  // absent 防抖：连续缺席满此时长才真正切换（< 此值算在席）
+const MIN_CONFIDENCE      = 0.40
+const MIN_PRESENT_COUNT   = 3       // 窗口内检测到 >= 3 次即视为在席
 
 export class PresenceDetector {
   private detector: FaceDetector | null = null
@@ -47,6 +48,9 @@ export class PresenceDetector {
   private stateStartTime = Date.now()
   private lastExtendTime = 0
   private firstPresentSeen = false   // 启动后首次 present 之前，不写 absent
+
+  // absent 防抖：记录"评估为 absent"的起始时刻，满 ABSENT_DEBOUNCE_MS 才真正切换
+  private absentSinceMs: number | null = null
 
   // 滑动窗口：记录每次检测到人脸的时间戳
   private detectionTimestamps: number[] = []
@@ -94,10 +98,11 @@ export class PresenceDetector {
     if (this.stopped) return   // stop() 在 video 加载期间被调用
 
     this.detectionTimestamps = []
-    this.lastExtendTime  = Date.now()
-    this.lastVideoTime   = -1
-    this.startTime       = Date.now()
+    this.lastExtendTime   = Date.now()
+    this.lastVideoTime    = -1
+    this.startTime        = Date.now()
     this.firstPresentSeen = false
+    this.absentSinceMs    = null
 
     // 检测循环：每 200ms 抓一帧，推送人脸框给预览窗口
     this.detectIntervalId = setInterval(() => this.detect(), DETECT_INTERVAL_MS)
@@ -176,16 +181,30 @@ export class PresenceDetector {
     this.detectionTimestamps = this.detectionTimestamps.filter(t => t > cutoff)
 
     const count = this.detectionTimestamps.length
-    const newState: PresenceState = count >= MIN_PRESENT_COUNT ? 'present' : 'absent'
+    const rawAbsent = count < MIN_PRESENT_COUNT
+
+    // ── absent 防抖 ──
+    // present：立即响应，清除防抖计时
+    // absent：需持续缺席 ABSENT_DEBOUNCE_MS 才切换，短暂离开仍视为 present
+    if (!rawAbsent) {
+      this.absentSinceMs = null  // 检测到人脸，重置防抖
+    } else if (this.absentSinceMs === null) {
+      this.absentSinceMs = now   // 开始计防抖
+    }
+
+    const debounced = rawAbsent && (now - (this.absentSinceMs ?? now)) >= ABSENT_DEBOUNCE_MS
+    const newState: PresenceState = (!rawAbsent) ? 'present' : debounced ? 'absent' : this.currentState
 
     // 启动后尚未见到首次 present：跳过 absent，等待用户被检测到
     if (newState === 'present') this.firstPresentSeen = true
     if (newState === 'absent' && !this.firstPresentSeen) return
+    // 防抖期间维持当前状态，不写 DB
+    if (newState === this.currentState && rawAbsent && !debounced) return
 
     const changed = newState !== this.currentState
 
     if (changed) {
-      this.currentState  = newState
+      this.currentState   = newState
       this.stateStartTime = now
       this.lastExtendTime = now
       // 状态变化 → 立刻写 DB
