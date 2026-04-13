@@ -308,49 +308,55 @@ export default function App() {
     return svc
   }, [config, activities])
 
-  // ── Right Alt Long-Press → Voice Chat ──
+  // ── Right Alt Long-Press → Voice Chat（全局热键，无需窗口聚焦）──
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'AltRight' && !pressingRef.current) {
-        pressingRef.current = true
-        altDownTimeRef.current = Date.now()
-        e.preventDefault()
+    let unlistenDown: (() => void) | null = null
+    let unlistenUp:   (() => void) | null = null
 
-        setTimeout(() => {
-          if (pressingRef.current && Date.now() - altDownTimeRef.current >= LONG_PRESS_MS) {
-            setFairyVisible(true)
-            const svc = getVoiceService()
-            svc.startRecording()
-          }
-        }, LONG_PRESS_MS)
-      }
-    }
+    const onDown = () => {
+      if (pressingRef.current) return
+      pressingRef.current = true
+      altDownTimeRef.current = Date.now()
 
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'AltRight' && pressingRef.current) {
-        pressingRef.current = false
-        const holdDuration = Date.now() - altDownTimeRef.current
-
-        if (holdDuration >= LONG_PRESS_MS && fairyStateRef.current === 'listening') {
-          // 长按松开 → 停止录音并处理
+      setTimeout(() => {
+        if (pressingRef.current && Date.now() - altDownTimeRef.current >= LONG_PRESS_MS) {
+          setFairyVisible(true)
           const svc = getVoiceService()
-          svc.stopAndProcess()
-        } else {
-          // 短按 → 取消
-          const svc = voiceServiceRef.current
-          if (svc) svc.cancel()
-          setFairyState('idle')
-          fairyStateRef.current = 'idle'
-          setFairyVisible(false)
+          svc.startRecording()
         }
+      }, LONG_PRESS_MS)
+    }
+
+    const onUp = () => {
+      if (!pressingRef.current) return
+      pressingRef.current = false
+      const holdDuration = Date.now() - altDownTimeRef.current
+
+      if (holdDuration >= LONG_PRESS_MS && fairyStateRef.current === 'listening') {
+        const svc = getVoiceService()
+        svc.stopAndProcess()
+      } else {
+        const svc = voiceServiceRef.current
+        if (svc) svc.cancel()
+        setFairyState('idle')
+        fairyStateRef.current = 'idle'
+        setFairyVisible(false)
       }
     }
 
-    window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('keyup', onKeyUp)
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      Promise.all([
+        listen('ralt-keydown', onDown),
+        listen('ralt-keyup',   onUp),
+      ]).then(([u1, u2]) => {
+        unlistenDown = u1
+        unlistenUp   = u2
+      })
+    })
+
     return () => {
-      window.removeEventListener('keydown', onKeyDown)
-      window.removeEventListener('keyup', onKeyUp)
+      unlistenDown?.()
+      unlistenUp?.()
     }
   }, [getVoiceService])
 

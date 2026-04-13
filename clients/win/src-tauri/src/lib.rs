@@ -7,6 +7,8 @@ mod api;
 mod fish_tts;
 mod manictime;
 mod qwen_asr;
+#[cfg(windows)]
+mod hotkey;
 
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -322,6 +324,10 @@ pub fn run() {
                 Ok(_) => log::info!("[Bili] 后台 WebView 已创建"),
                 Err(e) => log::warn!("[Bili] 后台 WebView 创建失败: {}", e),
             }
+
+            // 全局右 Alt 热键（push-to-talk，无论哪个窗口聚焦都生效）
+            #[cfg(windows)]
+            hotkey::install(app.handle().clone());
 
             log::info!("[App] Solo Agent 启动完成");
             Ok(())
