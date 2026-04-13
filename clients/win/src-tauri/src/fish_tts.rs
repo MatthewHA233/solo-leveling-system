@@ -263,6 +263,7 @@ async fn run_ws_loop(
                     }
                     Err(e) => {
                         log::error!("[FishTTS] WS 错误: {}", e);
+                        let _ = app_handle.emit("fish-tts-finish", ());
                         break;
                     }
                     _ => {

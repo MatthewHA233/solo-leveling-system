@@ -43,6 +43,7 @@ export async function* streamChat(
     model,
     messages,
     stream: true,
+    enable_thinking: false,  // 统一关闭思考模式，减少首 token 延迟
   }
 
   if (tools && tools.length > 0) {

@@ -12,7 +12,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RMENU;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, SetWindowsHookExW,
     KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
-    WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 // 全局存储 AppHandle（hook 回调是 C 函数指针，无法捕获状态）
@@ -22,10 +22,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code >= 0 {
         let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
         if kb.vkCode == VK_RMENU as u32 {
+            log::info!("[Hotkey] VK_RMENU wparam={}", wparam);
             if let Some(app) = APP.get() {
                 match wparam as u32 {
-                    WM_SYSKEYDOWN => { let _ = app.emit("ralt-keydown", ()); }
-                    WM_SYSKEYUP   => { let _ = app.emit("ralt-keyup", ()); }
+                    WM_KEYDOWN | WM_SYSKEYDOWN => { let _ = app.emit("ralt-keydown", ()); }
+                    WM_KEYUP   | WM_SYSKEYUP   => { let _ = app.emit("ralt-keyup", ()); }
                     _ => {}
                 }
             }

@@ -244,6 +244,63 @@ async fn migrate_database(
     Ok(new_db_path)
 }
 
+// ── Fairy 子窗口 ──
+
+/// 获取系统光标物理像素坐标（仅内部使用）
+#[cfg(windows)]
+fn cursor_pos_phys() -> Option<(i32, i32)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut pt = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut pt) } != 0 { Some((pt.x, pt.y)) } else { None }
+}
+
+/// JS 创建完 fairy-window 后调用此命令，启动 Rust 侧光标监控
+/// （JS 创建保证 Tauri IPC bridge 正常注入，Rust 监控保证点击穿透精准）
+#[tauri::command]
+async fn setup_fairy(app: tauri::AppHandle) -> Result<(), String> {
+    let win = app.get_webview_window("fairy-window")
+        .ok_or_else(|| "fairy-window not found".to_string())?;
+
+    log::info!("[Fairy] setup_fairy 已调用，启动光标监控");
+
+    #[cfg(windows)]
+    {
+        let win_clone = win.clone();
+        let _ = win_clone.set_ignore_cursor_events(true);
+        tauri::async_runtime::spawn(async move {
+            let mut prev_ignore = true;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                let Some((cx, cy)) = cursor_pos_phys() else { continue };
+                let (outer, sf) = match (win_clone.outer_position(), win_clone.scale_factor()) {
+                    (Ok(p), Ok(s)) => (p, s),
+                    _ => break, // 窗口已关闭
+                };
+
+                // 窗口 280×280 logical，fairy-core 400×400 缩放 0.7 = 280px
+                // 圆心 = (140, 140) logical px from window origin，r = 140
+                let fairy_cx = outer.x as f64 + 140.0 * sf;
+                let fairy_cy = outer.y as f64 + 140.0 * sf;
+                let fairy_r  = 140.0 * sf;
+
+                let dx = cx as f64 - fairy_cx;
+                let dy = cy as f64 - fairy_cy;
+                let should_ignore = dx * dx + dy * dy > fairy_r * fairy_r;
+
+                if should_ignore != prev_ignore {
+                    prev_ignore = should_ignore;
+                    let _ = win_clone.set_ignore_cursor_events(should_ignore);
+                }
+            }
+            log::info!("[Fairy] 光标监控退出");
+        });
+    }
+
+    Ok(())
+}
+
 // ── 文件操作命令（供 AI 工具调用） ──
 
 #[tauri::command]
@@ -345,6 +402,7 @@ pub fn run() {
             qwen_asr::qwen_asr_transcribe,
             read_file,
             write_file,
+            setup_fairy,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

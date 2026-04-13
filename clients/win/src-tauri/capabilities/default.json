@@ -4,7 +4,8 @@
   "description": "enables the default permissions",
   "windows": [
     "main",
-    "camera-preview"
+    "camera-preview",
+    "fairy-window"
   ],
   "permissions": [
     "core:default",
@@ -12,6 +13,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-close",
     "core:window:allow-start-dragging",
+    "core:window:allow-set-ignore-cursor-events",
     "core:event:allow-emit-to"
   ]
 }

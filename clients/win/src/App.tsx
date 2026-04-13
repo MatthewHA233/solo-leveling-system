@@ -43,10 +43,10 @@ import { useBiliHistory } from './lib/bilibili/useHistory'
 import { dbBiliItemToActivity } from './lib/bilibili/api'
 import { linkBiliToEvent, mergeActivities } from './lib/local-api'
 import type { DbBiliItem } from './lib/local-api'
-import FairyHUD from './components/FairyHUD'
 import type { FairyState } from './components/FairyHUD'
 import { NeonDivider, NeonBadge, MagneticButton } from './components/NeonUI'
 import { usePresenceDetection } from './hooks/usePresenceDetection'
+import { invoke } from '@tauri-apps/api/core'
 
 export interface ChatMessage {
   readonly id: string
@@ -161,6 +161,13 @@ export default function App() {
   // ── Presence Detection ──
   const { presence, videoRef } = usePresenceDetection(config.overlayEnabled)
 
+  // 预热 mic 权限：防止首次长按 Alt 时弹出权限弹窗导致无反应
+  useEffect(() => {
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(stream => stream.getTracks().forEach(t => t.stop()))
+      .catch(() => {})
+  }, [])
+
   // 将人脸框数据实时发送到摄像头子窗口
   useEffect(() => {
     import('@tauri-apps/api/event').then(({ emitTo }) => {
@@ -206,13 +213,58 @@ export default function App() {
   }, [])
 
   // ── Voice / Fairy ──
-  const [fairyState, setFairyState] = useState<FairyState>('idle')
-  const [fairyVisible, setFairyVisible] = useState(false)
   const altDownTimeRef = useRef<number>(0)
   const pressingRef = useRef(false)
   const fairyStateRef = useRef<FairyState>('idle')
   const voiceServiceRef = useRef<VoiceService | null>(null)
   const LONG_PRESS_MS = 600
+
+  const fairyWinRef = useRef<import('@tauri-apps/api/webviewWindow').WebviewWindow | null>(null)
+
+  useEffect(() => {
+    const init = async () => {
+      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+      const url = window.location.href.replace(/#.*$/, '') + '#fairy'
+      try {
+        const win = new WebviewWindow('fairy-window', {
+          url,
+          title: 'Fairy',
+          width: 280,
+          height: 280,
+          alwaysOnTop: true,
+          decorations: false,
+          resizable: false,
+          skipTaskbar: true,
+          transparent: true,
+          shadow: false,
+        })
+        fairyWinRef.current = win
+        win.once('destroyed', () => { fairyWinRef.current = null })
+      } catch (e) {
+        console.error('[fairy] window init failed:', e)
+      }
+    }
+    init()
+    return () => { fairyWinRef.current?.close().catch(() => {}) }
+  }, [])
+
+  const emitFairy = useCallback((state: FairyState, text = '') => {
+    fairyStateRef.current = state
+    import('@tauri-apps/api/event').then(({ emitTo }) => {
+      emitTo('fairy-window', 'fairy-state', { state, text }).catch(() => {})
+    })
+  }, [])
+
+  // fairy window listener 就绪时重发当前状态，修复启动后前几次 Alt 无反应
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    import('@tauri-apps/api/event').then(({ listen: listenEvent }) => {
+      listenEvent('fairy-window-ready', () => {
+        emitFairy(fairyStateRef.current)
+      }).then(fn => { unlisten = fn })
+    })
+    return () => { unlisten?.() }
+  }, [emitFairy])
 
   // ── Fetch Activities + ManicTime Spans ──
   const isToday = useCallback((date: Date) => {
@@ -246,9 +298,6 @@ export default function App() {
     return () => clearInterval(timer)
   }, [selectedDate, refreshMtSpans, isToday])
 
-  // 同步 fairyState 到 ref，供事件回调读取
-  useEffect(() => { fairyStateRef.current = fairyState }, [fairyState])
-
   // ── Voice Service（懒初始化）──
   const getVoiceService = useCallback(() => {
     if (voiceServiceRef.current) return voiceServiceRef.current
@@ -263,12 +312,7 @@ export default function App() {
       },
       {
         onPhaseChange: (phase) => {
-          const mapped: FairyState = phase
-          setFairyState(mapped)
-          fairyStateRef.current = mapped
-          if (phase === 'idle') {
-            setTimeout(() => setFairyVisible(false), 700)
-          }
+          emitFairy(phase as FairyState)
         },
         onUserAudio: (wavBase64, durationMs, sessionMsgId) => {
           // 把录音转成 blob URL，作为用户语音气泡显示
@@ -298,15 +342,13 @@ export default function App() {
             id: crypto.randomUUID(), role: 'system' as const,
             content: message, timestamp: new Date().toISOString(),
           }])
-          setFairyState('idle')
-          fairyStateRef.current = 'idle'
-          setFairyVisible(false)
+          emitFairy('idle')
         },
       },
     )
     voiceServiceRef.current = svc
     return svc
-  }, [config, activities])
+  }, [config, activities, emitFairy])
 
   // ── Right Alt Long-Press → Voice Chat（全局热键，无需窗口聚焦）──
   useEffect(() => {
@@ -314,13 +356,14 @@ export default function App() {
     let unlistenUp:   (() => void) | null = null
 
     const onDown = () => {
+      console.log('[RAlt] keydown received')
       if (pressingRef.current) return
       pressingRef.current = true
       altDownTimeRef.current = Date.now()
 
       setTimeout(() => {
         if (pressingRef.current && Date.now() - altDownTimeRef.current >= LONG_PRESS_MS) {
-          setFairyVisible(true)
+          emitFairy('listening')  // 立即给视觉反馈，不等 mic 权限
           const svc = getVoiceService()
           svc.startRecording()
         }
@@ -338,9 +381,7 @@ export default function App() {
       } else {
         const svc = voiceServiceRef.current
         if (svc) svc.cancel()
-        setFairyState('idle')
-        fairyStateRef.current = 'idle'
-        setFairyVisible(false)
+        emitFairy('idle')
       }
     }
 
@@ -358,7 +399,7 @@ export default function App() {
       unlistenDown?.()
       unlistenUp?.()
     }
-  }, [getVoiceService])
+  }, [getVoiceService, emitFairy])
 
   // ── Date Navigation ──
   const clearSelectionAndForm = () => {
@@ -517,6 +558,8 @@ export default function App() {
     }
 
     setIsProcessing(true)
+    // 文字输入也要立即显示思考动画
+    if (!isVoiceInput) emitFairy('thinking')
 
     // D2 + D4 — 并行查询目标和近期活动
     const oneHourAgo = Date.now() - 60 * 60 * 1000
@@ -575,6 +618,72 @@ export default function App() {
     const userMsg = createUserMessage(text)
     const capturedSnapshots: ApiRequestSnapshot[] = []
 
+    // ── TTS 流式管线（与 LLM 并行启动）──
+    type TtsState = {
+      client: ReturnType<typeof createFishTTSTauri>
+      audioCtx: AudioContext
+      nextStartTime: number
+      connected: boolean
+      pending: string[]
+      finishResolve: (() => void) | null
+      timeout: ReturnType<typeof setTimeout> | null
+    }
+    let tts: TtsState | null = null
+
+    if (config.ttsEnabled && config.fishApiKey) {
+      const audioCtx = new AudioContext({ sampleRate: 24000 })
+      const state: TtsState = {
+        client: null as any,
+        audioCtx,
+        nextStartTime: audioCtx.currentTime,
+        connected: false,
+        pending: [],
+        finishResolve: null,
+        timeout: null,
+      }
+      state.client = createFishTTSTauri(
+        { apiKey: config.fishApiKey, referenceId: config.fishReferenceId, model: config.fishModel },
+        (pcm) => {
+          const samples = pcm.length / 2
+          const buf = audioCtx.createBuffer(1, samples, 24000)
+          const ch = buf.getChannelData(0)
+          const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength)
+          for (let i = 0; i < samples; i++) ch[i] = view.getInt16(i * 2, true) / 32768
+          const src = audioCtx.createBufferSource()
+          src.buffer = buf
+          src.connect(audioCtx.destination)
+          const startAt = Math.max(state.nextStartTime, audioCtx.currentTime + 0.005)
+          src.start(startAt)
+          state.nextStartTime = startAt + buf.duration
+        },
+        () => { state.finishResolve?.() },
+      )
+      // 提前建连接（不 await，LLM 跑的同时握手）
+      state.client.connect().then(() => {
+        state.connected = true
+        for (const s of state.pending) state.client.sendText(s).catch(() => {})
+        state.pending = []
+      }).catch(() => {})
+      tts = state
+    }
+
+    // 句子缓冲：LLM 流式时按标点切句实时送 TTS
+    let sentBuf = ''
+    const SENT_RE = /[。！？!?.…]+/
+    const pushToTts = (chunk: string, force = false) => {
+      if (!tts) return
+      sentBuf += chunk
+      if (!force && (!SENT_RE.test(sentBuf) || sentBuf.length < 6)) return
+      const sentence = sentBuf.trim()
+      sentBuf = ''
+      if (!sentence) return
+      if (tts.connected) {
+        tts.client.sendText(sentence).catch(() => {})
+      } else {
+        tts.pending.push(sentence)
+      }
+    }
+
     try {
       const newHistory = await runQueryLoop({
         messages: [...conversationRef.current.slice(-20), userMsg],
@@ -604,6 +713,7 @@ export default function App() {
                 content: event.delta, timestamp: new Date().toISOString(),
               }]
             })
+            pushToTts(event.delta)
           }
         },
         executeTool: (call) => executeAgentTool(call.name, call.arguments),
@@ -632,10 +742,8 @@ export default function App() {
         )
       }
 
-      // ── TTS：AI 回复完成后朗读 ──
-      console.log('[TTS] ttsEnabled=', config.ttsEnabled, 'fishApiKey=', !!config.fishApiKey)
-      if (config.ttsEnabled && config.fishApiKey) {
-        // 取本次 AI 回复的完整文本
+      // ── TTS：LLM 完成后 flush 剩余句子，等待音频播完 ──
+      if (tts) {
         const replyText = (() => {
           for (let i = newHistory.length - 1; i >= 0; i--) {
             const m = newHistory[i]
@@ -644,64 +752,47 @@ export default function App() {
           return ''
         })()
 
-        console.log('[TTS] newHistory tail:', JSON.stringify(newHistory.slice(-2).map(m => ({ type: m.type, keys: Object.keys(m) }))))
-        console.log('[TTS] replyText length=', replyText.length, replyText.slice(0, 50))
         if (replyText.trim()) {
-          setFairyState('speaking')
-          setFairyVisible(true)
-          const stopFairy = () => {
-            setFairyState('idle')
-            setTimeout(() => setFairyVisible(false), 700)
-          }
+          emitFairy('speaking', replyText)
           try {
-            await new Promise<void>((resolve, reject) => {
-              // PCM 队列播放器（16-bit signed, 24000Hz, mono）
-              const audioCtx = new AudioContext({ sampleRate: 24000 })
-              let nextStartTime = audioCtx.currentTime
-
-              const playChunk = (pcm: Uint8Array) => {
-                const samples = pcm.length / 2
-                const buf = audioCtx.createBuffer(1, samples, 24000)
-                const ch = buf.getChannelData(0)
-                const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength)
-                for (let i = 0; i < samples; i++) {
-                  ch[i] = view.getInt16(i * 2, true) / 32768
+            pushToTts('', true)  // flush 缓冲区剩余文字
+            // 确保连接就绪后 flush
+            const waitConnected = new Promise<void>((res) => {
+              if (tts!.connected) { res(); return }
+              const poll = setInterval(() => {
+                if (tts!.connected) { clearInterval(poll); res() }
+              }, 50)
+              setTimeout(() => { clearInterval(poll); res() }, 5000)
+            })
+            await waitConnected
+            await tts.client.flush()
+            // 轮询 WebAudio 时间轴：不依赖 WS 关闭事件，音频真正播完立即结束
+            await new Promise<void>((resolve) => {
+              const s = tts!
+              s.finishResolve = resolve  // fish-tts-finish 仍可提前触发
+              s.timeout = setTimeout(resolve, 60_000)  // 60s 兜底
+              const poll = setInterval(() => {
+                // nextStartTime 是最后一帧排队结束的时刻
+                // currentTime > nextStartTime + 0.2s 表示所有音频已播完
+                if (s.audioCtx.currentTime >= s.nextStartTime + 0.2) {
+                  clearInterval(poll)
+                  resolve()
                 }
-                const src = audioCtx.createBufferSource()
-                src.buffer = buf
-                src.connect(audioCtx.destination)
-                // 紧接上一块播放，避免漂移
-                const startAt = Math.max(nextStartTime, audioCtx.currentTime + 0.005)
-                src.start(startAt)
-                nextStartTime = startAt + buf.duration
-              }
-
-              // 超时保底：30s 内没完成就强制 resolve
-              const timeout = setTimeout(() => {
-                audioCtx.close()
-                resolve()
-              }, 30_000)
-
-              const tts = createFishTTSTauri(
-                {
-                  apiKey: config.fishApiKey!,
-                  referenceId: config.fishReferenceId,
-                  model: config.fishModel,
-                },
-                playChunk,
-                () => { clearTimeout(timeout); audioCtx.close(); resolve() },
-              )
-              tts.connect()
-                .then(() => tts.sendText(replyText))
-                .then(() => tts.flush())
-                .catch(e => { clearTimeout(timeout); audioCtx.close(); reject(e) })
+              }, 200)
             })
           } catch {
             // TTS 失败不影响主流程
           } finally {
-            stopFairy()  // 无论成功/失败/超时都重置 Fairy 状态
+            if (tts.timeout) clearTimeout(tts.timeout)
+            tts.audioCtx.close()
+            emitFairy('idle')
           }
+        } else {
+          tts.audioCtx.close()
+          emitFairy('idle')
         }
+      } else {
+        emitFairy('idle')
       }
     } catch (err) {
       setChatMessages((prev) => [...prev, {
@@ -951,9 +1042,6 @@ export default function App() {
           })()}
         </div>
       </div>
-
-      {/* ── Fairy Voice HUD Overlay ── */}
-      <FairyHUD state={fairyState} visible={fairyVisible} />
 
     </div>
   )

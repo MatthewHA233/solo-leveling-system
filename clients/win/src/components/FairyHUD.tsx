@@ -9,7 +9,7 @@ export type FairyState = 'idle' | 'listening' | 'thinking' | 'speaking'
 
 interface Props {
   readonly state: FairyState
-  readonly visible: boolean
+  readonly text?: string
 }
 
 const styles = `
@@ -21,15 +21,49 @@ const styles = `
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: opacity 0.25s ease;
   }
-  .fairy-overlay.hidden { opacity: 0; }
-  .fairy-overlay.visible { opacity: 1; }
-
   .fairy-core {
     position: relative;
     width: 400px;
     height: 400px;
+    transform: scale(0.7);
+    transform-origin: center center;
+    pointer-events: auto;
+    cursor: grab;
+  }
+  .fairy-core:active { cursor: grabbing; }
+
+  /* ===== SPEECH BUBBLE ===== */
+  .fairy-bubble {
+    position: fixed;
+    top: 8px;
+    right: 8px;
+    max-width: 128px;
+    padding: 7px 10px;
+    background: rgba(4, 12, 35, 0.88);
+    border: 1px solid rgba(50, 130, 220, 0.55);
+    border-radius: 10px 10px 10px 2px;
+    box-shadow:
+      0 0 10px rgba(36, 102, 200, 0.35),
+      inset 0 0 8px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+    z-index: 10000;
+  }
+  .fairy-bubble-state {
+    font-family: 'Exo 2', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: rgba(80, 185, 255, 0.95);
+    text-shadow: 0 0 6px rgba(36, 140, 255, 0.6);
+    margin-bottom: 3px;
+  }
+  .fairy-bubble-text {
+    font-family: 'Exo 2', sans-serif;
+    font-size: 9px;
+    line-height: 1.45;
+    color: rgba(160, 215, 255, 0.75);
+    word-break: break-all;
   }
 
   .abs-center {
@@ -141,20 +175,9 @@ const styles = `
       0 0 35px rgba(36,102,157,0.8);
   }
 
-  .fairy-state-label {
-    position: absolute;
-    bottom: -48px;
-    left: 50%; transform: translateX(-50%);
-    font-family: 'Exo 2', sans-serif;
-    font-size: 11px; font-weight: bold;
-    letter-spacing: 3px;
-    color: rgba(100,180,255,0.6);
-    text-shadow: 0 0 8px rgba(0,100,255,0.4);
-    white-space: nowrap;
-  }
 `
 
-export default function FairyHUD({ state, visible }: Props) {
+export default function FairyHUD({ state, text = '' }: Props) {
   // ── Element refs ──
   const gyroRef = useRef<HTMLDivElement>(null)
   const ballRotatorRef = useRef<HTMLDivElement>(null)
@@ -430,10 +453,33 @@ export default function FairyHUD({ state, visible }: Props) {
     analyserRef.current = null
   }
 
+  const handleDrag = (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+      getCurrentWindow().startDragging()
+    })
+  }
+
+  const stateLabel =
+    state === 'listening' ? '正在聆听' :
+    state === 'thinking'  ? '思考中'   :
+    state === 'speaking'  ? '回应中'   : ''
+
+  const bubbleText = state === 'speaking' && text
+    ? text.slice(0, 80) + (text.length > 80 ? '…' : '')
+    : ''
+
   return (
-    <div className={`fairy-overlay ${visible ? 'visible' : 'hidden'}`}>
+    <div className="fairy-overlay">
       <style>{styles}</style>
-      <div className="fairy-core">
+      {state !== 'idle' && (
+        <div className="fairy-bubble">
+          <div className="fairy-bubble-state">{stateLabel}</div>
+          {bubbleText && <div className="fairy-bubble-text">{bubbleText}</div>}
+        </div>
+      )}
+      <div className="fairy-core" onMouseDown={handleDrag}>
         <div ref={glowRef} className="abs-center layer-glow-halo" />
         <div ref={glowHalo2Ref} className="abs-center layer-glow-halo2" />
         <div ref={glowRingRef} className="abs-center layer-glow-ring" />
@@ -464,11 +510,6 @@ export default function FairyHUD({ state, visible }: Props) {
         <div ref={el => { pupilRingsRef.current[1] = el }} className="abs-center pupil-ring pupil-2" />
         <div ref={ballRotatorRef} className="abs-center layer-ball-rotator">
           <div ref={ballRef} className="abs-center fairy-ball" />
-        </div>
-        <div className="fairy-state-label">
-          {state === 'listening' && '正在倾听...'}
-          {state === 'thinking' && '思考中...'}
-          {state === 'speaking' && '回应中...'}
         </div>
       </div>
     </div>
