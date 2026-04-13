@@ -24,36 +24,123 @@ interface Props {
   onDeleteMinuteRange?: (startMin: number, endMin: number) => void
 }
 
+// ── 响应式密度模式（纵向驱动）──
+// 每列行数决定列密度：12行/列=1列/小时，6行/列=2列/小时，4行/列=3列/小时，3行/列=4列/小时
+
+const DENSITY_ROWS = [12, 6, 4, 3] as const
+type RowsPerCol = (typeof DENSITY_ROWS)[number]
+
+/** 小时组之间的间距（非 12行/列 模式下，相邻小时列之间留小间距） */
+const HOUR_GROUP_GAP = 12
+
+/** 区时边界（凌晨/清晨/上午/下午/黄昏/夜晚）处额外叠加的间距，所有密度模式均生效 */
+const ZONE_GAP_EXTRA = 14
+
+const COL_GAP_BY_ROWS: Record<RowsPerCol, number> = { 12: 2, 6: 2, 4: 1, 3: 1 }
+
+/** 返回 hourGroup 之前（不含 0 点）累计的区时边界数量，用于叠加 ZONE_GAP_EXTRA */
+function zoneGapsBefore(hourGroup: number): number {
+  // ZONE_HOURS 首元素 0 跳过，统计 [5,7,12,18,20] 中 <= hourGroup 的个数
+  return [5, 7, 12, 18, 20].filter(h => h <= hourGroup).length
+}
+
+/**
+ * 根据可用高度选择最优密度模式，返回恰好填满高度的 cellH 和等比 cellW。
+ * 优先用最少列数（格子最大），cellH 低于阈值时切换到更密模式。
+ * cellW 始终随 cellH 等比缩放（基准比例 80:50 = 1.6）。
+ */
+const CELL_H_SWITCH = 40   // px：低于此高度时切换到更密模式
+const CELL_ASPECT   = 80 / 50  // cellW / cellH 基准比例
+
+/** 根据可用高度精确计算 cellH（两步收敛消除 rowGap 的循环依赖） */
+function solveCellH(availGrid: number, rpc: number): number {
+  // 第一步：忽略 rowGap 估算
+  const h0 = availGrid / rpc
+  const g0 = Math.max(2, Math.round(h0 * 0.14))
+  // 第二步：用第一步的 rowGap 修正
+  const h1 = (availGrid - g0 * (rpc - 1)) / rpc
+  const g1 = Math.max(2, Math.round(h1 * 0.14))
+  return (availGrid - g1 * (rpc - 1)) / rpc
+}
+
+function chooseModeByHeight(availH: number): { rowsPerCol: RowsPerCol; cellH: number; cellW: number } {
+  const topPad = 28, bottomPad = 8
+  const availGrid = availH - topPad - bottomPad
+
+  for (const rpc of DENSITY_ROWS) {
+    const cellH = solveCellH(availGrid, rpc)
+    if (cellH >= CELL_H_SWITCH) {
+      const cellW = Math.max(6, Math.round(cellH * CELL_ASPECT))
+      return { rowsPerCol: rpc, cellH, cellW }
+    }
+  }
+
+  // 已是最密模式仍不够高 → 用最密模式 + 最小高度（允许出现滚动条）
+  const cellH = Math.max(CELL_H_SWITCH, solveCellH(availGrid, 3))
+  const cellW = Math.max(6, Math.round(cellH * CELL_ASPECT))
+  return { rowsPerCol: 3, cellH, cellW }
+}
+
 // ── Grid 参数 ──
-function getGridParams(isExpanded: boolean, cellHOverride?: number) {
-  const minutesPerCol = isExpanded ? 60 : 30
-  const cols = 1440 / minutesPerCol      // 24 or 48
-  const rows = minutesPerCol / 5         // 12 or 6
-  const cellW = isExpanded ? 80 : 160
-  const defaultCellH = isExpanded ? 50 : 100
+function getGridParams(rowsPerCol: RowsPerCol, cellW: number, cellHOverride?: number) {
+  const minutesPerCol = rowsPerCol * 5
+  const cols = 1440 / minutesPerCol
+  const rows = rowsPerCol
+  const colsPerHour = 12 / rowsPerCol
+  const colGap = COL_GAP_BY_ROWS[rowsPerCol]
+  const hgGap = colsPerHour > 1 ? HOUR_GROUP_GAP : colGap
+
+  const defaultCellH = Math.max(4, Math.round(cellW * 0.65))
   const cellH = cellHOverride ?? defaultCellH
-  const colGap = isExpanded ? 2 : 4
-  const rowGap = 10
+  const rowGap = Math.max(2, Math.round(cellH * 0.14))
   const hPad = 4
   const topPad = 28
   const bottomPad = 8
-  const minuteH = cellH / 5   // 每分钟高度随 cellH 等比例缩放
-  const traceBaseX = isExpanded ? 3 : 5
-  const trackSp = isExpanded ? 7 : 8
+  const minuteH = cellH / 5
+  const traceBaseX = Math.max(1, Math.round(cellW * 0.04))
+  const trackSp = Math.max(2, Math.round(cellW * 0.09))
   const colStride = cellW + colGap
   const rowStride = cellH + rowGap
   const gridH = rows * rowStride - rowGap
-  const totalW = hPad + cols * colStride + 16
+  // 每小时组内宽：colsPerHour 列宽 + (colsPerHour-1) 列间距
+  const hourGroupInnerW = colsPerHour * colStride - colGap
+  // 5 个区时边界（5,7,12,18,20 点）各额外加 ZONE_GAP_EXTRA
+  const totalW = hPad + 24 * hourGroupInnerW + 23 * hgGap + 5 * ZONE_GAP_EXTRA + 16
   const totalH = topPad + gridH + bottomPad
+  // 字体随 cellH 等比缩放（基准 cellH=50，不超过原始大小）
+  const textScale = Math.min(1.0, cellH / 50)
+  const fs = (base: number) => Math.max(6, Math.round(base * textScale))
   return {
-    minutesPerCol, cols, rows, cellW, cellH, colGap, rowGap,
+    minutesPerCol, cols, rows, rowsPerCol, colsPerHour, colGap, rowGap,
+    cellW, cellH, colStride, rowStride, gridH, totalW, totalH,
     hPad, topPad, bottomPad, minuteH, traceBaseX, trackSp,
-    colStride, rowStride, gridH, totalW, totalH,
+    hourGroupInnerW, hgGap, fs,
   }
 }
 
+/** 列索引 → canvas X 坐标（考虑小时组间距 + 区时边界额外间距） */
 function colX(col: number, p: ReturnType<typeof getGridParams>) {
-  return p.hPad + col * p.colStride
+  const hourGroup = Math.floor(col / p.colsPerHour)
+  const colInGroup = col % p.colsPerHour
+  return p.hPad + hourGroup * (p.hourGroupInnerW + p.hgGap) + colInGroup * p.colStride
+    + zoneGapsBefore(hourGroup) * ZONE_GAP_EXTRA
+}
+
+/** canvas X → 列索引（colX 逆运算，用于鼠标事件） */
+function xToCol(x: number, p: ReturnType<typeof getGridParams>): number {
+  const relX = x - p.hPad
+  if (relX < 0) return -1
+  // 从高到低找第一个基准 X <= relX 的小时组
+  for (let h = 23; h >= 0; h--) {
+    const gx = h * (p.hourGroupInnerW + p.hgGap) + zoneGapsBefore(h) * ZONE_GAP_EXTRA
+    if (relX >= gx) {
+      const within = relX - gx
+      // 落在组间隙 → 归该组末列
+      const colInGroup = Math.min(p.colsPerHour - 1, Math.floor(within / p.colStride))
+      return h * p.colsPerHour + colInGroup
+    }
+  }
+  return 0
 }
 
 function fmt(m: number) {
@@ -114,53 +201,47 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
 type ZoneInfo = { label: string; bgColor: [number, number, number]; bgAlpha: number; textColor: string }
 
 function getZoneInfo(hour: number): ZoneInfo {
-  if (hour < 5)  return { label: '凌晨', bgColor: [0,   20,  80],  bgAlpha: 0.16, textColor: 'rgba(100,150,255,0.75)' }
-  if (hour < 7)  return { label: '清晨', bgColor: [160, 80,  20],  bgAlpha: 0.10, textColor: 'rgba(255,180,80,0.85)'  }
-  if (hour < 12) return { label: '上午', bgColor: [20,  100, 180], bgAlpha: 0.07, textColor: 'rgba(140,210,255,0.75)' }
-  if (hour < 18) return { label: '下午', bgColor: [160, 130, 10],  bgAlpha: 0.07, textColor: 'rgba(255,220,100,0.75)' }
-  if (hour < 20) return { label: '黄昏', bgColor: [200, 60,  20],  bgAlpha: 0.13, textColor: 'rgba(255,120,70,0.90)'  }
-  return           { label: '夜晚', bgColor: [30,  10,  80],  bgAlpha: 0.16, textColor: 'rgba(160,110,255,0.75)' }
+  if (hour < 5)  return { label: '凌晨', bgColor: [15,  10,  120], bgAlpha: 0.32, textColor: 'rgba(120,140,255,0.80)' }
+  if (hour < 7)  return { label: '清晨', bgColor: [210, 130, 30],  bgAlpha: 0.24, textColor: 'rgba(255,190,90,0.90)'  }
+  if (hour < 12) return { label: '上午', bgColor: [190, 200, 50],  bgAlpha: 0.18, textColor: 'rgba(220,240,100,0.85)' }
+  if (hour < 18) return { label: '下午', bgColor: [220, 180, 20],  bgAlpha: 0.18, textColor: 'rgba(255,220,80,0.85)'  }
+  if (hour < 20) return { label: '黄昏', bgColor: [220, 70,  20],  bgAlpha: 0.28, textColor: 'rgba(255,130,60,0.95)'  }
+  return           { label: '夜晚', bgColor: [30,  10,  110], bgAlpha: 0.32, textColor: 'rgba(160,110,255,0.80)' }
 }
 
 const ZONE_HOURS = [0, 5, 7, 12, 18, 20]
 
 function drawZoneBands(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getGridParams>) {
-  // 背景色带
-  for (let c = 0; c < p.cols; c++) {
-    const hour = Math.floor(c * p.minutesPerCol / 60)
-    const z = getZoneInfo(hour)
+  // 按小时组绘制色带：区内每个小时组单独一块，hgGap / ZONE_GAP_EXTRA 自然留白
+  const zones: [number, number][] = [[0,5],[5,7],[7,12],[12,18],[18,20],[20,24]]
+  for (const [startH, endH] of zones) {
+    const z = getZoneInfo(startH)
     const [r, g, b] = z.bgColor
     ctx.fillStyle = `rgba(${r},${g},${b},${z.bgAlpha})`
-    ctx.fillRect(colX(c, p), p.topPad, p.cellW, p.gridH)
+    for (let h = startH; h < endH; h++) {
+      const firstCol = Math.floor(h * 60 / p.minutesPerCol)
+      const lastCol  = Math.floor((h + 1) * 60 / p.minutesPerCol) - 1
+      if (firstCol >= p.cols) continue
+      const x0 = colX(firstCol, p)
+      const x1 = colX(Math.min(lastCol, p.cols - 1), p) + p.cellW
+      ctx.fillRect(x0, 0, x1 - x0, p.totalH)
+    }
   }
 
-  // 时区边界线 + 顶部标签
-  for (const zoneHour of ZONE_HOURS) {
-    const c = Math.floor(zoneHour * 60 / p.minutesPerCol)
-    if (c >= p.cols) continue
-    const x = colX(c, p)
-    const z = getZoneInfo(zoneHour)
-    const [r, g, b] = z.bgColor
-
-    // 边界竖线（跳过 0 点）
-    if (zoneHour > 0) {
-      ctx.save()
-      ctx.shadowColor = `rgb(${r},${g},${b})`
-      ctx.shadowBlur = 4
-      ctx.beginPath()
-      ctx.moveTo(x - p.colGap / 2, p.topPad)
-      ctx.lineTo(x - p.colGap / 2, p.topPad + p.gridH)
-      ctx.strokeStyle = `rgba(${r},${g},${b},0.35)`
-      ctx.lineWidth = 1
-      ctx.stroke()
-      ctx.restore()
-    }
-
-    // 顶部时区标签
-    ctx.font = `bold 9px 'JetBrains Mono', 'Courier New', monospace`
+  // 顶部区时标签：居中于整个区时列宽，楷体大字
+  const zoneDefs: [number, number][] = [[0,5],[5,7],[7,12],[12,18],[18,20],[20,24]]
+  const labelFontSize = Math.max(12, p.fs(15))
+  ctx.font = `bold ${labelFontSize}px 'KaiTi', 'STKaiti', 'SimSun', serif`
+  ctx.textAlign = 'center'
+  for (const [startH, endH] of zoneDefs) {
+    const z = getZoneInfo(startH)
+    const firstCol = Math.floor(startH * 60 / p.minutesPerCol)
+    const lastCol  = Math.floor(endH   * 60 / p.minutesPerCol) - 1
+    if (firstCol >= p.cols) continue
+    const x0 = colX(firstCol, p)
+    const x1 = colX(Math.min(lastCol, p.cols - 1), p) + p.cellW
     ctx.fillStyle = z.textColor
-    ctx.textAlign = 'left'
-    ctx.fillText(z.label, x + 2, 11)
+    ctx.fillText(z.label, (x0 + x1) / 2, labelFontSize)
   }
 }
 
@@ -345,8 +426,8 @@ function drawTagTitles(
   const maxTextW    = p.cellW - textLeftPad - 4
   if (maxTextW <= 0) return
 
-  const lineH    = 16
-  const fontSize = 12
+  const fontSize = p.fs(12)
+  const lineH    = Math.max(8, Math.round(fontSize * 1.4))
 
   for (const span of spans) {
     if (span.track !== 'tags') continue
@@ -385,7 +466,7 @@ function drawTagTitles(
     }
     // 标记徽章（:billable 等），小字追加
     if (markerStr && drawY <= y1) {
-      ctx.font = `500 8px 'JetBrains Mono', 'Courier New', monospace`
+      ctx.font = `500 ${p.fs(8)}px 'JetBrains Mono', 'Courier New', monospace`
       ctx.fillStyle = 'rgba(255,220,100,0.75)'
       ctx.fillText(markerStr, x, drawY)
     }
@@ -401,12 +482,40 @@ const BILI_YELLOW   = '#F5C842'
 
 function drawGrid(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getGridParams>) {
   const blue = theme.electricBlue
+  // 区时边界精确分钟数（包括 0 点）
+  const ZONE_BOUNDARY_MINS = new Set([0, 5*60, 7*60, 12*60, 18*60, 20*60])
   const cornerLen = Math.min(8, p.cellW * 0.12, p.cellH * 0.15)
 
+  // 绘制单个 bracket 角：side 控制绘制左侧还是右侧角
+  function drawCorners(
+    x: number, y: number, w: number, h: number,
+    drawLeft: boolean, drawRight: boolean,
+    color: string, lw: number, glow: boolean,
+  ) {
+    ctx.strokeStyle = color
+    ctx.lineWidth = lw
+    if (glow) { ctx.save(); ctx.shadowColor = blue; ctx.shadowBlur = 4 }
+    if (drawLeft) {
+      ctx.beginPath(); ctx.moveTo(x, y + cornerLen); ctx.lineTo(x, y); ctx.lineTo(x + cornerLen, y); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(x, y + h - cornerLen); ctx.lineTo(x, y + h); ctx.lineTo(x + cornerLen, y + h); ctx.stroke()
+    }
+    if (drawRight) {
+      ctx.beginPath(); ctx.moveTo(x + w - cornerLen, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cornerLen); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(x + w - cornerLen, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cornerLen); ctx.stroke()
+    }
+    if (glow) ctx.restore()
+  }
+
   for (let c = 0; c < p.cols; c++) {
-    const hourOfCol = Math.floor(c * p.minutesPerCol / 60)
-    const isNight = hourOfCol < 6 || hourOfCol >= 22
+    const startMin  = c * p.minutesPerCol
+    const startHour = Math.floor(startMin / 60)
+    const isNight = startHour < 6 || startHour >= 22
     const baseA = isNight ? 0.08 : 0.15
+
+    // 该列起始分钟恰好是区时边界 → 左侧高亮
+    const leftEdge  = ZONE_BOUNDARY_MINS.has(startMin)
+    // 该列结束分钟恰好是区时边界 → 右侧高亮（即下一列是区时第一列）
+    const rightEdge = ZONE_BOUNDARY_MINS.has(startMin + p.minutesPerCol)
 
     for (let r = 0; r < p.rows; r++) {
       const x = colX(c, p)
@@ -425,71 +534,26 @@ function drawGrid(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getGridPar
       ctx.lineWidth = 0.5
       ctx.strokeRect(x, y, w, h)
 
-      // 四角高亮 bracket
-      ctx.strokeStyle = hexToRgba(blue, baseA * 2.5)
-      ctx.lineWidth = 1
-      // 左上
-      ctx.beginPath()
-      ctx.moveTo(x, y + cornerLen)
-      ctx.lineTo(x, y)
-      ctx.lineTo(x + cornerLen, y)
-      ctx.stroke()
-      // 右上
-      ctx.beginPath()
-      ctx.moveTo(x + w - cornerLen, y)
-      ctx.lineTo(x + w, y)
-      ctx.lineTo(x + w, y + cornerLen)
-      ctx.stroke()
-      // 左下
-      ctx.beginPath()
-      ctx.moveTo(x, y + h - cornerLen)
-      ctx.lineTo(x, y + h)
-      ctx.lineTo(x + cornerLen, y + h)
-      ctx.stroke()
-      // 右下
-      ctx.beginPath()
-      ctx.moveTo(x + w - cornerLen, y + h)
-      ctx.lineTo(x + w, y + h)
-      ctx.lineTo(x + w, y + h - cornerLen)
-      ctx.stroke()
+      // 普通四角（非边界侧）
+      drawCorners(x, y, w, h, !leftEdge, !rightEdge, hexToRgba(blue, baseA * 2.5), 1, false)
+
+      // 区时边界侧：更亮更粗有辉光
+      if (leftEdge || rightEdge) {
+        drawCorners(x, y, w, h, leftEdge, rightEdge, hexToRgba(blue, 0.75), 1.5, true)
+      }
     }
   }
 
-  // 6 小时大分隔线（带 glow）
-  for (let hour = 6; hour <= 18; hour += 6) {
-    const c = Math.floor(hour * 60 / p.minutesPerCol)
-    if (c < 0 || c >= p.cols) continue
-    const x = colX(c, p) - p.colGap / 2
-
-    // glow
-    ctx.save()
-    ctx.shadowColor = blue
-    ctx.shadowBlur = 6
-    ctx.beginPath()
-    ctx.moveTo(x, p.topPad)
-    ctx.lineTo(x, p.topPad + p.gridH)
-    ctx.strokeStyle = hexToRgba(blue, 0.2)
-    ctx.lineWidth = 1
-    ctx.stroke()
-    ctx.restore()
-
-    // 实线
-    ctx.beginPath()
-    ctx.moveTo(x, p.topPad)
-    ctx.lineTo(x, p.topPad + p.gridH)
-    ctx.strokeStyle = hexToRgba(blue, 0.3)
-    ctx.lineWidth = 0.5
-    ctx.stroke()
-  }
 }
 
 function drawTimeLabels(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getGridParams>) {
+  const ZONE_BOUNDARY_MINS = new Set([0, 5*60, 7*60, 12*60, 18*60, 20*60])
   ctx.textAlign = 'center'
   for (let c = 0; c < p.cols; c++) {
     const x = colX(c, p) + p.cellW / 2
     const colStartMin = c * p.minutesPerCol
-    const major = colStartMin % 360 === 0
-    ctx.font = `${major ? 'bold' : '500'} ${major ? 12 : 10}px 'JetBrains Mono', 'Courier New', monospace`
+    const major = ZONE_BOUNDARY_MINS.has(colStartMin)
+    ctx.font = `${major ? 'bold' : '500'} ${major ? p.fs(12) : p.fs(10)}px 'JetBrains Mono', 'Courier New', monospace`
     ctx.fillStyle = major ? theme.electricBlue : theme.textPrimary
     ctx.fillText(fmt(colStartMin), x, p.topPad - 8)
   }
@@ -501,7 +565,7 @@ function drawTimeLabels(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getG
       const boundaryMin = colStartMin + (r + 1) * 5
       const gapY = p.topPad + r * p.rowStride + p.cellH + p.rowGap / 2
       const isMajor = boundaryMin % 10 === 0
-      ctx.font = `${isMajor ? 'bold' : 'normal'} ${isMajor ? 10 : 9}px 'JetBrains Mono', 'Courier New', monospace`
+      ctx.font = `${isMajor ? 'bold' : 'normal'} ${isMajor ? p.fs(10) : p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
       ctx.fillStyle = theme.textSecondary
       ctx.fillText(fmt(boundaryMin), cx, gapY + 3)
     }
@@ -656,14 +720,14 @@ function drawEventNodes(
       ctx.fill()
 
       // 序号
-      ctx.font = `500 10px 'JetBrains Mono', 'Courier New', monospace`
+      ctx.font = `500 ${p.fs(10)}px 'JetBrains Mono', 'Courier New', monospace`
       ctx.fillStyle = color
       ctx.textAlign = 'left'
       ctx.fillText(step.label, x + 9, y + 3)
 
       // hover 时显示步骤标题
       if (lit && step.title) {
-        ctx.font = `600 10px 'JetBrains Mono', 'Courier New', monospace`
+        ctx.font = `600 ${p.fs(10)}px 'JetBrains Mono', 'Courier New', monospace`
         ctx.fillStyle = color
         ctx.fillText(step.title, x + 9 + 16, y + 3)
       }
@@ -681,8 +745,8 @@ function drawTitles(
   const maxTextW = p.cellW - textLeftPad - 4
   if (maxTextW <= 0) return
 
-  const lineH = 14
-  const fontSize = 11
+  const fontSize = p.fs(11)
+  const lineH = Math.max(8, Math.round(fontSize * 1.27))
 
   for (const layout of layouts) {
     const a = layout.activity
@@ -717,7 +781,7 @@ function drawTitles(
 
     // 时间范围（标题下方，如果还有空间）
     if (drawY + lineH <= y1) {
-      ctx.font = `${fontSize - 2}px 'JetBrains Mono', 'Courier New', monospace`
+      ctx.font = `${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
       ctx.fillStyle = hexToRgba(theme.textPrimary, 0.7)
       ctx.fillText(`${fmt(a.startMinute)}–${fmt(a.endMinute)}`, x, drawY)
     }
@@ -866,7 +930,7 @@ function drawNowTick(
   ctx.stroke()
 
   // 时间文字
-  ctx.font = `900 10px 'JetBrains Mono', 'Courier New', monospace`
+  ctx.font = `900 ${p.fs(10)}px 'JetBrains Mono', 'Courier New', monospace`
   ctx.fillStyle = '#000'
   ctx.textAlign = 'center'
   ctx.fillText(timeStr, labelX + labelW / 2, labelY2 + 3.5)
@@ -917,7 +981,7 @@ function drawHoverHighlight(
   ctx.stroke()
 
   // 时间提示
-  ctx.font = `9px 'JetBrains Mono', 'Courier New', monospace`
+  ctx.font = `${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
   ctx.fillStyle = hexToRgba(cyan, 0.5)
   ctx.textAlign = 'center'
   ctx.fillText(fmt(hoverMin), cx, y + p.cellH - 5)
@@ -967,7 +1031,7 @@ function drawDragSelection(
   if (startCol < p.cols) {
     const sy = minuteToY(startMin, startCol, p)
     const sx = colX(startCol, p) + 4
-    ctx.font = `bold 9px 'JetBrains Mono', 'Courier New', monospace`
+    ctx.font = `bold ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
     ctx.fillStyle = cyan
     ctx.textAlign = 'left'
     ctx.fillText(fmt(startMin), sx, sy - 2)
@@ -977,7 +1041,7 @@ function drawDragSelection(
   if (endCol < p.cols) {
     const ey = minuteToY(endMin, endCol, p)
     const ex = colX(endCol, p) + 4
-    ctx.font = `bold 9px 'JetBrains Mono', 'Courier New', monospace`
+    ctx.font = `bold ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
     ctx.fillStyle = cyan
     ctx.textAlign = 'left'
     ctx.fillText(fmt(endMin), ex, ey + 9)
@@ -1001,7 +1065,7 @@ function drawDragSelection(
   ctx.fillRect(midX - badgeW / 2, midY - badgeH / 2, badgeW, badgeH)
   ctx.restore()
 
-  ctx.font = `bold 9px 'JetBrains Mono', 'Courier New', monospace`
+  ctx.font = `bold ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
   ctx.fillStyle = '#000'
   ctx.textAlign = 'center'
   ctx.fillText(durStr, midX, midY + 3.5)
@@ -1152,7 +1216,7 @@ function drawCrosshair(
     const maxLabelW  = x1 - labelX - 2
     const availTextW = maxLabelW - padX * 2 - (hasIcon ? iconSize + gap : 0)
 
-    ctx.font = `500 9px 'JetBrains Mono', 'Courier New', monospace`
+    ctx.font = `500 ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
     const lines     = availTextW > 10 ? wrapText(ctx, pipeLabel, availTextW).slice(0, 3) : [pipeLabel]
     const textBlock = hasIcon ? Math.max(iconSize, lines.length * lineH) : lines.length * lineH
     const labelH    = padY * 2 + textBlock
@@ -1175,7 +1239,7 @@ function drawCrosshair(
       textX = labelX + padX + iconSize + gap
     }
 
-    ctx.font      = `500 9px 'JetBrains Mono', 'Courier New', monospace`
+    ctx.font      = `500 ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
     ctx.fillStyle = 'rgba(255,255,255,0.85)'
     ctx.textAlign = 'left'
     const textStartY = labelY + padY + lineH - 1
@@ -1186,7 +1250,7 @@ function drawCrosshair(
 
   // ── "固定"/"取消固定" badge：列右边缘（白线尽头）外侧左对齐 ──
   const label = isPinned ? '取消固定' : '固定'
-  const font = `bold 9px 'JetBrains Mono', 'Courier New', monospace`
+  const font = `bold ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
   ctx.font = font
   const textW = ctx.measureText(label).width
   const bPadX = 5, bPadY = 3
@@ -1260,12 +1324,22 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
   // 列首右键菜单
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; startMin: number; endMin: number } | null>(null)
 
-  // ── 响应式高度：监听可用高度，等比缩放 cellH ──
+  // ── 响应式纵向：监听可用高度，等比缩放 cellH + cellW ──
+  // 横向保持固定宽度（overflow-x scroll），不响应容器宽度变化
   const [chartAreaH, setChartAreaH] = useState(0)
+  // 缩放时保留视图中心对应的时间比例，缩放后恢复到原位
+  const pRef = useRef<ReturnType<typeof getGridParams>>(getGridParams(12, 80))
+  const scrollRatioRef = useRef<number | null>(null)
+
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
     const ro = new ResizeObserver(([entry]) => {
+      // 记录当前视口中心对应的 totalW 比例
+      if (pRef.current.totalW > 0) {
+        const centerX = el.scrollLeft + el.clientWidth / 2
+        scrollRatioRef.current = centerX / pRef.current.totalW
+      }
       setChartAreaH(entry.contentRect.height)
     })
     ro.observe(el)
@@ -1273,16 +1347,28 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
   }, [])
 
   const p = useMemo(() => {
-    const base = getGridParams(isExpanded)
-    if (chartAreaH <= 0 || chartAreaH <= base.totalH) {
-      // 可用高度不足 → 用默认参数，允许滚动
-      return base
+    if (chartAreaH <= 0) {
+      // 初始化前用默认值（不会渲染）
+      return getGridParams(12, 80)
     }
-    // 可用高度充足 → 等比放大 cellH 填满
-    const { rows, rowGap, topPad, bottomPad } = base
-    const scaledCellH = (chartAreaH - topPad - bottomPad - (rows - 1) * rowGap) / rows
-    return getGridParams(isExpanded, scaledCellH)
-  }, [isExpanded, chartAreaH])
+    const { rowsPerCol, cellH, cellW } = chooseModeByHeight(chartAreaH)
+    return getGridParams(rowsPerCol, cellW, cellH)
+  }, [chartAreaH])
+
+  // 同步 pRef
+  useEffect(() => { pRef.current = p }, [p])
+
+  // p.totalW 变化后恢复滚动位置（保持视口中心时间不变）
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || scrollRatioRef.current === null) return
+    const ratio = scrollRatioRef.current
+    scrollRatioRef.current = null
+    requestAnimationFrame(() => {
+      el.scrollLeft = ratio * p.totalW - el.clientWidth / 2
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.totalW])
   const layouts = useMemo(() => computeLayouts(activities), [activities])
 
   // Bili span 时间重叠修正：后者开始时间衔接前者结束时间
@@ -1468,7 +1554,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
     const EDGE_TOL = 6
-    const c = Math.floor((x - p.hPad) / p.colStride)
+    const c = xToCol(x, p)
     if (c < 0 || c >= p.cols) return null
 
     for (const a of activities) {
@@ -1494,7 +1580,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     const rect = canvasRef.current!.getBoundingClientRect()
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
-    const c = Math.floor((x - p.hPad) / p.colStride)
+    const c = xToCol(x, p)
     const rBlock = Math.floor((y - p.topPad) / p.rowStride)
     if (c < 0 || c >= p.cols || rBlock < 0 || rBlock >= p.rows) return null
     const localY = y - p.topPad - rBlock * p.rowStride
@@ -1508,7 +1594,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     const rect = canvasRef.current!.getBoundingClientRect()
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
-    const cRaw = Math.floor((x - p.hPad) / p.colStride)
+    const cRaw = xToCol(x, p)
     const c = Math.max(0, Math.min(cRaw, p.cols - 1))
     const relY = y - p.topPad
     const clampedRelY = Math.max(0, Math.min(relY, p.gridH - 1))
@@ -1523,7 +1609,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     const rect = canvasRef.current!.getBoundingClientRect()
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
-    const c = Math.floor((x - p.hPad) / p.colStride)
+    const c = xToCol(x, p)
     const rBlock = Math.floor((y - p.topPad) / p.rowStride)
     if (c < 0 || c >= p.cols || rBlock < 0 || rBlock >= p.rows) return null
     const localY = y - p.topPad - rBlock * p.rowStride
@@ -1573,7 +1659,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     const rect = canvasRef.current!.getBoundingClientRect()
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
-    const c = Math.floor((x - p.hPad) / p.colStride)
+    const c = xToCol(x, p)
     const rBlock = Math.floor((y - p.topPad) / p.rowStride)
 
     // Edge resize 拖拽中
@@ -1818,7 +1904,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
 
     // 点击在列首时间标签区（topPad 以上）→ 显示删除菜单
     if (y <= p.topPad) {
-      const c = Math.floor((x - p.hPad) / p.colStride)
+      const c = xToCol(x, p)
       if (c >= 0 && c < p.cols) {
         const startMin = c * p.minutesPerCol
         const endMin = startMin + p.minutesPerCol
