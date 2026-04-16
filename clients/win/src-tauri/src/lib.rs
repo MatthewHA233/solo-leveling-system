@@ -7,6 +7,7 @@ mod api;
 mod fish_tts;
 mod manictime;
 mod qwen_asr;
+mod qwen_omni;
 #[cfg(windows)]
 mod hotkey;
 
@@ -16,11 +17,13 @@ use fish_tts::{FishTTSConfig, FishTTSConnection};
 use db::Database;
 use api::BiliState;
 use tauri::Manager;
+use base64::Engine as _;
 
 // ── 全局状态 ──
 
 struct AppState {
     fish_tts: Arc<Mutex<Option<FishTTSConnection>>>,
+    omni: qwen_omni::OmniState,
     db: Arc<RwLock<Option<Arc<Database>>>>,
     db_path: Arc<RwLock<String>>,
 }
@@ -244,6 +247,73 @@ async fn migrate_database(
     Ok(new_db_path)
 }
 
+// ── Qwen Omni Realtime 命令 ──
+
+#[tauri::command]
+async fn omni_connect(
+    api_key: String,
+    model: String,
+    voice: String,
+    system_prompt: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    // 关闭旧连接
+    {
+        let mut guard = state.omni.lock().await;
+        if let Some(old) = guard.take() {
+            old.stop();
+        }
+    }
+
+    let session = qwen_omni::connect(api_key, model, voice, system_prompt, app_handle).await?;
+
+    let mut guard = state.omni.lock().await;
+    *guard = Some(session);
+    Ok(())
+}
+
+#[tauri::command]
+async fn omni_send_audio(
+    pcm_base64: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let pcm = base64::engine::general_purpose::STANDARD
+        .decode(&pcm_base64)
+        .map_err(|e| format!("base64 解码失败: {e}"))?;
+    let guard = state.omni.lock().await;
+    if let Some(session) = guard.as_ref() {
+        session.send_audio(&pcm);
+        Ok(())
+    } else {
+        Err("Omni 未连接".to_string())
+    }
+}
+
+#[tauri::command]
+async fn omni_commit(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let guard = state.omni.lock().await;
+    if let Some(session) = guard.as_ref() {
+        session.commit();
+        Ok(())
+    } else {
+        Err("Omni 未连接".to_string())
+    }
+}
+
+#[tauri::command]
+async fn omni_stop(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let mut guard = state.omni.lock().await;
+    if let Some(session) = guard.take() {
+        session.stop();
+    }
+    Ok(())
+}
+
 // ── Fairy 子窗口 ──
 
 /// 获取系统光标物理像素坐标（仅内部使用）
@@ -337,6 +407,7 @@ pub fn run() {
 
     let state = Arc::new(AppState {
         fish_tts: Arc::new(Mutex::new(None)),
+        omni: Arc::new(Mutex::new(None)),
         db: Arc::new(RwLock::new(db.clone())),
         db_path: Arc::new(RwLock::new(db_path)),
     });
@@ -359,7 +430,7 @@ pub fn run() {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
+                        .level(log::LevelFilter::Debug)
                         .build(),
                 )?;
             }
@@ -395,6 +466,10 @@ pub fn run() {
             fish_tts_send_text,
             fish_tts_flush,
             fish_tts_stop,
+            omni_connect,
+            omni_send_audio,
+            omni_commit,
+            omni_stop,
             get_db_info,
             migrate_database,
             open_bili_login,

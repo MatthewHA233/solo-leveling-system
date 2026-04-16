@@ -12,17 +12,22 @@ export interface AgentConfig {
   // ── AI Provider ──
   readonly aiProvider: 'openai' | 'gemini'
   readonly aiEnabled: boolean
+  readonly aiMode: 'regular' | 'omni'   // 当前激活的模型模式
 
   // ── Gemini (legacy) ──
   readonly geminiApiKey: string | null
   readonly geminiApiBase: string
   readonly geminiModel: string
 
-  // ── OpenAI Compatible (千问) ──
+  // ── 常规模式 (OpenAI Compatible) ──
   readonly openaiApiKey: string | null
   readonly openaiApiBase: string
-  readonly openaiModel: string        // Phase 1: video/vision
-  readonly openaiCardModel: string    // Phase 2: text
+  readonly openaiCardModel: string    // 聊天模型
+
+  // ── 全模态模式 (Omni Realtime WS) ──
+  readonly omniApiKey: string | null   // 留空则复用 openaiApiKey
+  readonly omniApiBase: string
+  readonly omniModel: string
 
   // ── Batch Analysis ──
   readonly batchTargetDuration: number    // seconds
@@ -34,11 +39,11 @@ export interface AgentConfig {
   readonly fishApiKey: string | null
   readonly fishReferenceId: string
   readonly fishModel: string  // s1 或 s2-pro
-  readonly voiceModel: string
-
-  // ── ASR ──
   readonly asrApiKey: string | null    // 单独的 ASR API Key（不填则复用 openaiApiKey）
   readonly asrModel: string            // 如 qwen3-asr-flash-realtime
+
+  // ── Omni 语音输出音色 ──
+  readonly omniVoice: string           // 输出音色 ID（全模态模式下使用）
 
   // ── Overlay ──
   readonly overlayEnabled: boolean
@@ -68,6 +73,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
   aiProvider: 'openai',
   aiEnabled: true,
+  aiMode: 'regular',
 
   geminiApiKey: null,
   geminiApiBase: 'https://generativelanguage.googleapis.com',
@@ -75,8 +81,11 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
   openaiApiKey: import.meta.env.VITE_OPENAI_API_KEY ?? null,
   openaiApiBase: import.meta.env.VITE_OPENAI_API_BASE ?? 'https://dashscope.aliyuncs.com/compatible-mode',
-  openaiModel: import.meta.env.VITE_OPENAI_MODEL ?? 'qwen-vl-max',
   openaiCardModel: import.meta.env.VITE_OPENAI_CARD_MODEL ?? 'qwen-plus',
+
+  omniApiKey: null,
+  omniApiBase: import.meta.env.VITE_OPENAI_API_BASE ?? 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
+  omniModel: 'qwen3.5-omni-plus-realtime',
 
   batchTargetDuration: 300,
   batchMaxGap: 120,
@@ -86,10 +95,10 @@ export const DEFAULT_CONFIG: AgentConfig = {
   fishApiKey: import.meta.env.VITE_FISH_API_KEY ?? null,
   fishReferenceId: import.meta.env.VITE_FISH_REFERENCE_ID ?? '235851fae0da43309a9973fe7285a823',
   fishModel: import.meta.env.VITE_FISH_MODEL ?? 's1',
-  voiceModel: 'qwen3-omni-flash-2025-12-01',
-
   asrApiKey: null,
   asrModel: 'qwen3-asr-flash-realtime',
+
+  omniVoice: '',
 
   overlayEnabled: true,
   miniBarPosition: 'right',
@@ -132,7 +141,7 @@ export function loadConfig(): AgentConfig {
       // Remove null values so env defaults from DEFAULT_CONFIG are not overwritten
       const cleaned: Partial<AgentConfig> = {}
       for (const [k, v] of Object.entries(parsed)) {
-        if (v !== null && v !== undefined) {
+        if (v !== null && v !== undefined && !['voiceModel', 'voicePipeline', 'omniContextRounds', 'openaiModel', 'omniAsrEnabled', 'omniTtsEnabled'].includes(k)) {
           (cleaned as Record<string, unknown>)[k] = v
         }
       }

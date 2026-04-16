@@ -22,6 +22,9 @@ xcuserdata/
 # Claude Code
 .claude/
 
+# Superpowers 插件缓存
+.superpowers/
+
 # Obsidian
 .obsidian/
 

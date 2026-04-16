@@ -16,6 +16,120 @@ export interface VoiceRecorder {
   readonly isRecording: () => boolean
 }
 
+/** Omni 模式用：流式 PCM16 块回调（每次约 100ms / 1600 samples / 3200 bytes） */
+export interface StreamingRecorderOptions {
+  /** 每块 PCM16 LE mono 16kHz 字节，回调频率 ~10次/秒 */
+  readonly onChunk: (pcm16: Uint8Array) => void
+}
+
+/** 流式录音器：边录边回调 PCM 块，stop() 时 RecordingResult 为 null（数据已流出） */
+export interface StreamingVoiceRecorder {
+  readonly start: (opts: StreamingRecorderOptions) => Promise<void>
+  readonly stop: () => Promise<void>
+  readonly getAudioLevel: () => number
+  readonly isRecording: () => boolean
+}
+
+export function createStreamingRecorder(): StreamingVoiceRecorder {
+  let audioCtx: AudioContext | null = null
+  let mediaStream: MediaStream | null = null
+  let analyser: AnalyserNode | null = null
+  let processor: ScriptProcessorNode | null = null
+  let source: MediaStreamAudioSourceNode | null = null
+  let recording = false
+  let accumulator: number[] = []   // float32 samples accumulator
+  let onChunkCb: ((pcm16: Uint8Array) => void) | null = null
+
+  const CHUNK_SAMPLES = 1600  // 100ms at 16kHz
+
+  const start = async (opts: StreamingRecorderOptions) => {
+    onChunkCb = opts.onChunk
+    accumulator = []
+
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate: { ideal: TARGET_SAMPLE_RATE }, channelCount: 1 },
+      video: false,
+    })
+
+    audioCtx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE })
+    source = audioCtx.createMediaStreamSource(mediaStream)
+
+    analyser = audioCtx.createAnalyser()
+    analyser.fftSize = 256
+    source.connect(analyser)
+
+    processor = audioCtx.createScriptProcessor(4096, 1, 1)
+    processor.onaudioprocess = (e) => {
+      if (!recording) return
+      const input = e.inputBuffer.getChannelData(0)
+      // resample if needed, then accumulate
+      const sampleRate = audioCtx?.sampleRate ?? TARGET_SAMPLE_RATE
+      const samples = sampleRate !== TARGET_SAMPLE_RATE
+        ? Array.from(resample(new Float32Array(input), sampleRate, TARGET_SAMPLE_RATE))
+        : Array.from(input)
+      accumulator.push(...samples)
+
+      // emit chunks when we have enough samples
+      while (accumulator.length >= CHUNK_SAMPLES) {
+        const chunk = accumulator.splice(0, CHUNK_SAMPLES)
+        onChunkCb?.(float32ToPcm16(new Float32Array(chunk)))
+      }
+    }
+    source.connect(processor)
+    processor.connect(audioCtx.destination)
+
+    recording = true
+  }
+
+  const stop = async (): Promise<void> => {
+    if (!recording) return
+    recording = false
+
+    // flush remaining samples
+    if (accumulator.length > 0 && onChunkCb) {
+      onChunkCb(float32ToPcm16(new Float32Array(accumulator)))
+      accumulator = []
+    }
+    onChunkCb = null
+
+    if (processor) { processor.disconnect(); processor = null }
+    if (source) { source.disconnect(); source = null }
+    if (analyser) { analyser.disconnect(); analyser = null }
+    if (mediaStream) {
+      mediaStream.getTracks().forEach((t) => t.stop())
+      mediaStream = null
+    }
+    if (audioCtx && audioCtx.state !== 'closed') {
+      await audioCtx.close()
+    }
+    audioCtx = null
+  }
+
+  const getAudioLevel = (): number => {
+    if (!analyser) return 0
+    const data = new Uint8Array(analyser.frequencyBinCount)
+    analyser.getByteFrequencyData(data)
+    let sum = 0
+    for (let i = 0; i < data.length; i++) sum += data[i]
+    return sum / data.length / 255
+  }
+
+  return { start, stop, getAudioLevel, isRecording: () => recording }
+}
+
+// ── Float32 array → PCM16 Uint8Array (LE, mono) ──
+
+function float32ToPcm16(samples: Float32Array): Uint8Array {
+  const out = new Uint8Array(samples.length * 2)
+  const view = new DataView(out.buffer)
+  for (let i = 0; i < samples.length; i++) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]))
+    const int16 = clamped < 0 ? clamped * 32768 : clamped * 32767
+    view.setInt16(i * 2, int16, true)
+  }
+  return out
+}
+
 const TARGET_SAMPLE_RATE = 16000
 
 export function createVoiceRecorder(): VoiceRecorder {

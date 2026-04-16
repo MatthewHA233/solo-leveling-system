@@ -217,6 +217,7 @@ export default function App() {
   const pressingRef = useRef(false)
   const fairyStateRef = useRef<FairyState>('idle')
   const voiceServiceRef = useRef<VoiceService | null>(null)
+  const configRef = useRef(config)
   const LONG_PRESS_MS = 600
 
   const fairyWinRef = useRef<import('@tauri-apps/api/webviewWindow').WebviewWindow | null>(null)
@@ -303,7 +304,7 @@ export default function App() {
     if (voiceServiceRef.current) return voiceServiceRef.current
 
     const svc = createVoiceService(
-      () => config,
+      () => configRef.current,
       () => {
         if (activities.length === 0) return '今日暂无活动数据'
         return activities.slice(-5).map((a) =>
@@ -348,7 +349,85 @@ export default function App() {
     )
     voiceServiceRef.current = svc
     return svc
-  }, [config, activities, emitFairy])
+  }, [activities, emitFairy])
+
+  // ── Omni 全模态模式：监听 AI 回复事件 ──
+  const omniAudioCtxRef = useRef<AudioContext | null>(null)
+  const omniNextStartRef = useRef<number>(0)
+  const omniTextAccRef = useRef<string>('')
+
+  useEffect(() => {
+    if (config.aiMode !== 'omni') return
+
+    const playOmniPcm = (b64: string) => {
+      if (!omniAudioCtxRef.current) {
+        omniAudioCtxRef.current = new AudioContext({ sampleRate: 24000 })
+        omniNextStartRef.current = omniAudioCtxRef.current.currentTime
+      }
+      const ctx = omniAudioCtxRef.current
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+      const samples = bytes.length / 2
+      if (samples === 0) return
+      const buf = ctx.createBuffer(1, samples, 24000)
+      const ch = buf.getChannelData(0)
+      const view = new DataView(bytes.buffer)
+      for (let i = 0; i < samples; i++) ch[i] = view.getInt16(i * 2, true) / 32768
+      const src = ctx.createBufferSource()
+      src.buffer = buf
+      src.connect(ctx.destination)
+      const startAt = Math.max(omniNextStartRef.current, ctx.currentTime + 0.005)
+      src.start(startAt)
+      omniNextStartRef.current = startAt + buf.duration
+    }
+
+    const cleanups: Array<Promise<() => void>> = []
+
+    cleanups.push(
+      import('@tauri-apps/api/event').then(({ listen }) =>
+        listen<{ text: string }>('omni://text_chunk', ({ payload }) => {
+          omniTextAccRef.current += payload.text
+          emitFairy('speaking', omniTextAccRef.current)
+        })
+      )
+    )
+
+    cleanups.push(
+      import('@tauri-apps/api/event').then(({ listen }) =>
+        listen<{ data: string }>('omni://audio_chunk', ({ payload }) => {
+          playOmniPcm(payload.data)
+        })
+      )
+    )
+
+    cleanups.push(
+      import('@tauri-apps/api/event').then(({ listen }) =>
+        listen<{ status: string; message?: string }>('omni://status', ({ payload }) => {
+          if (payload.status === 'audio_done') {
+            const text = omniTextAccRef.current.trim()
+            if (text) {
+              setChatMessages((prev) => [...prev, {
+                id: crypto.randomUUID(), role: 'agent' as const,
+                content: text, timestamp: new Date().toISOString(),
+              }])
+              omniTextAccRef.current = ''
+            }
+            // phase 已由 voice-service 的 waitOmniAudioDone 回调到 idle
+          } else if (payload.status === 'error') {
+            setChatMessages((prev) => [...prev, {
+              id: crypto.randomUUID(), role: 'system' as const,
+              content: `Omni 错误: ${payload.message ?? '未知'}`,
+              timestamp: new Date().toISOString(),
+            }])
+            omniTextAccRef.current = ''
+          }
+        })
+      )
+    )
+
+    return () => {
+      cleanups.forEach((p) => p.then((fn) => fn()))
+    }
+  }, [config.aiMode, emitFairy])
 
   // ── Right Alt Long-Press → Voice Chat（全局热键，无需窗口聚焦）──
   useEffect(() => {
@@ -426,7 +505,11 @@ export default function App() {
   }
 
   const handleConfigUpdate = useCallback((updates: Partial<AgentConfig>) => {
-    setConfig((prev) => updateConfig(prev, updates))
+    setConfig((prev) => {
+      const next = updateConfig(prev, updates)
+      configRef.current = next
+      return next
+    })
   }, [])
 
   const refreshActivities = useCallback(() => {

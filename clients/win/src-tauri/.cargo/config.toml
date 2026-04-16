@@ -1,0 +1,3 @@
+[profile.dev]
+# 不生成独立 .pdb 文件，节省磁盘空间（调试符号内嵌在 .exe 里）
+split-debuginfo = "off"

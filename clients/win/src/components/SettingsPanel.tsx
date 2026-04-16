@@ -31,10 +31,17 @@ function formatBytes(bytes: number): string {
 export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
   // ── Local draft state (不实时写入，点确认才生效) ──
   const [draft, setDraft] = useState({
+    aiMode: config.aiMode,
+    // 常规模式
     openaiApiKey: config.openaiApiKey ?? '',
     openaiApiBase: config.openaiApiBase,
-    openaiModel: config.openaiModel,
     openaiCardModel: config.openaiCardModel,
+    // 全模态模式
+    omniApiKey: config.omniApiKey ?? '',
+    omniApiBase: config.omniApiBase,
+    omniModel: config.omniModel,
+    omniVoice: config.omniVoice,
+    // 语音（常规模式）
     fishApiKey: config.fishApiKey ?? '',
     fishReferenceId: config.fishReferenceId,
     asrApiKey: config.asrApiKey ?? '',
@@ -69,10 +76,14 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
 
   const handleApply = useCallback(() => {
     onUpdate({
+      aiMode: draft.aiMode,
       openaiApiKey: draft.openaiApiKey || null,
       openaiApiBase: draft.openaiApiBase,
-      openaiModel: draft.openaiModel,
       openaiCardModel: draft.openaiCardModel,
+      omniApiKey: draft.omniApiKey || null,
+      omniApiBase: draft.omniApiBase,
+      omniModel: draft.omniModel || 'qwen3.5-omni-plus-realtime',
+      omniVoice: draft.omniVoice,
       fishApiKey: draft.fishApiKey || null,
       fishReferenceId: draft.fishReferenceId,
       asrApiKey: draft.asrApiKey || null,
@@ -204,23 +215,62 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
 
         {/* ── AI 模型 ── */}
         <Section title="AI 模型" icon={Zap}>
-          <Field label="API Key" type="password"
-            value={draft.openaiApiKey}
-            onChange={(v) => update('openaiApiKey', v)}
-            placeholder="sk-..."
-          />
-          <Field label="API Base"
-            value={draft.openaiApiBase}
-            onChange={(v) => update('openaiApiBase', v)}
-          />
-          <Field label="聊天模型"
-            value={draft.openaiCardModel}
-            onChange={(v) => update('openaiCardModel', v)}
-          />
-          <Field label="视觉模型"
-            value={draft.openaiModel}
-            onChange={(v) => update('openaiModel', v)}
-          />
+          {/* 标签页 */}
+          <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
+            {(['regular', 'omni'] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => { setDraft((p) => ({ ...p, aiMode: mode })); setDirty(true); setSaved(false) }}
+                style={{
+                  flex: 1, padding: '5px 8px', borderRadius: 4, cursor: 'pointer',
+                  fontFamily: "'Exo 2', sans-serif", fontSize: 11,
+                  border: `1px solid ${draft.aiMode === mode ? theme.electricBlue : theme.glassBorder}`,
+                  background: draft.aiMode === mode ? 'rgba(0,180,255,0.12)' : 'rgba(255,255,255,0.03)',
+                  color: draft.aiMode === mode ? theme.electricBlue : theme.textSecondary,
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                {mode === 'regular' ? '常规聊天' : '全模态 Omni'}
+              </button>
+            ))}
+          </div>
+
+          {draft.aiMode === 'regular' ? (
+            <>
+              <Field label="API Key" type="password"
+                value={draft.openaiApiKey}
+                onChange={(v) => update('openaiApiKey', v)}
+                placeholder="sk-..."
+              />
+              <Field label="API Base"
+                value={draft.openaiApiBase}
+                onChange={(v) => update('openaiApiBase', v)}
+              />
+              <Field label="聊天模型"
+                value={draft.openaiCardModel}
+                onChange={(v) => update('openaiCardModel', v)}
+              />
+            </>
+          ) : (
+            <>
+              <Field label="API Key" type="password"
+                value={draft.omniApiKey}
+                onChange={(v) => update('omniApiKey', v)}
+                placeholder="留空则复用常规 API Key"
+              />
+              <Field label="API Base（硬编码，不可改）"
+                value="wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+                onChange={() => {}}
+                placeholder=""
+                disabled
+              />
+              <Field label="模型 ID"
+                value={draft.omniModel}
+                onChange={(v) => update('omniModel', v)}
+                placeholder="qwen3.5-omni-plus-realtime"
+              />
+            </>
+          )}
 
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <MagneticButton
@@ -240,40 +290,58 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
                 : '测试连接'}
             </MagneticButton>
           </div>
-
-          {/* 当前状态 */}
-          <div style={{ marginTop: 8, fontSize: 12, color: theme.textSecondary }}>
-            当前: {config.openaiApiKey ? config.openaiCardModel : '未配置'}
-            {config.openaiApiKey && (
-              <span style={{ color: theme.expGreen }}> ● 已启用</span>
-            )}
-          </div>
         </Section>
 
         {/* ── 语音 ── */}
         <Section title="语音" icon={Mic}>
-          <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 10 }}>
             右 Alt 长按 &gt; 600ms 开始说话
           </div>
-          <Field label="ASR API Key" type="password"
-            value={draft.asrApiKey}
-            onChange={(v) => update('asrApiKey', v)}
-            placeholder="不填则复用上方 API Key"
-          />
-          <Field label="ASR 模型"
-            value={draft.asrModel}
-            onChange={(v) => update('asrModel', v)}
-            placeholder="qwen3-asr-flash-realtime"
-          />
-          <Field label="Fish API Key" type="password"
-            value={draft.fishApiKey}
-            onChange={(v) => update('fishApiKey', v)}
-            placeholder="Fish Audio API Key（TTS 用）"
-          />
-          <Field label="音色 ID"
-            value={draft.fishReferenceId}
-            onChange={(v) => update('fishReferenceId', v)}
-          />
+
+          {draft.aiMode === 'regular' ? (
+            <>
+              <Field label="ASR API Key" type="password"
+                value={draft.asrApiKey}
+                onChange={(v) => update('asrApiKey', v)}
+                placeholder="不填则复用 AI 模型 API Key"
+              />
+              <Field label="ASR 模型"
+                value={draft.asrModel}
+                onChange={(v) => update('asrModel', v)}
+                placeholder="qwen3-asr-flash-realtime"
+              />
+              <Field label="Fish API Key" type="password"
+                value={draft.fishApiKey}
+                onChange={(v) => update('fishApiKey', v)}
+                placeholder="Fish Audio API Key（TTS）"
+              />
+              <Field label="Fish 音色 ID"
+                value={draft.fishReferenceId}
+                onChange={(v) => update('fishReferenceId', v)}
+              />
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 11, color: theme.textSecondary, marginBottom: 8 }}>
+                全模态模式：ASR + TTS 均由 Omni WS 处理，无需额外配置
+              </div>
+              <Field label="输出音色 ID"
+                value={draft.omniVoice}
+                onChange={(v) => update('omniVoice', v)}
+                placeholder="cosyvoice-v3.5-plus-bailian-..."
+              />
+            </>
+          )}
+
+          <div style={{ marginTop: 4 }}>
+            <MagneticButton
+              onClick={handleApply}
+              color={dirty ? theme.expGreen : theme.textSecondary}
+              disabled={!dirty}
+            >
+              {saved ? '已应用 ✓' : '保存'}
+            </MagneticButton>
+          </div>
         </Section>
 
         {/* ── 隐私 ── */}
@@ -439,23 +507,25 @@ function Section({
 // ── Input Field ──
 
 function Field({
-  label, value, onChange, type = 'text', placeholder,
+  label, value, onChange, type = 'text', placeholder, disabled,
 }: {
   label: string
   value: string
   onChange: (v: string) => void
   type?: 'text' | 'password'
   placeholder?: string
+  disabled?: boolean
 }) {
   return (
     <div style={{ marginBottom: 8 }}>
-      <label style={labelStyle}>{label}</label>
+      <label style={{ ...labelStyle, opacity: disabled ? 0.4 : 1 }}>{label}</label>
       <input
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        style={inputStyle}
+        disabled={disabled}
+        style={{ ...inputStyle, opacity: disabled ? 0.4 : 1, cursor: disabled ? 'not-allowed' : undefined }}
       />
     </div>
   )
@@ -485,3 +555,4 @@ const textareaStyle: React.CSSProperties = {
   resize: 'vertical',
   lineHeight: 1.5,
 }
+

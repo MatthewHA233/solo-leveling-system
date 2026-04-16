@@ -1,13 +1,15 @@
 // ══════════════════════════════════════════════
 // Voice Service — 语音管线编排
 //
-// 流程: 录音 → 展示音频气泡 → Qwen-ASR 转写 → 展示文字
+// 流程 A（默认）: 录音 → qwen-ASR 转写 → onTranscript → handleSend
+// 流程 B（aiMode=omni）: 流式录音 → Omni WS → 转写 → onTranscript → handleSend
 // ══════════════════════════════════════════════
 
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import type { AgentConfig } from '../agent/agent-config'
-import { createVoiceRecorder } from './voice-recorder'
-import type { VoiceRecorder } from './voice-recorder'
+import { createVoiceRecorder, createStreamingRecorder } from './voice-recorder'
+import type { VoiceRecorder, StreamingVoiceRecorder } from './voice-recorder'
 
 export type VoicePhase = 'idle' | 'listening' | 'thinking' | 'speaking'
 
@@ -29,8 +31,15 @@ export interface VoiceService {
   readonly getAudioLevel: () => number
 }
 
-// ASR WebSocket 端点（需要在 Rust 后端发起，因为浏览器不能设 Authorization header）
+// ASR WebSocket 端点
 const ASR_WS_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
+
+// PCM16 Uint8Array → base64
+function pcm16ToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+  return btoa(binary)
+}
 
 export function createVoiceService(
   getConfig: () => AgentConfig,
@@ -38,7 +47,8 @@ export function createVoiceService(
   callbacks: VoiceCallbacks,
 ): VoiceService {
   let phase: VoicePhase = 'idle'
-  let recorder: VoiceRecorder | null = null
+  let batchRecorder: VoiceRecorder | null = null
+  let streamRecorder: StreamingVoiceRecorder | null = null
 
   // Session 隔离：每次新录音自增，旧 session 的所有异步回调检查此值后放弃执行
   let sessionSeq = 0
@@ -48,79 +58,138 @@ export function createVoiceService(
     callbacks.onPhaseChange(p)
   }
 
-  const startRecording = async () => {
-    // 新 session 开始：使所有旧 session 的异步回调失效
-    sessionSeq++
+  // ── Omni 模式：等待 AI 音频回复完成 ──
+  const waitOmniAudioDone = (timeoutMs: number): Promise<void> =>
+    new Promise((resolve) => {
+      let unlisten: (() => void) | null = null
+      const timer = setTimeout(() => { unlisten?.(); resolve() }, timeoutMs)
+      listen<{ status: string }>('omni://status', (e) => {
+        if (e.payload.status === 'audio_done' || e.payload.status === 'disconnected' || e.payload.status === 'error') {
+          clearTimeout(timer)
+          unlisten?.()
+          resolve()
+        }
+      }).then((fn) => { unlisten = fn })
+    })
 
-    // phase 兜底
+  const startRecording = async () => {
+    sessionSeq++
     if (phase !== 'idle') phase = 'idle'
 
-    recorder = createVoiceRecorder()
-    try {
-      await recorder.start()
-      setPhase('listening')
-    } catch (err) {
-      callbacks.onError(`麦克风访问失败: ${err instanceof Error ? err.message : String(err)}`)
+    const config = getConfig()
+
+    const omniApiKey = config.omniApiKey || config.openaiApiKey
+    if (config.aiMode === 'omni' && omniApiKey) {
+      // ── Omni 全模态模式：流式录音 → Omni WS → 转写 ──
+      streamRecorder = createStreamingRecorder()
+      try {
+        await invoke('omni_connect', {
+          apiKey: omniApiKey,
+          model: config.omniModel,
+          voice: config.omniVoice || '',
+          systemPrompt: '',
+        })
+        await streamRecorder.start({
+          onChunk: (pcm16) => {
+            invoke('omni_send_audio', { pcmBase64: pcm16ToBase64(pcm16) }).catch(() => {})
+          },
+        })
+        setPhase('listening')
+      } catch (err) {
+        callbacks.onError(`Omni ASR 启动失败: ${err instanceof Error ? err.message : String(err)}`)
+        streamRecorder = null
+        invoke('omni_stop').catch(() => {})
+      }
+    } else {
+      // ── 默认批量录音 ──
+      batchRecorder = createVoiceRecorder()
+      try {
+        await batchRecorder.start()
+        setPhase('listening')
+      } catch (err) {
+        batchRecorder = null
+        callbacks.onError(`麦克风访问失败: ${err instanceof Error ? err.message : String(err)}`)
+      }
     }
   }
 
   const stopAndProcess = async () => {
-    if (phase !== 'listening' || !recorder) return
+    if (phase !== 'listening') return
     setPhase('thinking')
 
     const mySeq = sessionSeq
     const sessionMsgId = crypto.randomUUID()
-
-    const result = await recorder.stop()
-    recorder = null
-
-    if (mySeq !== sessionSeq) return
-
-    if (!result) {
-      callbacks.onError('录音过短或无声，已取消')
-      setPhase('idle')
-      return
-    }
-
-    // 通知 UI 展示录音气泡（立即）
-    callbacks.onUserAudio?.(result.wavBase64, result.durationMs, sessionMsgId)
-
-    // 调用 ASR 转写
     const config = getConfig()
-    if (config.openaiApiKey) {
+
+    if (config.aiMode === 'omni' && streamRecorder) {
+      // ── Omni 流式 ASR 收尾 ──
+      await streamRecorder.stop()
+      streamRecorder = null
+
       try {
-        const asrKey = config.asrApiKey ?? config.openaiApiKey ?? ''
-        const transcript = await invoke<string>('qwen_asr_transcribe', {
-          wavBase64: result.wavBase64,
-          apiKey: asrKey,
-          model: config.asrModel,
-          wsUrl: ASR_WS_URL,
-        })
-
-        if (mySeq !== sessionSeq) return
-
-        if (transcript.trim()) {
-          callbacks.onTranscript?.(transcript.trim(), sessionMsgId)
-        }
+        await invoke('omni_commit')
       } catch (err) {
         if (mySeq !== sessionSeq) return
-        // ASR 失败是非致命的，气泡已展示，仅记录
-        const msg = err instanceof Error ? err.message : String(err)
-        callbacks.onError(`语音转文字失败: ${msg}`)
+        callbacks.onError(`Omni commit 失败: ${err instanceof Error ? err.message : String(err)}`)
+        setPhase('idle')
+        return
       }
-    }
 
-    if (mySeq !== sessionSeq) return
-    setPhase('idle')
+      // Omni 模式：AI 直接生成回复（音频+文字），等待 audio_done 信号
+      await waitOmniAudioDone(30_000)
+      if (mySeq !== sessionSeq) return
+      setPhase('idle')
+    } else {
+      // ── 默认批量 ASR ──
+      const result = await batchRecorder?.stop() ?? null
+      batchRecorder = null
+
+      if (mySeq !== sessionSeq) return
+
+      if (!result) {
+        callbacks.onError('录音过短或无声，已取消')
+        setPhase('idle')
+        return
+      }
+
+      callbacks.onUserAudio?.(result.wavBase64, result.durationMs, sessionMsgId)
+
+      if (config.openaiApiKey) {
+        try {
+          const asrKey = config.asrApiKey ?? config.openaiApiKey ?? ''
+          const transcript = await invoke<string>('qwen_asr_transcribe', {
+            wavBase64: result.wavBase64,
+            apiKey: asrKey,
+            model: config.asrModel,
+            wsUrl: ASR_WS_URL,
+          })
+
+          if (mySeq !== sessionSeq) return
+
+          if (transcript.trim()) {
+            callbacks.onTranscript?.(transcript.trim(), sessionMsgId)
+          }
+        } catch (err) {
+          if (mySeq !== sessionSeq) return
+          callbacks.onError(`语音转文字失败: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      if (mySeq !== sessionSeq) return
+      setPhase('idle')
+    }
   }
 
   const cancel = () => {
-    if (recorder) { recorder.stop(); recorder = null }
+    if (batchRecorder) { batchRecorder.stop(); batchRecorder = null }
+    if (streamRecorder) { streamRecorder.stop().catch(() => {}); streamRecorder = null }
+    invoke('omni_stop').catch(() => {})
     setPhase('idle')
   }
 
   const getAudioLevel = (): number => {
-    if (recorder && phase === 'listening') return recorder.getAudioLevel()
+    if (batchRecorder && phase === 'listening') return batchRecorder.getAudioLevel()
+    if (streamRecorder && phase === 'listening') return streamRecorder.getAudioLevel()
     return 0
   }
 
