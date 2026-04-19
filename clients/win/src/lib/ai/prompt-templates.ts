@@ -385,3 +385,34 @@ export function buildSystemPrompt(
     buildDynamicContext(dynamicParams),
   ].join('\n\n')
 }
+
+// ── 对话历史摘要（供 Omni Realtime instructions 注入） ──────────────────────
+
+const MAX_SUMMARY_CHARS = 2000
+const MAX_ROUNDS = 8
+const MAX_MSG_CHARS = 200
+
+export function buildConversationSummary(
+  messages: ReadonlyArray<{ role: string; content: string }>,
+): string {
+  const turns = messages
+    .filter((m) => m.role === 'user' || m.role === 'agent')
+    .slice(-MAX_ROUNDS * 2)
+
+  if (turns.length === 0) return ''
+
+  const lines = turns.map((m) => {
+    const speaker = m.role === 'user' ? '主人' : 'Fairy'
+    const text = m.content.length > MAX_MSG_CHARS
+      ? m.content.slice(0, MAX_MSG_CHARS) + '…'
+      : m.content
+    return `${speaker}: ${text}`
+  })
+
+  const summary = lines.join('\n')
+  const truncated = summary.length > MAX_SUMMARY_CHARS
+    ? summary.slice(summary.length - MAX_SUMMARY_CHARS)
+    : summary
+
+  return `# 近期对话记录\n${truncated}`
+}
