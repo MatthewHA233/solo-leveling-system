@@ -297,6 +297,7 @@ export function queryModel(
 
               if (choice.finish_reason) {
                 stopReason = choice.finish_reason
+                console.log('[API] finish_reason=', choice.finish_reason, 'tool_calls=', !!(delta?.tool_calls?.length))
               }
             } catch {
               // 跳过格式异常的 SSE 行

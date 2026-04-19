@@ -3,11 +3,12 @@
 // ══════════════════════════════════════════════
 
 import { useRef, useEffect, useState } from 'react'
-import { Send, MessageSquare, Camera, Volume2, VolumeX, Bug } from 'lucide-react'
+import { Send, MessageSquare, Camera, Volume2, VolumeX, Bug, Radio } from 'lucide-react'
 import { theme } from '../theme'
-import type { ChatMessage } from '../App'
+import type { ChatMessage, OmniDebugInfo } from '../App'
 import type { ApiRequestSnapshot } from '../lib/llm/api'
 import DebugRequestModal from './DebugRequestModal'
+import OmniDebugModal from './OmniDebugModal'
 
 interface Props {
   readonly messages: readonly ChatMessage[]
@@ -26,6 +27,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [activeDebugSnaps, setActiveDebugSnaps] = useState<ApiRequestSnapshot[] | null>(null)
+  const [activeOmniDebug, setActiveOmniDebug] = useState<OmniDebugInfo | null>(null)
 
   useEffect(() => {
     const el = scrollRef.current
@@ -170,6 +172,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
             key={msg.id}
             message={msg}
             onDebug={msg.debugSnapshots ? () => setActiveDebugSnaps(msg.debugSnapshots!) : undefined}
+            onOmniDebug={msg.omniDebugInfo ? () => setActiveOmniDebug(msg.omniDebugInfo!) : undefined}
           />
         ))}
 
@@ -178,11 +181,17 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
         )}
       </div>
 
-      {/* ── Debug Modal ── */}
+      {/* ── Debug Modals ── */}
       {activeDebugSnaps && (
         <DebugRequestModal
           snapshots={activeDebugSnaps}
           onClose={() => setActiveDebugSnaps(null)}
+        />
+      )}
+      {activeOmniDebug && (
+        <OmniDebugModal
+          info={activeOmniDebug}
+          onClose={() => setActiveOmniDebug(null)}
         />
       )}
 
@@ -409,7 +418,7 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
 
 // ── Bubble ──
 
-function Bubble({ message, onDebug }: { message: ChatMessage; onDebug?: () => void }) {
+function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDebug?: () => void; onOmniDebug?: () => void }) {
   if (message.role === 'system') {
     return (
       <div style={{
@@ -477,8 +486,13 @@ function Bubble({ message, onDebug }: { message: ChatMessage; onDebug?: () => vo
             }),
       }}>
         {message.content}
+        {!isUser && message.audioUrl && (
+          <div style={{ marginTop: 6 }}>
+            <AudioBubble audioUrl={message.audioUrl} />
+          </div>
+        )}
       </div>
-      {/* Debug 按钮：只在 agent 消息上，有快照时显示 */}
+      {/* Debug 按钮（普通模式）：有快照时显示 */}
       {!isUser && onDebug && (
         <button
           onClick={onDebug}
@@ -494,6 +508,24 @@ function Bubble({ message, onDebug }: { message: ChatMessage; onDebug?: () => vo
           onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.15)')}
         >
           <Bug size={11} />
+        </button>
+      )}
+      {/* Omni Debug 按钮：Omni 回复气泡上显示 */}
+      {!isUser && onOmniDebug && (
+        <button
+          onClick={onOmniDebug}
+          title="查看本轮 Omni 上下文"
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: 'rgba(167,139,250,0.25)', padding: 2,
+            display: 'flex', alignItems: 'center',
+            flexShrink: 0,
+            transition: 'color 0.15s',
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = 'rgba(167,139,250,0.7)')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(167,139,250,0.25)')}
+        >
+          <Radio size={11} />
         </button>
       )}
     </div>

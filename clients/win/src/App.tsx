@@ -14,7 +14,7 @@ import { theme } from './theme'
 // Agent
 import { loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
-import { buildSystemPrompt } from './lib/ai/prompt-templates'
+import { buildSystemPrompt, buildConversationSummary } from './lib/ai/prompt-templates'
 import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from './lib/ai/prompt-templates'
 
 // LLM Engine（新）
@@ -26,10 +26,23 @@ import type { ApiRequestSnapshot } from './lib/llm/api'
 // Agent Tools
 import { TOOL_DEFINITIONS, executeAgentTool } from './lib/agent/agent-tools'
 
+// OpenAI Chat Completions tools → Realtime API flat tools
+// Chat 格式: { type: 'function', function: { name, description, parameters } }
+// Realtime 格式: { type: 'function', name, description, parameters }
+function toRealtimeTools(tools: typeof TOOL_DEFINITIONS) {
+  return tools.map((t) => ({
+    type: 'function' as const,
+    name: t.function.name,
+    description: t.function.description,
+    parameters: t.function.parameters,
+  }))
+}
+
 // Voice
 import { createVoiceService } from './lib/voice'
 import type { VoiceService } from './lib/voice'
 import { createFishTTSTauri } from './lib/voice/fish-tts-tauri'
+import { pcm16ChunksToWavBlob } from './lib/voice/voice-recorder'
 
 // UI
 import DayNightChart from './components/DayNightChart'
@@ -48,6 +61,22 @@ import { NeonDivider, NeonBadge, MagneticButton } from './components/NeonUI'
 import { usePresenceDetection } from './hooks/usePresenceDetection'
 import { invoke } from '@tauri-apps/api/core'
 
+export interface OmniDebugItem {
+  type: 'text' | 'audio'
+  ts: string
+  content?: string       // text 类型
+  wavBase64?: string     // audio 类型
+  durationMs?: number    // audio 类型
+}
+
+export interface OmniDebugInfo {
+  systemPrompt: string
+  model: string
+  voice: string
+  ts: string
+  items: OmniDebugItem[]
+}
+
 export interface ChatMessage {
   readonly id: string
   readonly role: 'user' | 'agent' | 'system'
@@ -56,7 +85,8 @@ export interface ChatMessage {
   readonly audioUrl?: string             // 语音消息的 blob URL（可播放）
   readonly durationMs?: number           // 录音时长（毫秒）
   readonly transcript?: string           // ASR 转写文本（语音消息专用）
-  readonly debugSnapshots?: ApiRequestSnapshot[]  // 本轮发给 AI 的请求快照
+  readonly debugSnapshots?: ApiRequestSnapshot[]  // 本轮发给 AI 的请求快照（普通模式）
+  readonly omniDebugInfo?: OmniDebugInfo          // 本轮发给 Omni 的上下文快照
 }
 
 // 区间合并「看B站视频」活动
@@ -218,6 +248,10 @@ export default function App() {
   const fairyStateRef = useRef<FairyState>('idle')
   const voiceServiceRef = useRef<VoiceService | null>(null)
   const configRef = useRef(config)
+  const systemPromptRef = useRef<string>('')
+  const chatMessagesRef = useRef<ChatMessage[]>([])
+  // 同步 ref，供 refreshSystemPrompt 读取最新值（避免 useCallback 闭包过期）
+  useEffect(() => { chatMessagesRef.current = chatMessages }, [chatMessages])
   const LONG_PRESS_MS = 600
 
   const fairyWinRef = useRef<import('@tauri-apps/api/webviewWindow').WebviewWindow | null>(null)
@@ -305,12 +339,7 @@ export default function App() {
 
     const svc = createVoiceService(
       () => configRef.current,
-      () => {
-        if (activities.length === 0) return '今日暂无活动数据'
-        return activities.slice(-5).map((a) =>
-          `${Math.floor(a.startMinute / 60)}:${String(a.startMinute % 60).padStart(2, '0')}-${Math.floor(a.endMinute / 60)}:${String(a.endMinute % 60).padStart(2, '0')} [${a.category}] ${a.title}`
-        ).join('\n')
-      },
+      () => systemPromptRef.current,
       {
         onPhaseChange: (phase) => {
           emitFairy(phase as FairyState)
@@ -326,14 +355,35 @@ export default function App() {
             content: '', audioUrl, durationMs,
             timestamp: new Date().toISOString(),
           }])
+          // Omni 模式：把音频 item 追加到已有快照（Alt 按下时已创建快照）
+          if (configRef.current.aiMode === 'omni') {
+            const audioItem: OmniDebugItem = { type: 'audio', wavBase64, durationMs, ts: new Date().toISOString() }
+            if (omniDebugInfoRef.current) {
+              omniDebugInfoRef.current = {
+                ...omniDebugInfoRef.current,
+                items: [...omniDebugInfoRef.current.items, audioItem],
+              }
+            } else {
+              const cfg = configRef.current
+              omniDebugInfoRef.current = {
+                systemPrompt: systemPromptRef.current,
+                model: cfg.omniModel,
+                voice: cfg.omniVoice || 'Tina',
+                ts: new Date().toISOString(),
+                items: [audioItem],
+              }
+            }
+          }
         },
         onTranscript: (text, sessionMsgId) => {
-          // ASR 转写完成：1) 更新音频气泡的 transcript；2) 触发 LLM 回复
+          // 更新用户气泡的转写文字
           setChatMessages((prev) =>
             prev.map((m) => m.id === sessionMsgId ? { ...m, transcript: text } : m)
           )
-          // 语音输入也走同一条 handleSend 链路
-          handleSend(text)
+          // Omni 模式：音频已经走 WS，工具调用走 omni://tool_call 事件，不回落 handleSend
+          if (configRef.current.aiMode !== 'omni') {
+            handleSend(text)
+          }
         },
         onAudioLevel: () => {
           // FairyHUD 自己通过 analyser 获取，这里暂不处理
@@ -346,6 +396,7 @@ export default function App() {
           emitFairy('idle')
         },
       },
+      () => toRealtimeTools(TOOL_DEFINITIONS),
     )
     voiceServiceRef.current = svc
     return svc
@@ -355,6 +406,10 @@ export default function App() {
   const omniAudioCtxRef = useRef<AudioContext | null>(null)
   const omniNextStartRef = useRef<number>(0)
   const omniTextAccRef = useRef<string>('')
+  const omniAiPcmChunksRef = useRef<Uint8Array[]>([])
+  const omniAgentMsgIdRef = useRef<string | null>(null)   // 当前 AI 回复气泡的消息 ID
+  const omniDebugInfoRef = useRef<OmniDebugInfo | null>(null)  // 本轮 Omni 上下文快照（随气泡写入）
+  const refreshSystemPromptRef = useRef<() => Promise<string>>(() => Promise.resolve(''))
 
   useEffect(() => {
     if (config.aiMode !== 'omni') return
@@ -387,6 +442,36 @@ export default function App() {
         listen<{ text: string }>('omni://text_chunk', ({ payload }) => {
           omniTextAccRef.current += payload.text
           emitFairy('speaking', omniTextAccRef.current)
+
+          // 第一条 text.delta：立刻建气泡（附带本轮 debug 快照）
+          if (!omniAgentMsgIdRef.current) {
+            const id = crypto.randomUUID()
+            omniAgentMsgIdRef.current = id
+            // 确保 debug 快照存在；若 ref 为空则就地补建（兜底）
+            if (!omniDebugInfoRef.current) {
+              const cfg = configRef.current
+              omniDebugInfoRef.current = {
+                systemPrompt: systemPromptRef.current,
+                model: cfg.omniModel,
+                voice: cfg.omniVoice || 'Tina',
+                ts: new Date().toISOString(),
+                items: [],
+              }
+            }
+            const debugSnap = omniDebugInfoRef.current
+            setChatMessages((prev) => [...prev, {
+              id, role: 'agent' as const,
+              content: omniTextAccRef.current,
+              timestamp: new Date().toISOString(),
+              omniDebugInfo: debugSnap,
+            }])
+          } else {
+            // 后续 delta：实时更新文字
+            const id = omniAgentMsgIdRef.current
+            setChatMessages((prev) =>
+              prev.map((m) => m.id === id ? { ...m, content: omniTextAccRef.current } : m)
+            )
+          }
         })
       )
     )
@@ -394,7 +479,42 @@ export default function App() {
     cleanups.push(
       import('@tauri-apps/api/event').then(({ listen }) =>
         listen<{ data: string }>('omni://audio_chunk', ({ payload }) => {
+          const pcm = Uint8Array.from(atob(payload.data), (c) => c.charCodeAt(0))
+          omniAiPcmChunksRef.current.push(pcm)
           playOmniPcm(payload.data)
+        })
+      )
+    )
+
+    // Omni 原生工具调用：WS 端触发 → 前端执行 → omni_tool_result 回传
+    cleanups.push(
+      import('@tauri-apps/api/event').then(({ listen }) =>
+        listen<{ call_id: string; name: string; arguments: string }>('omni://tool_call', async ({ payload }) => {
+          console.log('[Omni] tool_call', payload.name, payload.arguments)
+          emitFairy('thinking')
+          let argsPreview = payload.arguments
+          try { argsPreview = JSON.stringify(JSON.parse(payload.arguments), null, 0) } catch {}
+          const toolMsgId = `tool-${payload.call_id}`
+          setChatMessages((prev) => [...prev, {
+            id: toolMsgId, role: 'system' as const,
+            content: `⚙ ${payload.name}(${argsPreview})`,
+            timestamp: new Date().toISOString(),
+          }])
+          let result: string
+          try {
+            result = await executeAgentTool(payload.name, payload.arguments)
+          } catch (err) {
+            result = `工具执行失败：${err instanceof Error ? err.message : String(err)}`
+          }
+          const preview = result.length > 300 ? result.slice(0, 300) + '…' : result
+          setChatMessages((prev) => prev.map((m) =>
+            m.id === toolMsgId ? { ...m, content: m.content + `\n→ ${preview}` } : m
+          ))
+          try {
+            await invoke('omni_tool_result', { callId: payload.call_id, output: result })
+          } catch (err) {
+            console.error('[Omni] omni_tool_result failed', err)
+          }
         })
       )
     )
@@ -403,26 +523,53 @@ export default function App() {
       import('@tauri-apps/api/event').then(({ listen }) =>
         listen<{ status: string; message?: string }>('omni://status', ({ payload }) => {
           if (payload.status === 'audio_done') {
-            const text = omniTextAccRef.current.trim()
-            if (text) {
+            const chunks = omniAiPcmChunksRef.current
+            omniAiPcmChunksRef.current = []
+            omniTextAccRef.current = ''
+            const msgId = omniAgentMsgIdRef.current
+            omniAgentMsgIdRef.current = null
+
+            const audioUrl = chunks.length > 0
+              ? URL.createObjectURL(pcm16ChunksToWavBlob(chunks, 24000))
+              : undefined
+
+            const debugSnap = omniDebugInfoRef.current ?? undefined
+
+            if (msgId) {
+              // 给已有气泡追加音频 + debug 快照（兜底：text_chunk 时若 ref 还为空则在此补上）
+              setChatMessages((prev) =>
+                prev.map((m) => m.id === msgId
+                  ? { ...m, ...(audioUrl ? { audioUrl } : {}), ...(debugSnap && !m.omniDebugInfo ? { omniDebugInfo: debugSnap } : {}) }
+                  : m
+                )
+              )
+            } else if (audioUrl) {
+              // 极少情况：没有文字但有音频，建新气泡
               setChatMessages((prev) => [...prev, {
                 id: crypto.randomUUID(), role: 'agent' as const,
-                content: text, timestamp: new Date().toISOString(),
+                content: '', audioUrl, timestamp: new Date().toISOString(),
+                ...(debugSnap ? { omniDebugInfo: debugSnap } : {}),
               }])
-              omniTextAccRef.current = ''
             }
-            // phase 已由 voice-service 的 waitOmniAudioDone 回调到 idle
+            setIsProcessing(false)
+            emitFairy('idle')
+            // 对话完成后刷新 system prompt，确保下一次 session 的 instructions 包含本轮对话
+            refreshSystemPromptRef.current().catch(() => {})
           } else if (payload.status === 'error') {
+            omniAiPcmChunksRef.current = []
+            omniTextAccRef.current = ''
+            omniAgentMsgIdRef.current = null
             setChatMessages((prev) => [...prev, {
               id: crypto.randomUUID(), role: 'system' as const,
               content: `Omni 错误: ${payload.message ?? '未知'}`,
               timestamp: new Date().toISOString(),
             }])
-            omniTextAccRef.current = ''
           }
         })
       )
     )
+
+    // omni://user_transcript 由 voice-service 内部消费（调 onTranscript 更新气泡），此处无需重复处理
 
     return () => {
       cleanups.forEach((p) => p.then((fn) => fn()))
@@ -434,23 +581,45 @@ export default function App() {
     let unlistenDown: (() => void) | null = null
     let unlistenUp:   (() => void) | null = null
 
+    let lastDownMs = 0
     const onDown = () => {
-      console.log('[RAlt] keydown received')
       if (pressingRef.current) return
+      // 两路（DOM + Rust）可能在同一帧触发，去重
+      const now = Date.now()
+      if (now - lastDownMs < 50) return
+      lastDownMs = now
       pressingRef.current = true
+      console.log('[RAlt] keydown received')
       altDownTimeRef.current = Date.now()
 
       setTimeout(() => {
         if (pressingRef.current && Date.now() - altDownTimeRef.current >= LONG_PRESS_MS) {
           emitFairy('listening')  // 立即给视觉反馈，不等 mic 权限
+          // Omni 语音模式：提前刷 system prompt 并写 debug 快照（onUserAudio 无法知道 systemPrompt）
+          if (configRef.current.aiMode === 'omni') {
+            refreshSystemPrompt().then((sp) => {
+              const cfg = configRef.current
+              omniDebugInfoRef.current = {
+                systemPrompt: sp,
+                model: cfg.omniModel,
+                voice: cfg.omniVoice || 'Tina',
+                ts: new Date().toISOString(),
+                items: [],   // audio item 由 onUserAudio 追加
+              }
+            })
+          }
           const svc = getVoiceService()
           svc.startRecording()
         }
       }, LONG_PRESS_MS)
     }
 
+    let lastUpMs = 0
     const onUp = () => {
       if (!pressingRef.current) return
+      const now = Date.now()
+      if (now - lastUpMs < 50) return
+      lastUpMs = now
       pressingRef.current = false
       const holdDuration = Date.now() - altDownTimeRef.current
 
@@ -464,6 +633,13 @@ export default function App() {
       }
     }
 
+    // DOM 监听：Solo 窗口聚焦时 WebView2 拦截了 Alt 的系统键路由，
+    // Rust WH_KEYBOARD_LL 事件无法送达，用 DOM keydown/keyup 补位
+    const onDomDown = (e: KeyboardEvent) => { if (e.code === 'AltRight') { e.preventDefault(); onDown() } }
+    const onDomUp   = (e: KeyboardEvent) => { if (e.code === 'AltRight') { e.preventDefault(); onUp()   } }
+    window.addEventListener('keydown', onDomDown)
+    window.addEventListener('keyup',   onDomUp)
+
     import('@tauri-apps/api/event').then(({ listen }) => {
       Promise.all([
         listen('ralt-keydown', onDown),
@@ -475,6 +651,8 @@ export default function App() {
     })
 
     return () => {
+      window.removeEventListener('keydown', onDomDown)
+      window.removeEventListener('keyup',   onDomUp)
       unlistenDown?.()
       unlistenUp?.()
     }
@@ -625,6 +803,58 @@ export default function App() {
     refreshActivities()
   }, [activities, refreshActivities])
 
+  // ── System Prompt Builder（两套协议共用） ──
+  const refreshSystemPrompt = useCallback(async () => {
+    const cfg = configRef.current
+    const oneHourAgo = Date.now() - 60 * 60 * 1000
+    const today = new Date()
+    const toHHmm = (s: string) => s.slice(11, 16)
+
+    const [goalsRes, mtSpans, biliSpans] = await Promise.allSettled([
+      fetchGoals('active'),
+      fetchManicTimeSpans(today),
+      fetchBiliSpans(today),
+    ])
+
+    const goals: GoalRecord[] = goalsRes.status === 'fulfilled'
+      ? goalsRes.value.map((g) => ({ title: g.title, tags: parseGoalTags(g) }))
+      : []
+    const mtData = mtSpans.status === 'fulfilled' ? mtSpans.value : []
+
+    const activityTags: ActivityTagRecord[] = mtData
+      .filter((s) => s.track === 'tags' && new Date(s.end_at).getTime() >= oneHourAgo)
+      .map((s) => ({ startTime: toHHmm(s.start_at), endTime: toHHmm(s.end_at), tag: s.title, subTag: s.group_name ?? undefined }))
+
+    const appUsage: AppUsageRecord[] = mtData
+      .filter((s) => s.track === 'apps' && new Date(s.end_at).getTime() >= oneHourAgo)
+      .map((s) => ({ startTime: toHHmm(s.start_at), endTime: toHHmm(s.end_at), appName: s.title, windowTitle: s.group_name ?? '' }))
+
+    const biliHistory: BiliRecord[] = biliSpans.status === 'fulfilled'
+      ? biliSpans.value
+          .filter((s) => new Date(s.start_at).getTime() >= oneHourAgo)
+          .map((s) => ({ time: toHHmm(s.start_at), title: s.title, url: `https://www.bilibili.com/video/${s.bvid}` }))
+      : []
+
+    const base = buildSystemPrompt(
+      cfg.agentName, cfg.agentPersona, cfg.agentCallUser,
+      cfg.mainQuest,
+      { goals, activityTags, appUsage, biliHistory, presence },
+    )
+    const history = buildConversationSummary(
+      chatMessagesRef.current.map((m) => ({ role: m.role, content: m.content || m.transcript || '' }))
+    )
+    systemPromptRef.current = history ? `${base}\n\n${history}` : base
+    return systemPromptRef.current
+  }, [presence])
+  refreshSystemPromptRef.current = refreshSystemPrompt
+
+  // ── System Prompt 预热 + 定时刷新（每分钟，供 Omni 模式热读）──
+  useEffect(() => {
+    refreshSystemPrompt().catch(() => {})
+    const timer = setInterval(() => refreshSystemPrompt().catch(() => {}), 60_000)
+    return () => clearInterval(timer)
+  }, [refreshSystemPrompt])
+
   // ── Send Message ──
   const handleSend = useCallback(async (text: string) => {
     if (!text.trim()) return
@@ -644,58 +874,48 @@ export default function App() {
     // 文字输入也要立即显示思考动画
     if (!isVoiceInput) emitFairy('thinking')
 
-    // D2 + D4 — 并行查询目标和近期活动
-    const oneHourAgo = Date.now() - 60 * 60 * 1000
-    const today = new Date()
+    // D2 + D4 — 构建 system prompt（两套协议共用，结果缓存在 systemPromptRef）
+    const systemPrompt = await refreshSystemPrompt()
 
-    const toHHmm = (datetimeStr: string) =>
-      datetimeStr.slice(11, 16)  // "2026-04-09 14:32:00" → "14:32"
-
-    const [goalsRes, mtSpans, biliSpans] = await Promise.allSettled([
-      fetchGoals('active'),
-      fetchManicTimeSpans(today),
-      fetchBiliSpans(today),
-    ])
-
-    const goals: GoalRecord[] = goalsRes.status === 'fulfilled'
-      ? goalsRes.value.map(g => ({ title: g.title, tags: parseGoalTags(g) }))
-      : []
-
-    const mtData = mtSpans.status === 'fulfilled' ? mtSpans.value : []
-
-    const activityTags: ActivityTagRecord[] = mtData
-      .filter(s => s.track === 'tags' && new Date(s.end_at).getTime() >= oneHourAgo)
-      .map(s => ({
-        startTime: toHHmm(s.start_at),
-        endTime: toHHmm(s.end_at),
-        tag: s.title,
-        subTag: s.group_name ?? undefined,
-      }))
-
-    const appUsage: AppUsageRecord[] = mtData
-      .filter(s => s.track === 'apps' && new Date(s.end_at).getTime() >= oneHourAgo)
-      .map(s => ({
-        startTime: toHHmm(s.start_at),
-        endTime: toHHmm(s.end_at),
-        appName: s.title,
-        windowTitle: s.group_name ?? '',
-      }))
-
-    const biliHistory: BiliRecord[] = biliSpans.status === 'fulfilled'
-      ? biliSpans.value
-          .filter(s => new Date(s.start_at).getTime() >= oneHourAgo)
-          .map(s => ({
-            time: toHHmm(s.start_at),
-            title: s.title,
-            url: `https://www.bilibili.com/video/${s.bvid}`,
-          }))
-      : []
-
-    const systemPrompt = buildSystemPrompt(
-      config.agentName, config.agentPersona, config.agentCallUser,
-      config.mainQuest,
-      { goals, activityTags, appUsage, biliHistory, presence },
-    )
+    // ── Omni 全模态：文字输入直接走 WS，返回音频+文本，不走独立 LLM ──
+    if (configRef.current.aiMode === 'omni') {
+      const cfg = configRef.current
+      const omniApiKey = cfg.omniApiKey || cfg.openaiApiKey
+      if (!omniApiKey) {
+        setChatMessages((prev) => [...prev, {
+          id: crypto.randomUUID(), role: 'system' as const,
+          content: 'Omni 模式未配置 API Key', timestamp: new Date().toISOString(),
+        }])
+        setIsProcessing(false)
+        return
+      }
+      // 记录 debug 快照（text_chunk 建气泡时写入 ChatMessage）
+      omniDebugInfoRef.current = {
+        systemPrompt,
+        model: cfg.omniModel,
+        voice: cfg.omniVoice || 'Tina',
+        ts: new Date().toISOString(),
+        items: [{ type: 'text', content: text, ts: new Date().toISOString() }],
+      }
+      try {
+        await invoke('omni_connect', {
+          apiKey: omniApiKey, model: cfg.omniModel,
+          voice: cfg.omniVoice || '', systemPrompt,
+          tools: toRealtimeTools(TOOL_DEFINITIONS),
+        })
+        await invoke('omni_send_text', { text })
+        // 后续由 omni://text_chunk / omni://audio_chunk / omni://status(audio_done) 处理
+        // setIsProcessing(false) 在 audio_done handler 里触发
+      } catch (err) {
+        setChatMessages((prev) => [...prev, {
+          id: crypto.randomUUID(), role: 'system' as const,
+          content: `Omni 错误: ${err instanceof Error ? err.message : String(err)}`,
+          timestamp: new Date().toISOString(),
+        }])
+        setIsProcessing(false)
+      }
+      return
+    }
 
     const agentMsgId = crypto.randomUUID()
     const userMsg = createUserMessage(text)
@@ -781,6 +1001,7 @@ export default function App() {
         },
         maxIterations: 8,
         onEvent: (event) => {
+          if (event.type !== 'textDelta') console.log('[QueryLoop]', event.type, event)
           if (event.type === 'textDelta') {
             setChatMessages((prev) => {
               const idx = prev.findIndex((m) => m.id === agentMsgId)
@@ -797,6 +1018,33 @@ export default function App() {
               }]
             })
             pushToTts(event.delta)
+          } else if (event.type === 'toolCallStarted') {
+            // 工具调用开始：立即把 sentBuf 里积压的文字刷给 TTS（否则工具执行期间静音）
+            pushToTts('', true)
+            emitFairy('thinking')
+            let argsPreview = ''
+            try { argsPreview = JSON.stringify(JSON.parse(event.call.arguments), null, 0) } catch { argsPreview = event.call.arguments }
+            setChatMessages((prev) => [...prev, {
+              id: `tool-${event.call.id}`, role: 'system' as const,
+              content: `⚙ ${event.call.name}(${argsPreview})`,
+              timestamp: new Date().toISOString(),
+            }])
+          } else if (event.type === 'toolCallDone') {
+            // 工具完成：把结果追加到对应的系统消息气泡里
+            emitFairy('thinking')
+            const resultPreview = event.result.length > 300 ? event.result.slice(0, 300) + '…' : event.result
+            setChatMessages((prev) => prev.map((m) =>
+              m.id === `tool-${event.call.id}`
+                ? { ...m, content: m.content + `\n→ ${resultPreview}` }
+                : m
+            ))
+          } else if (event.type === 'error') {
+            // API 错误（工具调用后的第二次请求失败是常见原因）→ 直接显示给用户
+            setChatMessages((prev) => [...prev, {
+              id: crypto.randomUUID(), role: 'system' as const,
+              content: `错误：${event.message}`,
+              timestamp: new Date().toISOString(),
+            }])
           }
         },
         executeTool: (call) => executeAgentTool(call.name, call.arguments),

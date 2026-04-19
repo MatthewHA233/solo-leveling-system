@@ -7,8 +7,9 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+
 import type { AgentConfig } from '../agent/agent-config'
-import { createVoiceRecorder, createStreamingRecorder } from './voice-recorder'
+import { createVoiceRecorder, createStreamingRecorder, pcm16ChunksToWavBlob } from './voice-recorder'
 import type { VoiceRecorder, StreamingVoiceRecorder } from './voice-recorder'
 
 export type VoicePhase = 'idle' | 'listening' | 'thinking' | 'speaking'
@@ -43,12 +44,15 @@ function pcm16ToBase64(bytes: Uint8Array): string {
 
 export function createVoiceService(
   getConfig: () => AgentConfig,
-  _getContext: () => string,
+  getSystemPrompt: () => string,
   callbacks: VoiceCallbacks,
+  getOmniTools: () => unknown = () => [],
 ): VoiceService {
   let phase: VoicePhase = 'idle'
   let batchRecorder: VoiceRecorder | null = null
   let streamRecorder: StreamingVoiceRecorder | null = null
+  let omniPcmChunks: Uint8Array[] = []   // Omni 录音 PCM 缓冲，用于生成用户气泡音频
+  let omniRecordStartMs = 0
 
   // Session 隔离：每次新录音自增，旧 session 的所有异步回调检查此值后放弃执行
   let sessionSeq = 0
@@ -87,10 +91,14 @@ export function createVoiceService(
           apiKey: omniApiKey,
           model: config.omniModel,
           voice: config.omniVoice || '',
-          systemPrompt: '',
+          systemPrompt: getSystemPrompt(),
+          tools: getOmniTools(),
         })
+        omniPcmChunks = []
+        omniRecordStartMs = Date.now()
         await streamRecorder.start({
           onChunk: (pcm16) => {
+            omniPcmChunks.push(pcm16)
             invoke('omni_send_audio', { pcmBase64: pcm16ToBase64(pcm16) }).catch(() => {})
           },
         })
@@ -126,6 +134,23 @@ export function createVoiceService(
       await streamRecorder.stop()
       streamRecorder = null
 
+      // 立刻生成用户语音气泡（先无文字，transcript 到来后由 App.tsx 更新）
+      const durationMs = Date.now() - omniRecordStartMs
+      if (omniPcmChunks.length > 0 && callbacks.onUserAudio) {
+        const blob = pcm16ChunksToWavBlob(omniPcmChunks, 16000)
+        const reader = new FileReader()
+        reader.readAsDataURL(blob)
+        await new Promise<void>((resolve) => {
+          reader.onload = () => {
+            const dataUrl = reader.result as string
+            const base64 = dataUrl.split(',')[1]
+            callbacks.onUserAudio!(base64, durationMs, sessionMsgId)
+            resolve()
+          }
+        })
+      }
+      omniPcmChunks = []
+
       try {
         await invoke('omni_commit')
       } catch (err) {
@@ -134,6 +159,16 @@ export function createVoiceService(
         setPhase('idle')
         return
       }
+
+      // 监听本次 session 的用户转写，更新已有气泡（一次性）
+      listen<{ text: string }>('omni://user_transcript', ({ payload }) => {
+        if (mySeq === sessionSeq && payload.text.trim() && callbacks.onTranscript) {
+          callbacks.onTranscript(payload.text.trim(), sessionMsgId)
+        }
+      }).then((unlisten) => {
+        // 等 audio_done 后自动解除
+        waitOmniAudioDone(30_000).finally(() => unlisten())
+      })
 
       // Omni 模式：AI 直接生成回复（音频+文字），等待 audio_done 信号
       await waitOmniAudioDone(30_000)
