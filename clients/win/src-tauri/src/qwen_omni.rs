@@ -1,26 +1,30 @@
 // ══════════════════════════════════════════════
 // Qwen Omni Realtime — DashScope 全模态单 WS
 //
-// 参考: docs/参考.md（基于官方文档整理）
+// 参考: docs/参考.md（基于官方文档整理）+ OpenAI Realtime API function calling
 //
 // 协议流程:
 //   连接(Authorization header) → session.created
-//   → session.update(modalities/voice/格式)
+//   → session.update(modalities/voice/格式/tools)
 //   → input_audio_buffer.append(PCM Base64)
 //   → input_audio_buffer.commit + response.create
 //   ← response.audio.delta (PCM Base64)
 //   ← response.text.delta  (AI 文字)
+//   ← response.output_item.added/done (type=function_call → 工具调用)
+//   ← response.function_call_arguments.delta/done (工具参数流式)
 //   ← response.audio.done  → omni://status {audio_done}
 //
 // Tauri 事件（emit 到前端）:
 //   omni://status      { status: "connected"|"audio_done"|"error"|"disconnected", message? }
 //   omni://audio_chunk { data: string }  — Base64 PCM，前端直接解码播放
 //   omni://text_chunk  { text: string }  — AI 回复增量文字
+//   omni://tool_call   { call_id, name, arguments } — 工具调用（前端执行后回传 omni_tool_result）
 // ══════════════════════════════════════════════
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::{mpsc, Mutex};
@@ -56,6 +60,37 @@ impl OmniSession {
         ));
     }
 
+    pub fn send_text(&self, text: &str) {
+        let create = json!({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": text }]
+            }
+        });
+        let _ = self.tx.send(Message::Text(create.to_string().into()));
+        let _ = self.tx.send(Message::Text(
+            json!({ "type": "response.create" }).to_string().into(),
+        ));
+    }
+
+    /// 回传工具执行结果，触发 AI 继续生成回复（音频 + 文字）
+    pub fn send_tool_result(&self, call_id: &str, output: &str) {
+        let create = json!({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": output
+            }
+        });
+        let _ = self.tx.send(Message::Text(create.to_string().into()));
+        let _ = self.tx.send(Message::Text(
+            json!({ "type": "response.create" }).to_string().into(),
+        ));
+    }
+
     pub fn stop(&self) {
         let _ = self.tx.send(Message::Close(None));
     }
@@ -70,6 +105,7 @@ pub async fn connect(
     model: String,
     voice: String,
     system_prompt: String,
+    tools: Value,
     app_handle: tauri::AppHandle,
 ) -> Result<OmniSession, String> {
     let url = format!("{WS_BASE}?model={model}");
@@ -131,6 +167,10 @@ pub async fn connect(
     let tx_clone = tx.clone();
     tokio::spawn(async move {
         let mut session_ready = false;
+        // item_id → (call_id, name) ：用于 arguments.delta/done 事件找回对应 call
+        let mut pending_calls: HashMap<String, (String, String)> = HashMap::new();
+        // item_id → accumulated arguments（部分实现只发 delta，不发 done 的 arguments 字段）
+        let mut call_args: HashMap<String, String> = HashMap::new();
 
         while let Some(Ok(msg)) = stream.next().await {
             match msg {
@@ -147,7 +187,7 @@ pub async fn connect(
                             if !session_ready {
                                 session_ready = true;
                                 // 发送 session.update
-                                send_session_update(&tx_clone, &voice, &system_prompt);
+                                send_session_update(&tx_clone, &voice, &system_prompt, &tools);
                             }
                         }
 
@@ -169,9 +209,13 @@ pub async fn connect(
                             }
                         }
 
-                        "response.text.delta" => {
+                        // AI 回复文字：text 模态或 audio 转写，两种事件名都接
+                        "response.text.delta"
+                        | "response.audio.transcript.delta"
+                        | "response.audio_transcript.delta" => {
                             if let Some(delta) = v["delta"].as_str() {
                                 if !delta.is_empty() {
+                                    log::debug!("[OmniRealtime] ← text_delta({event_type}) {:?}", &delta[..delta.len().min(40)]);
                                     let _ = app_handle.emit("omni://text_chunk", json!({
                                         "text": delta
                                     }));
@@ -184,6 +228,86 @@ pub async fn connect(
                             let _ = app_handle.emit("omni://status", json!({
                                 "status": "audio_done"
                             }));
+                        }
+
+                        // 工具调用 item 首次出现：登记 item_id ↔ call_id/name 映射
+                        "response.output_item.added" => {
+                            let item = &v["item"];
+                            if item["type"].as_str() == Some("function_call") {
+                                let item_id = item["id"].as_str().unwrap_or("").to_string();
+                                let call_id = item["call_id"].as_str().unwrap_or("").to_string();
+                                let name    = item["name"].as_str().unwrap_or("").to_string();
+                                if !item_id.is_empty() && !call_id.is_empty() {
+                                    log::info!("[OmniRealtime] 工具调用开始 item={} call={} name={}", item_id, call_id, name);
+                                    pending_calls.insert(item_id.clone(), (call_id, name));
+                                    call_args.insert(item_id, String::new());
+                                }
+                            }
+                        }
+
+                        // 工具参数流式
+                        "response.function_call_arguments.delta" => {
+                            let item_id = v["item_id"].as_str().unwrap_or("");
+                            if let Some(delta) = v["delta"].as_str() {
+                                if let Some(buf) = call_args.get_mut(item_id) {
+                                    buf.push_str(delta);
+                                }
+                            }
+                        }
+
+                        // 工具参数完成：触发前端执行
+                        "response.function_call_arguments.done" => {
+                            let item_id = v["item_id"].as_str().unwrap_or("").to_string();
+                            let final_args = v["arguments"]
+                                .as_str()
+                                .map(|s| s.to_string())
+                                .or_else(|| call_args.get(&item_id).cloned())
+                                .unwrap_or_default();
+                            if let Some((call_id, name)) = pending_calls.remove(&item_id) {
+                                call_args.remove(&item_id);
+                                log::info!("[OmniRealtime] 工具调用完成 call={} name={} args={}",
+                                    call_id, name, &final_args[..final_args.len().min(200)]);
+                                let _ = app_handle.emit("omni://tool_call", json!({
+                                    "call_id": call_id,
+                                    "name": name,
+                                    "arguments": final_args,
+                                }));
+                            }
+                        }
+
+                        // 兜底：某些实现只发 output_item.done（不发 arguments.done）
+                        "response.output_item.done" => {
+                            let item = &v["item"];
+                            if item["type"].as_str() == Some("function_call") {
+                                let item_id = item["id"].as_str().unwrap_or("").to_string();
+                                // 若 arguments.done 已处理，这里 pending_calls 已空，跳过
+                                if let Some((call_id, name)) = pending_calls.remove(&item_id) {
+                                    let final_args = item["arguments"]
+                                        .as_str()
+                                        .map(|s| s.to_string())
+                                        .or_else(|| call_args.get(&item_id).cloned())
+                                        .unwrap_or_default();
+                                    call_args.remove(&item_id);
+                                    log::info!("[OmniRealtime] 工具调用完成(item.done) call={} name={} args={}",
+                                        call_id, name, &final_args[..final_args.len().min(200)]);
+                                    let _ = app_handle.emit("omni://tool_call", json!({
+                                        "call_id": call_id,
+                                        "name": name,
+                                        "arguments": final_args,
+                                    }));
+                                }
+                            }
+                        }
+
+                        "conversation.item.input_audio_transcription.completed" => {
+                            if let Some(transcript) = v["transcript"].as_str() {
+                                if !transcript.trim().is_empty() {
+                                    log::debug!("[OmniRealtime] ← 用户转写: {}", transcript);
+                                    let _ = app_handle.emit("omni://user_transcript", json!({
+                                        "text": transcript
+                                    }));
+                                }
+                            }
                         }
 
                         "error" => {
@@ -224,21 +348,33 @@ fn send_session_update(
     tx: &mpsc::UnboundedSender<Message>,
     voice: &str,
     system_prompt: &str,
+    tools: &Value,
 ) {
     // 音色空时使用默认
     let voice_val = if voice.is_empty() { "Tina" } else { voice };
 
+    let mut session = json!({
+        "modalities": ["text", "audio"],
+        "voice": voice_val,
+        "input_audio_format": "pcm",
+        "output_audio_format": "pcm",
+        "instructions": system_prompt,
+        "input_audio_transcription": { "model": "qwen-turbo" },
+        // manual 模式：用户手动 commit，配合 Alt 长按 UX
+        "turn_detection": null
+    });
+
+    // tools 非空数组时注入（Realtime API 扁平格式：{type, name, description, parameters}）
+    if let Some(arr) = tools.as_array() {
+        if !arr.is_empty() {
+            session["tools"] = tools.clone();
+            session["tool_choice"] = json!("auto");
+        }
+    }
+
     let msg = json!({
         "type": "session.update",
-        "session": {
-            "modalities": ["text", "audio"],
-            "voice": voice_val,
-            "input_audio_format": "pcm",
-            "output_audio_format": "pcm",
-            "instructions": system_prompt,
-            // manual 模式：用户手动 commit，配合 Alt 长按 UX
-            "turn_detection": null
-        }
+        "session": session,
     });
     let _ = tx.send(Message::Text(msg.to_string().into()));
 }

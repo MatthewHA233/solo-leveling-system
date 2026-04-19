@@ -255,6 +255,7 @@ async fn omni_connect(
     model: String,
     voice: String,
     system_prompt: String,
+    tools: Option<serde_json::Value>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
@@ -266,7 +267,8 @@ async fn omni_connect(
         }
     }
 
-    let session = qwen_omni::connect(api_key, model, voice, system_prompt, app_handle).await?;
+    let tools_val = tools.unwrap_or_else(|| serde_json::json!([]));
+    let session = qwen_omni::connect(api_key, model, voice, system_prompt, tools_val, app_handle).await?;
 
     let mut guard = state.omni.lock().await;
     *guard = Some(session);
@@ -304,6 +306,20 @@ async fn omni_commit(
 }
 
 #[tauri::command]
+async fn omni_send_text(
+    text: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let guard = state.omni.lock().await;
+    if let Some(session) = guard.as_ref() {
+        session.send_text(&text);
+        Ok(())
+    } else {
+        Err("Omni 未连接".to_string())
+    }
+}
+
+#[tauri::command]
 async fn omni_stop(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
@@ -312,6 +328,21 @@ async fn omni_stop(
         session.stop();
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn omni_tool_result(
+    call_id: String,
+    output: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let guard = state.omni.lock().await;
+    if let Some(session) = guard.as_ref() {
+        session.send_tool_result(&call_id, &output);
+        Ok(())
+    } else {
+        Err("Omni 未连接".to_string())
+    }
 }
 
 // ── Fairy 子窗口 ──
@@ -468,8 +499,10 @@ pub fn run() {
             fish_tts_stop,
             omni_connect,
             omni_send_audio,
+            omni_send_text,
             omni_commit,
             omni_stop,
+            omni_tool_result,
             get_db_info,
             migrate_database,
             open_bili_login,
