@@ -15,6 +15,19 @@ export default function FairyWindow() {
   const [state, setState] = useState<FairyState>('idle')
   const [text, setText] = useState('')
 
+  // Alt 键中继：此窗口聚焦时 WebView2 拦截系统键，需 DOM 捕获后转发给主窗口
+  useEffect(() => {
+    const onDown = (e: KeyboardEvent) => {
+      if (e.code === 'AltRight') { e.preventDefault(); import('@tauri-apps/api/event').then(({ emit }) => emit('ralt-keydown', null)) }
+    }
+    const onUp = (e: KeyboardEvent) => {
+      if (e.code === 'AltRight') { e.preventDefault(); import('@tauri-apps/api/event').then(({ emit }) => emit('ralt-keyup', null)) }
+    }
+    window.addEventListener('keydown', onDown)
+    window.addEventListener('keyup', onUp)
+    return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
+  }, [])
+
   useEffect(() => {
     invoke('setup_fairy').catch(() => {})
 
