@@ -1,9 +1,5 @@
 import type { ChronosActivity } from './types'
 
-function step(minute: number, label: string, title: string) {
-  return { id: `${minute}-${label}`, minute, label, title }
-}
-
 // 当前时间约 9:30 = 570 分钟
 export const mockActivities: ChronosActivity[] = [
   {
@@ -13,13 +9,7 @@ export const mockActivities: ChronosActivity[] = [
     startMinute: 540,  // 09:00
     endMinute: 660,    // 11:00
     goalAlignment: '直接推进',
-    steps: [
-      step(543, '1', '重构 Canvas 绘制层'),
-      step(570, '2', '修复 Trace 跨行连接器'),
-      step(600, '3', '添加焊点 Glow 效果'),
-      step(630, '4', '完成步骤节点序号'),
-      step(655, '5', 'Git commit'),
-    ],
+  events: [],
   },
   {
     id: '2',
@@ -28,10 +18,7 @@ export const mockActivities: ChronosActivity[] = [
     startMinute: 480,  // 08:00
     endMinute: 540,    // 09:00
     goalAlignment: '间接相关',
-    steps: [
-      step(482, '1', '整理组件库'),
-      step(510, '2', '昼夜表原型迭代'),
-    ],
+  events: [],
   },
   {
     id: '3',
@@ -40,10 +27,7 @@ export const mockActivities: ChronosActivity[] = [
     startMinute: 660,  // 11:00
     endMinute: 720,    // 12:00
     goalAlignment: '间接相关',
-    steps: [
-      step(662, '1', 'SwiftUI Canvas 文档'),
-      step(690, '2', 'React Canvas 方案'),
-    ],
+  events: [],
   },
   {
     id: '4',
@@ -52,10 +36,7 @@ export const mockActivities: ChronosActivity[] = [
     startMinute: 720,  // 12:00
     endMinute: 750,    // 12:30
     goalAlignment: '偏离主线',
-    steps: [
-      step(722, '1', '回复 PR Review'),
-      step(735, '2', '同步进度'),
-    ],
+  events: [],
   },
   {
     id: '5',
@@ -64,7 +45,7 @@ export const mockActivities: ChronosActivity[] = [
     startMinute: 750,  // 12:30
     endMinute: 840,    // 14:00
     goalAlignment: undefined,
-    steps: [],
+  events: [],
   },
   {
     id: '6',
@@ -73,11 +54,7 @@ export const mockActivities: ChronosActivity[] = [
     startMinute: 840,  // 14:00
     endMinute: 930,    // 15:30
     goalAlignment: '直接推进',
-    steps: [
-      step(843, '1', 'ReAct 架构设计'),
-      step(870, '2', '工具调用协议文档'),
-      step(900, '3', '数据流图'),
-    ],
+  events: [],
   },
   {
     id: '7',
@@ -86,8 +63,6 @@ export const mockActivities: ChronosActivity[] = [
     startMinute: 550,  // 09:10 (与编程并行)
     endMinute: 580,    // 09:40
     goalAlignment: '间接相关',
-    steps: [
-      step(553, '1', 'Attention Is All You Need'),
-    ],
+  events: [],
   },
 ]

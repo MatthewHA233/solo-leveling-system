@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import type {
-  Player, ActiveBuff, PlayerStats,
+  Player, ActiveBuff,
 } from './models'
 import {
   applyStatModifier, expForLevel, availableTitle,

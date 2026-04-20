@@ -3,7 +3,7 @@
 // 水滴涟漪 + 眼球追踪 + 陀螺仪 + 音频驱动
 // ══════════════════════════════════════════════
 
-import { useEffect, useRef, useMemo } from 'react'
+import { useEffect, useRef } from 'react'
 
 export type FairyState = 'idle' | 'listening' | 'thinking' | 'speaking'
 

@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import type { ChronosActivity } from '../types'
 import type { MtSpan, BiliSpan } from '../lib/local-api'
-import { theme, getCategoryColor, getCategoryLabel } from '../theme'
+import { theme } from '../theme'
 import { HudFrame } from './hud'
 
 interface Props {
@@ -221,7 +221,6 @@ function getZoneInfo(hour: number): ZoneInfo {
   return           { label: '夜晚', bgColor: [30,  10,  110], bgAlpha: 0.32, textColor: 'rgba(160,110,255,0.80)' }
 }
 
-const ZONE_HOURS = [0, 5, 7, 12, 18, 20]
 
 function drawZoneBands(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getGridParams>) {
   // 按小时组绘制色带：区内每个小时组单独一块，hgGap / ZONE_GAP_EXTRA 自然留白
@@ -572,7 +571,6 @@ function drawTagTitles(
 }
 
 const traceWidth = 8      // tag fill 区起始偏移（保持不变）
-const APP_TRACE_W = 3     // ManicTime 应用管线渲染宽度
 const BILI_COLOR    = '#FB7299'
 const BILI_YELLOW   = '#F5C842'
 
@@ -1329,18 +1327,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
 
   // 检测鼠标是否在活动边缘（±6px）→ 返回 edge 信息
   // 将鼠标事件坐标转换为分钟（跨列支持，snap to 5 min）
-  function minuteFromEvent(e: React.MouseEvent<HTMLCanvasElement>): number | null {
-    const rect = canvasRef.current!.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
-    const c = xToCol(x, p)
-    const rBlock = Math.floor((y - p.topPad) / p.rowStride)
-    if (c < 0 || c >= p.cols || rBlock < 0 || rBlock >= p.rows) return null
-    const localY = y - p.topPad - rBlock * p.rowStride
-    const extraMin = Math.min(Math.floor(localY / p.minuteH), 4)
-    const m = c * p.minutesPerCol + rBlock * 5 + extraMin
-    return Math.round(m / 5) * 5
-  }
 
   function getHitAt(e: React.MouseEvent<HTMLCanvasElement>): { minute: number; snappedEnd: number; hit: ChronosActivity | undefined; hitSpan: MtSpan | undefined } | null {
     const rect = canvasRef.current!.getBoundingClientRect()

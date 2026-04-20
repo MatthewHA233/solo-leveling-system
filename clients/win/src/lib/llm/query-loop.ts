@@ -27,7 +27,6 @@ import type {
   StopReason,
 } from './types'
 import type { QueryOptions } from './api'
-import type { ApiStreamChunk } from './api'
 
 // ── 工具调用接口（与 OpenAI 格式对齐） ──
 

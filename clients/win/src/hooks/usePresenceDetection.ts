@@ -28,7 +28,7 @@ export function usePresenceDetection(enabled: boolean): {
   // 当前活跃 span 的 id 和 start_time（用于 upsert 延长）
   const activeSpanIdRef    = useRef<string | null>(null)
   const activeSpanStartRef = useRef<string | null>(null)
-  const activeSpanStateRef = useRef<PresenceState>('unknown')
+  const activeSpanStateRef = useRef<'present' | 'absent' | null>(null)
 
   const [presence, setPresence] = useState<PresenceInfo>({
     state: 'unknown',
@@ -91,34 +91,36 @@ export function usePresenceDetection(enabled: boolean): {
       // absent 防抖：span 的真实开始时间可能早于回调触发时刻
       const spanStart = event.actualStartMs ? msToStr(event.actualStartMs) : now
 
-      if (newState === activeSpanStateRef.current && activeSpanIdRef.current) {
-        // 同状态：延长当前 span 的 end_time
-        upsertPresenceSpan({
-          id: activeSpanIdRef.current,
-          start_time: activeSpanStartRef.current!,
-          end_time: now,
-          state: newState,
-        }).catch(() => {})
-      } else {
-        // 状态变化：先关闭旧 span（end_time = 新 span 的真实开始时刻），再新建
-        if (activeSpanIdRef.current) {
+      if (newState !== 'unknown') {
+        if (newState === activeSpanStateRef.current && activeSpanIdRef.current) {
+          // 同状态：延长当前 span 的 end_time
           upsertPresenceSpan({
             id: activeSpanIdRef.current,
             start_time: activeSpanStartRef.current!,
-            end_time: spanStart,   // 前一段在用户真正离开时结束
-            state: activeSpanStateRef.current,
+            end_time: now,
+            state: newState,
+          }).catch(() => {})
+        } else {
+          // 状态变化：先关闭旧 span，再新建
+          if (activeSpanIdRef.current && activeSpanStateRef.current) {
+            upsertPresenceSpan({
+              id: activeSpanIdRef.current,
+              start_time: activeSpanStartRef.current!,
+              end_time: spanStart,
+              state: activeSpanStateRef.current,
+            }).catch(() => {})
+          }
+          const id = crypto.randomUUID()
+          activeSpanIdRef.current    = id
+          activeSpanStartRef.current = spanStart
+          activeSpanStateRef.current = newState
+          upsertPresenceSpan({
+            id,
+            start_time: spanStart,
+            end_time: now,
+            state: newState,
           }).catch(() => {})
         }
-        const id = crypto.randomUUID()
-        activeSpanIdRef.current    = id
-        activeSpanStartRef.current = spanStart   // 新 span 从真实开始时刻算起
-        activeSpanStateRef.current = newState
-        upsertPresenceSpan({
-          id,
-          start_time: spanStart,
-          end_time: now,
-          state: newState,
-        }).catch(() => {})
       }
 
       setPresence(prev => ({
@@ -166,7 +168,7 @@ export function usePresenceDetection(enabled: boolean): {
       stopTick()
       activeSpanIdRef.current    = null
       activeSpanStartRef.current = null
-      activeSpanStateRef.current = 'unknown'
+      activeSpanStateRef.current = null
     }
   }, [enabled, startTick, stopTick])
 

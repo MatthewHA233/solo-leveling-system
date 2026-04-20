@@ -4,7 +4,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { X, RefreshCw, Pause, Play, Tv2, LogIn, CheckSquare, Square, Plus } from 'lucide-react'
-import { openBiliLogin, calcProgressFromDb, formatViewTime } from '../lib/bilibili/api'
+import { openBiliLogin, formatViewTime } from '../lib/bilibili/api'
 import { fetchBiliHistoryDb } from '../lib/local-api'
 import type { DbBiliItem } from '../lib/local-api'
 import type { BiliCursor } from '../lib/bilibili/useHistory'

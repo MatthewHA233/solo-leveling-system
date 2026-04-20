@@ -16,8 +16,9 @@ export class Stream<T> implements AsyncIterator<T> {
   private isDone = false
   private hasError: unknown = undefined
   private started = false
+  private readonly returned?: () => void
 
-  constructor(private readonly returned?: () => void) {}
+  constructor(returned?: () => void) { this.returned = returned }
 
   [Symbol.asyncIterator](): AsyncIterableIterator<T> {
     if (this.started) {

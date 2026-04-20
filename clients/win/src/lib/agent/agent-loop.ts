@@ -8,8 +8,7 @@ import {
   appendUser, appendAssistant, appendToolResult,
   trimIfNeeded, buildLLMMessages, persistMessages, patchSession,
 } from './agent-memory'
-import type { ToolContext } from './agent-tools'
-import { ALL_TOOLS, toToolDefinition, executeTool } from './agent-tools'
+import { TOOL_DEFINITIONS, executeAgentTool } from './agent-tools'
 import type { StreamChunk } from '../ai/ai-client'
 import { streamChat } from '../ai/ai-client'
 import type { AgentConfig } from './agent-config'
@@ -30,7 +29,6 @@ export async function runAgentLoop(
   systemPrompt: string,
   memory: AgentMemoryState,
   config: AgentConfig,
-  toolContext: ToolContext,
   onEvent: (event: AgentLoopEvent) => void,
   maxIterations = 8,
   sessionId: string | null = null,
@@ -39,7 +37,7 @@ export async function runAgentLoop(
   let state = appendUser(memory, userMessage)
   state = trimIfNeeded(state)
 
-  const toolDefs = ALL_TOOLS.map(toToolDefinition)
+  const toolDefs = TOOL_DEFINITIONS
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     const messages = buildLLMMessages(state, systemPrompt)
@@ -118,7 +116,7 @@ export async function runAgentLoop(
     for (const tc of toolCalls) {
       onEvent({ type: 'toolCallStarted', name: tc.name, args: tc.arguments })
 
-      const result = await executeTool(tc.name, tc.arguments, toolContext)
+      const result = await executeAgentTool(tc.name, JSON.stringify(tc.arguments))
 
       onEvent({ type: 'toolCallResult', name: tc.name, result })
       state = appendToolResult(state, tc.id, tc.name, result)

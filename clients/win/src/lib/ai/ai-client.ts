@@ -5,7 +5,7 @@
 
 import type { AgentConfig } from '../agent/agent-config'
 import type { LLMMessage } from '../agent/agent-memory'
-import type { ToolDefinition } from '../agent/agent-tools'
+import type { ToolDefinition } from '../llm/types'
 
 // ── Stream Chunk Types ──
 

@@ -16,10 +16,6 @@ interface Tool {
 
 // ── 工具辅助函数 ──
 
-function toLocalDateStr(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-}
-
 /** YYYY-MM-DD → Date（当地时间 0:00），无效/缺省返回今天 */
 function parseDateArg(dateArg: unknown): Date {
   if (typeof dateArg === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateArg)) {
@@ -34,18 +30,6 @@ function parseDateArg(dateArg: unknown): Date {
  *   "HH:MM"            → 补全今天日期，用于 date+days 场景的简单过滤
  *   "YYYY-MM-DD HH:MM" → 直接使用，用于跨天精确范围
  */
-function normalizeDateTime(raw: unknown, fallbackDate: Date, isCeil: boolean): string | null {
-  if (!raw || typeof raw !== 'string') return null
-  if (/^\d{2}:\d{2}$/.test(raw)) {
-    // 只有时间，补上 fallbackDate 的日期
-    return `${toLocalDateStr(fallbackDate)} ${raw}`
-  }
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(raw)) {
-    return raw
-  }
-  return null
-}
-
 /**
  * 按时间段过滤 span，支持跨天范围。
  * span 与查询时间段有重叠即保留（而非完全包含）。
