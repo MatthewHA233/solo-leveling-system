@@ -66,14 +66,23 @@ export function createVoiceService(
   const waitOmniAudioDone = (timeoutMs: number): Promise<void> =>
     new Promise((resolve) => {
       let unlisten: (() => void) | null = null
-      const timer = setTimeout(() => { unlisten?.(); resolve() }, timeoutMs)
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        unlisten?.()
+        resolve()
+      }
+      const timer = setTimeout(finish, timeoutMs)
       listen<{ status: string }>('omni://status', (e) => {
         if (e.payload.status === 'audio_done' || e.payload.status === 'disconnected' || e.payload.status === 'error') {
           clearTimeout(timer)
-          unlisten?.()
-          resolve()
+          finish()
         }
-      }).then((fn) => { unlisten = fn })
+      }).then((fn) => {
+        if (done) { fn(); return }
+        unlisten = fn
+      })
     })
 
   const startRecording = async () => {
@@ -160,14 +169,20 @@ export function createVoiceService(
         return
       }
 
-      // 监听本次 session 的用户转写，更新已有气泡（一次性）
+      // 监听本次 session 的用户转写，更新已有气泡（一次性，audio_done 后自动解除）
+      let transcriptUnlisten: (() => void) | null = null
+      let transcriptDisposed = false
       listen<{ text: string }>('omni://user_transcript', ({ payload }) => {
         if (mySeq === sessionSeq && payload.text.trim() && callbacks.onTranscript) {
           callbacks.onTranscript(payload.text.trim(), sessionMsgId)
         }
-      }).then((unlisten) => {
-        // 等 audio_done 后自动解除
-        waitOmniAudioDone(30_000).finally(() => unlisten())
+      }).then((u) => {
+        if (transcriptDisposed) { u(); return }
+        transcriptUnlisten = u
+      })
+      waitOmniAudioDone(30_000).finally(() => {
+        transcriptDisposed = true
+        transcriptUnlisten?.()
       })
 
       // Omni 模式：AI 直接生成回复（音频+文字），等待 audio_done 信号

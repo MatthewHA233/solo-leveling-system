@@ -4,8 +4,14 @@
 /* ── Custom Scrollbar ── */
 ::-webkit-scrollbar { width: 3px; height: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(0,229,255,0.18); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,229,255,0.4); }
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(0,229,255,0.45), rgba(112,0,255,0.45));
+  border-radius: 2px;
+  box-shadow: 0 0 4px rgba(0,229,255,0.35);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(0,229,255,0.8), rgba(112,0,255,0.8));
+}
 
 /* ── Time input calendar icon ── */
 input[type="time"]::-webkit-calendar-picker-indicator {
@@ -27,15 +33,34 @@ input[type="time"]::-webkit-calendar-picker-indicator {
   0%, 100% { opacity: 0.2; transform: scale(0.8); }
   50%       { opacity: 1;   transform: scale(1.2); }
 }
-@keyframes scanLine {
-  0%   { transform: translateY(-8px); opacity: 0; }
-  10%  { opacity: 1; }
-  90%  { opacity: 1; }
-  100% { transform: translateY(100vh); opacity: 0; }
+/* HUD：数据跳动文本（低频，仅用于 flicker 状态） */
+@keyframes hudFlicker {
+  0%, 92%, 100% { opacity: 1; }
+  94%           { opacity: 0.55; }
+  96%           { opacity: 1; }
 }
-@keyframes borderGlow {
-  0%, 100% { box-shadow: 0 0 4px rgba(0,229,255,0.2); }
-  50%       { box-shadow: 0 0 12px rgba(0,229,255,0.5); }
+
+/* HUD 面板扫描线叠层（静态，无 blend-mode） */
+.hud-scanlines {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent 0px, transparent 2px,
+    rgba(0,229,255,0.05) 2px, rgba(0,229,255,0.05) 3px
+  );
+  opacity: 0.5;
+}
+
+/* HUD 背景栅格（静态，无 mask-image 以避免大面积合成开销） */
+.hud-grid-bg {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(0,229,255,0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,229,255,0.035) 1px, transparent 1px);
+  background-size: 40px 40px, 40px 40px;
+  opacity: 0.35;
 }
 
 /* ── Focus glow for inputs ── */
@@ -51,13 +76,65 @@ input:-webkit-autofill:focus {
   -webkit-box-shadow: 0 0 0px 1000px #050505 inset;
 }
 
-/* ── Topbar scanline effect ── */
-.topbar-scan::after {
-  content: '';
-  position: absolute;
-  left: 0; right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent 0%, rgba(0,229,255,0.4) 50%, transparent 100%);
-  animation: scanLine 4s linear infinite;
-  pointer-events: none;
+/* hud-top-sweep / topbar-scan：已移除（动画 box-shadow 与横向 sweep 导致顶栏持续重绘） */
+
+/* ── Session Picker rows (native :hover for perf; 避免每行 setState 重渲染) ── */
+.session-row:hover {
+  background: linear-gradient(90deg, rgba(0,229,255,0.10) 0%, transparent 100%);
 }
+.session-del-btn:hover {
+  color: #ff5b6a !important;
+}
+
+/* ── 历史会话开关按钮 ── */
+.hud-history-toggle[data-on="0"]:hover {
+  border-color: rgba(0,229,255,0.55) !important;
+  color: #8af1ff !important;
+  background: rgba(0,229,255,0.06) !important;
+}
+.hud-history-toggle[data-on="1"]:hover {
+  box-shadow: 0 0 14px rgba(0,229,255,0.85), inset 0 0 10px rgba(0,229,255,0.32) !important;
+}
+
+/* ── NEW SESSION 按钮 hover ── */
+.hud-new-session-btn:hover {
+  background: linear-gradient(90deg, rgba(0,229,255,0.38) 0%, rgba(112,0,255,0.22) 100%) !important;
+  box-shadow: 0 0 14px rgba(0,229,255,0.55), inset 0 0 10px rgba(0,229,255,0.25);
+}
+
+/* ── 昼夜表数据源切换按钮 hover ── */
+.daynight-track-btn[data-active="0"]:hover {
+  color: currentColor !important;
+  background: rgba(0,229,255,0.06) !important;
+  filter: brightness(1.4);
+}
+.daynight-track-btn[data-active="1"]:hover {
+  filter: brightness(1.15);
+}
+
+/* ── Session Picker 开灯动画（clip-path 横向揭示 + 边缘亮闪） ── */
+@keyframes pickerPowerOn {
+  0%   { clip-path: inset(0 0 0 100%); opacity: 0.3; }
+  60%  { clip-path: inset(0 0 0 0);    opacity: 1;   }
+  100% { clip-path: inset(0 0 0 0);    opacity: 1;   }
+}
+@keyframes pickerEdgeFlash {
+  0%   { opacity: 0;   transform: scaleY(0.2); }
+  30%  { opacity: 1;   transform: scaleY(1);   }
+  100% { opacity: 0;   transform: scaleY(1);   }
+}
+.session-picker-root {
+  animation: pickerPowerOn 220ms ease-out;
+  will-change: clip-path, opacity;
+}
+.session-picker-edge-flash {
+  position: absolute;
+  top: 0; bottom: 0; left: -1px;
+  width: 2px;
+  background: linear-gradient(180deg, transparent, #7ecaff 40%, #ffffff 50%, #7ecaff 60%, transparent);
+  box-shadow: 0 0 14px rgba(126,202,255,0.9), 0 0 24px rgba(126,202,255,0.6);
+  animation: pickerEdgeFlash 320ms ease-out;
+  pointer-events: none;
+  transform-origin: center;
+}
+

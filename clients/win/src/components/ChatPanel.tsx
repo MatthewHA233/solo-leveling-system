@@ -9,6 +9,36 @@ import type { ChatMessage, OmniDebugInfo } from '../App'
 import type { ApiRequestSnapshot } from '../lib/llm/api'
 import DebugRequestModal from './DebugRequestModal'
 import OmniDebugModal from './OmniDebugModal'
+import { HudFrame } from './hud'
+
+// 气泡倒角 clip-path（尖角留"尾巴"侧用于指向发送者）
+// 用户：右下为尾，其余三角 8px 斜切
+const bubbleClipUser = `polygon(
+  8px 0,
+  calc(100% - 8px) 0,
+  100% 8px,
+  100% 100%,
+  8px 100%,
+  0 calc(100% - 8px),
+  0 8px
+)`
+// AI：左下为尾
+const bubbleClipAgent = `polygon(
+  8px 0,
+  calc(100% - 8px) 0,
+  100% 8px,
+  100% calc(100% - 8px),
+  calc(100% - 8px) 100%,
+  0 100%,
+  0 8px
+)`
+// 输入框 / 按钮通用 4px 八角切角
+const clip4 = `polygon(
+  4px 0, calc(100% - 4px) 0,
+  100% 4px, 100% calc(100% - 4px),
+  calc(100% - 4px) 100%, 4px 100%,
+  0 calc(100% - 4px), 0 4px
+)`
 
 interface Props {
   readonly messages: readonly ChatMessage[]
@@ -21,9 +51,10 @@ interface Props {
   readonly ttsEnabled?: boolean
   readonly onToggleTts?: () => void
   readonly onOpenSessions?: () => void
+  readonly sessionsOpen?: boolean
 }
 
-export default function ChatPanel({ messages, isProcessing, onSend, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions }: Props) {
+export default function ChatPanel({ messages, isProcessing, onSend, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
   const [input, setInput] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -57,12 +88,36 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
     <div style={{
       display: 'flex', flexDirection: 'column',
       height: '100%', fontFamily: theme.fontBody,
+      position: 'relative',
+      padding: '4px 4px',
     }}>
+      {/* 外层 HUD 装饰（断续边线 + 顶/底握手 + 侧接口 + 异形四角） */}
+      <HudFrame
+        color={theme.electricBlue}
+        accent={theme.warningOrange}
+        topLabel="CHAT · SHADOW"
+        bottomLabel="INPUT"
+        showNotchTop
+        showNotchBottom
+        notchWidth={60}
+        notchDepth={7}
+        cornerSize={16}
+      />
       <style>{`
-        .chat-textarea::placeholder { color: ${theme.textMuted}; }
+        .chat-textarea::placeholder { color: ${theme.textMuted}; font-family: ${theme.fontMono}; letter-spacing: 0.5px; font-size: 12px; }
         .chat-textarea:focus { outline: none; }
-        .send-btn:hover:not(:disabled) { background: ${theme.electricBlue} !important; color: #000 !important; }
-        .chat-input-wrap:focus-within { border-color: ${theme.electricBlue}44 !important; box-shadow: 0 0 0 2px ${theme.electricBlue}12; }
+        .send-btn:hover:not(:disabled) {
+          background: linear-gradient(135deg, ${theme.electricBlue} 0%, ${theme.electricBlue}CC 100%) !important;
+          color: #001820 !important;
+          text-shadow: none !important;
+          box-shadow: 0 0 14px ${theme.electricBlue}AA, inset 0 0 8px rgba(255,255,255,0.25) !important;
+        }
+        .chat-input-wrap:focus-within {
+          border-color: ${theme.electricBlue}66 !important;
+          box-shadow: inset 0 0 16px ${theme.electricBlue}14, 0 0 0 1px ${theme.electricBlue}22 !important;
+        }
+        .hud-icon-btn:hover { border-color: ${theme.electricBlue}66 !important; background: ${theme.electricBlue}14 !important; }
+        .hud-icon-btn:hover .hud-icon-inner { color: ${theme.electricBlue} !important; }
         @keyframes audioPulse {
           0%,100% { transform: scale(1);   opacity: 0.7; }
           50%      { transform: scale(1.18); opacity: 0.3; }
@@ -79,67 +134,62 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
 
       {/* ── Header ── */}
       <div style={{
-        padding: '8px 12px',
-        borderBottom: `1px solid ${theme.divider}`,
+        padding: '14px 18px 10px',
+        borderBottom: `1px solid ${theme.hudFrameSoft}`,
         display: 'flex', alignItems: 'center', gap: 8,
         position: 'relative',   // CameraPreview 定位锚点
+        background: `linear-gradient(90deg, ${theme.electricBlue}08 0%, transparent 100%)`,
       }}>
+        {/* 历史会话开关：科幻电源按钮（LED 指示 + 接线） */}
+        {onOpenSessions && (
+          <HistoryToggle on={!!sessionsOpen} onClick={onOpenSessions} />
+        )}
         <span style={{
           fontSize: 12, fontWeight: 700,
           fontFamily: theme.fontDisplay,
-          color: theme.electricBlue, letterSpacing: 2,
-          textShadow: `0 0 8px ${theme.electricBlue}60`,
+          color: theme.electricBlue, letterSpacing: 2.5,
+          textShadow: `0 0 10px ${theme.electricBlue}AA, 0 0 20px ${theme.electricBlue}44`,
         }}>
           暗影系统
         </span>
+        {/* 状态徽章：ONLINE（切角） */}
+        <span style={{
+          fontSize: 8.5, fontWeight: 700,
+          letterSpacing: 1.6,
+          color: theme.expGreen,
+          padding: '2px 7px',
+          border: `1px solid ${theme.expGreen}55`,
+          clipPath: clip4,
+          background: `${theme.expGreen}14`,
+          fontFamily: theme.fontMono,
+          textShadow: `0 0 6px ${theme.expGreen}88`,
+        }}>
+          ONLINE
+        </span>
 
         {/* 右侧按钮组 */}
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
-          {/* 历史会话 */}
-          {onOpenSessions && (
-            <button
-              onClick={onOpenSessions}
-              title="历史会话"
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer', padding: 2,
-                display: 'flex', alignItems: 'center',
-                color: 'rgba(255,255,255,0.35)',
-                transition: 'color 0.15s',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = theme.electricBlue)}
-              onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.35)')}
-            >
-              <History size={13} />
-            </button>
-          )}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
           {/* TTS 开关 */}
           {onToggleTts && (
-            <button
+            <HudIconBtn
               onClick={onToggleTts}
               title={ttsEnabled ? '关闭语音朗读' : '开启语音朗读'}
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer', padding: 2,
-                display: 'flex', alignItems: 'center',
-                color: ttsEnabled ? '#4ADE80' : 'rgba(255,255,255,0.2)',
-                transition: 'color 0.3s',
-              }}
+              active={ttsEnabled}
+              activeColor={theme.expGreen}
             >
-              {ttsEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}
-            </button>
+              {ttsEnabled ? <Volume2 size={11} /> : <VolumeX size={11} />}
+            </HudIconBtn>
           )}
           {onToggleCamera && (
-            <button
+            <HudIconBtn
               onClick={onToggleCamera}
               title={cameraWindowOpen ? '关闭摄像头预览' : cameraPresent ? '检测到人脸 · 点击预览' : '点击打开摄像头预览'}
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer', padding: 2,
-                display: 'flex', alignItems: 'center',
-                color: cameraWindowOpen ? '#4ADE80' : cameraReady ? 'rgba(74,222,128,0.4)' : 'rgba(255,255,255,0.2)',
-                transition: 'color 0.3s',
-              }}
+              active={cameraWindowOpen}
+              activeColor={theme.expGreen}
+              dim={!cameraReady}
             >
-              <Camera size={13} />
-            </button>
+              <Camera size={11} />
+            </HudIconBtn>
           )}
           <div style={{
             width: 5, height: 5, borderRadius: '50%',
@@ -163,13 +213,21 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
           <div style={{
             display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center',
-            height: '100%', gap: 10, padding: '0 20px',
+            height: '100%', gap: 12, padding: '0 20px',
           }}>
             <MessageSquare size={28} style={{
               color: theme.electricBlue,
               filter: `drop-shadow(0 0 8px ${theme.electricBlue}60)`,
               opacity: 0.5,
             }} />
+            <div style={{
+              fontSize: 9.5, fontFamily: theme.fontMono, fontWeight: 700,
+              letterSpacing: 2.5,
+              color: theme.electricBlue, opacity: 0.65,
+              textShadow: `0 0 6px ${theme.electricBlue}99`,
+            }}>
+              ─ STAND BY FOR INPUT ─
+            </div>
             <div style={{
               fontSize: 12, color: theme.textSecondary,
               textAlign: 'center', lineHeight: 1.7,
@@ -215,15 +273,38 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
 
       {/* ── Input ── */}
       <div style={{
-        padding: '10px 14px',
-        borderTop: `1px solid ${theme.divider}`,
+        padding: '10px 18px 14px',
+        borderTop: `1px solid ${theme.hudFrameSoft}`,
+        position: 'relative',
+        background: `linear-gradient(180deg, transparent 0%, ${theme.electricBlue}06 100%)`,
       }}>
+        {/* 输入框 mono 标签 */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          marginBottom: 5,
+          fontSize: 8.5,
+          fontFamily: theme.fontMono,
+          fontWeight: 700,
+          letterSpacing: 2,
+          color: theme.electricBlue,
+          opacity: 0.55,
+        }}>
+          <span style={{ textShadow: `0 0 4px ${theme.electricBlue}99` }}>&gt; INPUT</span>
+          <span style={{
+            flex: 1, height: 1,
+            background: `linear-gradient(90deg, ${theme.electricBlue}44 0%, transparent 100%)`,
+          }} />
+          <span style={{ opacity: 0.7 }}>ENTER ⏎</span>
+        </div>
         <div className="chat-input-wrap" style={{
+          position: 'relative',
           display: 'flex', alignItems: 'flex-end', gap: 8,
-          background: 'rgba(255,255,255,0.04)',
-          border: `1px solid ${theme.glassBorder}`,
-          borderRadius: 8, padding: '8px 12px',
+          background: 'rgba(0,12,28,0.6)',
+          border: `1px solid ${theme.hudFrameSoft}`,
+          clipPath: clip4,
+          padding: '8px 12px',
           transition: 'border-color 0.2s, box-shadow 0.2s',
+          boxShadow: `inset 0 0 12px rgba(0,229,255,0.04)`,
         }}>
           <textarea
             ref={inputRef}
@@ -231,7 +312,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="输入消息...  Enter 发送"
+            placeholder="输入消息..."
             rows={1}
             style={{
               flex: 1, background: 'transparent', border: 'none',
@@ -247,23 +328,141 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
             disabled={!input.trim() || isProcessing}
             style={{
               background: input.trim() && !isProcessing
-                ? `${theme.electricBlue}22`
-                : 'rgba(255,255,255,0.05)',
-              border: `1px solid ${input.trim() && !isProcessing ? theme.electricBlue + '60' : 'transparent'}`,
-              borderRadius: 6,
+                ? `linear-gradient(135deg, ${theme.electricBlue}33 0%, ${theme.electricBlue}14 100%)`
+                : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${input.trim() && !isProcessing ? theme.electricBlue + '88' : theme.hudFrameSoft}`,
+              clipPath: clip4,
               color: input.trim() && !isProcessing ? theme.electricBlue : theme.textMuted,
-              width: 32, height: 32,
+              textShadow: input.trim() && !isProcessing ? `0 0 6px ${theme.electricBlue}BB` : undefined,
+              boxShadow: input.trim() && !isProcessing ? `0 0 10px ${theme.electricBlue}33, inset 0 0 6px ${theme.electricBlue}22` : undefined,
+              height: 30,
+              padding: '0 10px',
               cursor: input.trim() && !isProcessing ? 'pointer' : 'default',
               transition: 'all 0.15s ease',
               flexShrink: 0,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+              fontFamily: theme.fontMono, fontSize: 10, fontWeight: 700, letterSpacing: 1.6,
             }}
           >
-            <Send size={13} />
+            <Send size={11} />
+            <span>SEND</span>
           </button>
         </div>
       </div>
     </div>
+  )
+}
+
+// ── HUD Icon Button（切角 + 边框 + hover cyan） ──
+
+// 历史会话开关：断裂 HUD 边框（四角 L 标 + 上下刻度段 + 右侧插头尖），点亮时整体发光 + 拉出信号线
+function HistoryToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+  const c = theme.electricBlue
+  const dim = on ? 1 : 0.5
+  return (
+    <button
+      className="hud-history-toggle"
+      data-on={on ? '1' : '0'}
+      onClick={onClick}
+      title={on ? '收起历史会话' : '打开历史会话'}
+      style={{
+        position: 'relative',
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '5px 14px 5px 10px',
+        background: on
+          ? `linear-gradient(90deg, ${c}22 0%, ${c}08 100%)`
+          : 'transparent',
+        border: 'none',
+        color: on ? c : theme.textSecondary,
+        fontSize: 10.5, fontFamily: theme.fontMono,
+        fontWeight: 700, letterSpacing: 1.6,
+        cursor: 'pointer',
+        textShadow: on ? `0 0 5px ${c}` : undefined,
+        transition: 'color 0.15s, background 0.15s',
+        lineHeight: 1,
+      }}
+    >
+      {/* HUD 式断裂边框：4 角 L + 上下刻度段 + 右侧三角插头 */}
+      <svg
+        width="100%" height="100%"
+        preserveAspectRatio="none"
+        style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none',
+          overflow: 'visible',
+          filter: on ? `drop-shadow(0 0 4px ${c}BB)` : undefined,
+        }}
+        viewBox="0 0 100 100"
+      >
+        {/* 4 角 L */}
+        <polyline points="0,14 0,0 14,0"   stroke={c} strokeWidth="2" fill="none" opacity={dim} />
+        <polyline points="86,0 100,0 100,14" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
+        <polyline points="100,86 100,100 86,100" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
+        <polyline points="14,100 0,100 0,86" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
+        {/* 上下边中段短线（刻度）*/}
+        <line x1="35" y1="0" x2="65" y2="0"     stroke={c} strokeWidth="1" opacity={dim * 0.6} />
+        <line x1="35" y1="100" x2="65" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.6} />
+        {/* 上下边细刻度 tick */}
+        <line x1="25" y1="0" x2="25" y2="4"   stroke={c} strokeWidth="1" opacity={dim * 0.8} />
+        <line x1="75" y1="0" x2="75" y2="4"   stroke={c} strokeWidth="1" opacity={dim * 0.8} />
+        <line x1="25" y1="96" x2="25" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.8} />
+        <line x1="75" y1="96" x2="75" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.8} />
+      </svg>
+
+      <History size={11} style={{ position: 'relative' }} />
+      <span style={{ position: 'relative' }}>历史</span>
+
+      {/* 点亮时的信号线：从按钮右端延伸，与面板视觉相连 */}
+      {on && (
+        <span style={{
+          position: 'absolute',
+          right: -7, top: 'calc(50% - 0.5px)',
+          width: 7, height: 1,
+          background: c,
+          boxShadow: `0 0 4px ${c}, 0 0 8px ${c}88`,
+          pointerEvents: 'none',
+        }} />
+      )}
+    </button>
+  )
+}
+
+function HudIconBtn({
+  onClick, title, active, activeColor, dim, children,
+}: {
+  onClick: () => void
+  title: string
+  active?: boolean
+  activeColor?: string
+  dim?: boolean
+  children: React.ReactNode
+}) {
+  const base = active
+    ? (activeColor ?? theme.electricBlue)
+    : dim ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.45)'
+  return (
+    <button
+      className="hud-icon-btn"
+      onClick={onClick}
+      title={title}
+      style={{
+        background: active ? `${activeColor ?? theme.electricBlue}14` : 'rgba(0,229,255,0.03)',
+        border: `1px solid ${active ? (activeColor ?? theme.electricBlue) + '66' : theme.hudFrameSoft}`,
+        clipPath: clip4,
+        padding: '4px 5px',
+        cursor: 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        transition: 'background 0.15s, border-color 0.15s',
+      }}
+    >
+      <span className="hud-icon-inner" style={{
+        color: base,
+        display: 'flex', alignItems: 'center',
+        textShadow: active ? `0 0 6px ${activeColor ?? theme.electricBlue}` : undefined,
+        transition: 'color 0.15s',
+      }}>
+        {children}
+      </span>
+    </button>
   )
 }
 
@@ -351,8 +550,9 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
       display: 'flex', alignItems: 'center', gap: 10,
       padding: '10px 14px',
       minWidth: 230, maxWidth: 290,
-      background: `linear-gradient(135deg, ${theme.electricBlue}f0, ${theme.electricBlue}b8)`,
-      borderRadius: '18px 18px 4px 18px',
+      background: `linear-gradient(135deg, ${theme.electricBlue}F0 0%, ${theme.electricBlue}B8 100%)`,
+      clipPath: bubbleClipUser,
+      boxShadow: `0 0 14px ${theme.electricBlue}55`,
     }}>
       <audio
         ref={audioRef}
@@ -483,9 +683,10 @@ function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDeb
       animation: 'fadeSlideIn 0.2s ease',
     }}>
       <div style={{
+        position: 'relative',
         maxWidth: '88%',
-        padding: '9px 13px',
-        borderRadius: isUser ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
+        padding: isUser ? '9px 14px' : '9px 14px 9px 16px',
+        clipPath: isUser ? bubbleClipUser : bubbleClipAgent,
         fontSize: 13,
         fontFamily: theme.fontBody,
         lineHeight: 1.6,
@@ -493,16 +694,28 @@ function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDeb
         wordBreak: 'break-word',
         ...(isUser
           ? {
-              background: `linear-gradient(135deg, ${theme.electricBlue}e0, ${theme.electricBlue}b0)`,
+              background: `linear-gradient(135deg, ${theme.electricBlue}E6 0%, ${theme.electricBlue}B0 60%, ${theme.electricBlue}88 100%)`,
               color: '#001820',
               fontWeight: 500,
+              boxShadow: `0 0 12px ${theme.electricBlue}55`,
             }
           : {
-              background: 'rgba(255,255,255,0.05)',
-              border: `1px solid ${theme.glassBorder}`,
+              background: `linear-gradient(135deg, rgba(8,16,32,0.92) 0%, rgba(4,10,24,0.88) 100%)`,
               color: theme.textPrimary,
+              boxShadow: `inset 0 0 10px ${theme.electricBlue}14, 0 0 8px rgba(0,229,255,0.10)`,
             }),
       }}>
+        {/* AI 气泡：左侧发光指示条（代表信号源） */}
+        {!isUser && (
+          <span aria-hidden style={{
+            position: 'absolute',
+            left: 0, top: 6, bottom: 6,
+            width: 2,
+            background: theme.electricBlue,
+            boxShadow: `0 0 6px ${theme.electricBlue}`,
+            opacity: 0.75,
+          }} />
+        )}
         {message.content}
         {!isUser && message.audioUrl && (
           <div style={{ marginTop: 6 }}>
@@ -554,17 +767,35 @@ function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDeb
 
 function TypingDots() {
   return (
-    <div style={{ display: 'flex', gap: 5, padding: '6px 4px', alignItems: 'center' }}>
-      {[0, 1, 2].map((i) => (
-        <div
-          key={i}
-          style={{
-            width: 5, height: 5, borderRadius: '50%',
-            background: theme.electricBlue,
-            animation: `typingPulse 1s ease-in-out ${i * 0.18}s infinite`,
-          }}
-        />
-      ))}
+    <div style={{
+      display: 'inline-flex', gap: 6, padding: '6px 12px',
+      alignItems: 'center',
+      alignSelf: 'flex-start',
+      background: 'rgba(4,10,24,0.7)',
+      border: `1px solid ${theme.hudFrameSoft}`,
+      clipPath: bubbleClipAgent,
+      fontFamily: theme.fontMono,
+      fontSize: 9,
+      letterSpacing: 1.8,
+      fontWeight: 700,
+      color: theme.electricBlue,
+      textShadow: `0 0 5px ${theme.electricBlue}99`,
+    }}>
+      <span style={{ opacity: 0.7 }}>RECV</span>
+      <span style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            style={{
+              width: 5, height: 5,
+              background: theme.electricBlue,
+              boxShadow: `0 0 6px ${theme.electricBlue}`,
+              animation: `typingPulse 1s ease-in-out ${i * 0.18}s infinite`,
+              transform: 'rotate(45deg)',
+            }}
+          />
+        ))}
+      </span>
     </div>
   )
 }

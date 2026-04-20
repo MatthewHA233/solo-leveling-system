@@ -303,6 +303,10 @@ export async function patchSession(
   })
 }
 
+export async function deleteChatSession(sessionId: string): Promise<void> {
+  await fetch(`${API_BASE}/api/sessions/${sessionId}`, { method: 'DELETE' })
+}
+
 /** 应用启动时调用：恢复最近会话（4h内）或创建新会话 */
 export async function initChatSession(): Promise<{
   sessionId: string

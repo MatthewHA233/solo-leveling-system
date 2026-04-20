@@ -5,6 +5,8 @@
 import { useState } from 'react'
 import { X, ChevronDown, ChevronUp } from 'lucide-react'
 import type { OmniDebugInfo } from '../App'
+import { theme, hud } from '../theme'
+import { HudFrame } from './hud'
 
 interface Props {
   info: OmniDebugInfo
@@ -67,27 +69,65 @@ function CollapsibleSection({
 }
 
 export default function OmniDebugModal({ info, onClose }: Props) {
+  const accent = '#a78bfa'
   return (
     <div
-      style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 9999,
+        background: 'radial-gradient(ellipse at center, rgba(8,0,24,0.65) 0%, rgba(0,0,0,0.85) 100%)',
+        backdropFilter: 'blur(6px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
       onClick={onClose}
     >
+      {/* HUD 外框 */}
       <div
         style={{
-          background: '#0c0c0c',
-          border: '1px solid #242424',
-          borderRadius: 10,
+          position: 'relative',
+          padding: 1,
           width: '82vw', maxWidth: 860,
           height: '80vh',
-          display: 'flex', flexDirection: 'column',
-          overflow: 'hidden',
-          boxShadow: '0 24px 80px rgba(0,0,0,0.8)',
+          background: `linear-gradient(135deg, ${accent}AA 0%, ${theme.shadowPurple}77 50%, ${accent}44 100%)`,
+          clipPath: hud.chamfer12, WebkitClipPath: hud.chamfer12,
+          boxShadow: `0 24px 80px rgba(0,0,0,0.8), 0 0 30px ${accent}33`,
         }}
         onClick={e => e.stopPropagation()}
       >
+      <div
+        style={{
+          position: 'relative',
+          width: '100%', height: '100%',
+          background: theme.hudFillDeep,
+          display: 'flex', flexDirection: 'column',
+          overflow: 'hidden',
+          clipPath: hud.chamfer12, WebkitClipPath: hud.chamfer12,
+        }}
+      >
+        <div className="hud-scanlines" />
+        <HudFrame
+          color={accent}
+          accent={theme.dangerRed}
+          topLabel="OMNI-CTX"
+          bottomLabel={info.model.toUpperCase().slice(0, 14)}
+          showNotchTop
+          showNotchBottom
+          showConnectors
+          notchWidth={64}
+          notchDepth={7}
+          cornerSize={14}
+        />
         {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 14px', borderBottom: '1px solid #1c1c1c', flexShrink: 0 }}>
-          <span style={{ color: '#a78bfa', fontWeight: 700, fontSize: 11, letterSpacing: 0.8 }}>OMNI 上下文调试</span>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '12px 18px', borderBottom: `1px solid ${accent}33`,
+          background: `linear-gradient(90deg, ${accent}10 0%, transparent 100%)`,
+          flexShrink: 0,
+        }}>
+          <span style={{
+            color: accent, fontWeight: 700, fontSize: 12,
+            letterSpacing: 2, fontFamily: theme.fontDisplay,
+            textShadow: `0 0 10px ${accent}AA, 0 0 20px ${accent}44`,
+          }}>OMNI 上下文调试</span>
           <span style={{ fontSize: 10, color: '#6b7280' }}>{info.model}</span>
           {info.voice && <span style={{ fontSize: 10, color: '#374151' }}>音色 {info.voice}</span>}
           <span style={{ fontSize: 10, color: '#1f2937' }}>{info.ts.slice(11, 19)}</span>
@@ -150,6 +190,7 @@ export default function OmniDebugModal({ info, onClose }: Props) {
             </div>
           ))}
         </div>
+      </div>
       </div>
     </div>
   )
