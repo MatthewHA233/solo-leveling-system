@@ -694,6 +694,20 @@ impl Database {
         Ok(())
     }
 
+    /// 删除会话（含其所有消息）
+    pub async fn delete_chat_session(&self, session_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "DELETE FROM chat_messages WHERE session_id = ?",
+            params![session_id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM chat_sessions WHERE id = ?",
+            params![session_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     // ── Bilibili 历史 ──
 
     /// 批量 UPSERT B站历史（同 bvid 保留最新进度/时间）

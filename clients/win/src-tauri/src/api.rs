@@ -279,6 +279,17 @@ async fn update_chat_session(
     }
 }
 
+/// DELETE /api/sessions/:id
+async fn delete_chat_session(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Json<ApiResponse<()>> {
+    match state.db.delete_chat_session(&id).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
 /// 从 Bilibili API JSON 响应中提取可 upsert 的条目
 fn extract_bili_items(data: &serde_json::Value) -> Vec<UpsertBiliItem> {
     let list = data
@@ -580,7 +591,7 @@ pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>) -> Router {
         .route("/api/activities/{id}", delete(delete_activity).put(update_activity))
         .route("/api/sessions", get(list_chat_sessions).post(create_chat_session))
         .route("/api/sessions/{id}/messages", get(get_chat_messages).post(append_chat_messages))
-        .route("/api/sessions/{id}", patch(update_chat_session))
+        .route("/api/sessions/{id}", patch(update_chat_session).delete(delete_chat_session))
         .route("/api/bilibili/result", post(recv_bili_result))
         .route("/api/bilibili/history", get(get_bili_history))
         .route("/api/bilibili/history/link", axum::routing::put(link_bili_to_event))
