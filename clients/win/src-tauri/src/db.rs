@@ -91,6 +91,8 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     pub name: Option<String>,
     pub timestamp: String,
+    pub audio_path: Option<String>,   // 语音气泡的 WAV 文件路径（相对于音频根目录）
+    pub duration_ms: Option<i64>,     // 录音时长（毫秒）
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,6 +103,8 @@ pub struct CreateChatMessageRequest {
     pub tool_call_id: Option<String>,
     pub name: Option<String>,
     pub timestamp: String,
+    pub audio_path: Option<String>,
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,7 +343,13 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated ON chat_sessions(updated_at);
+        "#).map_err(|e| format!("创建表失败: {}", e))?;
 
+        // 渐进式迁移：audio_path / duration_ms（旧数据库无此列时自动追加）
+        let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN audio_path TEXT");
+        let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER");
+
+        conn.execute_batch(r#"
             -- B站历史表
             CREATE TABLE IF NOT EXISTS bili_history (
                 bvid TEXT PRIMARY KEY,
@@ -621,7 +631,7 @@ impl Database {
     pub async fn get_chat_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, tool_calls, tool_call_id, name, timestamp FROM chat_messages WHERE session_id = ? ORDER BY timestamp"
+            "SELECT id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms FROM chat_messages WHERE session_id = ? ORDER BY timestamp"
         ).map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([session_id], |row| {
@@ -634,6 +644,8 @@ impl Database {
                 tool_call_id: row.get(5)?,
                 name: row.get(6)?,
                 timestamp: row.get(7)?,
+                audio_path: row.get(8)?,
+                duration_ms: row.get(9)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -648,8 +660,8 @@ impl Database {
         for msg in req.messages {
             let id = Uuid::new_v4().to_string();
             conn.execute(
-                "INSERT INTO chat_messages (id, session_id, role, content, tool_calls, tool_call_id, name, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                params![&id, session_id, &msg.role, &msg.content, &msg.tool_calls, &msg.tool_call_id, &msg.name, &msg.timestamp],
+                "INSERT INTO chat_messages (id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![&id, session_id, &msg.role, &msg.content, &msg.tool_calls, &msg.tool_call_id, &msg.name, &msg.timestamp, &msg.audio_path, &msg.duration_ms],
             ).map_err(|e| e.to_string())?;
         }
 

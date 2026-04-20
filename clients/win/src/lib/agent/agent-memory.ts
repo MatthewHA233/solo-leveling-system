@@ -21,6 +21,8 @@ export interface SessionMessage {
   readonly toolCallId: string | null
   readonly name: string | null
   readonly timestamp: string    // ISO string
+  readonly audioPath?: string | null   // 相对路径 "{sessionId}/{filename}.wav"
+  readonly durationMs?: number | null  // 录音时长（毫秒）
 }
 
 export interface LLMMessage {
@@ -231,6 +233,8 @@ interface ApiChatMessage {
   tool_call_id: string | null
   name: string | null
   timestamp: string
+  audio_path?: string | null
+  duration_ms?: number | null
 }
 
 function fromApiMessage(m: ApiChatMessage): SessionMessage {
@@ -241,6 +245,8 @@ function fromApiMessage(m: ApiChatMessage): SessionMessage {
     toolCallId: m.tool_call_id,
     name: m.name,
     timestamp: m.timestamp,
+    audioPath: m.audio_path ?? null,
+    durationMs: m.duration_ms ?? null,
   }
 }
 
@@ -275,6 +281,8 @@ export async function persistMessages(
       tool_call_id: m.toolCallId,
       name: m.name,
       timestamp: m.timestamp,
+      audio_path: m.audioPath ?? null,
+      duration_ms: m.durationMs ?? null,
     })),
   }
   await fetch(`${API_BASE}/api/sessions/${sessionId}/messages`, {

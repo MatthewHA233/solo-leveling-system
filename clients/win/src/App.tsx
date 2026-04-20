@@ -19,9 +19,17 @@ import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from '
 
 // LLM Engine（新）
 import { runQueryLoop } from './lib/llm/query-loop'
-import { createUserMessage, getMessageText, isAssistantMessage } from './lib/llm/types'
+import { createUserMessage, createAssistantMessage, getMessageText, isAssistantMessage } from './lib/llm/types'
 import type { Message } from './lib/llm/types'
 import type { ApiRequestSnapshot } from './lib/llm/api'
+
+// Session 持久化
+import {
+  initChatSession, persistMessages, patchSession,
+  fetchSessionMessages, getRecentChatSessions, createChatSession,
+} from './lib/agent/agent-memory'
+import type { ChatSessionInfo, SessionMessage } from './lib/agent/agent-memory'
+import { generateSessionTitle } from './lib/ai/session-title'
 
 // Agent Tools
 import { TOOL_DEFINITIONS, executeAgentTool } from './lib/agent/agent-tools'
@@ -47,6 +55,7 @@ import { pcm16ChunksToWavBlob } from './lib/voice/voice-recorder'
 // UI
 import DayNightChart from './components/DayNightChart'
 import ChatPanel from './components/ChatPanel'
+import SessionPicker from './components/SessionPicker'
 import SettingsPanel from './components/SettingsPanel'
 import SpanDetailPanel from './components/SpanDetailPanel'
 import AppHoverPanel from './components/AppHoverPanel'
@@ -59,7 +68,8 @@ import type { DbBiliItem } from './lib/local-api'
 import type { FairyState } from './components/FairyHUD'
 import { NeonDivider, NeonBadge, MagneticButton } from './components/NeonUI'
 import { usePresenceDetection } from './hooks/usePresenceDetection'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, convertFileSrc } from '@tauri-apps/api/core'
+import soloLevelingLogo from './assets/SOLO LEVELING SYSTEM.png'
 
 export interface OmniDebugItem {
   type: 'text' | 'audio'
@@ -88,6 +98,69 @@ export interface ChatMessage {
   readonly debugSnapshots?: ApiRequestSnapshot[]  // 本轮发给 AI 的请求快照（普通模式）
   readonly omniDebugInfo?: OmniDebugInfo          // 本轮发给 Omni 的上下文快照
 }
+
+// ── Session 持久化：格式转换 ──
+
+function sessionMessagesToChatMessages(msgs: readonly SessionMessage[], audioDir = ''): ChatMessage[] {
+  const out: ChatMessage[] = []
+  for (const m of msgs) {
+    if (m.role === 'tool') continue
+    const content = (m.content ?? '').trim()
+    // 音频气泡：即使没有文字也要还原（content 可能是 transcript）
+    const hasAudio = !!(m.audioPath && audioDir)
+    if (!content && !hasAudio) continue
+
+    const audioUrl = hasAudio
+      ? convertFileSrc(`${audioDir}/${m.audioPath}`)
+      : undefined
+
+    out.push({
+      id: crypto.randomUUID(),
+      role: m.role === 'user' ? 'user' : 'agent',
+      content,
+      timestamp: m.timestamp,
+      ...(audioUrl ? { audioUrl, durationMs: m.durationMs ?? undefined } : {}),
+      // transcript 就是 content（语音消息 content 存的是转写文本）
+      ...(audioUrl && content ? { transcript: content } : {}),
+    })
+  }
+  return out
+}
+
+function sessionMessagesToLLMHistory(msgs: readonly SessionMessage[]): Message[] {
+  const out: Message[] = []
+  for (const m of msgs) {
+    if (m.role === 'tool') continue
+    const content = (m.content ?? '').trim()
+    if (!content) continue
+    if (m.role === 'user') {
+      out.push(createUserMessage(content))
+    } else if (m.role === 'assistant') {
+      out.push(createAssistantMessage(content))
+    }
+  }
+  return out
+}
+
+function makeSessionMessage(
+  role: SessionMessage['role'],
+  content: string,
+  audioPath?: string,
+  durationMs?: number,
+): SessionMessage {
+  return {
+    role,
+    content,
+    toolCalls: null,
+    toolCallId: null,
+    name: null,
+    timestamp: new Date().toISOString(),
+    audioPath: audioPath ?? null,
+    durationMs: durationMs ?? null,
+  }
+}
+
+const TITLE_TRIGGER_MIN_MESSAGES = 4       // 累计到此数后，首次生成 AI 标题
 
 // 区间合并「看B站视频」活动
 // 使用 mergeActivities API：移动事件而非删重建，event_id 不变，bvid 链接天然保留
@@ -188,6 +261,16 @@ export default function App() {
   // LLM 对话历史（新类型系统），与 UI 展示的 chatMessages 分离
   const conversationRef = useRef<Message[]>([])
 
+  // ── Session 持久化 ──
+  const sessionIdRef = useRef<string | null>(null)
+  const sessionTitleRef = useRef<string>('新会话')       // 现存标题，用于决定是否触发 AI 重命名
+  const persistedBufferRef = useRef<SessionMessage[]>([])  // 已持久化的历史（用于 title 生成的上下文窗口）
+  const lastOmniUserInputRef = useRef<string>('')        // Omni 本轮用户输入（文字 or 转写）
+  const audioDirRef = useRef<string>('')                 // 音频根目录（Rust data_local/solo-agent/audio）
+  const pendingAudioRef = useRef<Map<string, { audioPath: string; durationMs: number }>>(new Map())
+  const [sessions, setSessions] = useState<readonly ChatSessionInfo[]>([])
+  const [pickerOpen, setPickerOpen] = useState(false)
+
   // ── Presence Detection ──
   const { presence, videoRef } = usePresenceDetection(config.overlayEnabled)
 
@@ -253,6 +336,32 @@ export default function App() {
   // 同步 ref，供 refreshSystemPrompt 读取最新值（避免 useCallback 闭包过期）
   useEffect(() => { chatMessagesRef.current = chatMessages }, [chatMessages])
   const LONG_PRESS_MS = 600
+
+  // ── 启动：获取音频目录 + 恢复最近会话（<4h）或创建新会话 ──
+  useEffect(() => {
+    (async () => {
+      try {
+        // 先拿音频根目录（后续 save_audio_file / asset URL 都依赖它）
+        const audioDir = await invoke<string>('get_audio_dir')
+        audioDirRef.current = audioDir
+
+        const { sessionId, state } = await initChatSession()
+        sessionIdRef.current = sessionId
+        persistedBufferRef.current = [...state.messages]
+
+        // 恢复最近一次的 session title（用于决定是否要 AI 重命名）
+        const recent = await getRecentChatSessions(1)
+        if (recent[0]?.id === sessionId) sessionTitleRef.current = recent[0].title || '新会话'
+
+        if (state.messages.length > 0) {
+          setChatMessages(sessionMessagesToChatMessages(state.messages, audioDir))
+          conversationRef.current = sessionMessagesToLLMHistory(state.messages).slice(-12)
+        }
+      } catch {
+        // 后端不可用：静默降级（不影响功能，不持久化）
+      }
+    })()
+  }, [])
 
   const fairyWinRef = useRef<import('@tauri-apps/api/webviewWindow').WebviewWindow | null>(null)
 
@@ -350,11 +459,23 @@ export default function App() {
           const bytes = Uint8Array.from(atob(wavBase64), (c) => c.charCodeAt(0))
           const blob = new Blob([bytes], { type: 'audio/wav' })
           const audioUrl = URL.createObjectURL(blob)
+          const msgTimestamp = new Date().toISOString()
           setChatMessages((prev) => [...prev, {
             id: sessionMsgId, role: 'user' as const,
             content: '', audioUrl, durationMs,
-            timestamp: new Date().toISOString(),
+            timestamp: msgTimestamp,
           }])
+
+          // 异步保存到磁盘，存入 pendingAudio Map，等转写或发送时一并写 DB
+          if (sessionIdRef.current) {
+            invoke<string>('save_audio_file', {
+              sessionId: sessionIdRef.current,
+              wavBase64,
+              timestamp: msgTimestamp,
+            }).then((audioPath) => {
+              pendingAudioRef.current.set(sessionMsgId, { audioPath, durationMs })
+            }).catch(() => {})
+          }
           // Omni 模式：把音频 item 追加到已有快照（Alt 按下时已创建快照）
           if (configRef.current.aiMode === 'omni') {
             const audioItem: OmniDebugItem = { type: 'audio', wavBase64, durationMs, ts: new Date().toISOString() }
@@ -380,8 +501,22 @@ export default function App() {
           setChatMessages((prev) =>
             prev.map((m) => m.id === sessionMsgId ? { ...m, transcript: text } : m)
           )
+
+          // 语音消息持久化：转写完成时将用户语音消息写入 DB（含 audioPath）
+          if (sessionIdRef.current) {
+            const pending = pendingAudioRef.current.get(sessionMsgId)
+            if (pending) {
+              pendingAudioRef.current.delete(sessionMsgId)
+              const voiceMsg = makeSessionMessage('user', text, pending.audioPath, pending.durationMs)
+              persistedBufferRef.current = [...persistedBufferRef.current, voiceMsg]
+              persistMessages(sessionIdRef.current, [voiceMsg]).catch(() => {})
+            }
+          }
+
           // Omni 模式：音频已经走 WS，工具调用走 omni://tool_call 事件，不回落 handleSend
-          if (configRef.current.aiMode !== 'omni') {
+          if (configRef.current.aiMode === 'omni') {
+            lastOmniUserInputRef.current = text   // 供 audio_done 持久化使用
+          } else {
             handleSend(text)
           }
         },
@@ -555,6 +690,37 @@ export default function App() {
             emitFairy('idle')
             // 对话完成后刷新 system prompt，确保下一次 session 的 instructions 包含本轮对话
             refreshSystemPromptRef.current().catch(() => {})
+
+            // ── Omni 持久化：保存本轮 user input + assistant 回复 ──
+            if (sessionIdRef.current) {
+              const sid = sessionIdRef.current
+              const cfg = configRef.current
+              const newPairs: SessionMessage[] = []
+              const userInput = lastOmniUserInputRef.current.trim()
+              const aiText = (msgId
+                ? chatMessagesRef.current.find((m) => m.id === msgId)?.content ?? ''
+                : ''
+              ).trim()
+              if (userInput) newPairs.push(makeSessionMessage('user', userInput))
+              if (aiText) newPairs.push(makeSessionMessage('assistant', aiText))
+              if (newPairs.length > 0) {
+                persistedBufferRef.current = [...persistedBufferRef.current, ...newPairs]
+                persistMessages(sid, newPairs).catch(() => {})
+                if (
+                  persistedBufferRef.current.length >= TITLE_TRIGGER_MIN_MESSAGES &&
+                  (sessionTitleRef.current === '新会话' || sessionTitleRef.current === '')
+                ) {
+                  generateSessionTitle(persistedBufferRef.current, cfg)
+                    .then((title) => {
+                      if (!title) return
+                      sessionTitleRef.current = title
+                      patchSession(sid, { title }).catch(() => {})
+                    })
+                    .catch(() => {})
+                }
+              }
+              lastOmniUserInputRef.current = ''
+            }
           } else if (payload.status === 'error') {
             omniAiPcmChunksRef.current = []
             omniTextAccRef.current = ''
@@ -903,6 +1069,7 @@ export default function App() {
           voice: cfg.omniVoice || '', systemPrompt,
           tools: toRealtimeTools(TOOL_DEFINITIONS),
         })
+        lastOmniUserInputRef.current = text
         await invoke('omni_send_text', { text })
         // 后续由 omni://text_chunk / omni://audio_chunk / omni://status(audio_done) 处理
         // setIsProcessing(false) 在 audio_done handler 里触发
@@ -1062,6 +1229,46 @@ export default function App() {
       })
       conversationRef.current = compactHistory.slice(-12) // 最多保留 6 轮对话
 
+      // ── 持久化本轮对话 ──
+      if (sessionIdRef.current) {
+        const sid = sessionIdRef.current
+        const cfg = configRef.current
+        // 从 newHistory 提取最终的 user + assistant 文本（去工具链）
+        const newPairs: SessionMessage[] = []
+        for (const m of newHistory) {
+          if (m.type === 'user' && !m.isMeta && m.toolUseResult === undefined) {
+            const content = typeof m.message.content === 'string'
+              ? m.message.content
+              : m.message.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
+            if (content.trim()) newPairs.push(makeSessionMessage('user', content.trim()))
+          } else if (isAssistantMessage(m) && m.message.content.every((b: any) => b.type === 'text')) {
+            const text = getMessageText(m)
+            if (text.trim()) newPairs.push(makeSessionMessage('assistant', text.trim()))
+          }
+        }
+        // 只追加真正新增的消息（去掉和 persistedBufferRef 已有内容重叠的部分）
+        const alreadyCount = persistedBufferRef.current.length
+        const deduplicated = newPairs.slice(alreadyCount)
+        if (deduplicated.length > 0) {
+          persistedBufferRef.current = [...persistedBufferRef.current, ...deduplicated]
+          persistMessages(sid, deduplicated).catch(() => {})
+        }
+
+        // AI 标题：消息数达到阈值且标题仍为默认时才触发（fire-and-forget）
+        if (
+          persistedBufferRef.current.length >= TITLE_TRIGGER_MIN_MESSAGES &&
+          (sessionTitleRef.current === '新会话' || sessionTitleRef.current === '')
+        ) {
+          generateSessionTitle(persistedBufferRef.current, cfg)
+            .then((title) => {
+              if (!title) return
+              sessionTitleRef.current = title
+              patchSession(sid, { title }).catch(() => {})
+            })
+            .catch(() => {})
+        }
+      }
+
       // 把本轮快照 patch 到对应 agent 气泡
       if (capturedSnapshots.length > 0) {
         setChatMessages((prev) =>
@@ -1136,6 +1343,41 @@ export default function App() {
     setIsProcessing(false)
   }, [activities, config, chatMessages])
 
+  // ── 切换 / 新建会话 ──
+  const switchSession = useCallback(async (sessionId: string) => {
+    if (sessionId === sessionIdRef.current) return
+    try {
+      const msgs = await fetchSessionMessages(sessionId)
+      sessionIdRef.current = sessionId
+      persistedBufferRef.current = [...msgs]
+      const info = sessions.find((s) => s.id === sessionId)
+      sessionTitleRef.current = info?.title || '新会话'
+      conversationRef.current = sessionMessagesToLLMHistory(msgs).slice(-12)
+      setChatMessages(sessionMessagesToChatMessages(msgs, audioDirRef.current))
+    } catch {
+      // 加载失败静默忽略
+    }
+  }, [sessions])
+
+  const newSession = useCallback(async () => {
+    try {
+      const s = await createChatSession()
+      sessionIdRef.current = s.id
+      sessionTitleRef.current = '新会话'
+      persistedBufferRef.current = []
+      conversationRef.current = []
+      setChatMessages([])
+      setSessions((prev) => [s, ...prev])
+    } catch {
+      // 无网络时降级
+      sessionIdRef.current = null
+      sessionTitleRef.current = '新会话'
+      persistedBufferRef.current = []
+      conversationRef.current = []
+      setChatMessages([])
+    }
+  }, [])
+
   return (
     <div style={{
       display: 'flex', flexDirection: 'column',
@@ -1155,21 +1397,29 @@ export default function App() {
       {/* ── Top Bar ── */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8,
-        padding: '0 12px', height: 36, flexShrink: 0,
+        padding: '0 12px', height: 52, flexShrink: 0,
         background: 'rgba(0,10,20,0.7)',
         borderBottom: `1px solid ${theme.divider}`,
         position: 'relative',
       }}>
         {/* Logo */}
-        <span style={{
-          fontSize: 13, fontWeight: 700,
-          fontFamily: theme.fontDisplay,
-          color: theme.electricBlue,
-          letterSpacing: 3,
-          textShadow: `0 0 8px ${theme.electricBlue}80, 0 0 20px ${theme.electricBlue}30`,
-        }}>
-          SOLO LEVELING SYSTEM
-        </span>
+        <img
+          src={soloLevelingLogo}
+          alt="SOLO LEVELING SYSTEM"
+          draggable={false}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            navigator.clipboard.writeText('SOLO LEVELING SYSTEM').catch(() => {})
+          }}
+          style={{
+            height: 36,
+            objectFit: 'contain',
+            userSelect: 'none',
+            WebkitUserSelect: 'none',
+            filter: `drop-shadow(0 0 6px ${theme.electricBlue}80)`,
+            cursor: 'default',
+          }}
+        />
 
         <NeonDivider vertical />
 
@@ -1358,6 +1608,12 @@ export default function App() {
                     onToggleCamera={toggleCameraWindow}
                     ttsEnabled={config.ttsEnabled}
                     onToggleTts={() => handleConfigUpdate({ ttsEnabled: !config.ttsEnabled })}
+                    onOpenSessions={() => {
+                      getRecentChatSessions(50)
+                        .then((s) => setSessions(s))
+                        .catch(() => {})
+                      setPickerOpen(true)
+                    }}
                   />
                 </div>
                 {hasDetail && (
@@ -1374,6 +1630,16 @@ export default function App() {
         </div>
       </div>
 
+      {/* ── Session Picker ── */}
+      {pickerOpen && (
+        <SessionPicker
+          sessions={sessions}
+          currentSessionId={sessionIdRef.current}
+          onSelect={switchSession}
+          onNewSession={() => { newSession(); setPickerOpen(false) }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
     </div>
   )
 }

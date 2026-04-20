@@ -402,6 +402,44 @@ async fn setup_fairy(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// ── 音频文件持久化 ──
+
+/// 返回音频根目录（{data_local}/solo-agent/audio/）
+fn audio_root() -> std::path::PathBuf {
+    Database::default_data_dir().join("audio")
+}
+
+/// 保存一条语音消息 WAV 到磁盘
+/// 返回相对路径 "{session_id}/{filename}"，供 DB 存储
+#[tauri::command]
+async fn save_audio_file(
+    session_id: String,
+    wav_base64: String,
+    timestamp: String,
+) -> Result<String, String> {
+    use base64::engine::general_purpose::STANDARD;
+    let bytes = STANDARD.decode(&wav_base64).map_err(|e| format!("base64 解码失败: {}", e))?;
+
+    // 文件名：timestamp 转换为合法文件名（去掉冒号等特殊字符）
+    let safe_ts = timestamp.replace([':', '.'], "-");
+    let filename = format!("{}.wav", safe_ts);
+
+    let dir = audio_root().join(&session_id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
+
+    let file_path = dir.join(&filename);
+    std::fs::write(&file_path, &bytes).map_err(|e| format!("写入失败: {}", e))?;
+
+    // 返回相对路径（session_id/filename），绝对路径由前端用 get_audio_dir 拼接
+    Ok(format!("{}/{}", session_id, filename))
+}
+
+/// 返回音频根目录的绝对路径（前端用于拼接 asset:// URL）
+#[tauri::command]
+fn get_audio_dir() -> String {
+    audio_root().to_string_lossy().into_owned()
+}
+
 // ── 文件操作命令（供 AI 工具调用） ──
 
 #[tauri::command]
@@ -510,6 +548,8 @@ pub fn run() {
             qwen_asr::qwen_asr_transcribe,
             read_file,
             write_file,
+            save_audio_file,
+            get_audio_dir,
             setup_fairy,
         ])
         .run(tauri::generate_context!())

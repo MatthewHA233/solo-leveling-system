@@ -3,7 +3,7 @@
 // ══════════════════════════════════════════════
 
 import { useRef, useEffect, useState } from 'react'
-import { Send, MessageSquare, Camera, Volume2, VolumeX, Bug, Radio } from 'lucide-react'
+import { Send, MessageSquare, Camera, Volume2, VolumeX, Bug, Radio, History } from 'lucide-react'
 import { theme } from '../theme'
 import type { ChatMessage, OmniDebugInfo } from '../App'
 import type { ApiRequestSnapshot } from '../lib/llm/api'
@@ -20,9 +20,10 @@ interface Props {
   readonly onToggleCamera?: () => void
   readonly ttsEnabled?: boolean
   readonly onToggleTts?: () => void
+  readonly onOpenSessions?: () => void
 }
 
-export default function ChatPanel({ messages, isProcessing, onSend, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts }: Props) {
+export default function ChatPanel({ messages, isProcessing, onSend, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions }: Props) {
   const [input, setInput] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -94,6 +95,23 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
 
         {/* 右侧按钮组 */}
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
+          {/* 历史会话 */}
+          {onOpenSessions && (
+            <button
+              onClick={onOpenSessions}
+              title="历史会话"
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer', padding: 2,
+                display: 'flex', alignItems: 'center',
+                color: 'rgba(255,255,255,0.35)',
+                transition: 'color 0.15s',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = theme.electricBlue)}
+              onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.35)')}
+            >
+              <History size={13} />
+            </button>
+          )}
           {/* TTS 开关 */}
           {onToggleTts && (
             <button
