@@ -4,12 +4,12 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ChevronLeft, ChevronRight, Maximize2, Minimize2, Settings, Tv2, Mic } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Settings, Tv2, Mic } from 'lucide-react'
 import { fetchActivities } from './lib/chronos-api'
 import { createActivity, updateActivity, deleteActivity, fetchManicTimeSpans, fetchBiliSpans, fetchGoals, parseGoalTags } from './lib/local-api'
 import type { MtSpan, BiliSpan } from './lib/local-api'
 import type { ChronosActivity } from './types'
-import { theme } from './theme'
+import { theme, hud } from './theme'
 
 // Agent
 import { loadConfig, updateConfig } from './lib/agent/agent-config'
@@ -26,7 +26,7 @@ import type { ApiRequestSnapshot } from './lib/llm/api'
 // Session 持久化
 import {
   initChatSession, persistMessages, patchSession,
-  fetchSessionMessages, getRecentChatSessions, createChatSession,
+  fetchSessionMessages, getRecentChatSessions, createChatSession, deleteChatSession,
 } from './lib/agent/agent-memory'
 import type { ChatSessionInfo, SessionMessage } from './lib/agent/agent-memory'
 import { generateSessionTitle } from './lib/ai/session-title'
@@ -67,6 +67,7 @@ import { linkBiliToEvent, mergeActivities } from './lib/local-api'
 import type { DbBiliItem } from './lib/local-api'
 import type { FairyState } from './components/FairyHUD'
 import { NeonDivider, NeonBadge, MagneticButton } from './components/NeonUI'
+import { HudFrame, HudCommandStrip, DataRibbon, NeonRule } from './components/hud'
 import { usePresenceDetection } from './hooks/usePresenceDetection'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import soloLevelingLogo from './assets/SOLO LEVELING SYSTEM.png'
@@ -224,22 +225,11 @@ export default function App() {
   const [dbStatus, setDbStatus] = useState<'loading' | 'live' | 'error'>('loading')
 
   // ── Layout ──
-  const [isExpanded, setIsExpanded] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showBili, setShowBili] = useState(false)
 
 
   // ── Activity Editor ──
-  type EditMode =
-    | { type: 'add' }
-    | { type: 'edit'; activity: ChronosActivity }
-    | null
-  const [editMode, setEditMode] = useState<EditMode>(null)
-  // 图表常驻高亮选区
-  const [chartSelection, setChartSelection] = useState<{ startMinute: number; endMinute: number } | null>(null)
-  // 推送给表单的时间（框选/右键/快速时长）
-  const [pushedTime, setPushedTime] = useState<{ start: number; end: number } | null>(null)
-  const [pushedVersion, setPushedVersion] = useState(0)
 
   // ── Bilibili 后台持久监控 ──
   const [config, setConfig] = useState<AgentConfig>(loadConfig)
@@ -570,11 +560,22 @@ export default function App() {
       omniNextStartRef.current = startAt + buf.duration
     }
 
-    const cleanups: Array<Promise<() => void>> = []
+    // StrictMode-safe 监听器注册：同步标记 disposed + 收集 unlisten，
+    // 避免 unmount/remount 竞态下 mount 1 的监听器残留导致事件翻倍（文字叠字、音频回音、tool_call 双发 → "active response" 错误）
+    let disposed = false
+    const unlisteners: Array<() => void> = []
 
-    cleanups.push(
-      import('@tauri-apps/api/event').then(({ listen }) =>
-        listen<{ text: string }>('omni://text_chunk', ({ payload }) => {
+    const registerListen = <T,>(event: string, handler: (e: { payload: T }) => void) => {
+      import('@tauri-apps/api/event').then(({ listen }) => {
+        if (disposed) return
+        listen<T>(event, handler).then((u) => {
+          if (disposed) { u(); return }
+          unlisteners.push(u)
+        })
+      })
+    }
+
+    registerListen<{ text: string }>('omni://text_chunk', ({ payload }) => {
           omniTextAccRef.current += payload.text
           emitFairy('speaking', omniTextAccRef.current)
 
@@ -607,24 +608,16 @@ export default function App() {
               prev.map((m) => m.id === id ? { ...m, content: omniTextAccRef.current } : m)
             )
           }
-        })
-      )
-    )
+    })
 
-    cleanups.push(
-      import('@tauri-apps/api/event').then(({ listen }) =>
-        listen<{ data: string }>('omni://audio_chunk', ({ payload }) => {
-          const pcm = Uint8Array.from(atob(payload.data), (c) => c.charCodeAt(0))
-          omniAiPcmChunksRef.current.push(pcm)
-          playOmniPcm(payload.data)
-        })
-      )
-    )
+    registerListen<{ data: string }>('omni://audio_chunk', ({ payload }) => {
+      const pcm = Uint8Array.from(atob(payload.data), (c) => c.charCodeAt(0))
+      omniAiPcmChunksRef.current.push(pcm)
+      playOmniPcm(payload.data)
+    })
 
     // Omni 原生工具调用：WS 端触发 → 前端执行 → omni_tool_result 回传
-    cleanups.push(
-      import('@tauri-apps/api/event').then(({ listen }) =>
-        listen<{ call_id: string; name: string; arguments: string }>('omni://tool_call', async ({ payload }) => {
+    registerListen<{ call_id: string; name: string; arguments: string }>('omni://tool_call', async ({ payload }) => {
           console.log('[Omni] tool_call', payload.name, payload.arguments)
           emitFairy('thinking')
           let argsPreview = payload.arguments
@@ -650,13 +643,9 @@ export default function App() {
           } catch (err) {
             console.error('[Omni] omni_tool_result failed', err)
           }
-        })
-      )
-    )
+    })
 
-    cleanups.push(
-      import('@tauri-apps/api/event').then(({ listen }) =>
-        listen<{ status: string; message?: string }>('omni://status', ({ payload }) => {
+    registerListen<{ status: string; message?: string }>('omni://status', ({ payload }) => {
           if (payload.status === 'audio_done') {
             const chunks = omniAiPcmChunksRef.current
             omniAiPcmChunksRef.current = []
@@ -731,14 +720,13 @@ export default function App() {
               timestamp: new Date().toISOString(),
             }])
           }
-        })
-      )
-    )
+    })
 
     // omni://user_transcript 由 voice-service 内部消费（调 onTranscript 更新气泡），此处无需重复处理
 
     return () => {
-      cleanups.forEach((p) => p.then((fn) => fn()))
+      disposed = true
+      unlisteners.forEach((fn) => fn())
     }
   }, [config.aiMode, emitFairy])
 
@@ -825,27 +813,19 @@ export default function App() {
   }, [getVoiceService, emitFairy])
 
   // ── Date Navigation ──
-  const clearSelectionAndForm = () => {
-    setChartSelection(null)
-    setEditMode(null)
-    setPushedTime(null)
-  }
 
   const prevDay = () => {
     const d = new Date(selectedDate)
     d.setDate(d.getDate() - 1)
     setSelectedDate(d)
-    clearSelectionAndForm()
   }
   const nextDay = () => {
     const d = new Date(selectedDate)
     d.setDate(d.getDate() + 1)
     setSelectedDate(d)
-    clearSelectionAndForm()
   }
   const goToday = () => {
     setSelectedDate(new Date())
-    clearSelectionAndForm()
   }
 
   const handleConfigUpdate = useCallback((updates: Partial<AgentConfig>) => {
@@ -897,48 +877,6 @@ export default function App() {
     sync()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [biliNewItems])
-
-  const handleActivitySave = useCallback(async (activity: Omit<ChronosActivity, 'id'>) => {
-    if (editMode?.type === 'add') {
-      await createActivity(selectedDate, activity)  // 普通新建，不需要 eventIds
-    } else if (editMode?.type === 'edit') {
-      await updateActivity(editMode.activity.id, activity)
-    }
-    refreshActivities()
-    setEditMode(null)
-    setChartSelection(null)
-  }, [editMode, selectedDate, refreshActivities])
-
-  const handleActivityDelete = useCallback(async () => {
-    if (editMode?.type !== 'edit') return
-    await deleteActivity(editMode.activity.id)
-    refreshActivities()
-    setEditMode(null)
-    setChartSelection(null)
-  }, [editMode, refreshActivities])
-
-  const handleTimeSelect = useCallback((start: number, end: number) => {
-    setShowSettings(false)
-    setShowBili(false)
-    setChartSelection({ startMinute: start, endMinute: end })
-    setPushedTime({ start, end })
-    setPushedVersion((v) => v + 1)
-    // 如果表单未打开则打开（不传时间，靠 pushedTime 同步）
-    setEditMode((prev) => prev === null ? { type: 'add' } : prev)
-  }, [])
-
-  const handleClearSelection = useCallback(() => {
-    setChartSelection(null)
-    setPushedTime(null)
-    setPushedVersion((v) => v + 1)
-  }, [])
-
-  const handleActivityResize = useCallback(async (id: string, newStart: number, newEnd: number) => {
-    const activity = activities.find((a) => a.id === id)
-    if (!activity) return
-    await updateActivity(id, { ...activity, startMinute: newStart, endMinute: newEnd })
-    refreshActivities()
-  }, [activities, refreshActivities])
 
   // 手动从 BiliHistoryMonitor 加入活动（多选）
   const handleAddBiliToActivity = useCallback(async (items: DbBiliItem[]) => {
@@ -1381,11 +1319,15 @@ export default function App() {
   return (
     <div style={{
       display: 'flex', flexDirection: 'column',
-      height: '100vh', background: theme.background,
+      height: '100vh',
+      background: hud.backdrop,
       color: theme.textPrimary,
       fontFamily: theme.fontBody,
       overflow: 'hidden',
+      position: 'relative',
     }}>
+      {/* 全局 HUD 背景栅格（遮罩成椭圆渐隐） */}
+      <div className="hud-grid-bg" style={{ zIndex: 0 }} />
       {/* ── 隐藏摄像头（presence detection） ── */}
       <video
         ref={videoRef}
@@ -1396,12 +1338,23 @@ export default function App() {
 
       {/* ── Top Bar ── */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '0 12px', height: 52, flexShrink: 0,
-        background: 'rgba(0,10,20,0.7)',
-        borderBottom: `1px solid ${theme.divider}`,
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '0 40px', height: 60, flexShrink: 0,
+        background: `linear-gradient(180deg, rgba(4,10,26,0.85) 0%, rgba(2,6,18,0.75) 100%)`,
+        boxShadow: `0 2px 22px rgba(0,229,255,0.10)`,
         position: 'relative',
+        overflow: 'visible',
+        zIndex: 2,
       }}>
+        {/* 顶栏专用 HUD 装饰（斜切端头 + 中央凸起桥 + 底部握手凹陷） */}
+        <HudCommandStrip
+          color={theme.electricBlue}
+          accent={theme.warningOrange}
+          centerLabel="SOLO LEVELING SYSTEM · CORE"
+          leftBadge="SLS-01"
+          rightBadge="v0.1"
+        />
+
         {/* Logo */}
         <img
           src={soloLevelingLogo}
@@ -1412,80 +1365,77 @@ export default function App() {
             navigator.clipboard.writeText('SOLO LEVELING SYSTEM').catch(() => {})
           }}
           style={{
-            height: 36,
+            height: 40,
             objectFit: 'contain',
             userSelect: 'none',
             WebkitUserSelect: 'none',
-            filter: `drop-shadow(0 0 6px ${theme.electricBlue}80)`,
+            filter: `
+              drop-shadow(0 0 8px ${theme.electricBlue}AA)
+              drop-shadow(0 0 16px ${theme.shadowPurple}55)
+            `,
             cursor: 'default',
           }}
         />
 
-        <NeonDivider vertical />
+        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 4px' }} />
 
-        {/* Date Nav */}
-        <button onClick={prevDay} style={navBtn} title="前一天">
-          <ChevronLeft size={14} />
-        </button>
-        <span style={{
-          fontSize: 12, fontWeight: 600,
-          fontFamily: theme.fontMono,
-          color: theme.textPrimary, letterSpacing: 1,
-          minWidth: 88, textAlign: 'center',
-        }}>
-          {selectedDate.toLocaleDateString('zh-CN', {
-            month: '2-digit', day: '2-digit', weekday: 'short',
-          })}
-        </span>
-        <button onClick={nextDay} style={navBtn} title="后一天">
-          <ChevronRight size={14} />
-        </button>
-        <button onClick={goToday} style={{
-          ...navBtn,
-          fontFamily: theme.fontBody,
-          fontSize: 12, fontWeight: 600,
-          color: theme.electricBlue,
-          padding: '3px 8px',
-          border: `1px solid ${theme.electricBlue}30`,
-          borderRadius: 3,
-        }}>
-          今日
-        </button>
-
-        {/* DB Status dot */}
-        <div style={{
-          width: 6, height: 6, borderRadius: '50%',
-          background: dbStatus === 'live' ? theme.expGreen : dbStatus === 'error' ? theme.dangerRed : theme.textSecondary,
-          boxShadow: dbStatus === 'live' ? `0 0 6px ${theme.expGreen}` : undefined,
-          animation: dbStatus === 'loading' ? 'glowPulse 1.2s ease-in-out infinite' : undefined,
-          flexShrink: 0,
-        }} title={dbStatus === 'loading' ? '同步中' : dbStatus === 'live' ? '已连接' : '连接错误'} />
-
-        <NeonDivider vertical />
-
-        {/* Chart expand/collapse */}
-        <button
-          onClick={() => setIsExpanded(!isExpanded)}
-          style={{
+        {/* 日期导航区 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <button onClick={prevDay} style={navBtn} title="前一天">
+            <ChevronLeft size={12} />
+          </button>
+          <DataRibbon
+            label="DATE"
+            value={selectedDate.toLocaleDateString('zh-CN', {
+              month: '2-digit', day: '2-digit', weekday: 'short',
+            })}
+            style={{ minWidth: 88, alignItems: 'center', textAlign: 'center' }}
+          />
+          <button onClick={nextDay} style={navBtn} title="后一天">
+            <ChevronRight size={12} />
+          </button>
+          <button onClick={goToday} style={{
             ...navBtn,
-            color: isExpanded ? theme.electricBlue : theme.textSecondary,
-            padding: '3px 5px',
-            border: `1px solid ${isExpanded ? theme.electricBlue + '40' : 'transparent'}`,
-            borderRadius: 3,
-          }}
-          title={isExpanded ? '收缩昼夜表' : '展开昼夜表'}
-        >
-          {isExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-        </button>
+            color: theme.electricBlue,
+            padding: '5px 11px',
+            border: `1px solid ${theme.electricBlue}55`,
+            background: `${theme.electricBlue}0E`,
+            textShadow: `0 0 6px ${theme.electricBlue}AA`,
+            letterSpacing: 1.8,
+          }}>
+            NOW
+          </button>
+        </div>
+
+        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 4px' }} />
+
+        {/* DB 状态读数 */}
+        <DataRibbon
+          label="DB"
+          color={dbStatus === 'live' ? theme.expGreen : dbStatus === 'error' ? theme.dangerRed : theme.textSecondary}
+          flicker={dbStatus === 'loading'}
+          value={
+            <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span style={{
+                width: 5, height: 5, borderRadius: '50%',
+                background: dbStatus === 'live' ? theme.expGreen : dbStatus === 'error' ? theme.dangerRed : theme.textSecondary,
+                boxShadow: dbStatus === 'live' ? `0 0 6px ${theme.expGreen}` : undefined,
+              }} />
+              {dbStatus === 'live' ? 'ONLINE' : dbStatus === 'error' ? 'ERROR' : 'SYNC'}
+            </span>
+          }
+        />
+
+        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 4px' }} />
 
         <div style={{ flex: 1 }} />
 
         {/* Voice hint */}
-        <button style={{ ...navBtn, color: theme.textMuted, padding: '2px 4px' }} title="长按右 Alt 呼唤语音助手">
-          <Mic size={13} />
+        <button style={{ ...navBtn, color: theme.textMuted }} title="长按右 Alt 呼唤语音助手">
+          <Mic size={12} />
         </button>
 
-        <NeonDivider vertical />
+        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 4px' }} />
 
         {/* B站历史 */}
         <button
@@ -1493,11 +1443,13 @@ export default function App() {
           style={{
             ...navBtn,
             color: showBili ? theme.electricBlue : theme.textSecondary,
-            textShadow: showBili ? `0 0 6px ${theme.electricBlue}` : undefined,
+            border: `1px solid ${showBili ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
+            background: showBili ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
+            textShadow: showBili ? `0 0 6px ${theme.electricBlue}AA` : undefined,
           }}
           title="B站历史记录"
         >
-          <Tv2 size={14} />
+          <Tv2 size={12} />
         </button>
 
         {/* Settings */}
@@ -1505,13 +1457,14 @@ export default function App() {
           onClick={() => { setShowSettings(!showSettings); if (!showSettings) setShowBili(false) }}
           style={{
             ...navBtn,
-            fontSize: 15,
             color: showSettings ? theme.electricBlue : theme.textSecondary,
-            textShadow: showSettings ? `0 0 6px ${theme.electricBlue}` : undefined,
+            border: `1px solid ${showSettings ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
+            background: showSettings ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
+            textShadow: showSettings ? `0 0 6px ${theme.electricBlue}AA` : undefined,
           }}
           title="设置"
         >
-          <Settings size={14} />
+          <Settings size={12} />
         </button>
       </div>
 
@@ -1523,9 +1476,7 @@ export default function App() {
             activities={activities}
             mtSpans={mtSpans}
             biliSpans={biliSpans}
-            isExpanded={isExpanded}
             selectedDate={selectedDate}
-            selection={chartSelection}
             onSpanClick={() => {}}
             onSpanHover={setHoveredTagSpan}
             onAppSpanHover={setHoveredAppSpan}
@@ -1534,9 +1485,6 @@ export default function App() {
             onTrackModeChange={setTrackMode}
             pinnedPos={pinnedPos}
             onPinPos={setPinnedPos}
-            onTimeSelect={handleTimeSelect}
-            onClearSelection={handleClearSelection}
-            onActivityResize={handleActivityResize}
             onDeleteMinuteRange={handleDeleteMinuteRange}
           />
         </div>
@@ -1544,9 +1492,11 @@ export default function App() {
         {/* Right Panel: Chat or Settings */}
         <div style={{
           width: 340,
-          borderLeft: `1px solid ${theme.divider}`,
+          borderLeft: `1px solid ${theme.hudFrameSoft}`,
           display: 'flex', flexDirection: 'column',
-          background: 'rgba(2,6,14,0.6)',
+          background: `linear-gradient(180deg, rgba(4,10,26,0.72) 0%, rgba(2,6,14,0.82) 100%)`,
+          boxShadow: `inset 1px 0 0 ${theme.electricBlue}18, inset 0 0 40px rgba(0,229,255,0.03)`,
+          position: 'relative',
         }}>
           {/* 右侧栏内容：Settings / Bili 优先；否则面板覆盖 Chat */}
           {showSettings ? (
@@ -1608,20 +1558,45 @@ export default function App() {
                     onToggleCamera={toggleCameraWindow}
                     ttsEnabled={config.ttsEnabled}
                     onToggleTts={() => handleConfigUpdate({ ttsEnabled: !config.ttsEnabled })}
+                    sessionsOpen={pickerOpen}
                     onOpenSessions={() => {
-                      getRecentChatSessions(50)
-                        .then((s) => setSessions(s))
-                        .catch(() => {})
-                      setPickerOpen(true)
+                      if (pickerOpen) {
+                        setPickerOpen(false)
+                      } else {
+                        getRecentChatSessions(50)
+                          .then((s) => setSessions(s))
+                          .catch(() => {})
+                        setPickerOpen(true)
+                      }
                     }}
                   />
                 </div>
                 {hasDetail && (
-                  <div style={{ height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
-                    {tagSpan && <SpanDetailPanel span={tagSpan} />}
-                    {appSpan && <AppHoverPanel span={appSpan} date={selectedDate} />}
-                    {biliSpan && <BiliVideoPanel span={biliSpan} />}
-                    <div style={{ flex: 1 }} />
+                  <div style={{
+                    height: '100%', position: 'relative',
+                    padding: '4px 4px',
+                    fontFamily: theme.fontBody,
+                  }}>
+                    <HudFrame
+                      color={theme.electricBlue}
+                      accent={theme.warningOrange}
+                      topLabel="DETAIL · SCAN"
+                      showNotchTop
+                      showNotchBottom={false}
+                      notchWidth={70}
+                      notchDepth={7}
+                      cornerSize={16}
+                    />
+                    <div style={{
+                      height: '100%', overflow: 'auto',
+                      display: 'flex', flexDirection: 'column',
+                      padding: '8px 4px',
+                    }}>
+                      {tagSpan && <SpanDetailPanel span={tagSpan} />}
+                      {appSpan && <AppHoverPanel span={appSpan} date={selectedDate} />}
+                      {biliSpan && <BiliVideoPanel span={biliSpan} />}
+                      <div style={{ flex: 1 }} />
+                    </div>
                   </div>
                 )}
               </>
@@ -1630,13 +1605,21 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── Session Picker ── */}
+      {/* ── Session Picker（侧栏，停靠在聊天面板左侧，不遮挡聊天窗口）── */}
       {pickerOpen && (
         <SessionPicker
           sessions={sessions}
           currentSessionId={sessionIdRef.current}
-          onSelect={switchSession}
-          onNewSession={() => { newSession(); setPickerOpen(false) }}
+          dockRight={340}
+          onSelect={(id) => { switchSession(id) }}
+          onNewSession={() => { newSession() }}
+          onDelete={async (id) => {
+            try { await deleteChatSession(id) } catch {}
+            setSessions((prev) => prev.filter((s) => s.id !== id))
+            if (sessionIdRef.current === id) {
+              await newSession()
+            }
+          }}
           onClose={() => setPickerOpen(false)}
         />
       )}
@@ -1644,10 +1627,23 @@ export default function App() {
   )
 }
 
+// 顶栏 HUD 风格按钮：切角方框 + mono 排版 + cyan 边框
 const navBtn: React.CSSProperties = {
-  background: 'transparent', border: 'none',
-  color: theme.textSecondary, cursor: 'pointer',
-  fontSize: 16, padding: '2px 4px', lineHeight: 1,
-  fontFamily: theme.fontBody,
-  transition: 'color 0.15s',
+  background: 'rgba(0,229,255,0.04)',
+  border: `1px solid ${theme.hudFrameSoft}`,
+  color: theme.textSecondary,
+  cursor: 'pointer',
+  fontSize: 11,
+  fontFamily: theme.fontMono,
+  fontWeight: 700,
+  letterSpacing: 1,
+  padding: '5px 7px',
+  lineHeight: 1,
+  clipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
+  transition: 'color 0.15s, background 0.15s, border-color 0.15s',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  minWidth: 26,
+  minHeight: 24,
 }

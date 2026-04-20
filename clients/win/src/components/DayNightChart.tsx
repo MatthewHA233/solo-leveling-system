@@ -1,15 +1,14 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
-import type { ChronosActivity, TraceLayout } from '../types'
+import type { ChronosActivity } from '../types'
 import type { MtSpan, BiliSpan } from '../lib/local-api'
 import { theme, getCategoryColor, getCategoryLabel } from '../theme'
+import { HudFrame } from './hud'
 
 interface Props {
   activities: ChronosActivity[]
   mtSpans?: MtSpan[]
   biliSpans?: BiliSpan[]
-  isExpanded: boolean
   selectedDate: Date
-  selection?: { startMinute: number; endMinute: number } | null
   onSpanClick?: (span: MtSpan) => void
   onSpanHover?: (span: MtSpan | null) => void
   onAppSpanHover?: (span: MtSpan | null) => void
@@ -18,9 +17,6 @@ interface Props {
   onTrackModeChange?: (mode: 'apps' | 'bili') => void
   pinnedPos?: { col: number; y: number; minute: number } | null
   onPinPos?: (pos: { col: number; y: number; minute: number } | null) => void
-  onTimeSelect?: (startMinute: number, endMinute: number) => void
-  onClearSelection?: () => void
-  onActivityResize?: (activityId: string, newStart: number, newEnd: number) => void
   onDeleteMinuteRange?: (startMin: number, endMin: number) => void
 }
 
@@ -147,24 +143,40 @@ function fmt(m: number) {
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
 }
 
-function computeLayouts(activities: ChronosActivity[]): TraceLayout[] {
-  const sorted = [...activities].sort((a, b) => a.startMinute - b.startMinute)
-  const result: TraceLayout[] = []
-  const ends: number[] = []
-  for (const a of sorted) {
-    let t = ends.findIndex((e) => a.startMinute >= e)
-    if (t === -1) { t = ends.length; ends.push(a.endMinute) }
-    else ends[t] = a.endMinute
-    result.push({ activity: a, trackIndex: Math.min(t, 2) })
-  }
-  return result
-}
-
 function hexToRgba(hex: string, alpha: number): string {
   const r = parseInt(hex.slice(1, 3), 16)
   const g = parseInt(hex.slice(3, 5), 16)
   const b = parseInt(hex.slice(5, 7), 16)
   return `rgba(${r},${g},${b},${alpha})`
+}
+
+/** 感知亮度（0–255），暗色自动朝白色方向拉亮到 minLum */
+function brightenForDark(hex: string, minLum = 150): string {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  if (lum >= minLum) return hex
+  const t = (minLum - lum) / (255 - lum)  // 向白色插值
+  const nr = Math.round(r + (255 - r) * t)
+  const ng = Math.round(g + (255 - g) * t)
+  const nb = Math.round(b + (255 - b) * t)
+  return `#${nr.toString(16).padStart(2, '0')}${ng.toString(16).padStart(2, '0')}${nb.toString(16).padStart(2, '0')}`
+}
+
+/** 斜切矩形路径（八角 HUD 风格），不 fill/stroke，由调用方决定 */
+function chamferPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, c: number) {
+  const cx = Math.min(c, w / 2, h / 2)
+  ctx.beginPath()
+  ctx.moveTo(x + cx, y)
+  ctx.lineTo(x + w - cx, y)
+  ctx.lineTo(x + w, y + cx)
+  ctx.lineTo(x + w, y + h - cx)
+  ctx.lineTo(x + w - cx, y + h)
+  ctx.lineTo(x + cx, y + h)
+  ctx.lineTo(x, y + h - cx)
+  ctx.lineTo(x, y + cx)
+  ctx.closePath()
 }
 
 // ── 工具函数 ──
@@ -283,7 +295,6 @@ function drawTagFills(
 
     const color   = span.color ?? '#4488ff'
     const hovered = hoveredSpanId === span.id
-    const opacity = hovered ? 0.75 : 0.55
 
     const startCol = Math.floor(startMin / p.minutesPerCol)
     const endCol   = Math.floor((endMin - 1) / p.minutesPerCol)
@@ -298,18 +309,76 @@ function drawTagFills(
       const y1 = minuteToY(segEnd, c, p)
       const x  = colX(c, p) + fillOffsetX
       const w  = p.cellW - fillOffsetX
+      const h  = y1 - y0
+      if (h <= 0 || w <= 0) continue
 
-      // 填充
-      ctx.fillStyle = hexToRgba(color, opacity)
-      ctx.fillRect(x, y0, w, y1 - y0)
+      const isFirstCol = c === startCol
+      const isLastCol  = c === endCol
 
-      // 左侧亮边
-      ctx.strokeStyle = hexToRgba(color, hovered ? 1.0 : 0.85)
-      ctx.lineWidth = 2
+      // 1) 填充：极弱水平渐变（基本接近纯色，只在右端收一点边）
+      const grad = ctx.createLinearGradient(x, 0, x + w, 0)
+      grad.addColorStop(0, hexToRgba(color, hovered ? 0.68 : 0.52))
+      grad.addColorStop(0.75, hexToRgba(color, hovered ? 0.6 : 0.46))
+      grad.addColorStop(1, hexToRgba(color, hovered ? 0.42 : 0.32))
+      ctx.fillStyle = grad
+      ctx.fillRect(x, y0, w, h)
+
+      // 2) 顶部高亮带（仅段首列顶部）
+      if (isFirstCol) {
+        ctx.fillStyle = hexToRgba(color, hovered ? 0.95 : 0.8)
+        ctx.fillRect(x, y0, w, 1.2)
+      }
+      // 底部收口暗线（仅末列底部）
+      if (isLastCol) {
+        ctx.fillStyle = hexToRgba(color, hovered ? 0.55 : 0.4)
+        ctx.fillRect(x, y1 - 1, w, 1)
+      }
+
+      // 3) 左侧能量亮边 + 发光
+      ctx.save()
+      if (hovered) {
+        ctx.shadowColor = hexToRgba(color, 0.9)
+        ctx.shadowBlur = 6
+      }
+      ctx.strokeStyle = hexToRgba(color, hovered ? 1.0 : 0.9)
+      ctx.lineWidth = hovered ? 2.2 : 1.8
       ctx.beginPath()
-      ctx.moveTo(x, y0)
-      ctx.lineTo(x, y1)
+      ctx.moveTo(x + 0.5, y0)
+      ctx.lineTo(x + 0.5, y1)
       ctx.stroke()
+      ctx.restore()
+
+      // 4) 首/末列 L 形端盖（HUD 收口）
+      const cornerLen = Math.min(8, Math.max(4, h * 0.22))
+      const cornerW = 1.4
+      ctx.strokeStyle = hexToRgba(color, hovered ? 1.0 : 0.85)
+      ctx.lineWidth = cornerW
+      ctx.lineCap = 'butt'
+      if (isFirstCol) {
+        ctx.beginPath()
+        ctx.moveTo(x, y0 + cornerLen)
+        ctx.lineTo(x, y0)
+        ctx.lineTo(x + cornerLen, y0)
+        ctx.stroke()
+      }
+      if (isLastCol) {
+        ctx.beginPath()
+        ctx.moveTo(x + w - cornerLen, y1)
+        ctx.lineTo(x + w, y1)
+        ctx.lineTo(x + w, y1 - cornerLen)
+        ctx.stroke()
+      }
+
+      // 5) 悬浮：外发光描边（整段矩形）
+      if (hovered) {
+        ctx.save()
+        ctx.shadowColor = hexToRgba(color, 0.7)
+        ctx.shadowBlur = 10
+        ctx.strokeStyle = hexToRgba(color, 0.5)
+        ctx.lineWidth = 1
+        ctx.strokeRect(x + 0.5, y0 + 0.5, w - 1, h - 1)
+        ctx.restore()
+      }
     }
   }
 }
@@ -340,6 +409,9 @@ function drawAppTraces(
     const startCol = Math.floor(startMin / p.minutesPerCol)
     const endCol   = Math.floor((endMin - 1) / p.minutesPerCol)
 
+    // 暗色自动提亮（紫色、深蓝等在暗背景下被吞没的颜色）
+    const vivid = brightenForDark(color, 160)
+
     for (let c = startCol; c <= endCol && c < p.cols; c++) {
       const segStart = Math.max(startMin, c * p.minutesPerCol)
       const segEnd   = Math.min(endMin, (c + 1) * p.minutesPerCol)
@@ -350,27 +422,40 @@ function drawAppTraces(
       const y1 = minuteToY(segEnd, c, p)
       if (y1 <= y0) continue
 
-      ctx.beginPath()
-      ctx.moveTo(lx, y0); ctx.lineTo(lx, y1)
-      ctx.strokeStyle = hexToRgba(color, 0.85)
-      ctx.lineWidth = 1.5; ctx.lineCap = 'butt'; ctx.stroke()
+      // 顶/底端 inset，避开与单元格左上/左下角重叠导致的"视觉打结"
+      const isFirstSegCol = c === startCol
+      const isLastSegCol  = c === endCol
+      const topInset = isFirstSegCol ? 2 : 0
+      const botInset = isLastSegCol ? 2 : 0
+      const py0 = y0 + topInset
+      const py1 = y1 - botInset
+      if (py1 <= py0) continue
 
-      ctx.beginPath()
-      ctx.moveTo(rx, y0); ctx.lineTo(rx, y1)
-      ctx.strokeStyle = 'rgba(255,255,255,0.18)'
-      ctx.lineWidth = 1; ctx.lineCap = 'butt'; ctx.stroke()
+      // 单根粗实心轨：简洁、清晰、对比度高
+      const barX = lx + 1
+      const barW = (rx - lx) - 1   // ~5px 粗度
+      ctx.save()
+      ctx.shadowColor = hexToRgba(vivid, isHighlighted ? 0.9 : 0.55)
+      ctx.shadowBlur = isHighlighted ? 8 : 4
+      ctx.fillStyle = vivid
+      ctx.fillRect(barX, py0, barW, py1 - py0)
+      ctx.restore()
 
-      // 管内图标：非高亮时在左轨右侧绘制（高亮时图标随横线标签显示，视觉上"移位"）
+      // 单层顶部高光（只在首列顶部有），增加立体感但不再跟轨道边框同位
+      if (isFirstSegCol) {
+        ctx.fillStyle = 'rgba(255,255,255,0.5)'
+        ctx.fillRect(barX, py0, barW, 1)
+      }
+
+      // 管内图标：非高亮时靠近右侧（贴着标签矩形左边缘），高亮时由横线标签代替
       if (!isHighlighted && getIcon) {
         const appName = span.group_name ?? span.title
         const icon = getIcon(appName)
         if (icon && y1 - y0 >= PIPE_ICON_SIZE) {
-          const iconX = lx + 1
+          const tagLeftX = cx + p.traceBaseX + traceWidth + TRACE_GAP
+          const iconX = tagLeftX - PIPE_ICON_SIZE - 1
           const iconY = y0 + (y1 - y0) / 2 - PIPE_ICON_SIZE / 2
-          ctx.save()
-          ctx.globalAlpha = 0.72
           ctx.drawImage(icon, iconX, iconY, PIPE_ICON_SIZE, PIPE_ICON_SIZE)
-          ctx.restore()
         }
       }
     }
@@ -390,6 +475,7 @@ function drawBiliTracesInPipe(
     if (endMin <= startMin) continue
 
     const railColor = si % 2 === 0 ? BILI_COLOR : BILI_YELLOW
+    const vivid = brightenForDark(railColor, 160)
     const startCol = Math.floor(startMin / p.minutesPerCol)
     const endCol   = Math.floor((endMin - 1) / p.minutesPerCol)
 
@@ -403,15 +489,27 @@ function drawBiliTracesInPipe(
       const y1 = minuteToY(segEnd, c, p)
       if (y1 <= y0) continue
 
-      ctx.beginPath()
-      ctx.moveTo(lx, y0); ctx.lineTo(lx, y1)
-      ctx.strokeStyle = hexToRgba(railColor, 0.85)
-      ctx.lineWidth = 1.5; ctx.lineCap = 'butt'; ctx.stroke()
+      const isFirstSegCol = c === startCol
+      const isLastSegCol  = c === endCol
+      const topInset = isFirstSegCol ? 2 : 0
+      const botInset = isLastSegCol ? 2 : 0
+      const py0 = y0 + topInset
+      const py1 = y1 - botInset
+      if (py1 <= py0) continue
 
-      ctx.beginPath()
-      ctx.moveTo(rx, y0); ctx.lineTo(rx, y1)
-      ctx.strokeStyle = 'rgba(255,255,255,0.18)'
-      ctx.lineWidth = 1; ctx.lineCap = 'butt'; ctx.stroke()
+      const barX = lx + 1
+      const barW = (rx - lx) - 1
+      ctx.save()
+      ctx.shadowColor = hexToRgba(vivid, 0.55)
+      ctx.shadowBlur = 4
+      ctx.fillStyle = vivid
+      ctx.fillRect(barX, py0, barW, py1 - py0)
+      ctx.restore()
+
+      if (isFirstSegCol) {
+        ctx.fillStyle = 'rgba(255,255,255,0.5)'
+        ctx.fillRect(barX, py0, barW, 1)
+      }
     }
   }
 }
@@ -572,221 +670,6 @@ function drawTimeLabels(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getG
   }
 }
 
-function drawCellFills(
-  ctx: CanvasRenderingContext2D,
-  p: ReturnType<typeof getGridParams>,
-  layouts: TraceLayout[],
-  hoveredId: string | null,
-) {
-  for (const layout of layouts) {
-    const a = layout.activity
-    const color = getCategoryColor(a.category)
-    const hovered = hoveredId === a.id
-    const opacity = hovered ? 0.75 : 0.55
-
-    // 按列绘制连续实心矩形（贯穿行间隙）
-    const startCol = Math.floor(a.startMinute / p.minutesPerCol)
-    const endCol = Math.floor((a.endMinute - 1) / p.minutesPerCol)
-
-    for (let c = startCol; c <= endCol && c < p.cols; c++) {
-      const colStartMin = c * p.minutesPerCol
-      const colEndMin = (c + 1) * p.minutesPerCol
-      const actStart = Math.max(a.startMinute, colStartMin)
-      const actEnd = Math.min(a.endMinute, colEndMin)
-
-      const y0 = minuteToY(actStart, c, p)
-      const y1 = minuteToY(actEnd, c, p)
-      const x = colX(c, p)
-
-      ctx.fillStyle = hexToRgba(color, opacity)
-      ctx.fillRect(x, y0, p.cellW, y1 - y0)
-    }
-  }
-}
-
-function drawTraceSegments(
-  ctx: CanvasRenderingContext2D,
-  p: ReturnType<typeof getGridParams>,
-  layouts: TraceLayout[],
-  hoveredId: string | null,
-  glow: boolean,
-) {
-  for (const layout of layouts) {
-    const a = layout.activity
-    const color = getCategoryColor(a.category)
-    const hovered = hoveredId === a.id
-    const trackX = p.traceBaseX + layout.trackIndex * p.trackSp
-    const traceW = 3.0
-
-    let m = a.startMinute
-    while (m < a.endMinute) {
-      const c = Math.floor(m / p.minutesPerCol)
-      const r = Math.floor((m % p.minutesPerCol) / 5)
-      if (c >= p.cols || r >= p.rows) break
-      const cellStart = c * p.minutesPerCol + r * 5
-      const cellEnd = cellStart + 5
-      const localStart = Math.max(a.startMinute, cellStart) - cellStart
-      const localEnd = Math.min(a.endMinute, cellEnd) - cellStart
-      const cx = colX(c, p)
-      const cy = p.topPad + r * p.rowStride
-      const x = cx + trackX
-      const y0 = cy + localStart * p.minuteH
-      const y1 = cy + localEnd * p.minuteH
-
-      const lw = glow ? traceW + 2 : (hovered ? traceW + 0.5 : traceW)
-      const op = glow ? 1.0 : 1.0
-      ctx.beginPath()
-      ctx.moveTo(x, y0)
-      ctx.lineTo(x, y1)
-      ctx.strokeStyle = hexToRgba(color, op)
-      ctx.lineWidth = lw
-      ctx.lineCap = 'round'
-      ctx.stroke()
-
-      if (!glow) {
-        // 起点矩形 cap
-        if (cellStart <= a.startMinute && a.startMinute < cellEnd) {
-          ctx.fillStyle = color
-          ctx.fillRect(x - 3, y0 - 1.5, 6, 3)
-        }
-        // 终点圆 cap
-        if (cellStart < a.endMinute && a.endMinute <= cellEnd) {
-          ctx.beginPath()
-          ctx.arc(x, y1, 3, 0, Math.PI * 2)
-          ctx.fillStyle = color
-          ctx.fill()
-        }
-        // 跨行连接虚线
-        if (a.endMinute > cellEnd && r < p.rows - 1) {
-          const nextCy = p.topPad + (r + 1) * p.rowStride
-          ctx.beginPath()
-          ctx.moveTo(x, y1)
-          ctx.lineTo(x, nextCy)
-          ctx.strokeStyle = hexToRgba(color, 0.5)
-          ctx.lineWidth = 1.5
-          ctx.setLineDash([2, 3])
-          ctx.stroke()
-          ctx.setLineDash([])
-        }
-      }
-      m = cellEnd
-    }
-  }
-}
-
-function drawEventNodes(
-  ctx: CanvasRenderingContext2D,
-  p: ReturnType<typeof getGridParams>,
-  layouts: TraceLayout[],
-  hoveredCell: { col: number; row: number } | null,
-) {
-  for (const layout of layouts) {
-    const color = getCategoryColor(layout.activity.category)
-    const trackX = p.traceBaseX + layout.trackIndex * p.trackSp
-
-    for (const step of layout.activity.events) {
-      const c = Math.floor(step.minute / p.minutesPerCol)
-      const r = Math.floor((step.minute % p.minutesPerCol) / 5)
-      if (c >= p.cols || r >= p.rows) continue
-      const cellStart = c * p.minutesPerCol + r * 5
-      const localMin = step.minute - cellStart
-      const cx = colX(c, p)
-      const cy = p.topPad + r * p.rowStride
-      const x = cx + trackX
-      const y = cy + localMin * p.minuteH
-
-      const lit = hoveredCell?.col === c && hoveredCell?.row === r
-
-      // 背景擦除圆
-      const nodeR = lit ? 6 : 5
-      ctx.beginPath()
-      ctx.arc(x, y, nodeR, 0, Math.PI * 2)
-      ctx.fillStyle = theme.background
-      ctx.fill()
-
-      // 外圆环
-      const ringR = lit ? 5.5 : 4.5
-      ctx.beginPath()
-      ctx.arc(x, y, ringR, 0, Math.PI * 2)
-      ctx.strokeStyle = color
-      ctx.lineWidth = lit ? 2 : 1.5
-      ctx.stroke()
-
-      // 内实心点
-      const dotR = lit ? 2.5 : 2
-      ctx.beginPath()
-      ctx.arc(x, y, dotR, 0, Math.PI * 2)
-      ctx.fillStyle = color
-      ctx.fill()
-
-      // 序号
-      ctx.font = `500 ${p.fs(10)}px 'JetBrains Mono', 'Courier New', monospace`
-      ctx.fillStyle = color
-      ctx.textAlign = 'left'
-      ctx.fillText(step.label, x + 9, y + 3)
-
-      // hover 时显示步骤标题
-      if (lit && step.title) {
-        ctx.font = `600 ${p.fs(10)}px 'JetBrains Mono', 'Courier New', monospace`
-        ctx.fillStyle = color
-        ctx.fillText(step.title, x + 9 + 16, y + 3)
-      }
-    }
-  }
-}
-
-function drawTitles(
-  ctx: CanvasRenderingContext2D,
-  p: ReturnType<typeof getGridParams>,
-  layouts: TraceLayout[],
-) {
-  // 文字区域：三条竖线右侧到矩形右边
-  const textLeftPad = p.traceBaseX + 3 * p.trackSp + 4
-  const maxTextW = p.cellW - textLeftPad - 4
-  if (maxTextW <= 0) return
-
-  const fontSize = p.fs(11)
-  const lineH = Math.max(8, Math.round(fontSize * 1.27))
-
-  for (const layout of layouts) {
-    const a = layout.activity
-    // 在活动的第一列内绘制标题
-    const startCol = Math.floor(a.startMinute / p.minutesPerCol)
-    if (startCol >= p.cols) continue
-
-    const colStartMin = startCol * p.minutesPerCol
-    const colEndMin = (startCol + 1) * p.minutesPerCol
-    const actStart = Math.max(a.startMinute, colStartMin)
-    const actEnd = Math.min(a.endMinute, colEndMin)
-
-    const x = colX(startCol, p) + textLeftPad
-    const y0 = minuteToY(actStart, startCol, p)
-    const y1 = minuteToY(actEnd, startCol, p)
-    const availH = y1 - y0
-
-    if (availH < lineH) continue
-
-    // 标题换行
-    ctx.font = `bold ${fontSize}px 'JetBrains Mono', 'Courier New', monospace`
-    ctx.textAlign = 'left'
-    ctx.fillStyle = theme.textPrimary
-    const titleLines = wrapText(ctx, a.title, maxTextW)
-
-    let drawY = y0 + lineH
-    for (const line of titleLines) {
-      if (drawY > y1) break
-      ctx.fillText(line, x, drawY)
-      drawY += lineH
-    }
-
-    // 时间范围（标题下方，如果还有空间）
-    if (drawY + lineH <= y1) {
-      ctx.font = `${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
-      ctx.fillStyle = hexToRgba(theme.textPrimary, 0.7)
-      ctx.fillText(`${fmt(a.startMinute)}–${fmt(a.endMinute)}`, x, drawY)
-    }
-  }
-}
 
 function drawNowTick(
   ctx: CanvasRenderingContext2D,
@@ -805,270 +688,166 @@ function drawNowTick(
   const cx = colX(col, p)
   const cy = p.topPad + row * p.rowStride
   const y = cy + localMin * p.minuteH
-  const blue = theme.electricBlue
-  const cyan = '#00ffff'
+  const cyan = '#00E5FF'
+  const seconds = now.getSeconds()
+  // 每 3 秒 pulse 一次（用秒做静态强度调制，避免额外 rAF）
+  const pulse = 0.7 + 0.3 * Math.abs(Math.sin((seconds / 60) * Math.PI * 2))
 
-  // ── 全列纵向扫描线（淡色垂直光柱） ──
-  const colCenterX = cx + p.cellW / 2
-  const grad = ctx.createLinearGradient(colCenterX, p.topPad, colCenterX, p.topPad + p.gridH)
-  grad.addColorStop(0, 'transparent')
-  grad.addColorStop(Math.max(0, (y - p.topPad - 60) / p.gridH), 'transparent')
-  grad.addColorStop((y - p.topPad) / p.gridH, hexToRgba(cyan, 0.06))
-  grad.addColorStop(Math.min(1, (y - p.topPad + 60) / p.gridH), 'transparent')
-  grad.addColorStop(1, 'transparent')
-  ctx.fillStyle = grad
+  // ── 全列纵向扫描光柱（居中在 y，上下渐隐） ──
+  const colCx = cx + p.cellW / 2
+  const sweepGrad = ctx.createLinearGradient(colCx, p.topPad, colCx, p.topPad + p.gridH)
+  sweepGrad.addColorStop(0, 'rgba(0,229,255,0)')
+  sweepGrad.addColorStop(Math.max(0, (y - p.topPad - 80) / p.gridH), 'rgba(0,229,255,0)')
+  sweepGrad.addColorStop((y - p.topPad) / p.gridH, `rgba(0,229,255,${0.08 * pulse})`)
+  sweepGrad.addColorStop(Math.min(1, (y - p.topPad + 80) / p.gridH), 'rgba(0,229,255,0)')
+  sweepGrad.addColorStop(1, 'rgba(0,229,255,0)')
+  ctx.fillStyle = sweepGrad
   ctx.fillRect(cx, p.topPad, p.cellW, p.gridH)
 
-  // ── 外层宽光晕 ──
+  // ── 外层大光晕条 ──
   ctx.save()
   ctx.shadowColor = cyan
-  ctx.shadowBlur = 20
+  ctx.shadowBlur = 22
   ctx.beginPath()
-  ctx.moveTo(cx - 12, y)
-  ctx.lineTo(cx + p.cellW + 12, y)
-  ctx.strokeStyle = hexToRgba(cyan, 0.25)
+  ctx.moveTo(cx - 14, y); ctx.lineTo(cx + p.cellW + 14, y)
+  ctx.strokeStyle = hexToRgba(cyan, 0.22 * pulse)
   ctx.lineWidth = 10
   ctx.stroke()
   ctx.restore()
 
-  // ── 内层锐利光晕 ──
+  // ── 主扫描线（三段渐变：透明 → 亮 → 透明反向）──
+  const lineGrad = ctx.createLinearGradient(cx - 6, y, cx + p.cellW + 6, y)
+  lineGrad.addColorStop(0,    'rgba(0,229,255,0)')
+  lineGrad.addColorStop(0.15, cyan)
+  lineGrad.addColorStop(0.5,  '#FFFFFF')
+  lineGrad.addColorStop(0.85, cyan)
+  lineGrad.addColorStop(1,    'rgba(0,229,255,0)')
   ctx.save()
-  ctx.shadowColor = blue
-  ctx.shadowBlur = 8
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 6
   ctx.beginPath()
-  ctx.moveTo(cx, y)
-  ctx.lineTo(cx + p.cellW, y)
-  ctx.strokeStyle = hexToRgba(blue, 0.6)
-  ctx.lineWidth = 4
-  ctx.stroke()
-  ctx.restore()
-
-  // ── 主扫描线（渐变） ──
-  const lineGrad = ctx.createLinearGradient(cx, y, cx + p.cellW, y)
-  lineGrad.addColorStop(0, cyan)
-  lineGrad.addColorStop(0.5, blue)
-  lineGrad.addColorStop(1, cyan)
-  ctx.beginPath()
-  ctx.moveTo(cx, y)
-  ctx.lineTo(cx + p.cellW, y)
+  ctx.moveTo(cx - 6, y); ctx.lineTo(cx + p.cellW + 6, y)
   ctx.strokeStyle = lineGrad
-  ctx.lineWidth = 2
-  ctx.lineCap = 'butt'
-  ctx.stroke()
-
-  // ── 左侧菱形指针 ──
-  const dW = 7, dH = 10
-  const dx = cx - dW - 2
-  ctx.beginPath()
-  ctx.moveTo(dx, y)
-  ctx.lineTo(dx + dW / 2, y - dH / 2)
-  ctx.lineTo(dx + dW, y)
-  ctx.lineTo(dx + dW / 2, y + dH / 2)
-  ctx.closePath()
-  // 菱形 glow
-  ctx.save()
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 10
-  ctx.fillStyle = blue
-  ctx.fill()
-  ctx.restore()
-  // 菱形边框
-  ctx.strokeStyle = cyan
-  ctx.lineWidth = 1
-  ctx.stroke()
-
-  // ── 右侧小三角 ──
-  const triW = 5, triH = 6
-  const tx = cx + p.cellW + 2
-  ctx.beginPath()
-  ctx.moveTo(tx, y - triH / 2)
-  ctx.lineTo(tx + triW, y)
-  ctx.lineTo(tx, y + triH / 2)
-  ctx.closePath()
-  ctx.fillStyle = blue
-  ctx.fill()
-
-  // ── 端点光点 ──
-  for (const px of [cx, cx + p.cellW]) {
-    ctx.beginPath()
-    ctx.arc(px, y, 3, 0, Math.PI * 2)
-    ctx.fillStyle = cyan
-    ctx.fill()
-    ctx.beginPath()
-    ctx.arc(px, y, 1.5, 0, Math.PI * 2)
-    ctx.fillStyle = '#fff'
-    ctx.fill()
-  }
-
-  // ── 时间标签（六边形科技风） ──
-  const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  const labelW = 44, labelH = 16
-  const notch = 4
-  const labelX = dx - labelW - 2
-  const labelY2 = y
-
-  // 六边形背景
-  ctx.beginPath()
-  ctx.moveTo(labelX + notch, labelY2 - labelH / 2)
-  ctx.lineTo(labelX + labelW - notch, labelY2 - labelH / 2)
-  ctx.lineTo(labelX + labelW, labelY2)
-  ctx.lineTo(labelX + labelW - notch, labelY2 + labelH / 2)
-  ctx.lineTo(labelX + notch, labelY2 + labelH / 2)
-  ctx.lineTo(labelX, labelY2)
-  ctx.closePath()
-
-  ctx.save()
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 12
-  ctx.fillStyle = blue
-  ctx.fill()
-  ctx.restore()
-
-  // 六边形边框
-  ctx.strokeStyle = cyan
-  ctx.lineWidth = 1
-  ctx.stroke()
-
-  // 时间文字
-  ctx.font = `900 ${p.fs(10)}px 'JetBrains Mono', 'Courier New', monospace`
-  ctx.fillStyle = '#000'
-  ctx.textAlign = 'center'
-  ctx.fillText(timeStr, labelX + labelW / 2, labelY2 + 3.5)
-}
-
-// ── 空格 hover 高亮 ──
-
-function drawHoverHighlight(
-  ctx: CanvasRenderingContext2D,
-  p: ReturnType<typeof getGridParams>,
-  hoverMin: number | null,
-  layouts: TraceLayout[],
-) {
-  if (hoverMin === null) return
-  const onActivity = layouts.some((l) => hoverMin >= l.activity.startMinute && hoverMin < l.activity.endMinute)
-  if (onActivity) return
-
-  const c = Math.floor(hoverMin / p.minutesPerCol)
-  const row = Math.floor((hoverMin % p.minutesPerCol) / 5)
-  if (c >= p.cols || row >= p.rows) return
-
-  const x = colX(c, p)
-  const y = p.topPad + row * p.rowStride
-  const cyan = theme.electricBlue
-
-  // 单格背景亮
-  ctx.fillStyle = hexToRgba(cyan, 0.08)
-  ctx.fillRect(x, y, p.cellW, p.cellH)
-
-  // 边框虚线
-  ctx.save()
-  ctx.strokeStyle = hexToRgba(cyan, 0.35)
-  ctx.lineWidth = 1
-  ctx.setLineDash([3, 3])
-  ctx.strokeRect(x + 0.5, y + 0.5, p.cellW - 1, p.cellH - 1)
-  ctx.setLineDash([])
-  ctx.restore()
-
-  // 中心 + 号
-  const cx = x + p.cellW / 2
-  const cy = y + p.cellH / 2
-  const arm = 5
-  ctx.strokeStyle = hexToRgba(cyan, 0.5)
   ctx.lineWidth = 1.5
-  ctx.beginPath()
-  ctx.moveTo(cx - arm, cy); ctx.lineTo(cx + arm, cy)
-  ctx.moveTo(cx, cy - arm); ctx.lineTo(cx, cy + arm)
   ctx.stroke()
-
-  // 时间提示
-  ctx.font = `${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
-  ctx.fillStyle = hexToRgba(cyan, 0.5)
-  ctx.textAlign = 'center'
-  ctx.fillText(fmt(hoverMin), cx, y + p.cellH - 5)
-}
-
-// ── 拖拽选区 ──
-
-function drawDragSelection(
-  ctx: CanvasRenderingContext2D,
-  p: ReturnType<typeof getGridParams>,
-  startMin: number,
-  endMin: number,
-) {
-  if (endMin <= startMin) return
-  const cyan = theme.electricBlue
-  const duration = endMin - startMin
-
-  const startCol = Math.floor(startMin / p.minutesPerCol)
-  const endCol = Math.floor(Math.max(endMin - 1, 0) / p.minutesPerCol)
-
-  for (let c = startCol; c <= endCol && c < p.cols; c++) {
-    const colStartMin = c * p.minutesPerCol
-    const colEndMin = (c + 1) * p.minutesPerCol
-    const segStart = Math.max(startMin, colStartMin)
-    const segEnd = Math.min(endMin, colEndMin)
-
-    const y0 = minuteToY(segStart, c, p)
-    const y1 = minuteToY(segEnd, c, p)
-    const x = colX(c, p)
-    const h = y1 - y0
-
-    // 填充
-    ctx.fillStyle = hexToRgba(cyan, 0.18)
-    ctx.fillRect(x, y0, p.cellW, h)
-
-    // 边框
-    ctx.save()
-    ctx.strokeStyle = hexToRgba(cyan, 0.75)
-    ctx.lineWidth = 1.5
-    ctx.shadowColor = cyan
-    ctx.shadowBlur = 4
-    ctx.strokeRect(x + 0.5, y0 + 0.5, p.cellW - 1, h - 1)
-    ctx.restore()
-  }
-
-  // 起始时间标签
-  if (startCol < p.cols) {
-    const sy = minuteToY(startMin, startCol, p)
-    const sx = colX(startCol, p) + 4
-    ctx.font = `bold ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
-    ctx.fillStyle = cyan
-    ctx.textAlign = 'left'
-    ctx.fillText(fmt(startMin), sx, sy - 2)
-  }
-
-  // 结束时间标签
-  if (endCol < p.cols) {
-    const ey = minuteToY(endMin, endCol, p)
-    const ex = colX(endCol, p) + 4
-    ctx.font = `bold ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
-    ctx.fillStyle = cyan
-    ctx.textAlign = 'left'
-    ctx.fillText(fmt(endMin), ex, ey + 9)
-  }
-
-  // 时长徽章（浮于中间列）
-  const midMin = (startMin + endMin) / 2
-  const midCol = Math.min(Math.floor(midMin / p.minutesPerCol), p.cols - 1)
-  const midY = minuteToY(midMin, midCol, p)
-  const midX = colX(midCol, p) + p.cellW / 2
-  const durStr = duration < 60
-    ? `${duration}m`
-    : `${Math.floor(duration / 60)}h${duration % 60 ? ` ${duration % 60}m` : ''}`
-  const badgeW = durStr.length * 7 + 12
-  const badgeH = 15
-
-  ctx.save()
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 8
-  ctx.fillStyle = cyan
-  ctx.fillRect(midX - badgeW / 2, midY - badgeH / 2, badgeW, badgeH)
   ctx.restore()
 
-  ctx.font = `bold ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
-  ctx.fillStyle = '#000'
-  ctx.textAlign = 'center'
-  ctx.fillText(durStr, midX, midY + 3.5)
+  // ── 中段刻度（线上每 ~1/4 处一个小方点） ──
+  ctx.save()
+  ctx.fillStyle = hexToRgba(cyan, 0.85)
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 4
+  for (const r of [0.25, 0.5, 0.75]) {
+    const tx = cx + p.cellW * r
+    ctx.fillRect(tx - 0.5, y - 2, 1, 4)
+  }
+  ctx.restore()
+
+  // ── 两端 L 角端盖 ──
+  ctx.save()
+  ctx.strokeStyle = cyan
+  ctx.lineWidth = 1.2
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 5
+  const lArm = 5
+  ctx.beginPath()
+  // 左端
+  ctx.moveTo(cx, y - lArm); ctx.lineTo(cx, y + lArm)
+  // 右端
+  ctx.moveTo(cx + p.cellW, y - lArm); ctx.lineTo(cx + p.cellW, y + lArm)
+  ctx.stroke()
+  ctx.restore()
+
+  // ── 右侧 HUD 时间指示：时间文本贴线，NOW 小标签 + 脉冲圆点组成扁平 chip ──
+  const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+  ctx.font = `700 ${p.fs(11)}px 'JetBrains Mono', 'Courier New', monospace`
+  const timeW = ctx.measureText(timeStr).width
+
+  ctx.font = `700 ${p.fs(7)}px 'JetBrains Mono', 'Courier New', monospace`
+  const nowLabelW = ctx.measureText('NOW').width
+
+  const padX = 6
+  const dotSize = 4
+  const gap = 5
+  const chipW = padX + dotSize + gap + nowLabelW + 6 + timeW + padX
+  const chipH = 16
+  // 原位：右侧（列末尾 + 箭头短连线 + 间距）
+  const chipX = cx + p.cellW + 10
+  const chipY = y - chipH / 2
+
+  // chip → 列末的指向短连线（不覆盖右端 L 角端盖）
+  ctx.save()
+  ctx.strokeStyle = cyan
+  ctx.lineWidth = 1
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 4
+  ctx.beginPath()
+  ctx.moveTo(cx + p.cellW + 3, y); ctx.lineTo(chipX, y)
+  ctx.stroke()
+  ctx.restore()
+
+  // chip 主体（斜切 + 顶/底保留空间，让扫描线视觉上"穿过"chip 中央）
+  chamferPath(ctx, chipX, chipY, chipW, chipH, 3)
+  ctx.save()
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 10 * pulse
+  // 背景半透明，让扫描线能从 chip 中间隐约"贯穿"
+  ctx.fillStyle = 'rgba(2,14,28,0.78)'
+  ctx.fill()
+  ctx.strokeStyle = cyan
+  ctx.lineWidth = 1
+  ctx.stroke()
+  ctx.restore()
+
+  // 扫描线"穿过"chip：在 chip 内沿 y 再画一条细亮线（贴着文本基线），强化"文本在线上"的观感
+  ctx.save()
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 5
+  const innerGrad = ctx.createLinearGradient(chipX, y, chipX + chipW, y)
+  innerGrad.addColorStop(0, hexToRgba(cyan, 0.0))
+  innerGrad.addColorStop(0.15, hexToRgba(cyan, 0.55))
+  innerGrad.addColorStop(0.85, hexToRgba(cyan, 0.55))
+  innerGrad.addColorStop(1, hexToRgba(cyan, 0.0))
+  ctx.strokeStyle = innerGrad
+  ctx.lineWidth = 0.8
+  ctx.beginPath()
+  ctx.moveTo(chipX + 1, y); ctx.lineTo(chipX + chipW - 1, y)
+  ctx.stroke()
+  ctx.restore()
+
+  // 脉冲小圆点（左端，落在 y 上）
+  ctx.save()
+  ctx.fillStyle = cyan
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 6 * pulse
+  const dotCx = chipX + padX + dotSize / 2
+  ctx.beginPath()
+  ctx.arc(dotCx, y, dotSize / 2 * (0.7 + 0.3 * pulse), 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+
+  // NOW 小标签（文字在线上）
+  ctx.save()
+  ctx.font = `700 ${p.fs(7)}px 'JetBrains Mono', 'Courier New', monospace`
+  ctx.fillStyle = hexToRgba(cyan, 0.78)
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('NOW', chipX + padX + dotSize + gap, y + 0.5)
+  ctx.restore()
+
+  // 时间主文本（贴在线上，白色+青光）
+  ctx.save()
+  ctx.font = `700 ${p.fs(11)}px 'JetBrains Mono', 'Courier New', monospace`
+  ctx.fillStyle = '#FFFFFF'
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 6
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(timeStr, chipX + padX + dotSize + gap + nowLabelW + 6, y + 0.5)
+  ctx.restore()
+
+  // 防止全局 textBaseline 漏出
+  ctx.textBaseline = 'alphabetic'
 }
 
 // ── 十字准线（只在当前列） ──
@@ -1084,7 +863,7 @@ function drawCrosshair(
   getIcon?: (name: string) => HTMLImageElement | null,
   trackMode: 'apps' | 'bili' = 'apps',
   biliSpans: BiliSpan[] = [],
-): { x: number; y: number; w: number; h: number } | null {
+): { x: number; y: number; w: number; h: number; pin: { col: number; y: number; minute: number } } | null {
   if (col < 0 || col >= p.cols) return null
   const relY = mouseY - p.topPad
   if (relY < 0 || relY > p.gridH) return null
@@ -1125,7 +904,11 @@ function drawCrosshair(
   let pipeLabelIcon: HTMLImageElement | null = null
 
   // 跨列高亮管线辅助
-  function highlightPipeSpan(startMin: number, endMin: number, color: string) {
+  function highlightPipeSpan(startMin: number, endMin: number, _color: string) {
+    // 固定高亮色：亮青 + 白，不随 span 颜色变化
+    const frameColor = '#00E5FF'
+    const frameGlow  = 'rgba(0,229,255,0.8)'
+
     const hStartCol = Math.floor(startMin / p.minutesPerCol)
     const hEndCol   = Math.floor((endMin - 1) / p.minutesPerCol)
     for (let hc = hStartCol; hc <= hEndCol && hc < p.cols; hc++) {
@@ -1138,18 +921,18 @@ function drawCrosshair(
       const rx   = hcx + p.traceBaseX + PIPE_RIGHT
 
       ctx.save()
-      ctx.shadowColor = color; ctx.shadowBlur = 10
+      ctx.shadowColor = frameGlow; ctx.shadowBlur = 10
       ctx.beginPath(); ctx.moveTo(lx, sy0); ctx.lineTo(lx, sy1)
-      ctx.strokeStyle = hexToRgba(color, 1.0)
+      ctx.strokeStyle = frameColor
       ctx.lineWidth = 3.5; ctx.lineCap = 'butt'; ctx.stroke()
       ctx.beginPath(); ctx.moveTo(rx, sy0); ctx.lineTo(rx, sy1)
-      ctx.strokeStyle = 'rgba(255,255,255,0.45)'
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'
       ctx.lineWidth = 1.5; ctx.stroke()
       ctx.restore()
 
       ctx.save()
-      ctx.shadowColor = color; ctx.shadowBlur = 6
-      ctx.strokeStyle = hexToRgba(color, 0.9)
+      ctx.shadowColor = frameGlow; ctx.shadowBlur = 6
+      ctx.strokeStyle = frameColor
       ctx.lineWidth = 1.5; ctx.lineCap = 'square'
       if (hc === hStartCol) {
         ctx.beginPath(); ctx.moveTo(lx - 1, sy0); ctx.lineTo(rx + 1, sy0); ctx.stroke()
@@ -1190,12 +973,14 @@ function drawCrosshair(
     }
   }
 
-  // 横线颜色：固定时橙色，悬浮时白色
-  const lineColor = isPinned ? 'rgba(255,180,60,0.85)' : 'rgba(255,255,255,0.55)'
-  const glowColor = isPinned ? 'rgba(255,180,60,0.5)' : 'rgba(255,255,255,0.4)'
+  // ── HUD 准星横线：主线 + 两端 L 角 + 中段刻度 ──
+  const lineColor = isPinned ? 'rgba(255,180,60,0.95)' : 'rgba(220,240,255,0.65)'
+  const glowColor = isPinned ? 'rgba(255,180,60,0.55)' : 'rgba(180,220,255,0.45)'
+  const tickColor = isPinned ? 'rgba(255,180,60,0.85)' : 'rgba(200,230,255,0.55)'
+
   ctx.save()
   ctx.shadowColor = glowColor
-  ctx.shadowBlur = 4
+  ctx.shadowBlur = isPinned ? 5 : 4
   ctx.beginPath()
   ctx.moveTo(x0, mouseY)
   ctx.lineTo(x1, mouseY)
@@ -1204,7 +989,40 @@ function drawCrosshair(
   ctx.stroke()
   ctx.restore()
 
-  // ── 管线标签（图标+文本，管线右侧到列右边缘，支持换行） ──
+  // 两端 L 角端盖（向内）
+  ctx.save()
+  ctx.strokeStyle = tickColor
+  ctx.lineWidth = isPinned ? 1 : 0.85
+  ctx.shadowColor = glowColor
+  ctx.shadowBlur = isPinned ? 4 : 2
+  const lArm = 4
+  ctx.beginPath()
+  // 左端：向下 + 向内
+  ctx.moveTo(x0, mouseY - lArm); ctx.lineTo(x0, mouseY + lArm)
+  ctx.moveTo(x0, mouseY);        ctx.lineTo(x0 + 2, mouseY)
+  // 右端
+  ctx.moveTo(x1, mouseY - lArm); ctx.lineTo(x1, mouseY + lArm)
+  ctx.moveTo(x1, mouseY);        ctx.lineTo(x1 - 2, mouseY)
+  ctx.stroke()
+  ctx.restore()
+
+  // 中段 3 枚短刻度（仅在准星较长时画，避免挤压）
+  if (x1 - x0 > 36) {
+    ctx.save()
+    ctx.strokeStyle = tickColor
+    ctx.globalAlpha = 0.55
+    ctx.lineWidth = 0.75
+    const midX = (x0 + x1) / 2
+    ctx.beginPath()
+    for (const dx of [-6, 0, 6]) {
+      ctx.moveTo(midX + dx, mouseY - 2)
+      ctx.lineTo(midX + dx, mouseY + 2)
+    }
+    ctx.stroke()
+    ctx.restore()
+  }
+
+  // ── 管线标签（原风格 + 轻微斜切） ──
   if (pipeLabel) {
     const hasIcon  = pipeLabelIcon !== null
     const iconSize = 14
@@ -1223,12 +1041,11 @@ function drawCrosshair(
     const labelY    = mouseY - labelH / 2
 
     ctx.save()
+    chamferPath(ctx, labelX, labelY, maxLabelW, labelH, 2)
     ctx.fillStyle   = 'rgba(4,8,18,0.80)'
+    ctx.fill()
     ctx.strokeStyle = isPinned ? 'rgba(255,180,60,0.5)' : (trackMode === 'bili' ? 'rgba(251,114,153,0.3)' : 'rgba(255,255,255,0.18)')
     ctx.lineWidth   = 0.75
-    ctx.beginPath()
-    ctx.roundRect(labelX, labelY, maxLabelW, labelH, 3)
-    ctx.fill()
     ctx.stroke()
     ctx.restore()
 
@@ -1239,63 +1056,82 @@ function drawCrosshair(
       textX = labelX + padX + iconSize + gap
     }
 
-    ctx.font      = `500 ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
-    ctx.fillStyle = 'rgba(255,255,255,0.85)'
-    ctx.textAlign = 'left'
+    ctx.font         = `500 ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
+    ctx.fillStyle    = 'rgba(255,255,255,0.88)'
+    ctx.textAlign    = 'left'
+    ctx.textBaseline = 'alphabetic'
     const textStartY = labelY + padY + lineH - 1
     lines.forEach((line, i) => {
       ctx.fillText(line, textX, textStartY + i * lineH)
     })
   }
 
-  // ── "固定"/"取消固定" badge：列右边缘（白线尽头）外侧左对齐 ──
-  const label = isPinned ? '取消固定' : '固定'
+  // ── 锁定/解锁 badge：HUD 指示器（深底 + 彩色边框 + 彩色发光文字） ──
+  const label = isPinned ? '解锁' : '锁定'
   const font = `bold ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
   ctx.font = font
   const textW = ctx.measureText(label).width
-  const bPadX = 5, bPadY = 3
+  const bPadX = 7
   const badgeW = textW + bPadX * 2
   const badgeH = 14
-  const badgeX = x1 + 3          // 白线右端之外，左对齐
+  const badgeX = x1 + 5
   const badgeY = mouseY - badgeH / 2
 
+  const accentC = isPinned ? 'rgba(255,180,60,1)'   : 'rgba(150,210,255,0.9)'
+  const softC   = isPinned ? 'rgba(255,180,60,0.35)': 'rgba(150,210,255,0.3)'
+  const glowC   = isPinned ? 'rgba(255,180,60,0.6)' : 'rgba(150,200,255,0.35)'
+
+  // 主体：深背景 + 彩色边框
   ctx.save()
-  ctx.shadowColor = isPinned ? 'rgba(255,180,60,0.6)' : 'rgba(255,255,255,0.3)'
-  ctx.shadowBlur = 6
-  ctx.fillStyle   = isPinned ? 'rgba(255,150,40,0.85)' : 'rgba(40,40,60,0.85)'
-  ctx.strokeStyle = isPinned ? 'rgba(255,180,60,0.9)' : 'rgba(255,255,255,0.5)'
-  ctx.lineWidth = 0.75
-  ctx.beginPath()
-  ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 3)
+  ctx.shadowColor = glowC
+  ctx.shadowBlur = isPinned ? 6 : 3
+  chamferPath(ctx, badgeX, badgeY, badgeW, badgeH, 3)
+  ctx.fillStyle = 'rgba(6,10,20,0.88)'
   ctx.fill()
+  ctx.strokeStyle = accentC
+  ctx.lineWidth = isPinned ? 1 : 0.8
   ctx.stroke()
   ctx.restore()
 
-  ctx.font      = font
-  ctx.fillStyle = isPinned ? '#000' : 'rgba(255,255,255,0.9)'
-  ctx.textAlign = 'center'
-  ctx.fillText(label, badgeX + badgeW / 2, badgeY + badgeH / 2 + 3.5)
+  // 顶/底 accent 细线（HUD 端口感）
+  ctx.save()
+  ctx.strokeStyle = softC
+  ctx.lineWidth = 0.75
+  ctx.beginPath()
+  ctx.moveTo(badgeX + 4, badgeY - 1); ctx.lineTo(badgeX + badgeW - 4, badgeY - 1)
+  ctx.moveTo(badgeX + 4, badgeY + badgeH + 1); ctx.lineTo(badgeX + badgeW - 4, badgeY + badgeH + 1)
+  ctx.stroke()
+  ctx.restore()
 
-  return { x: badgeX, y: badgeY, w: badgeW, h: badgeH }
+  // 文字：彩色发光，严格几何居中
+  ctx.save()
+  ctx.font         = font
+  ctx.fillStyle    = accentC
+  ctx.shadowColor  = glowC
+  ctx.shadowBlur   = isPinned ? 4 : 2
+  ctx.textAlign    = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(label, badgeX + badgeW / 2, badgeY + badgeH / 2 + 0.5)
+  ctx.restore()
+
+  return { x: badgeX, y: badgeY, w: badgeW, h: badgeH, pin: { col, y: mouseY, minute } }
 }
 
 
 // ── 主组件 ──
 
-export default function DayNightChart({ activities, mtSpans = [], biliSpans = [], isExpanded, selectedDate, selection, onSpanClick, onSpanHover, onAppSpanHover, onBiliSpanHover, trackMode = 'apps', onTrackModeChange, pinnedPos, onPinPos, onTimeSelect, onClearSelection, onActivityResize, onDeleteMinuteRange }: Props) {
+export default function DayNightChart({ activities, mtSpans = [], biliSpans = [], selectedDate, onSpanClick, onSpanHover, onAppSpanHover, onBiliSpanHover, trackMode = 'apps', onTrackModeChange, pinnedPos, onPinPos, onDeleteMinuteRange }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const hoveredIdRef = useRef<string | null>(null)
   const hoveredSpanIdRef = useRef<number | null>(null)
   const hoveredCellRef = useRef<{ col: number; row: number } | null>(null)
   const rafRef = useRef<number>(0)
-  const glowImageRef = useRef<ImageBitmap | HTMLCanvasElement | null>(null)
-  const glowKeyRef = useRef<string>('')
   // 十字准线位置
   const mouseYRef = useRef<number | null>(null)
   const hoveredColRef = useRef<number | null>(null)
   // 固定/取消固定标签的画布命中区域
-  const pinBadgeRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
+  const pinBadgeRef = useRef<{ x: number; y: number; w: number; h: number; pin: { col: number; y: number; minute: number } } | null>(null)
   // 悬浮的 tag span（用于右侧栏面板）
   const hoveredTagSpanRef = useRef<MtSpan | null>(null)
   // 悬浮的 app span（用于右侧栏面板）
@@ -1305,16 +1141,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
   // 指向最新 scheduleRedraw（用于图标加载后触发重绘）
   const redrawRef = useRef<(() => void) | null>(null)
   // 拖拽框选
-  const isDraggingRef = useRef(false)
-  const dragStartMinRef = useRef<number | null>(null)
-  const dragCurMinRef = useRef<number | null>(null)
-  const hoverMinRef = useRef<number | null>(null)
-  // 边缘拖拽调整时间
-  const edgeDragRef = useRef<{
-    activity: ChronosActivity
-    edge: 'start' | 'end'
-    currentMinute: number
-  } | null>(null)
 
   const dpr = window.devicePixelRatio || 1
 
@@ -1369,7 +1195,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.totalW])
-  const layouts = useMemo(() => computeLayouts(activities), [activities])
 
   // Bili span 时间重叠修正：后者开始时间衔接前者结束时间
   const adjustedBiliSpans = useMemo((): BiliSpan[] => {
@@ -1400,22 +1225,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     return selectedDate.toDateString() === now.toDateString()
   })()
 
-  // 预渲染 glow 层（只在 layouts/params 变化时重建，blur 很贵）
-  useEffect(() => {
-    const key = `${p.totalW}-${p.totalH}-${layouts.length}-${dpr}`
-    if (glowKeyRef.current === key) return
-    glowKeyRef.current = key
-
-    const offscreen = document.createElement('canvas')
-    offscreen.width = p.totalW * dpr
-    offscreen.height = p.totalH * dpr
-    const ctx = offscreen.getContext('2d')!
-    ctx.scale(dpr, dpr)
-    ctx.filter = 'blur(5px)'
-    drawTraceSegments(ctx, p, layouts, null, true)
-    glowImageRef.current = offscreen
-  }, [p, layouts, dpr])
-
   // 绘制
   const draw = useCallback(() => {
     const canvas = canvasRef.current
@@ -1423,19 +1232,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const hoveredId = hoveredIdRef.current
     const hoveredSpanId = hoveredSpanIdRef.current
-    const hoveredCell = hoveredCellRef.current
-
-    // Edge resize 时用修改后的 activity 实时更新视觉
-    const edgeRef = edgeDragRef.current
-    const activeLayouts = edgeRef ? (() => {
-      const a = edgeRef.activity
-      const newStart = edgeRef.edge === 'start' ? edgeRef.currentMinute : a.startMinute
-      const newEnd   = edgeRef.edge === 'end'   ? edgeRef.currentMinute : a.endMinute
-      const modified = { ...a, startMinute: newStart, endMinute: newEnd }
-      return layouts.map(l => l.activity.id === a.id ? { ...l, activity: modified } : l)
-    })() : layouts
 
     ctx.clearRect(0, 0, p.totalW * dpr, p.totalH * dpr)
 
@@ -1451,13 +1248,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     drawTagFills(ctx, p, mtSpans, hoveredSpanId)
     drawGrid(ctx, p)
     drawTimeLabels(ctx, p)
-
-    // Glow 层
-    if (glowImageRef.current) {
-      ctx.globalAlpha = 0.3
-      ctx.drawImage(glowImageRef.current, 0, 0, p.totalW, p.totalH)
-      ctx.globalAlpha = 1.0
-    }
 
     // ── 十字准线 ──
     const _mouseY = mouseYRef.current
@@ -1496,15 +1286,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
 
     drawNowTick(ctx, p, isToday)
 
-    // 选区（最顶层）：拖拽中显示拖拽选区，松手后显示常驻选区
-    if (isDraggingRef.current && dragStartMinRef.current !== null && dragCurMinRef.current !== null) {
-      const selStart = Math.min(dragStartMinRef.current, dragCurMinRef.current)
-      const selEnd = Math.max(dragStartMinRef.current, dragCurMinRef.current)
-      drawDragSelection(ctx, p, selStart, Math.max(selEnd, selStart + 5))
-    } else if (selection) {
-      drawDragSelection(ctx, p, selection.startMinute, selection.endMinute)
-    }
-
     if (pinnedPos != null) {
       const badge = drawCrosshair(ctx, p, pinnedPos.col, pinnedPos.y, mtSpans, true, getIcon, trackMode, adjustedBiliSpans)
       pinBadgeRef.current = badge
@@ -1520,7 +1301,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     }
 
     ctx.restore()
-  }, [p, mtSpans, adjustedBiliSpans, trackMode, isToday, dpr, selection, pinnedPos]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [p, mtSpans, adjustedBiliSpans, trackMode, isToday, dpr, pinnedPos]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     draw()
@@ -1547,34 +1328,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
   redrawRef.current = scheduleRedraw
 
   // 检测鼠标是否在活动边缘（±6px）→ 返回 edge 信息
-  function hitTestEdge(e: React.MouseEvent<HTMLCanvasElement>): {
-    activity: ChronosActivity; edge: 'start' | 'end'; minute: number
-  } | null {
-    const rect = canvasRef.current!.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
-    const EDGE_TOL = 6
-    const c = xToCol(x, p)
-    if (c < 0 || c >= p.cols) return null
-
-    for (const a of activities) {
-      // start edge：活动起始列
-      const startCol = Math.floor(a.startMinute / p.minutesPerCol)
-      if (startCol === c) {
-        const sy = minuteToY(a.startMinute, c, p)
-        if (Math.abs(y - sy) <= EDGE_TOL) return { activity: a, edge: 'start', minute: a.startMinute }
-      }
-      // end edge：活动结束列（end 在列边界时归前一列）
-      const endCol = Math.floor(a.endMinute / p.minutesPerCol)
-      const checkCol = (a.endMinute % p.minutesPerCol === 0 && endCol > 0) ? endCol - 1 : endCol
-      if (checkCol === c && checkCol < p.cols) {
-        const ey = minuteToY(a.endMinute, checkCol, p)
-        if (Math.abs(y - ey) <= EDGE_TOL) return { activity: a, edge: 'end', minute: a.endMinute }
-      }
-    }
-    return null
-  }
-
   // 将鼠标事件坐标转换为分钟（跨列支持，snap to 5 min）
   function minuteFromEvent(e: React.MouseEvent<HTMLCanvasElement>): number | null {
     const rect = canvasRef.current!.getBoundingClientRect()
@@ -1587,22 +1340,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     const extraMin = Math.min(Math.floor(localY / p.minuteH), 4)
     const m = c * p.minutesPerCol + rBlock * 5 + extraMin
     return Math.round(m / 5) * 5
-  }
-
-  // 边缘拖拽专用：夹紧坐标，永不返回 null
-  function minuteFromEventClamped(e: React.MouseEvent<HTMLCanvasElement>): number {
-    const rect = canvasRef.current!.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
-    const cRaw = xToCol(x, p)
-    const c = Math.max(0, Math.min(cRaw, p.cols - 1))
-    const relY = y - p.topPad
-    const clampedRelY = Math.max(0, Math.min(relY, p.gridH - 1))
-    const rBlock = Math.max(0, Math.min(Math.floor(clampedRelY / p.rowStride), p.rows - 1))
-    const localY = clampedRelY - rBlock * p.rowStride
-    const extraMin = Math.min(Math.floor(localY / p.minuteH), 4)
-    const m = c * p.minutesPerCol + rBlock * 5 + extraMin
-    return Math.max(0, Math.min(Math.round(m / 5) * 5, 1440))
   }
 
   function getHitAt(e: React.MouseEvent<HTMLCanvasElement>): { minute: number; snappedEnd: number; hit: ChronosActivity | undefined; hitSpan: MtSpan | undefined } | null {
@@ -1628,31 +1365,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
 
   function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
     e.preventDefault()
-
-    // 1. 优先检测边缘 resize
-    const edgeHit = hitTestEdge(e)
-    if (edgeHit) {
-      edgeDragRef.current = {
-        activity: edgeHit.activity,
-        edge: edgeHit.edge,
-        currentMinute: edgeHit.minute,
-      }
-      canvasRef.current!.style.cursor = 'ns-resize'
-      scheduleRedraw()
-      return
-    }
-
-    // 2. 命中 tag span → 由 handleClick 处理，不开始框选
-    const info = getHitAt(e)
-    if (!info || info.hitSpan) return
-
-    // 3. 空白区域 → 框选
-    isDraggingRef.current = true
-    dragStartMinRef.current = info.minute
-    dragCurMinRef.current = info.snappedEnd
-    hoverMinRef.current = null
-    canvasRef.current!.style.cursor = 'ns-resize'
-    scheduleRedraw()
   }
 
   function handleMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
@@ -1662,40 +1374,11 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     const c = xToCol(x, p)
     const rBlock = Math.floor((y - p.topPad) / p.rowStride)
 
-    // Edge resize 拖拽中
-    if (edgeDragRef.current) {
-      const newMin = minuteFromEventClamped(e)
-      const ref = edgeDragRef.current
-      const a = ref.activity
-      if (ref.edge === 'start') {
-        ref.currentMinute = Math.min(newMin, a.endMinute - 5)
-      } else {
-        ref.currentMinute = Math.max(Math.min(newMin, 1440), a.startMinute + 5)
-      }
-      scheduleRedraw()
-      return
-    }
-
-    if (isDraggingRef.current) {
-      // 框选拖拽中：更新选区终点
-      if (c >= 0 && c < p.cols && rBlock >= 0 && rBlock < p.rows) {
-        const localY = y - p.topPad - rBlock * p.rowStride
-        const extraMin = Math.min(Math.floor(localY / p.minuteH), 4)
-        const m = c * p.minutesPerCol + rBlock * 5 + extraMin
-        dragCurMinRef.current = Math.ceil((m + 1) / 5) * 5
-      }
-      scheduleRedraw()
-      return
-    }
-
-    // 普通 hover：先检测边缘
-    const edgeHover = hitTestEdge(e)
-    if (edgeHover) {
-      hoveredIdRef.current = edgeHover.activity.id
-      hoveredCellRef.current = null
-      hoverMinRef.current = null
-      canvasRef.current!.style.cursor = 'ns-resize'
-      scheduleRedraw()
+    // 命中当前 badge 区域：保持准星/badge 锁在原悬停位，不更新 hover 列和 Y
+    // （否则 badge 位于列外侧会让 hoveredColRef 跳到下一列，点击时锁定错列）
+    const badge = pinBadgeRef.current
+    if (badge && x >= badge.x && x <= badge.x + badge.w && y >= badge.y && y <= badge.y + badge.h) {
+      canvasRef.current!.style.cursor = 'pointer'
       return
     }
 
@@ -1714,7 +1397,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
         const m = c * p.minutesPerCol + rBlock * 5 + extraMin
         const hitSpan = spanFromMinute(m)
         hoveredSpanIdRef.current = hitSpan?.id ?? null
-        hoverMinRef.current = hitSpan ? null : Math.floor(m / 5) * 5
         canvasRef.current!.style.cursor = hitSpan ? 'pointer' : 'crosshair'
 
         mouseYRef.current = y
@@ -1757,7 +1439,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     } else {
       hoveredCellRef.current = null
       hoveredSpanIdRef.current = null
-      hoverMinRef.current = null
       hoveredColRef.current = null
 
       if (pinnedPos != null) {
@@ -1780,56 +1461,13 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     scheduleRedraw()
   }
 
-  function handleMouseUp(e: React.MouseEvent<HTMLCanvasElement>) {
-    // Edge resize 完成 → 持久化
-    if (edgeDragRef.current) {
-      const ref = edgeDragRef.current
-      const a = ref.activity
-      const newStart = ref.edge === 'start' ? ref.currentMinute : a.startMinute
-      const newEnd = ref.edge === 'end' ? ref.currentMinute : a.endMinute
-      edgeDragRef.current = null
-      canvasRef.current!.style.cursor = 'crosshair'
-      onActivityResize?.(a.id, newStart, newEnd)
-      scheduleRedraw()
-      return
-    }
-
-    if (!isDraggingRef.current) return
-    isDraggingRef.current = false
-    canvasRef.current!.style.cursor = 'crosshair'
-
-    const start = dragStartMinRef.current
-    const end = dragCurMinRef.current
-    dragStartMinRef.current = null
-    dragCurMinRef.current = null
-
-    if (start !== null && end !== null) {
-      const selStart = Math.min(start, end)
-      const selEnd = Math.max(start, end)
-      if (selEnd - selStart < 5) {
-        // 几乎没移动 → 当作单击，默认 60 分钟
-        onTimeSelect?.(selStart, Math.min(selStart + 60, 1440))
-      } else {
-        onTimeSelect?.(selStart, selEnd)
-      }
-    }
+  function handleMouseUp(_e: React.MouseEvent<HTMLCanvasElement>) {
     scheduleRedraw()
   }
 
   function handleMouseLeave() {
-    // edge resize 离开 → 取消（不保存）
-    if (edgeDragRef.current) {
-      edgeDragRef.current = null
-    }
-    // 框选拖拽中离开 → 取消
-    if (isDraggingRef.current) {
-      isDraggingRef.current = false
-      dragStartMinRef.current = null
-      dragCurMinRef.current = null
-    }
     hoveredCellRef.current = null
     hoveredIdRef.current = null
-    hoverMinRef.current = null
     hoveredColRef.current = null
     if (pinnedPos == null) {
       // 未固定时，离开画布清除横线和 hover span
@@ -1859,26 +1497,20 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     const cx = e.clientX - rect.left
     const cy = e.clientY - rect.top
 
-    // 优先检测"固定/取消固定"标签
+    // 优先检测"锁定/解锁"标签：直接使用 drawCrosshair 绘制时保存的准星绝对位置
     const badge = pinBadgeRef.current
     if (badge && cx >= badge.x && cx <= badge.x + badge.w && cy >= badge.y && cy <= badge.y + badge.h) {
       if (pinnedPos != null) {
         onPinPos?.(null)
       } else {
-        const c2 = Math.floor((cx - p.hPad) / p.colStride)
-        const rBlock2 = Math.floor((cy - p.topPad) / p.rowStride)
-        if (c2 >= 0 && c2 < p.cols && rBlock2 >= 0 && rBlock2 < p.rows) {
-          const localY2 = cy - p.topPad - rBlock2 * p.rowStride
-          const extraMin2 = Math.min(Math.floor(localY2 / p.minuteH), 4)
-          const rawMinute = c2 * p.minutesPerCol + rBlock2 * 5 + extraMin2
-          onPinPos?.({ col: c2, y: cy, minute: rawMinute })
-        }
+        onPinPos?.(badge.pin)
       }
       return
     }
 
-    // 点击单元格区域：固定横线到原始像素位置（不 snap，保留精确 Y）
-    const c2 = Math.floor((cx - p.hPad) / p.colStride)
+    // 点击单元格区域：用 xToCol 精确反算（考虑 hgGap + ZONE_GAP_EXTRA，
+    // Math.floor((cx-hPad)/colStride) 会累积 gap 偏差导致溢出到下一列）
+    const c2 = xToCol(cx, p)
     const rBlock2 = Math.floor((cy - p.topPad) / p.rowStride)
     if (c2 >= 0 && c2 < p.cols && rBlock2 >= 0 && rBlock2 < p.rows) {
       if (pinnedPos != null) {
@@ -1916,14 +1548,13 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
       }
     }
     setCtxMenu(null)
-    onClearSelection?.()
   }
 
   // 自动滚动到当前时间 / 最早活动
-  // 只在日期切换或展开/收起时触发，不随活动增删重置位置
+  // 只在日期切换时触发，不随活动增删重置位置
   const scrollKeyRef = useRef('')
   useEffect(() => {
-    const key = `${selectedDate.toDateString()}-${isExpanded}`
+    const key = selectedDate.toDateString()
     if (scrollKeyRef.current === key) return
     scrollKeyRef.current = key
 
@@ -1943,7 +1574,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
     const scrollX = targetCol * p.colStride
     setTimeout(() => { container.scrollLeft = scrollX }, 100)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDate, isExpanded, isToday, p.minutesPerCol, p.colStride])
+  }, [selectedDate, isToday, p.minutesPerCol, p.colStride])
 
   // 图例：从 ManicTime tags 提取一级标签
   const tagLegend = useMemo(() => {
@@ -1969,9 +1600,25 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
   }, 0)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: theme.background, position: 'relative' }}
+    <div
+      style={{
+        display: 'flex', flexDirection: 'column', height: '100%',
+        background: theme.background, position: 'relative',
+      }}
       onClick={() => setCtxMenu(null)}
     >
+      {/* HUD 边框：围绕整个昼夜表，绝对覆盖不占布局 */}
+      <HudFrame
+        color={theme.electricBlue}
+        accent={theme.warningOrange}
+        showNotchTop={false}
+        showNotchBottom={false}
+        showConnectors={false}
+        cornerSize={14}
+        rivets={false}
+        intensity="soft"
+      />
+
       {/* 列首右键菜单 */}
       {ctxMenu && (
         <div
@@ -2010,39 +1657,66 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
         </div>
       )}
 
-      {/* 管线模式切换 */}
+      {/* 管线模式切换（HUD 风格斜切按钮） */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 2,
-        padding: '3px 8px', flexShrink: 0,
-        borderBottom: `1px solid ${hexToRgba(theme.electricBlue, 0.1)}`,
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: '6px 14px 6px 12px', flexShrink: 0,
+        borderBottom: `1px solid ${hexToRgba(theme.electricBlue, 0.12)}`,
       }}>
+        <span style={{
+          fontFamily: theme.fontMono, fontSize: 10.5, fontWeight: 700,
+          letterSpacing: 2, color: theme.electricBlue,
+          textShadow: `0 0 6px ${hexToRgba(theme.electricBlue, 0.55)}`,
+          paddingRight: 6,
+          borderRight: `1px solid ${hexToRgba(theme.electricBlue, 0.45)}`,
+          marginRight: 2,
+        }}>
+          左侧管道数据源
+        </span>
         {(['apps', 'bili'] as const).map((mode) => {
           const active = trackMode === mode
           const label = mode === 'apps' ? '应用程序' : '哔哩哔哩'
-          const color = mode === 'apps' ? '#888888' : BILI_COLOR
+          const color = mode === 'apps' ? theme.electricBlue : BILI_COLOR
           return (
             <button
               key={mode}
               onClick={() => onTrackModeChange?.(mode)}
+              className="daynight-track-btn"
+              data-active={active ? '1' : '0'}
               style={{
-                background: active ? hexToRgba(color, 0.15) : 'transparent',
-                border: `1px solid ${active ? hexToRgba(color, 0.5) : 'transparent'}`,
-                borderRadius: 3, cursor: 'pointer',
-                padding: '1px 10px',
-                fontFamily: "'JetBrains Mono', 'Courier New', monospace",
-                fontSize: 10, fontWeight: 600,
-                color: active ? color : hexToRgba(color, 0.4),
-                transition: 'all 0.15s',
-                letterSpacing: 1,
+                position: 'relative',
+                background: active
+                  ? `linear-gradient(90deg, ${hexToRgba(color, 0.22)} 0%, ${hexToRgba(color, 0.06)} 100%)`
+                  : 'transparent',
+                border: `1px solid ${active ? hexToRgba(color, 0.7) : hexToRgba(color, 0.25)}`,
+                clipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
+                WebkitClipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
+                cursor: 'pointer',
+                padding: '3px 14px',
+                fontFamily: theme.fontBody,
+                fontSize: 11.5, fontWeight: 700,
+                color: active ? color : hexToRgba(color, 0.55),
+                textShadow: active ? `0 0 6px ${hexToRgba(color, 0.6)}` : undefined,
+                boxShadow: active ? `0 0 10px ${hexToRgba(color, 0.35)}, inset 0 0 8px ${hexToRgba(color, 0.18)}` : undefined,
+                transition: 'color 0.15s, background 0.15s, box-shadow 0.15s, border-color 0.15s',
+                letterSpacing: 1.2,
               }}
             >
+              {active && (
+                <span style={{
+                  position: 'absolute', left: -4, top: '50%',
+                  width: 3, height: 10, transform: 'translateY(-50%)',
+                  background: color, boxShadow: `0 0 6px ${color}`,
+                  pointerEvents: 'none',
+                }} />
+              )}
               {label}
             </button>
           )
         })}
       </div>
 
-      {/* 图表滚动区：flex-1 填满剩余高度，高度不足时出现滚动条 */}
+      {/* 图表滚动区：flex:1 直接填满，保持原响应式高度测量 */}
       <div
         ref={containerRef}
         style={{ flex: 1, overflowX: 'auto', overflowY: 'auto', cursor: 'crosshair' }}
@@ -2061,31 +1735,64 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
         />
       </div>
 
-      {/* 分隔线 */}
-      <div style={{ height: 1, background: hexToRgba(theme.electricBlue, 0.15) }} />
-
-      {/* 图例 */}
+      {/* 图例（HUD 风格） */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 12,
-        padding: '8px 16px', flexWrap: 'wrap',
+        display: 'flex', alignItems: 'center', gap: 14,
+        padding: '6px 14px 8px', flexWrap: 'wrap',
+        borderTop: `1px solid ${hexToRgba(theme.electricBlue, 0.12)}`,
+        background: `linear-gradient(180deg, ${hexToRgba(theme.electricBlue, 0.03)} 0%, transparent 100%)`,
       }}>
+        <span style={{
+          fontFamily: theme.fontMono, fontSize: 10.5, fontWeight: 700,
+          letterSpacing: 2, color: theme.electricBlue,
+          textShadow: `0 0 6px ${hexToRgba(theme.electricBlue, 0.55)}`,
+          paddingRight: 8,
+          borderRight: `1px solid ${hexToRgba(theme.electricBlue, 0.45)}`,
+        }}>
+          标签图例
+        </span>
         {tagLegend.map(([name, color]) => (
-          <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <div style={{
-              width: 14, height: 3, borderRadius: 1,
+          <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{
+              width: 14, height: 10, flexShrink: 0,
+              clipPath: 'polygon(2px 0, calc(100% - 2px) 0, 100% 2px, 100% calc(100% - 2px), calc(100% - 2px) 100%, 2px 100%, 0 calc(100% - 2px), 0 2px)',
+              WebkitClipPath: 'polygon(2px 0, calc(100% - 2px) 0, 100% 2px, 100% calc(100% - 2px), calc(100% - 2px) 100%, 2px 100%, 0 calc(100% - 2px), 0 2px)',
               background: color,
-              boxShadow: `0 0 6px ${hexToRgba(color, 0.6)}`,
+              borderLeft: `2px solid ${color}`,
             }} />
             <span style={{
-              fontFamily: "'JetBrains Mono', 'Courier New', monospace",
-              fontSize: 12, color: theme.textSecondary,
+              fontFamily: theme.fontBody,
+              fontSize: 12, fontWeight: 600,
+              color: theme.textPrimary,
+              letterSpacing: 0.3,
             }}>
               {name}
             </span>
           </div>
         ))}
-        <span style={{ marginLeft: 'auto', fontFamily: "'JetBrains Mono', 'Courier New', monospace", fontSize: 12, color: theme.textSecondary }}>
-          {tagSpans.length} 段标签 · 共 {totalTagMinutes} 分钟
+        <span style={{
+          marginLeft: 'auto',
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          fontFamily: theme.fontMono,
+          fontSize: 11, fontWeight: 700,
+          color: theme.textPrimary,
+          letterSpacing: 0.8,
+          padding: '3px 11px',
+          border: `1px solid ${hexToRgba(theme.electricBlue, 0.55)}`,
+          clipPath: 'polygon(3px 0, calc(100% - 3px) 0, 100% 3px, 100% calc(100% - 3px), calc(100% - 3px) 100%, 3px 100%, 0 calc(100% - 3px), 0 3px)',
+          WebkitClipPath: 'polygon(3px 0, calc(100% - 3px) 0, 100% 3px, 100% calc(100% - 3px), calc(100% - 3px) 100%, 3px 100%, 0 calc(100% - 3px), 0 3px)',
+          background: `linear-gradient(90deg, ${hexToRgba(theme.electricBlue, 0.14)} 0%, ${hexToRgba(theme.electricBlue, 0.04)} 100%)`,
+          boxShadow: `0 0 8px ${hexToRgba(theme.electricBlue, 0.25)}, inset 0 0 6px ${hexToRgba(theme.electricBlue, 0.08)}`,
+        }}>
+          <span style={{ color: theme.electricBlue, textShadow: `0 0 6px ${hexToRgba(theme.electricBlue, 0.85)}` }}>
+            {tagSpans.length}
+          </span>
+          <span style={{ color: theme.textPrimary }}>段</span>
+          <span style={{ color: hexToRgba(theme.electricBlue, 0.6) }}>·</span>
+          <span style={{ color: theme.electricBlue, textShadow: `0 0 6px ${hexToRgba(theme.electricBlue, 0.85)}` }}>
+            {totalTagMinutes}
+          </span>
+          <span style={{ color: theme.textPrimary }}>分</span>
         </span>
       </div>
     </div>
