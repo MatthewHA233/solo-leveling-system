@@ -356,8 +356,10 @@ export default function App() {
   const fairyWinRef = useRef<import('@tauri-apps/api/webviewWindow').WebviewWindow | null>(null)
 
   useEffect(() => {
+    let cancelled = false
     const init = async () => {
       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+      if (cancelled) return
       const url = window.location.href.replace(/#.*$/, '') + '#fairy'
       try {
         const win = new WebviewWindow('fairy-window', {
@@ -379,7 +381,11 @@ export default function App() {
       }
     }
     init()
-    return () => { fairyWinRef.current?.close().catch(() => {}) }
+    return () => {
+      cancelled = true
+      fairyWinRef.current?.close().catch(() => {})
+      fairyWinRef.current = null
+    }
   }, [])
 
   const emitFairy = useCallback((state: FairyState, text = '') => {
