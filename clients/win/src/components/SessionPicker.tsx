@@ -98,7 +98,7 @@ export default function SessionPicker({
       }}>
         <span style={{ flex: 1 }} />
         <span style={{
-          fontSize: 9.5, color: theme.textMuted,
+          fontSize: 9.5, color: theme.textPrimary,
           fontFamily: theme.fontMono, letterSpacing: 1,
           padding: '1px 6px',
           border: `1px solid ${theme.hudFrameSoft}`,
@@ -133,7 +133,7 @@ export default function SessionPicker({
         clipPath: clip4, WebkitClipPath: clip4,
         flexShrink: 0,
       }}>
-        <Search size={11} style={{ color: theme.textMuted, flexShrink: 0 }} />
+        <Search size={11} style={{ color: theme.textPrimary, flexShrink: 0 }} />
         <input
           ref={inputRef}
           value={query}
@@ -256,7 +256,7 @@ function SessionRow({
               fontSize: 10, fontFamily: theme.fontMono, letterSpacing: 1,
               background: 'transparent',
               border: `1px solid ${theme.hudFrameSoft}`,
-              color: theme.textMuted,
+              color: theme.textPrimary,
               cursor: 'pointer',
               clipPath: clip4, WebkitClipPath: clip4,
             }}
@@ -277,7 +277,7 @@ function SessionRow({
               {title}
             </div>
             <div style={{
-              fontSize: 9, color: theme.textMuted,
+              fontSize: 11, color: theme.textPrimary,
               fontFamily: theme.fontMono, flexShrink: 0,
             }}>
               {updated}
@@ -288,7 +288,7 @@ function SessionRow({
               title="删除"
               style={{
                 background: 'none', border: 'none', padding: 2,
-                color: theme.textMuted, cursor: 'pointer',
+                color: theme.textPrimary, cursor: 'pointer',
                 display: 'flex', alignItems: 'center',
               }}
             >
@@ -297,9 +297,9 @@ function SessionRow({
           </div>
           {preview && (
             <div style={{
-              fontSize: 10.5, color: theme.textSecondary,
+              fontSize: 10.5, color: theme.textPrimary,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              opacity: 0.65,
+              opacity: 0.72,
             }}>
               {preview}
             </div>
@@ -313,7 +313,8 @@ function SessionRow({
 function formatRelativeTime(iso: string): string {
   const then = new Date(iso).getTime()
   if (!isFinite(then)) return ''
-  const diffMs = Date.now() - then
+  const now = Date.now()
+  const diffMs = now - then
   const diffMin = Math.floor(diffMs / 60000)
   if (diffMin < 1) return '刚刚'
   if (diffMin < 60) return `${diffMin}分前`
@@ -322,5 +323,11 @@ function formatRelativeTime(iso: string): string {
   const diffDay = Math.floor(diffHr / 24)
   if (diffDay < 7) return `${diffDay}天前`
   const d = new Date(iso)
-  return `${d.getMonth() + 1}/${d.getDate()}`
+  const thisYear = new Date(now).getFullYear()
+  const thatYear = d.getFullYear()
+  const md = `${d.getMonth() + 1}月${d.getDate()}日`
+  if (thatYear === thisYear) return md
+  if (thatYear === thisYear - 1) return `去年${md}`
+  if (thatYear === thisYear - 2) return `前年${md}`
+  return `${thatYear}年${md}`
 }

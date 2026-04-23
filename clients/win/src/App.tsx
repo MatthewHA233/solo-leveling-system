@@ -1621,10 +1621,17 @@ export default function App() {
           onNewSession={() => { newSession() }}
           onDelete={async (id) => {
             try { await deleteChatSession(id) } catch {}
-            setSessions((prev) => prev.filter((s) => s.id !== id))
-            if (sessionIdRef.current === id) {
-              await newSession()
-            }
+            setSessions((prev) => {
+              const remaining = prev.filter((s) => s.id !== id)
+              if (sessionIdRef.current === id) {
+                if (remaining.length > 0) {
+                  switchSession(remaining[0].id)
+                } else {
+                  newSession()
+                }
+              }
+              return remaining
+            })
           }}
           onClose={() => setPickerOpen(false)}
         />
