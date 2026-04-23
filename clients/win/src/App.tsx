@@ -464,9 +464,10 @@ export default function App() {
 
           // 异步保存到磁盘，存入 pendingAudio Map，等转写或发送时一并写 DB
           if (sessionIdRef.current) {
+            const wavBytes = Uint8Array.from(atob(wavBase64), c => c.charCodeAt(0))
             invoke<string>('save_audio_file', {
               sessionId: sessionIdRef.current,
-              wavBase64,
+              wavBytes,
               timestamp: msgTimestamp,
             }).then((audioPath) => {
               pendingAudioRef.current.set(sessionMsgId, { audioPath, durationMs })
@@ -659,11 +660,11 @@ export default function App() {
             const msgId = omniAgentMsgIdRef.current
             omniAgentMsgIdRef.current = null
 
-            const audioUrl = chunks.length > 0
-              ? URL.createObjectURL(pcm16ChunksToWavBlob(chunks, 24000))
-              : undefined
+            const wavBlob = chunks.length > 0 ? pcm16ChunksToWavBlob(chunks, 24000) : null
+            const audioUrl = wavBlob ? URL.createObjectURL(wavBlob) : undefined
 
             const debugSnap = omniDebugInfoRef.current ?? undefined
+            const aiMsgTimestamp = new Date().toISOString()
 
             if (msgId) {
               // 给已有气泡追加音频 + debug 快照（兜底：text_chunk 时若 ref 还为空则在此补上）
@@ -677,7 +678,7 @@ export default function App() {
               // 极少情况：没有文字但有音频，建新气泡
               setChatMessages((prev) => [...prev, {
                 id: crypto.randomUUID(), role: 'agent' as const,
-                content: '', audioUrl, timestamp: new Date().toISOString(),
+                content: '', audioUrl, timestamp: aiMsgTimestamp,
                 ...(debugSnap ? { omniDebugInfo: debugSnap } : {}),
               }])
             }
@@ -697,23 +698,43 @@ export default function App() {
                 : ''
               ).trim()
               if (userInput) newPairs.push(makeSessionMessage('user', userInput))
-              if (aiText) newPairs.push(makeSessionMessage('assistant', aiText))
-              if (newPairs.length > 0) {
-                persistedBufferRef.current = [...persistedBufferRef.current, ...newPairs]
-                persistMessages(sid, newPairs).catch(() => {})
-                if (
-                  persistedBufferRef.current.length >= TITLE_TRIGGER_MIN_MESSAGES &&
-                  (sessionTitleRef.current === '新会话' || sessionTitleRef.current === '')
-                ) {
-                  generateSessionTitle(persistedBufferRef.current, cfg)
-                    .then((title) => {
-                      if (!title) return
-                      sessionTitleRef.current = title
-                      patchSession(sid, { title }).catch(() => {})
+
+              // AI 音频落盘后再写 DB
+              const persistAiMsg = async () => {
+                let aiAudioPath: string | undefined
+                if (wavBlob && sid) {
+                  try {
+                    const buf = await wavBlob.arrayBuffer()
+                    const wavBytes = new Uint8Array(buf)
+                    aiAudioPath = await invoke<string>('save_audio_file', {
+                      sessionId: sid,
+                      wavBytes,
+                      timestamp: aiMsgTimestamp,
                     })
-                    .catch(() => {})
+                  } catch { /* 落盘失败不阻塞 */ }
+                }
+                if (aiText || aiAudioPath) {
+                  newPairs.push(makeSessionMessage('assistant', aiText, aiAudioPath))
                 }
               }
+              persistAiMsg().then(() => {
+                if (newPairs.length > 0) {
+                  persistedBufferRef.current = [...persistedBufferRef.current, ...newPairs]
+                  persistMessages(sid, newPairs).catch(() => {})
+                  if (
+                    persistedBufferRef.current.length >= TITLE_TRIGGER_MIN_MESSAGES &&
+                    (sessionTitleRef.current === '新会话' || sessionTitleRef.current === '')
+                  ) {
+                    generateSessionTitle(persistedBufferRef.current, cfg)
+                      .then((title) => {
+                        if (!title) return
+                        sessionTitleRef.current = title
+                        patchSession(sid, { title }).catch(() => {})
+                      })
+                      .catch(() => {})
+                  }
+                }
+              }).catch(() => {})
               lastOmniUserInputRef.current = ''
             }
           } else if (payload.status === 'error') {
