@@ -67,6 +67,7 @@ import { linkBiliToEvent, mergeActivities } from './lib/local-api'
 import type { DbBiliItem } from './lib/local-api'
 import type { FairyState } from './components/FairyHUD'
 import { HudFrame, HudCommandStrip, DataRibbon, NeonRule } from './components/hud'
+import { CloseConfirmModal } from './components/CloseConfirmModal'
 import { usePresenceDetection } from './hooks/usePresenceDetection'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import soloLevelingLogo from './assets/SOLO LEVELING SYSTEM.png'
@@ -1622,6 +1623,8 @@ export default function App() {
           onClose={() => setPickerOpen(false)}
         />
       )}
+
+      <CloseConfirmModal />
     </div>
   )
 }

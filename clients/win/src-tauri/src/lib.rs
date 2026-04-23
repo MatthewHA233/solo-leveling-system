@@ -2,6 +2,8 @@
 // Solo Agent — Tauri 后端入口
 // ══════════════════════════════════════════════
 
+use tauri::Emitter;
+
 mod db;
 mod api;
 mod fish_tts;
@@ -29,6 +31,11 @@ struct AppState {
 }
 
 // ── Tauri 命令 ──
+
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
 
 #[tauri::command]
 async fn fish_tts_connect(
@@ -484,6 +491,13 @@ pub fn run() {
     let bili_state = Arc::new(BiliState::new());
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 已有实例运行时，聚焦主窗口
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .manage(bili_state.clone())
@@ -526,10 +540,56 @@ pub fn run() {
             #[cfg(windows)]
             hotkey::install(app.handle().clone());
 
+            // 系统托盘
+            use tauri::menu::{MenuBuilder, MenuItemBuilder};
+            use tauri::tray::TrayIconBuilder;
+
+            let show_item = MenuItemBuilder::new("显示主窗口").id("tray_show").build(app)?;
+            let quit_item = MenuItemBuilder::new("退出").id("tray_quit").build(app)?;
+            let menu = MenuBuilder::new(app).item(&show_item).item(&quit_item).build()?;
+
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .tooltip("SOLO LEVELING SYSTEM")
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "tray_show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "tray_quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
             log::info!("[App] Solo Agent 启动完成");
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.emit("main-close-requested", ());
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            exit_app,
             open_url_in_browser,
             fish_tts_connect,
             fish_tts_send_text,

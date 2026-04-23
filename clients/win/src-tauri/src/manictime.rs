@@ -186,7 +186,7 @@ pub fn get_app_icon_png(group_name: &str) -> Option<Vec<u8>> {
     let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
 
     // 先尝试 Icon32，再 Icon16
-    let sql = "SELECT Icon32, Icon16 FROM Ar_Group WHERE ReportId = 3 AND Name = ? LIMIT 1";
+    let sql = "SELECT Icon32, Icon16 FROM Ar_Group WHERE ReportId = 3 AND Name = ? ORDER BY GroupId DESC LIMIT 1";
     conn.query_row(sql, rusqlite::params![group_name], |row| {
         let icon32: Option<Vec<u8>> = row.get(0)?;
         let icon16: Option<Vec<u8>> = row.get(1)?;
