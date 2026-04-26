@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { MessageSquare, Plus, Search, X, Trash2 } from 'lucide-react'
 import { theme } from '../theme'
 import { HudFrame } from './hud'
+import Tooltip from './Tooltip'
 import type { ChatSessionInfo } from '../lib/agent/agent-memory'
 
 interface Props {
@@ -106,9 +107,9 @@ export default function SessionPicker({
         }}>
           {filtered.length}/{sessions.length}
         </span>
+        <Tooltip content="收起 (Esc)">
         <button
           onClick={onClose}
-          title="收起 (Esc)"
           style={{
             background: `${accent}12`,
             border: `1px solid ${accent}55`,
@@ -120,6 +121,7 @@ export default function SessionPicker({
         >
           <X size={12} />
         </button>
+        </Tooltip>
       </div>
 
       {/* Search */}
@@ -282,10 +284,10 @@ function SessionRow({
             }}>
               {updated}
             </div>
+            <Tooltip content="删除">
             <button
               className="session-del-btn"
               onClick={(e) => { e.stopPropagation(); onRequestDelete() }}
-              title="删除"
               style={{
                 background: 'none', border: 'none', padding: 2,
                 color: theme.textPrimary, cursor: 'pointer',
@@ -294,6 +296,7 @@ function SessionRow({
             >
               <Trash2 size={11} />
             </button>
+            </Tooltip>
           </div>
           {preview && (
             <div style={{

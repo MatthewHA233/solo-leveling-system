@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { theme, hud } from '../theme'
 import { fetchManicTimeSpans } from '../lib/local-api'
+import Tooltip from './Tooltip'
 
 interface Props {
   readonly anchorRef: React.RefObject<HTMLElement | null>
@@ -246,10 +247,12 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose 
         {/* Header: 年月 + 导航 */}
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <div style={{ display: 'flex', gap: 4 }}>
-            <button className="dpp-nav" onClick={goPrevYear} title="上一年">«</button>
-            <button className="dpp-nav" onClick={goPrevMonth} title="上个月">
+            <Tooltip content="上一年"><button className="dpp-nav" onClick={goPrevYear}>«</button></Tooltip>
+            <Tooltip content="上个月">
+            <button className="dpp-nav" onClick={goPrevMonth}>
               <ChevronLeft size={12} />
             </button>
+            </Tooltip>
           </div>
           <div style={{
             fontFamily: theme.fontDisplay,
@@ -260,10 +263,12 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose 
             {viewMonth.y} · {String(viewMonth.m + 1).padStart(2, '0')}
           </div>
           <div style={{ display: 'flex', gap: 4 }}>
-            <button className="dpp-nav" onClick={goNextMonth} title="下个月">
+            <Tooltip content="下个月">
+            <button className="dpp-nav" onClick={goNextMonth}>
               <ChevronRight size={12} />
             </button>
-            <button className="dpp-nav" onClick={goNextYear} title="下一年">»</button>
+            </Tooltip>
+            <Tooltip content="下一年"><button className="dpp-nav" onClick={goNextYear}>»</button></Tooltip>
           </div>
         </div>
 
@@ -311,15 +316,19 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose 
               isSel && 'selected',
             ].filter(Boolean).join(' ')
             return (
-              <button
+              <Tooltip
                 key={d.toISOString()}
+                content={totalMin > 0 ? `已记录 ${Math.floor(totalMin / 60)}h ${totalMin % 60}m` : ''}
+                disabled={totalMin === 0}
+              >
+              <button
                 className={cls}
                 onClick={() => { onChange(new Date(d)); onClose() }}
-                title={totalMin > 0 ? `已记录 ${Math.floor(totalMin / 60)}h ${totalMin % 60}m` : undefined}
               >
                 {ranges.length > 0 && <DayRing ranges={ranges} active={isSel || isToday} />}
                 <span style={{ position: 'relative', zIndex: 1 }}>{d.getDate()}</span>
               </button>
+              </Tooltip>
             )
           })}
         </div>

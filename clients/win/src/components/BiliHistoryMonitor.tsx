@@ -3,12 +3,14 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { X, RefreshCw, Pause, Play, Tv2, LogIn, CheckSquare, Square, Plus } from 'lucide-react'
+import { X, RefreshCw, Pause, Play, LogIn, CheckSquare, Square, Plus } from 'lucide-react'
+import BiliIcon from './icons/BiliIcon'
 import { openBiliLogin, formatViewTime } from '../lib/bilibili/api'
 import { fetchBiliHistoryDb } from '../lib/local-api'
 import type { DbBiliItem } from '../lib/local-api'
 import type { BiliCursor } from '../lib/bilibili/useHistory'
 import { theme } from '../theme'
+import Tooltip from './Tooltip'
 
 const ITEM_H = 88   // px，每行固定高度（字体放大后加高）
 const OVERSCAN = 4  // 上下各多渲染几行
@@ -186,17 +188,23 @@ export default function BiliHistoryMonitor({
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderBottom: `1px solid ${theme.divider}`, flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Tv2 size={14} style={{ color: theme.electricBlue }} />
+          <BiliIcon size={16} style={{ color: theme.electricBlue }} />
           <span style={{ fontSize: 13, fontWeight: 700, color: theme.electricBlue, letterSpacing: 0.5 }}>B站历史浏览记录</span>
           {isLoading && <span style={{ fontSize: 11, color: theme.textMuted }}>同步中…</span>}
           <span style={{ fontSize: 11, color: theme.textMuted }}>{total > 0 ? `${total} 条` : ''}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-          <button onClick={isPaused ? onResume : onPause} style={iconBtn} title={isPaused ? '继续' : '暂停'}>
+          <Tooltip content={isPaused ? '继续' : '暂停'}>
+          <button onClick={isPaused ? onResume : onPause} style={iconBtn}>
             {isPaused ? <Play size={12} /> : <Pause size={12} />}
           </button>
-          <button onClick={() => { onRefresh(); loadPage(0, true) }} style={iconBtn} title="立即同步"><RefreshCw size={12} /></button>
-          <button onClick={onClose} style={iconBtn} title="关闭"><X size={13} /></button>
+          </Tooltip>
+          <Tooltip content="立即同步">
+          <button onClick={() => { onRefresh(); loadPage(0, true) }} style={iconBtn}><RefreshCw size={12} /></button>
+          </Tooltip>
+          <Tooltip content="关闭">
+          <button onClick={onClose} style={iconBtn}><X size={13} /></button>
+          </Tooltip>
         </div>
       </div>
 

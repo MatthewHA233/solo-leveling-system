@@ -40,6 +40,12 @@ input[type="time"]::-webkit-calendar-picker-indicator {
   96%           { opacity: 1; }
 }
 
+/* Tooltip 淡入（提升到全局，避免每个 Tooltip 实例重复注入 <style>） */
+@keyframes tooltip-fade {
+  from { opacity: 0; transform: translate(-50%, var(--tt-from)) scale(0.94); }
+  to   { opacity: 1; transform: translate(-50%, var(--tt-to))   scale(1);    }
+}
+
 /* HUD 面板扫描线叠层（静态，无 blend-mode） */
 .hud-scanlines {
   position: absolute; inset: 0;

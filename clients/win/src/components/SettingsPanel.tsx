@@ -10,6 +10,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { theme } from '../theme'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import { MagneticButton } from './NeonUI'
+import Tooltip from './Tooltip'
 
 interface Props {
   readonly config: AgentConfig
@@ -560,7 +561,7 @@ function Field({
               onClick={() => setRevealed((v) => !v)}
               disabled={disabled}
             >
-              {revealed ? <EyeOff size={13} /> : <Eye size={13} />}
+              {revealed ? <Eye size={13} /> : <EyeOff size={13} />}
             </IconBtn>
             <IconBtn
               title={copied ? '已复制' : '复制'}
@@ -587,9 +588,9 @@ function IconBtn({
   active?: boolean
 }) {
   return (
+    <Tooltip content={title} disabled={disabled}>
     <button
       type="button"
-      title={title}
       onClick={onClick}
       disabled={disabled}
       style={{
@@ -614,6 +615,7 @@ function IconBtn({
     >
       {children}
     </button>
+    </Tooltip>
   )
 }
 

@@ -4,7 +4,8 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ChevronLeft, ChevronRight, Settings, Tv2, Mic } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Settings } from 'lucide-react'
+import BiliIcon from './components/icons/BiliIcon'
 import { fetchActivities } from './lib/chronos-api'
 import { createActivity, deleteActivity, fetchManicTimeSpans, fetchBiliSpans, fetchGoals, parseGoalTags } from './lib/local-api'
 import type { MtSpan, BiliSpan } from './lib/local-api'
@@ -69,6 +70,7 @@ import type { DbBiliItem } from './lib/local-api'
 import type { FairyState } from './components/FairyHUD'
 import { HudFrame, HudCommandStrip, DataRibbon, NeonRule } from './components/hud'
 import { CloseConfirmModal } from './components/CloseConfirmModal'
+import Tooltip from './components/Tooltip'
 import { usePresenceDetection } from './hooks/usePresenceDetection'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import soloLevelingLogo from './assets/SOLO LEVELING SYSTEM.png'
@@ -1473,13 +1475,15 @@ export default function App() {
 
         {/* 日期导航区 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <button onClick={prevDay} style={navBtn} title="前一天">
+          <Tooltip content="前一天">
+          <button onClick={prevDay} style={navBtn}>
             <ChevronLeft size={12} />
           </button>
+          </Tooltip>
+          <Tooltip content="选择日期">
           <button
             ref={dateAnchorRef}
             onClick={() => setDatePickerOpen((v) => !v)}
-            title="选择日期"
             style={{
               background: datePickerOpen ? `${theme.electricBlue}10` : 'transparent',
               border: `1px solid ${datePickerOpen ? `${theme.electricBlue}55` : 'transparent'}`,
@@ -1499,9 +1503,12 @@ export default function App() {
               style={{ minWidth: 88, alignItems: 'center', textAlign: 'center' }}
             />
           </button>
-          <button onClick={nextDay} style={navBtn} title="后一天">
+          </Tooltip>
+          <Tooltip content="后一天">
+          <button onClick={nextDay} style={navBtn}>
             <ChevronRight size={12} />
           </button>
+          </Tooltip>
           <button onClick={goToday} style={{
             ...navBtn,
             color: theme.electricBlue,
@@ -1538,14 +1545,8 @@ export default function App() {
 
         <div style={{ flex: 1 }} />
 
-        {/* Voice hint */}
-        <button style={{ ...navBtn, color: theme.textMuted }} title="长按右 Alt 呼唤语音助手">
-          <Mic size={12} />
-        </button>
-
-        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 4px' }} />
-
         {/* B站历史 */}
+        <Tooltip content="B站历史记录">
         <button
           onClick={() => { setShowBili(!showBili); if (!showBili) setShowSettings(false) }}
           style={{
@@ -1555,12 +1556,13 @@ export default function App() {
             background: showBili ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
             textShadow: showBili ? `0 0 6px ${theme.electricBlue}AA` : undefined,
           }}
-          title="B站历史记录"
         >
-          <Tv2 size={12} />
+          <BiliIcon size={14} />
         </button>
+        </Tooltip>
 
         {/* Settings */}
+        <Tooltip content="设置">
         <button
           onClick={() => { setShowSettings(!showSettings); if (!showSettings) setShowBili(false) }}
           style={{
@@ -1570,10 +1572,10 @@ export default function App() {
             background: showSettings ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
             textShadow: showSettings ? `0 0 6px ${theme.electricBlue}AA` : undefined,
           }}
-          title="设置"
         >
           <Settings size={12} />
         </button>
+        </Tooltip>
       </div>
 
       {/* ── Main: Chart + Right Panel ── */}

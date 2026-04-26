@@ -10,6 +10,7 @@ import type { ApiRequestSnapshot } from '../lib/llm/api'
 import DebugRequestModal from './DebugRequestModal'
 import OmniDebugModal from './OmniDebugModal'
 import { HudFrame } from './hud'
+import Tooltip from './Tooltip'
 
 // 气泡倒角 clip-path（尖角留"尾巴"侧用于指向发送者）
 // 用户：右下为尾，其余三角 8px 斜切
@@ -107,10 +108,11 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
         .chat-textarea::placeholder { color: ${theme.textMuted}; font-family: ${theme.fontMono}; letter-spacing: 0.5px; font-size: 12px; }
         .chat-textarea:focus { outline: none; }
         .send-btn:hover:not(:disabled) {
-          background: linear-gradient(135deg, ${theme.electricBlue} 0%, ${theme.electricBlue}CC 100%) !important;
+          background: radial-gradient(circle at 35% 35%, ${theme.electricBlue}88 0%, ${theme.electricBlue}33 70%) !important;
           color: #001820 !important;
-          text-shadow: none !important;
-          box-shadow: 0 0 14px ${theme.electricBlue}AA, inset 0 0 8px rgba(255,255,255,0.25) !important;
+          border-color: ${theme.electricBlue} !important;
+          box-shadow: 0 0 12px ${theme.electricBlue}AA, inset 0 0 6px rgba(255,255,255,0.25) !important;
+          transform: scale(1.06);
         }
         .chat-input-wrap:focus-within {
           border-color: ${theme.electricBlue}66 !important;
@@ -183,7 +185,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
           {onToggleCamera && (
             <HudIconBtn
               onClick={onToggleCamera}
-              title={cameraWindowOpen ? '关闭摄像头预览' : cameraPresent ? '检测到人脸 · 点击预览' : '点击打开摄像头预览'}
+              title={cameraWindowOpen ? '关闭预览' : cameraPresent ? '已检测人脸' : '打开预览'}
               active={cameraWindowOpen}
               activeColor={theme.expGreen}
               dim={!cameraReady}
@@ -280,7 +282,6 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
       }}>
         <div className="chat-input-wrap" style={{
           position: 'relative',
-          display: 'flex', alignItems: 'flex-end', gap: 8,
           background: 'rgba(0,12,28,0.6)',
           border: `1px solid ${theme.hudFrameSoft}`,
           clipPath: clip4,
@@ -297,38 +298,42 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
             placeholder="输入消息..."
             rows={3}
             style={{
-              flex: 1, background: 'transparent', border: 'none',
+              width: '100%', background: 'transparent', border: 'none',
               color: theme.textPrimary,
               fontFamily: theme.fontBody,
               fontSize: 13, outline: 'none', resize: 'none',
-              lineHeight: 1.5, minHeight: 60, maxHeight: 160, overflowY: 'auto',
+              lineHeight: 1.5, minHeight: 64, maxHeight: 200, overflowY: 'auto',
+              // 右下留出圆形按钮空间
+              paddingRight: 34, paddingBottom: 2,
             }}
           />
+          {/* 浮动 send：圆形小按钮，钉在右下角内侧 */}
+          <Tooltip content="发送 (Enter)" wrapStyle={{ position: 'absolute', right: 14, bottom: 10 }}>
           <button
             className="send-btn"
             onClick={handleSend}
             disabled={!input.trim() || isProcessing}
             style={{
               background: input.trim() && !isProcessing
-                ? `linear-gradient(135deg, ${theme.electricBlue}33 0%, ${theme.electricBlue}14 100%)`
+                ? `radial-gradient(circle at 35% 35%, ${theme.electricBlue}55 0%, ${theme.electricBlue}1A 70%)`
                 : 'rgba(255,255,255,0.04)',
               border: `1px solid ${input.trim() && !isProcessing ? theme.electricBlue + '88' : theme.hudFrameSoft}`,
-              clipPath: clip4,
+              borderRadius: '50%',
+              padding: 0,
+              width: 24, height: 24,
               color: input.trim() && !isProcessing ? theme.electricBlue : theme.textMuted,
-              textShadow: input.trim() && !isProcessing ? `0 0 6px ${theme.electricBlue}BB` : undefined,
-              boxShadow: input.trim() && !isProcessing ? `0 0 10px ${theme.electricBlue}33, inset 0 0 6px ${theme.electricBlue}22` : undefined,
-              height: 30,
-              padding: '0 10px',
+              boxShadow: input.trim() && !isProcessing
+                ? `0 0 8px ${theme.electricBlue}55, inset 0 0 4px ${theme.electricBlue}33`
+                : undefined,
+              opacity: input.trim() && !isProcessing ? 1 : 0.55,
               cursor: input.trim() && !isProcessing ? 'pointer' : 'default',
               transition: 'all 0.15s ease',
-              flexShrink: 0,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-              fontFamily: theme.fontMono, fontSize: 10, fontWeight: 700, letterSpacing: 1.6,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}
           >
-            <Send size={11} />
-            <span>SEND</span>
+            <Send size={11} style={{ marginLeft: -1 }} />
           </button>
+          </Tooltip>
         </div>
       </div>
     </div>
@@ -342,11 +347,11 @@ function HistoryToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
   const c = theme.electricBlue
   const dim = on ? 1 : 0.5
   return (
+    <Tooltip content={on ? '收起历史会话' : '打开历史会话'}>
     <button
       className="hud-history-toggle"
       data-on={on ? '1' : '0'}
       onClick={onClick}
-      title={on ? '收起历史会话' : '打开历史会话'}
       style={{
         position: 'relative',
         display: 'inline-flex', alignItems: 'center', gap: 6,
@@ -405,6 +410,7 @@ function HistoryToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
         }} />
       )}
     </button>
+    </Tooltip>
   )
 }
 
@@ -422,29 +428,30 @@ function HudIconBtn({
     ? (activeColor ?? theme.electricBlue)
     : dim ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.45)'
   return (
-    <button
-      className="hud-icon-btn"
-      onClick={onClick}
-      title={title}
-      style={{
-        background: active ? `${activeColor ?? theme.electricBlue}14` : 'rgba(0,229,255,0.03)',
-        border: `1px solid ${active ? (activeColor ?? theme.electricBlue) + '66' : theme.hudFrameSoft}`,
-        clipPath: clip4,
-        padding: '4px 5px',
-        cursor: 'pointer',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        transition: 'background 0.15s, border-color 0.15s',
-      }}
-    >
-      <span className="hud-icon-inner" style={{
-        color: base,
-        display: 'flex', alignItems: 'center',
-        textShadow: active ? `0 0 6px ${activeColor ?? theme.electricBlue}` : undefined,
-        transition: 'color 0.15s',
-      }}>
-        {children}
-      </span>
-    </button>
+    <Tooltip content={title}>
+      <button
+        className="hud-icon-btn"
+        onClick={onClick}
+        style={{
+          background: active ? `${activeColor ?? theme.electricBlue}14` : 'rgba(0,229,255,0.03)',
+          border: `1px solid ${active ? (activeColor ?? theme.electricBlue) + '66' : theme.hudFrameSoft}`,
+          clipPath: clip4,
+          padding: '4px 5px',
+          cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          transition: 'background 0.15s, border-color 0.15s',
+        }}
+      >
+        <span className="hud-icon-inner" style={{
+          color: base,
+          display: 'flex', alignItems: 'center',
+          textShadow: active ? `0 0 6px ${activeColor ?? theme.electricBlue}` : undefined,
+          transition: 'color 0.15s',
+        }}>
+          {children}
+        </span>
+      </button>
+    </Tooltip>
   )
 }
 
@@ -707,9 +714,9 @@ function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDeb
       </div>
       {/* Debug 按钮（普通模式）：有快照时显示 */}
       {!isUser && onDebug && (
+        <Tooltip content="查看本轮 AI 请求">
         <button
           onClick={onDebug}
-          title="查看本轮 AI 请求"
           style={{
             background: 'none', border: 'none', cursor: 'pointer',
             color: 'rgba(255,255,255,0.15)', padding: 2,
@@ -722,12 +729,13 @@ function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDeb
         >
           <Bug size={11} />
         </button>
+        </Tooltip>
       )}
       {/* Omni Debug 按钮：Omni 回复气泡上显示 */}
       {!isUser && onOmniDebug && (
+        <Tooltip content="查看本轮 Omni 上下文">
         <button
           onClick={onOmniDebug}
-          title="查看本轮 Omni 上下文"
           style={{
             background: 'none', border: 'none', cursor: 'pointer',
             color: 'rgba(167,139,250,0.25)', padding: 2,
@@ -740,6 +748,7 @@ function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDeb
         >
           <Radio size={11} />
         </button>
+        </Tooltip>
       )}
     </div>
   )
