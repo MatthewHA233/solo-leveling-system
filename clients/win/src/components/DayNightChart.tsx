@@ -1178,10 +1178,38 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.totalW])
 
-  // Bili span 时间重叠修正：后者开始时间衔接前者结束时间
+  // 选中日期的 YYYY-MM-DD 字符串（用于裁剪跨天 span）
+  const selectedDateStr = useMemo(() => {
+    const y = selectedDate.getFullYear()
+    const m = String(selectedDate.getMonth() + 1).padStart(2, '0')
+    const d = String(selectedDate.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }, [selectedDate])
+
+  // Bili span 时间重叠修正 + 跨天裁剪：
+  // 一段 23:30 → 次日 00:30 的 span 在"前一天"被裁成 23:30→24:00，
+  // 在"次日"被裁成 00:00→00:30，两边都能正常渲染
   const adjustedBiliSpans = useMemo((): BiliSpan[] => {
     if (!biliSpans.length) return biliSpans
-    const sorted = [...biliSpans].sort((a, b) => dtToMinute(a.start_at) - dtToMinute(b.start_at))
+
+    // 1) 先把每个 span 裁到 selectedDate 的范围内
+    const clamped: BiliSpan[] = []
+    for (const span of biliSpans) {
+      const startDate = span.start_at.split(' ')[0] ?? ''
+      const endDate   = span.end_at.split(' ')[0]   ?? ''
+      const startsBefore = startDate < selectedDateStr
+      const endsAfter    = endDate   > selectedDateStr
+
+      // 完全在选中日期之外的 span 跳过（理论上 SQL 已过滤，前端兜底）
+      if (endDate < selectedDateStr || startDate > selectedDateStr) continue
+
+      const newStart = startsBefore ? `${selectedDateStr} 00:00:00` : span.start_at
+      const newEnd   = endsAfter    ? `${selectedDateStr} 23:59:59` : span.end_at
+      clamped.push({ ...span, start_at: newStart, end_at: newEnd })
+    }
+
+    // 2) 重叠修正：后者开始衔接前者结束
+    const sorted = clamped.sort((a, b) => dtToMinute(a.start_at) - dtToMinute(b.start_at))
     const result: BiliSpan[] = []
     let prevEndMin = -Infinity
     for (const span of sorted) {
@@ -1200,7 +1228,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
       prevEndMin = endMin
     }
     return result
-  }, [biliSpans])
+  }, [biliSpans, selectedDateStr])
 
   const isToday = (() => {
     const now = new Date()

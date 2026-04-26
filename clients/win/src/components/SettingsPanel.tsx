@@ -11,6 +11,7 @@ import { theme } from '../theme'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import { MagneticButton } from './NeonUI'
 import Tooltip from './Tooltip'
+import HudSelect from './HudSelect'
 
 interface Props {
   readonly config: AgentConfig
@@ -51,6 +52,8 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
     excludedTitleKeywords: config.excludedTitleKeywords.join('\n'),
     biliIntervalSeconds: config.biliIntervalSeconds,
     biliAutoCreate: config.biliAutoCreate,
+    biliDownloadPath: config.biliDownloadPath,
+    biliDownloadQuality: config.biliDownloadQuality,
     agentName: config.agentName,
     agentPersona: config.agentPersona,
     agentCallUser: config.agentCallUser,
@@ -93,6 +96,8 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
       excludedTitleKeywords: draft.excludedTitleKeywords.split('\n').map((s) => s.trim()).filter(Boolean),
       biliIntervalSeconds: draft.biliIntervalSeconds,
       biliAutoCreate: draft.biliAutoCreate,
+      biliDownloadPath: draft.biliDownloadPath || 'E:\\BiliDownloads',
+      biliDownloadQuality: draft.biliDownloadQuality,
       agentName: draft.agentName || 'Fairy',
       agentPersona: draft.agentPersona,
       agentCallUser: draft.agentCallUser || '主人',
@@ -401,6 +406,67 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
               自动同步新视频为活动
             </label>
           </div>
+
+          {/* 下载存储位置 */}
+          <label style={{ ...labelStyle, marginTop: 8 }}>视频下载存储位置</label>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8 }}>
+            <input
+              type="text"
+              value={draft.biliDownloadPath}
+              onChange={(e) => {
+                setDraft((prev) => ({ ...prev, biliDownloadPath: e.target.value }))
+                setDirty(true)
+                setSaved(false)
+              }}
+              placeholder="E:\BiliDownloads"
+              style={{ ...inputStyle, flex: 1 }}
+            />
+            <MagneticButton
+              onClick={async () => {
+                const sel = await open({
+                  directory: true,
+                  multiple: false,
+                  title: '选择 B 站视频下载位置',
+                  defaultPath: draft.biliDownloadPath || undefined,
+                })
+                if (sel && typeof sel === 'string') {
+                  setDraft((prev) => ({ ...prev, biliDownloadPath: sel }))
+                  setDirty(true)
+                  setSaved(false)
+                }
+              }}
+            >
+              选择
+            </MagneticButton>
+          </div>
+          <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 8 }}>
+            合并后的 mp4 会保存到此目录。需系统已安装 ffmpeg（在 PATH 中）。
+          </div>
+
+          {/* 画质偏好 */}
+          <label style={labelStyle}>下载画质偏好</label>
+          <div style={{ marginBottom: 6 }}>
+            <HudSelect
+              value={draft.biliDownloadQuality}
+              onChange={(v) => {
+                setDraft((prev) => ({ ...prev, biliDownloadQuality: v }))
+                setDirty(true)
+                setSaved(false)
+              }}
+              options={[
+                { value: 'auto',       label: '自动',  hint: '账号最高可得' },
+                { value: '4k',         label: '4K',    hint: 'qn=120 · 大会员' },
+                { value: '1080p_plus', label: '1080P+', hint: 'qn=112 · 高码率·大会员' },
+                { value: '1080p',      label: '1080P',  hint: 'qn=80' },
+                { value: '720p',       label: '720P',   hint: 'qn=64 · 省流' },
+                { value: '480p',       label: '480P',   hint: 'qn=32 · 极省流' },
+              ]}
+            />
+          </div>
+          <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 8 }}>
+            实际拿到的清晰度受账号权限限制；选高于权限的会自动回退到可用最高。
+          </div>
+
           <div style={{ marginTop: 4 }}>
             <MagneticButton
               onClick={handleApply}

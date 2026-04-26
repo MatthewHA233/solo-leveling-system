@@ -3,12 +3,90 @@
  * 显示：封面缩略图、标题、UP主、时长/进度
  */
 
+import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import { Download, Check, AlertTriangle, Loader2, FolderOpen } from 'lucide-react'
 import type { BiliSpan } from '../lib/local-api'
 import { theme } from '../theme'
+import { loadConfig } from '../lib/agent/agent-config'
+import Tooltip from './Tooltip'
+import HudSelect from './HudSelect'
+
+type QualityKey = 'auto' | '4k' | '1080p_plus' | '1080p' | '720p' | '480p'
+
+interface QualityOption {
+  value: QualityKey
+  label: string
+  hint?: string
+  /** 该选项对应的 qn 值（auto 没有具体 qn） */
+  qn?: number
+}
+
+const QUALITY_OPTIONS: ReadonlyArray<QualityOption> = [
+  { value: 'auto',       label: '自动',   hint: '账号最高' },
+  { value: '4k',         label: '4K',     hint: 'qn=120', qn: 120 },
+  { value: '1080p_plus', label: '1080P+', hint: 'qn=112', qn: 112 },
+  { value: '1080p',      label: '1080P',  hint: 'qn=80',  qn: 80  },
+  { value: '720p',       label: '720P',   hint: 'qn=64',  qn: 64  },
+  { value: '480p',       label: '480P',   hint: 'qn=32',  qn: 32  },
+]
+
+/** qn → QualityKey；找不到精确匹配时返回 null（让上层退回到 quality_request 字段） */
+function qnToQualityKey(qn: number | null | undefined): QualityKey | null {
+  if (qn == null) return null
+  const opt = QUALITY_OPTIONS.find((o) => o.qn === qn)
+  return opt ? opt.value : null
+}
 
 interface Props {
   span: BiliSpan
+}
+
+type DlStage =
+  | 'idle'
+  | 'queued'
+  | 'fetching_meta'
+  | 'downloading_video'
+  | 'downloading_audio'
+  | 'merging'
+  | 'done'
+  | 'error'
+
+interface DlProgress {
+  bvid: string
+  stage: DlStage
+  percent: number
+  message: string | null
+  output_path: string | null
+  queue_position: number | null
+}
+
+// 后端 BiliVideoAsset 序列化结构（snake_case 字段直出）
+interface BiliVideoAsset {
+  id: string
+  bvid: string
+  download_status: string  // queued | downloading | done | error
+  download_path: string | null
+  quality_request: string | null
+  quality_id: number | null
+  file_size: number | null
+  error_message: string | null
+  started_at: string | null
+  completed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+const STAGE_LABEL: Record<DlStage, string> = {
+  idle: '下载',
+  queued: '排队中',
+  fetching_meta: '解析流',
+  downloading_video: '视频流',
+  downloading_audio: '音频流',
+  merging: '合并',
+  done: '已保存',
+  error: '失败',
 }
 
 const BILI_COLOR = '#FB7299'
@@ -30,10 +108,105 @@ function openBili(bvid: string) {
   invoke('open_url_in_browser', { url: `https://www.bilibili.com/video/${bvid}` }).catch(() => {})
 }
 
+function openInExplorer(filePath: string) {
+  // 用资源管理器打开并选中文件
+  invoke('open_url_in_browser', { url: `file:///${filePath.replace(/\\/g, '/')}` }).catch(() => {})
+}
+
 export default function BiliVideoPanel({ span }: Props) {
   const progressPct = span.duration > 0
     ? Math.min(100, Math.round((span.progress / span.duration) * 100))
     : 0
+
+  // ── 下载状态 ──
+  const [dl, setDl] = useState<DlProgress>({
+    bvid: span.bvid, stage: 'idle', percent: 0, message: null, output_path: null, queue_position: null,
+  })
+
+  // 每个按钮独立的画质选择（默认取全局配置；切换 span 时重新读取）
+  const defaultQuality = useMemo<QualityKey>(
+    () => (loadConfig().biliDownloadQuality as QualityKey) || 'auto',
+    [span.bvid],
+  )
+  const [quality, setQuality] = useState<QualityKey>(defaultQuality)
+  useEffect(() => { setQuality(defaultQuality) }, [defaultQuality])
+
+  // 该视频实际可用的 qn 列表；null = 探测中或失败（失败时显示全部）
+  const [availableQns, setAvailableQns] = useState<number[] | null>(null)
+
+  // 实际下拉展示的选项：'auto' 总是保留；其余按 availableQns 过滤
+  const visibleOptions = useMemo<ReadonlyArray<QualityOption>>(() => {
+    if (!availableQns || availableQns.length === 0) return QUALITY_OPTIONS
+    return QUALITY_OPTIONS.filter((o) => o.qn === undefined || availableQns.includes(o.qn))
+  }, [availableQns])
+
+  // 切换 span / 拿到可用 qn 后：若当前选项不在列表里，回退到 auto
+  useEffect(() => {
+    if (!visibleOptions.some((o) => o.value === quality)) {
+      setQuality('auto')
+    }
+  }, [visibleOptions, quality])
+
+  // 切换 span 时：重置 idle + 查 DB 恢复已下载状态 + 探测可用清晰度
+  useEffect(() => {
+    setDl({ bvid: span.bvid, stage: 'idle', percent: 0, message: null, output_path: null, queue_position: null })
+    setAvailableQns(null)
+    let cancelled = false
+
+    invoke<BiliVideoAsset[]>('get_bili_assets_by_bvid', { bvid: span.bvid })
+      .then((assets) => {
+        if (cancelled) return
+        const done = assets.find((a) => a.download_status === 'done' && a.download_path)
+        if (done && done.download_path) {
+          setDl((prev) => {
+            if (prev.stage !== 'idle') return prev
+            return {
+              bvid: span.bvid, stage: 'done', percent: 100,
+              message: '已保存', output_path: done.download_path,
+              queue_position: null,
+            }
+          })
+          // 恢复上次下载使用的画质：优先 quality_id（精确 qn），
+          // 回退到 quality_request（'auto' / '480p' 等字符串）
+          const restored = qnToQualityKey(done.quality_id) ?? (done.quality_request as QualityKey | null)
+          if (restored && QUALITY_OPTIONS.some((o) => o.value === restored)) {
+            setQuality(restored)
+          }
+        }
+      })
+      .catch(() => {})
+
+    // 探测当前账号能拿到哪些清晰度（失败保持 null = 显示全部）
+    invoke<number[]>('probe_bili_qualities', { bvid: span.bvid })
+      .then((qns) => { if (!cancelled) setAvailableQns(qns) })
+      .catch(() => {})
+
+    return () => { cancelled = true }
+  }, [span.bvid])
+
+  // 监听全局下载进度事件
+  useEffect(() => {
+    const unlisten = listen<DlProgress>('bili-download-progress', (e) => {
+      if (e.payload.bvid === span.bvid) setDl(e.payload)
+    })
+    return () => { unlisten.then(fn => fn()).catch(() => {}) }
+  }, [span.bvid])
+
+  const handleDownload = async () => {
+    const cfg = loadConfig()
+    const saveDir = cfg.biliDownloadPath || 'E:\\BiliDownloads'
+    setDl({ bvid: span.bvid, stage: 'queued', percent: 0, message: '入队中...', output_path: null, queue_position: null })
+    try {
+      await invoke('enqueue_bili_download', { bvid: span.bvid, saveDir, quality })
+    } catch (err) {
+      setDl({
+        bvid: span.bvid, stage: 'error', percent: 0,
+        message: String(err), output_path: null, queue_position: null,
+      })
+    }
+  }
+
+  const isWorking = dl.stage !== 'idle' && dl.stage !== 'done' && dl.stage !== 'error'
 
   return (
     <div style={{
@@ -182,6 +355,157 @@ export default function BiliVideoPanel({ span }: Props) {
       }}>
         {span.bvid}
       </div>
+
+      {/* ── 下载控制 ── */}
+      <div style={{ marginTop: 10 }}>
+        <DownloadControl
+          dl={dl}
+          isWorking={isWorking}
+          biliColor={BILI_COLOR}
+          quality={quality}
+          qualityOptions={visibleOptions}
+          onQualityChange={setQuality}
+          onDownload={handleDownload}
+          onOpenFile={() => dl.output_path && openInExplorer(dl.output_path)}
+        />
+      </div>
     </div>
   )
+}
+
+// ── 下载控件 ──
+
+function DownloadControl({
+  dl, isWorking, biliColor, quality, qualityOptions, onQualityChange, onDownload, onOpenFile,
+}: {
+  dl: DlProgress
+  isWorking: boolean
+  biliColor: string
+  quality: QualityKey
+  qualityOptions: ReadonlyArray<QualityOption>
+  onQualityChange: (q: QualityKey) => void
+  onDownload: () => void
+  onOpenFile: () => void
+}) {
+  // 进度态
+  if (isWorking) {
+    return (
+      <div>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          fontSize: 11, color: theme.textPrimary,
+          fontFamily: theme.fontMono, marginBottom: 4,
+        }}>
+          <Loader2 size={11} style={{ animation: 'spin 1.4s linear infinite', color: biliColor }} />
+          <span>{STAGE_LABEL[dl.stage]}</span>
+          <span style={{ color: theme.textSecondary, marginLeft: 'auto' }}>
+            {dl.percent > 0 ? `${dl.percent.toFixed(0)}%` : ''}
+          </span>
+        </div>
+        <div style={{
+          height: 4, borderRadius: 2,
+          background: 'rgba(255,255,255,0.08)',
+          overflow: 'hidden',
+        }}>
+          <div style={{
+            width: `${Math.max(2, dl.percent)}%`,
+            height: '100%',
+            background: biliColor,
+            transition: 'width 0.2s',
+          }} />
+        </div>
+        {dl.message && (
+          <div style={{
+            marginTop: 4, fontSize: 10,
+            color: theme.textMuted, fontFamily: theme.fontMono,
+            wordBreak: 'break-all',
+          }}>
+            {dl.message}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // 完成态
+  if (dl.stage === 'done') {
+    return (
+      <div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <button
+            onClick={onDownload}
+            style={btnStyle(biliColor, 'rgba(251,114,153,0.10)')}
+          >
+            <Download size={12} /> 重新下载
+          </button>
+          <HudSelect inline value={quality} options={qualityOptions} onChange={onQualityChange} />
+          <Tooltip content={dl.output_path || '打开'}>
+            <button
+              onClick={onOpenFile}
+              style={btnStyle(theme.expGreen, 'rgba(110,255,140,0.10)')}
+            >
+              <FolderOpen size={12} /> 打开
+            </button>
+          </Tooltip>
+          <span style={{
+            marginLeft: 'auto', fontSize: 10,
+            color: theme.expGreen, display: 'flex',
+            alignItems: 'center', gap: 3,
+          }}>
+            <Check size={11} /> 已保存
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  // 错误态
+  if (dl.stage === 'error') {
+    return (
+      <div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <button
+            onClick={onDownload}
+            style={btnStyle(biliColor, 'rgba(251,114,153,0.10)')}
+          >
+            <Download size={12} /> 重试下载
+          </button>
+          <HudSelect inline value={quality} options={qualityOptions} onChange={onQualityChange} />
+        </div>
+        <div style={{
+          marginTop: 4, fontSize: 10,
+          color: theme.dangerRed, display: 'flex',
+          alignItems: 'flex-start', gap: 4,
+          wordBreak: 'break-all',
+        }}>
+          <AlertTriangle size={11} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>{dl.message || '未知错误'}</span>
+        </div>
+      </div>
+    )
+  }
+
+  // idle
+  return (
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+      <button
+        onClick={onDownload}
+        style={btnStyle(biliColor, 'rgba(251,114,153,0.10)')}
+      >
+        <Download size={12} /> 下载视频
+      </button>
+      <HudSelect inline value={quality} options={qualityOptions} onChange={onQualityChange} />
+    </div>
+  )
+}
+
+function btnStyle(color: string, bg: string): React.CSSProperties {
+  return {
+    display: 'inline-flex', alignItems: 'center', gap: 4,
+    padding: '4px 10px', fontSize: 11, fontWeight: 600,
+    fontFamily: theme.fontBody,
+    color, background: bg,
+    border: `1px solid ${color}`, borderRadius: 3,
+    cursor: 'pointer', letterSpacing: 0.5,
+  }
 }

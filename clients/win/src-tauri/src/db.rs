@@ -157,6 +157,30 @@ pub struct UpsertBiliItem {
     pub view_at: i64,
 }
 
+// ── B 站视频资产（下载/逐字稿/AI 总结/笔记） ──
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BiliVideoAsset {
+    pub id: String,
+    pub bvid: String,
+    pub download_status: String,           // queued | downloading | done | error
+    pub download_path: Option<String>,
+    pub quality_request: Option<String>,   // auto / 1080p / ...
+    pub quality_id: Option<i64>,           // 实际 qn (80/112/...)
+    pub video_codecs: Option<String>,
+    pub audio_codecs: Option<String>,
+    pub file_size: Option<i64>,
+    pub error_message: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    // 未来扩展字段
+    pub transcript: Option<String>,
+    pub ai_summary: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 // ── 数据库管理 ──
 
 pub struct Database {
@@ -382,6 +406,31 @@ impl Database {
                 state TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_presence_start ON presence_spans(start_time);
+
+            -- B 站视频资产：下载记录 + 后续逐字稿/AI总结/笔记
+            -- bvid 软引用 bili_history.bvid（不强制 FK，允许下载非历史中的视频）
+            CREATE TABLE IF NOT EXISTS bili_video_assets (
+                id TEXT PRIMARY KEY,
+                bvid TEXT NOT NULL,
+                download_status TEXT NOT NULL DEFAULT 'queued',
+                download_path TEXT,
+                quality_request TEXT,
+                quality_id INTEGER,
+                video_codecs TEXT,
+                audio_codecs TEXT,
+                file_size INTEGER,
+                error_message TEXT,
+                started_at TEXT,
+                completed_at TEXT,
+                transcript TEXT,
+                ai_summary TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_bili_assets_bvid ON bili_video_assets(bvid);
+            CREATE INDEX IF NOT EXISTS idx_bili_assets_status ON bili_video_assets(download_status);
+            CREATE INDEX IF NOT EXISTS idx_bili_assets_created ON bili_video_assets(created_at DESC);
         "#).map_err(|e| format!("创建表失败: {}", e))?;
 
         log::info!("[Database] 表初始化完成");
@@ -773,21 +822,26 @@ impl Database {
 
     /// 查询某天的 B站观看 spans（用于昼夜表轨道）
     /// date 格式: "2026-04-06"
+    /// 跨天的 span（如 23:30 → 次日 00:30）只要与该天有交集就会返回
     pub async fn get_bili_spans_for_date(&self, date: &str) -> Result<Vec<BiliSpan>, String> {
         let conn = self.conn.lock().await;
         let sql = r#"
-            SELECT
-                bvid, title, author_name, cover, duration, progress,
-                datetime(
+            WITH spans AS (
+                SELECT
+                    bvid, title, author_name, cover, duration, progress, view_at,
                     view_at - CASE
                         WHEN progress > 0 THEN MIN(progress, 3600)
                         ELSE MIN(duration, 3600)
-                    END,
-                    'unixepoch', 'localtime'
-                ) AS start_dt,
-                datetime(view_at, 'unixepoch', 'localtime') AS end_dt
-            FROM bili_history
-            WHERE date(view_at, 'unixepoch', 'localtime') = ?
+                    END AS start_unix
+                FROM bili_history
+            )
+            SELECT
+                bvid, title, author_name, cover, duration, progress,
+                datetime(start_unix, 'unixepoch', 'localtime') AS start_dt,
+                datetime(view_at,    'unixepoch', 'localtime') AS end_dt
+            FROM spans
+            WHERE date(view_at,    'unixepoch', 'localtime') = ?1
+               OR date(start_unix, 'unixepoch', 'localtime') = ?1
             ORDER BY view_at ASC
         "#;
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
@@ -900,6 +954,139 @@ impl Database {
         Ok(())
     }
 
+    // ── B 站视频资产 ──
+
+    /// 创建一条新的下载记录（status=queued），返回 asset id
+    pub async fn create_bili_asset(
+        &self, bvid: &str, quality_request: Option<&str>,
+    ) -> Result<String, String> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().await;
+        conn.execute(
+            r#"INSERT INTO bili_video_assets
+               (id, bvid, download_status, quality_request, created_at, updated_at)
+               VALUES (?, ?, 'queued', ?, ?, ?)"#,
+            params![&id, bvid, quality_request, &now, &now],
+        ).map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+
+    /// 更新下载状态（含可选 started_at；message 进度等不存）
+    pub async fn update_bili_asset_status(
+        &self, id: &str, status: &str, mark_started: bool,
+    ) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().await;
+        if mark_started {
+            conn.execute(
+                r#"UPDATE bili_video_assets
+                   SET download_status = ?, started_at = COALESCE(started_at, ?), updated_at = ?
+                   WHERE id = ?"#,
+                params![status, &now, &now, id],
+            ).map_err(|e| e.to_string())?;
+        } else {
+            conn.execute(
+                "UPDATE bili_video_assets SET download_status = ?, updated_at = ? WHERE id = ?",
+                params![status, &now, id],
+            ).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// 下载完成：写入路径、清晰度、编解码、文件大小
+    pub async fn complete_bili_asset(
+        &self,
+        id: &str,
+        download_path: &str,
+        quality_id: Option<i64>,
+        video_codecs: Option<&str>,
+        audio_codecs: Option<&str>,
+        file_size: Option<i64>,
+    ) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().await;
+        conn.execute(
+            r#"UPDATE bili_video_assets
+               SET download_status='done', download_path=?, quality_id=?,
+                   video_codecs=?, audio_codecs=?, file_size=?,
+                   completed_at=?, updated_at=?,
+                   error_message=NULL
+               WHERE id=?"#,
+            params![
+                download_path, quality_id, video_codecs, audio_codecs, file_size,
+                &now, &now, id,
+            ],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 下载失败：写入错误信息
+    pub async fn fail_bili_asset(&self, id: &str, message: &str) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().await;
+        conn.execute(
+            r#"UPDATE bili_video_assets
+               SET download_status='error', error_message=?, completed_at=?, updated_at=?
+               WHERE id=?"#,
+            params![message, &now, &now, id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 查询某个 bvid 的全部资产记录（按 created_at 倒序）
+    pub async fn get_bili_assets_by_bvid(&self, bvid: &str) -> Result<Vec<BiliVideoAsset>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            r#"SELECT id, bvid, download_status, download_path, quality_request, quality_id,
+                      video_codecs, audio_codecs, file_size, error_message,
+                      started_at, completed_at, transcript, ai_summary, notes,
+                      created_at, updated_at
+               FROM bili_video_assets WHERE bvid = ? ORDER BY created_at DESC"#,
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([bvid], BiliVideoAsset::from_row)
+            .map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 查询最近的资产记录（用于下载列表面板，未来用）
+    pub async fn get_recent_bili_assets(&self, limit: i64) -> Result<Vec<BiliVideoAsset>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            r#"SELECT id, bvid, download_status, download_path, quality_request, quality_id,
+                      video_codecs, audio_codecs, file_size, error_message,
+                      started_at, completed_at, transcript, ai_summary, notes,
+                      created_at, updated_at
+               FROM bili_video_assets ORDER BY created_at DESC LIMIT ?"#,
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([limit], BiliVideoAsset::from_row)
+            .map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+}
+
+impl BiliVideoAsset {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(BiliVideoAsset {
+            id:               row.get(0)?,
+            bvid:             row.get(1)?,
+            download_status:  row.get(2)?,
+            download_path:    row.get(3)?,
+            quality_request:  row.get(4)?,
+            quality_id:       row.get(5)?,
+            video_codecs:     row.get(6)?,
+            audio_codecs:     row.get(7)?,
+            file_size:        row.get(8)?,
+            error_message:    row.get(9)?,
+            started_at:       row.get(10)?,
+            completed_at:     row.get(11)?,
+            transcript:       row.get(12)?,
+            ai_summary:       row.get(13)?,
+            notes:            row.get(14)?,
+            created_at:       row.get(15)?,
+            updated_at:       row.get(16)?,
+        })
+    }
 }
 
 // ── PresenceSpan ──

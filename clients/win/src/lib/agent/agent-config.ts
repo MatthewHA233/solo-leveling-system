@@ -65,6 +65,9 @@ export interface AgentConfig {
   // ── Bilibili ──
   readonly biliIntervalSeconds: number
   readonly biliAutoCreate: boolean
+  readonly biliDownloadPath: string
+  /** 下载画质偏好；'auto' = 取账号能拿到的最高清晰度 */
+  readonly biliDownloadQuality: 'auto' | '4k' | '1080p_plus' | '1080p' | '720p' | '480p'
 }
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -129,6 +132,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
   biliIntervalSeconds: 60,
   biliAutoCreate: true,
+  biliDownloadPath: 'E:\\BiliDownloads',
+  biliDownloadQuality: 'auto',
 }
 
 // ── Load / Save ──

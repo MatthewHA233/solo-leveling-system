@@ -46,6 +46,18 @@ input[type="time"]::-webkit-calendar-picker-indicator {
   to   { opacity: 1; transform: translate(-50%, var(--tt-to))   scale(1);    }
 }
 
+/* 旋转 Loader（B站下载等加载状态） */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* HudSelect 弹出动画 */
+@keyframes hudSelectFade {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+
 /* HUD 面板扫描线叠层（静态，无 blend-mode） */
 .hud-scanlines {
   position: absolute; inset: 0;

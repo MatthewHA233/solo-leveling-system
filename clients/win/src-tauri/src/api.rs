@@ -21,6 +21,7 @@ use crate::db::{
     ChronosActivity, CreateActivityRequest, Database, UpdateActivityRequest, UpdateChatSessionRequest,
     BiliHistoryRow, UpsertBiliItem, MergeActivitiesRequest, BiliSpan, Goal, PresenceSpan,
 };
+use crate::bili_download::{BiliDownloadState, PlayUrlMeta, QualityProbe, deliver_playurl_result, deliver_probe_result};
 
 // ── Bilibili 回调状态 ──
 
@@ -40,6 +41,7 @@ impl BiliState {
 pub struct ApiState {
     pub db: Arc<Database>,
     pub bili: Arc<BiliState>,
+    pub bili_dl: Arc<BiliDownloadState>,
 }
 
 // ── Response Types ──
@@ -343,6 +345,46 @@ async fn recv_bili_result(
     Json(ApiResponse::ok(()))
 }
 
+// ── B站下载 playurl 回调 ──
+
+#[derive(Deserialize)]
+struct PlayUrlResultPayload {
+    ok: Option<PlayUrlMeta>,
+    error: Option<String>,
+}
+
+/// POST /api/bilibili/playurl_result — 接收 WebView 注入 JS 拿到的 DASH 流地址
+async fn recv_bili_playurl_result(
+    State(state): State<ApiState>,
+    Json(body): Json<PlayUrlResultPayload>,
+) -> Json<ApiResponse<()>> {
+    let result = match body.ok {
+        Some(meta) => Ok(meta),
+        None => Err(body.error.unwrap_or_else(|| "未知错误".to_string())),
+    };
+    deliver_playurl_result(&state.bili_dl, result).await;
+    Json(ApiResponse::ok(()))
+}
+
+#[derive(Deserialize)]
+struct QualitiesResultPayload {
+    ok: Option<QualityProbe>,
+    error: Option<String>,
+}
+
+/// POST /api/bilibili/qualities_result — 接收清晰度探测回调
+async fn recv_bili_qualities_result(
+    State(state): State<ApiState>,
+    Json(body): Json<QualitiesResultPayload>,
+) -> Json<ApiResponse<()>> {
+    let result = match body.ok {
+        Some(probe) => Ok(probe),
+        None => Err(body.error.unwrap_or_else(|| "未知错误".to_string())),
+    };
+    deliver_probe_result(&state.bili_dl, result).await;
+    Json(ApiResponse::ok(()))
+}
+
 /// GET /api/bilibili/spans/day?date=2026-04-06
 async fn get_bili_spans_day(
     State(state): State<ApiState>,
@@ -582,8 +624,8 @@ async fn close_presence_span(
     }
 }
 
-pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>) -> Router {
-    let state = ApiState { db, bili };
+pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>, bili_dl: Arc<BiliDownloadState>) -> Router {
+    let state = ApiState { db, bili, bili_dl };
 
     Router::new()
         .route("/api/health", get(health))
@@ -593,6 +635,8 @@ pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>) -> Router {
         .route("/api/sessions/{id}/messages", get(get_chat_messages).post(append_chat_messages))
         .route("/api/sessions/{id}", patch(update_chat_session).delete(delete_chat_session))
         .route("/api/bilibili/result", post(recv_bili_result))
+        .route("/api/bilibili/playurl_result", post(recv_bili_playurl_result))
+        .route("/api/bilibili/qualities_result", post(recv_bili_qualities_result))
         .route("/api/bilibili/history", get(get_bili_history))
         .route("/api/bilibili/history/link", axum::routing::put(link_bili_to_event))
         .route("/api/activities/merge", post(merge_activities))
@@ -614,8 +658,8 @@ pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>) -> Router {
         .with_state(state)
 }
 
-pub async fn start_server(db: Arc<Database>, bili: Arc<BiliState>, port: u16) {
-    let app = create_router(db, bili);
+pub async fn start_server(db: Arc<Database>, bili: Arc<BiliState>, bili_dl: Arc<BiliDownloadState>, port: u16) {
+    let app = create_router(db, bili, bili_dl);
     let addr = format!("0.0.0.0:{}", port);
 
     log::info!("[API] HTTP 服务器启动: http://{}", addr);

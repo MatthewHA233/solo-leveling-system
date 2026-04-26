@@ -10,6 +10,7 @@ mod fish_tts;
 mod manictime;
 mod qwen_asr;
 mod qwen_omni;
+mod bili_download;
 #[cfg(windows)]
 mod hotkey;
 
@@ -18,6 +19,7 @@ use tokio::sync::{Mutex, RwLock};
 use fish_tts::{FishTTSConfig, FishTTSConnection};
 use db::Database;
 use api::BiliState;
+use bili_download::BiliDownloadState;
 use tauri::Manager;
 use base64::Engine as _;
 
@@ -254,6 +256,32 @@ async fn migrate_database(
     Ok(new_db_path)
 }
 
+// ── B 站视频资产 ──
+
+#[tauri::command]
+async fn get_bili_assets_by_bvid(
+    bvid: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<db::BiliVideoAsset>, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.get_bili_assets_by_bvid(&bvid).await
+}
+
+#[tauri::command]
+async fn get_recent_bili_assets(
+    limit: Option<i64>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<db::BiliVideoAsset>, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.get_recent_bili_assets(limit.unwrap_or(50)).await
+}
+
 // ── Qwen Omni Realtime 命令 ──
 
 #[tauri::command]
@@ -484,6 +512,15 @@ pub fn run() {
     });
 
     let bili_state = Arc::new(BiliState::new());
+    let bili_dl_state = Arc::new(BiliDownloadState::new());
+
+    // 把 DB 注入到下载状态（用于写资产表）
+    if let Some(db_for_dl) = db.clone() {
+        let dl = bili_dl_state.clone();
+        tauri::async_runtime::block_on(async move {
+            dl.set_db(db_for_dl).await;
+        });
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -496,12 +533,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .manage(bili_state.clone())
+        .manage(bili_dl_state.clone())
         .setup(move |app| {
             // 启动 HTTP 服务器（在 Tauri runtime 内）
             if let Some(db_clone) = db {
                 let bili_clone = bili_state.clone();
+                let bili_dl_clone = bili_dl_state.clone();
                 tauri::async_runtime::spawn(async move {
-                    api::start_server(db_clone, bili_clone, 3000).await;
+                    api::start_server(db_clone, bili_clone, bili_dl_clone, 3000).await;
                 });
             }
 
@@ -600,6 +639,10 @@ pub fn run() {
             migrate_database,
             open_bili_login,
             fetch_bili_history,
+            bili_download::enqueue_bili_download,
+            bili_download::probe_bili_qualities,
+            get_bili_assets_by_bvid,
+            get_recent_bili_assets,
             qwen_asr::qwen_asr_transcribe,
             read_file,
             write_file,
