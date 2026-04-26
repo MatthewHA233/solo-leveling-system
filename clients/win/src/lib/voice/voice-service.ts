@@ -186,9 +186,11 @@ export function createVoiceService(
       })
 
       // Omni 模式：AI 直接生成回复（音频+文字），等待 audio_done 信号
+      // 注意：不在此处 setPhase('idle')。audio_done 只表示 WS 上游推流完成，
+      // 实际音频还在 AudioContext 队列里播放。idle 由 App.tsx 的 omni://status
+      // 处理器在 src.onended 后统一发出，避免气泡/动画提前结束。
       await waitOmniAudioDone(30_000)
       if (mySeq !== sessionSeq) return
-      setPhase('idle')
     } else {
       // ── 默认批量 ASR ──
       const result = await batchRecorder?.stop() ?? null

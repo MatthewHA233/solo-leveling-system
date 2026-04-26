@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useCallback, useEffect } from 'react'
-import { X, ChevronRight, Zap, Mic, Lock, Database, Tv2, Bot } from 'lucide-react'
+import { X, ChevronRight, Zap, Mic, Lock, Database, Tv2, Bot, Eye, EyeOff, Copy, Check } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { theme } from '../theme'
@@ -516,18 +516,104 @@ function Field({
   placeholder?: string
   disabled?: boolean
 }) {
+  const [revealed, setRevealed] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const isPassword = type === 'password'
+  const effectiveType = isPassword && !revealed ? 'password' : 'text'
+
+  const handleCopy = useCallback(async () => {
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {}
+  }, [value])
+
+  const ICON_BTN_W = 22
+  const rightPad = isPassword ? ICON_BTN_W * 2 + 6 : 8
+
   return (
     <div style={{ marginBottom: 8 }}>
       <label style={{ ...labelStyle, opacity: disabled ? 0.4 : 1 }}>{label}</label>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        disabled={disabled}
-        style={{ ...inputStyle, opacity: disabled ? 0.4 : 1, cursor: disabled ? 'not-allowed' : undefined }}
-      />
+      <div style={{ position: 'relative' }}>
+        <input
+          type={effectiveType}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          disabled={disabled}
+          style={{
+            ...inputStyle,
+            paddingRight: rightPad,
+            opacity: disabled ? 0.4 : 1,
+            cursor: disabled ? 'not-allowed' : undefined,
+          }}
+        />
+        {isPassword && (
+          <div style={{
+            position: 'absolute', right: 4, top: 0, bottom: 0,
+            display: 'flex', alignItems: 'center', gap: 2,
+          }}>
+            <IconBtn
+              title={revealed ? '隐藏' : '显示'}
+              onClick={() => setRevealed((v) => !v)}
+              disabled={disabled}
+            >
+              {revealed ? <EyeOff size={13} /> : <Eye size={13} />}
+            </IconBtn>
+            <IconBtn
+              title={copied ? '已复制' : '复制'}
+              onClick={handleCopy}
+              disabled={disabled || !value}
+              active={copied}
+            >
+              {copied ? <Check size={13} /> : <Copy size={13} />}
+            </IconBtn>
+          </div>
+        )}
+      </div>
     </div>
+  )
+}
+
+function IconBtn({
+  children, onClick, title, disabled, active,
+}: {
+  children: React.ReactNode
+  onClick: () => void
+  title: string
+  disabled?: boolean
+  active?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        width: 22, height: 22, padding: 0,
+        background: 'transparent', border: 'none', borderRadius: 3,
+        color: active ? theme.expGreen : theme.textSecondary,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.35 : 1,
+        transition: 'color 0.15s ease, background 0.15s ease',
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled) {
+          e.currentTarget.style.color = active ? theme.expGreen : theme.electricBlue
+          e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
+        }
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.color = active ? theme.expGreen : theme.textSecondary
+        e.currentTarget.style.background = 'transparent'
+      }}
+    >
+      {children}
+    </button>
   )
 }
 

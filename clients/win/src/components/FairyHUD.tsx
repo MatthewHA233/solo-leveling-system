@@ -58,6 +58,83 @@ const styles = `
     text-shadow: 0 0 6px rgba(36, 140, 255, 0.6);
     margin-bottom: 3px;
   }
+
+  /* ===== STATE INDICATOR ANIMATIONS ===== */
+  .fairy-state-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    height: 14px;
+    margin-bottom: 4px;
+  }
+
+  /* listening: 多条声波柱起伏，等宽间距铺满 */
+  .si-bar {
+    flex: 0 0 auto;
+    width: 3px;
+    height: 100%;
+    border-radius: 2px;
+    background: rgba(80, 200, 255, 0.95);
+    box-shadow: 0 0 6px rgba(60, 170, 255, 0.7);
+    animation: si-bar-pulse 0.9s ease-in-out infinite;
+    transform-origin: center;
+  }
+  .si-bar:nth-child(1) { animation-delay: 0.00s; }
+  .si-bar:nth-child(2) { animation-delay: 0.08s; }
+  .si-bar:nth-child(3) { animation-delay: 0.16s; }
+  .si-bar:nth-child(4) { animation-delay: 0.24s; }
+  .si-bar:nth-child(5) { animation-delay: 0.32s; }
+  .si-bar:nth-child(6) { animation-delay: 0.40s; }
+  .si-bar:nth-child(7) { animation-delay: 0.48s; }
+  .si-bar:nth-child(8) { animation-delay: 0.56s; }
+  .si-bar:nth-child(9) { animation-delay: 0.64s; }
+  @keyframes si-bar-pulse {
+    0%, 100% { transform: scaleY(0.25); opacity: 0.65; }
+    50%      { transform: scaleY(1.0);  opacity: 1; }
+  }
+
+  /* thinking: 圆点呼吸，等距铺满 */
+  .si-dot {
+    flex: 0 0 auto;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: rgba(120, 200, 255, 0.95);
+    box-shadow: 0 0 6px rgba(60, 170, 255, 0.7);
+    animation: si-dot-blink 1.2s ease-in-out infinite;
+  }
+  .si-dot:nth-child(1) { animation-delay: 0.00s; }
+  .si-dot:nth-child(2) { animation-delay: 0.12s; }
+  .si-dot:nth-child(3) { animation-delay: 0.24s; }
+  .si-dot:nth-child(4) { animation-delay: 0.36s; }
+  .si-dot:nth-child(5) { animation-delay: 0.48s; }
+  .si-dot:nth-child(6) { animation-delay: 0.60s; }
+  .si-dot:nth-child(7) { animation-delay: 0.72s; }
+  @keyframes si-dot-blink {
+    0%, 80%, 100% { transform: scale(0.45); opacity: 0.35; }
+    40%           { transform: scale(1.15); opacity: 1; }
+  }
+
+  /* speaking: 流动波形，按等比拼接铺满（不形变） */
+  .si-wave {
+    width: 100%;
+    height: 14px;
+    overflow: hidden;
+    display: block;
+  }
+  .si-wave path {
+    fill: none;
+    stroke: rgba(80, 200, 255, 0.95);
+    stroke-width: 1.4;
+    stroke-linecap: round;
+    filter: drop-shadow(0 0 4px rgba(60, 170, 255, 0.7));
+    animation: si-wave-flow 1.1s linear infinite;
+  }
+  @keyframes si-wave-flow {
+    0%   { stroke-dasharray: 6 4; stroke-dashoffset: 0; }
+    100% { stroke-dasharray: 6 4; stroke-dashoffset: -20; }
+  }
   .fairy-bubble-text {
     font-family: 'Exo 2', sans-serif;
     font-size: 9px;
@@ -461,21 +538,57 @@ export default function FairyHUD({ state, text = '' }: Props) {
     })
   }
 
-  const stateLabel =
-    state === 'listening' ? '正在聆听' :
-    state === 'thinking'  ? '思考中'   :
-    state === 'speaking'  ? '回应中'   : ''
+  const StateIndicator = () => {
+    if (state === 'listening') {
+      const bars = Array.from({ length: 9 })
+      return (
+        <div className="fairy-state-indicator" aria-label="listening">
+          {bars.map((_, i) => <span key={i} className="si-bar" />)}
+        </div>
+      )
+    }
+    if (state === 'thinking') {
+      const dots = Array.from({ length: 7 })
+      return (
+        <div className="fairy-state-indicator" aria-label="thinking">
+          {dots.map((_, i) => <span key={i} className="si-dot" />)}
+        </div>
+      )
+    }
+    if (state === 'speaking') {
+      // 长路径 + slice: 等比缩放（不形变），按容器宽度裁切
+      const cycles = 60
+      const period = 7
+      const total = cycles * period
+      let d = `M 0 7`
+      for (let i = 0; i < cycles; i++) {
+        const x1 = i * period + period / 2
+        const x2 = (i + 1) * period
+        d += ` Q ${x1} ${i % 2 === 0 ? 1 : 13}, ${x2} 7`
+      }
+      return (
+        <div className="fairy-state-indicator" aria-label="speaking">
+          <svg
+            className="si-wave"
+            viewBox={`0 0 ${total} 14`}
+            preserveAspectRatio="xMinYMid slice"
+          >
+            <path d={d} />
+          </svg>
+        </div>
+      )
+    }
+    return null
+  }
 
-  const bubbleText = state === 'speaking' && text
-    ? text.slice(0, 80) + (text.length > 80 ? '…' : '')
-    : ''
+  const bubbleText = state === 'speaking' ? text : ''
 
   return (
     <div className="fairy-overlay">
       <style>{styles}</style>
       {state !== 'idle' && (
         <div className="fairy-bubble">
-          <div className="fairy-bubble-state">{stateLabel}</div>
+          <StateIndicator />
           {bubbleText && <div className="fairy-bubble-text">{bubbleText}</div>}
         </div>
       )}

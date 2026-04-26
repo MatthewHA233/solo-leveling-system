@@ -14,7 +14,7 @@ use std::sync::{
 use tauri::{AppHandle, Emitter};
 
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_RMENU;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_RCONTROL, VK_RMENU};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, SetWindowsHookExW,
     KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
@@ -25,34 +25,50 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
 
-// 事件通道发送端（只在钩子线程写，不 block）
-static TX: OnceLock<std::sync::Mutex<std::sync::mpsc::SyncSender<bool>>> = OnceLock::new();
+// 事件通道：HookEvent 表示 (是哪个键, 是按下还是抬起)
+#[derive(Clone, Copy)]
+enum HookEvent {
+    RAltDown,
+    RAltUp,
+    RCtrlDown,
+}
+static TX: OnceLock<std::sync::Mutex<std::sync::mpsc::SyncSender<HookEvent>>> = OnceLock::new();
 
 // 防重复：上一次状态
 static LAST_DOWN: AtomicBool = AtomicBool::new(false);
+static RCTRL_DOWN: AtomicBool = AtomicBool::new(false);
 
 // ── 钩子回调（必须极快返回）──
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
         let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
-        if kb.vkCode == VK_RMENU as u32 {
-            let is_down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-            let is_up   = matches!(wparam as u32, WM_KEYUP   | WM_SYSKEYUP);
+        let is_down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+        let is_up   = matches!(wparam as u32, WM_KEYUP   | WM_SYSKEYUP);
 
+        let send = |evt: HookEvent| {
+            if let Some(lock) = TX.get() {
+                if let Ok(tx) = lock.lock() {
+                    let _ = tx.try_send(evt);
+                }
+            }
+        };
+
+        if kb.vkCode == VK_RMENU as u32 {
             // 防抖：只在状态变化时发送
             if is_down && !LAST_DOWN.swap(true, Ordering::Relaxed) {
-                if let Some(lock) = TX.get() {
-                    if let Ok(tx) = lock.lock() {
-                        let _ = tx.try_send(true);
-                    }
-                }
+                send(HookEvent::RAltDown);
             } else if is_up && LAST_DOWN.swap(false, Ordering::Relaxed) {
-                if let Some(lock) = TX.get() {
-                    if let Ok(tx) = lock.lock() {
-                        let _ = tx.try_send(false);
-                    }
+                send(HookEvent::RAltUp);
+            }
+        } else if kb.vkCode == VK_RCONTROL as u32 {
+            if is_down && !RCTRL_DOWN.swap(true, Ordering::Relaxed) {
+                // 仅在 RAlt 已按下时上报，作为打断键
+                if LAST_DOWN.load(Ordering::Relaxed) {
+                    send(HookEvent::RCtrlDown);
                 }
+            } else if is_up {
+                RCTRL_DOWN.store(false, Ordering::Relaxed);
             }
         }
     }
@@ -66,8 +82,8 @@ pub fn install(app: AppHandle) {
         return;
     }
 
-    // 同步 channel：容量 4，钩子不阻塞
-    let (tx, rx) = std::sync::mpsc::sync_channel::<bool>(4);
+    // 同步 channel：容量 8，钩子不阻塞
+    let (tx, rx) = std::sync::mpsc::sync_channel::<HookEvent>(8);
     TX.set(std::sync::Mutex::new(tx)).ok();
 
     // 派发线程：把 channel 消息转成 Tauri 事件
@@ -75,13 +91,20 @@ pub fn install(app: AppHandle) {
     std::thread::Builder::new()
         .name("hotkey-emit".into())
         .spawn(move || {
-            while let Ok(is_down) = rx.recv() {
-                if is_down {
-                    log::debug!("[Hotkey] ralt-keydown");
-                    let _ = app_emit.emit("ralt-keydown", ());
-                } else {
-                    log::debug!("[Hotkey] ralt-keyup");
-                    let _ = app_emit.emit("ralt-keyup", ());
+            while let Ok(evt) = rx.recv() {
+                match evt {
+                    HookEvent::RAltDown => {
+                        log::debug!("[Hotkey] ralt-keydown");
+                        let _ = app_emit.emit("ralt-keydown", ());
+                    }
+                    HookEvent::RAltUp => {
+                        log::debug!("[Hotkey] ralt-keyup");
+                        let _ = app_emit.emit("ralt-keyup", ());
+                    }
+                    HookEvent::RCtrlDown => {
+                        log::debug!("[Hotkey] rctrl-cancel");
+                        let _ = app_emit.emit("voice-cancel", ());
+                    }
                 }
             }
         })

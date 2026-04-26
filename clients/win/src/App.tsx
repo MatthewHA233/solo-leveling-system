@@ -369,7 +369,9 @@ export default function App() {
           height: 280,
           alwaysOnTop: true,
           decorations: false,
-          resizable: false,
+          resizable: true,
+          maximizable: false,   // 禁用 Aero Snap 最大化（拖到屏幕边缘）
+          minimizable: false,
           skipTaskbar: true,
           transparent: true,
           shadow: false,
@@ -537,6 +539,8 @@ export default function App() {
   // ── Omni 全模态模式：监听 AI 回复事件 ──
   const omniAudioCtxRef = useRef<AudioContext | null>(null)
   const omniNextStartRef = useRef<number>(0)
+  const omniLastSourceRef = useRef<AudioBufferSourceNode | null>(null)
+  const omniLastSourceEndedRef = useRef<boolean>(true)
   const omniTextAccRef = useRef<string>('')
   const omniAiPcmChunksRef = useRef<Uint8Array[]>([])
   const omniAgentMsgIdRef = useRef<string | null>(null)   // 当前 AI 回复气泡的消息 ID
@@ -565,6 +569,15 @@ export default function App() {
       const startAt = Math.max(omniNextStartRef.current, ctx.currentTime + 0.005)
       src.start(startAt)
       omniNextStartRef.current = startAt + buf.duration
+      // 用真实 onended 事件判断播放完成（绕开 sample rate / 调度误差）
+      omniLastSourceRef.current = src
+      omniLastSourceEndedRef.current = false
+      src.onended = () => {
+        if (omniLastSourceRef.current === src) {
+          omniLastSourceEndedRef.current = true
+          console.log('[FairyDbg] last src onended', { ctxNow: ctx.currentTime.toFixed(3), queueEnd: omniNextStartRef.current.toFixed(3) })
+        }
+      }
     }
 
     // StrictMode-safe 监听器注册：同步标记 disposed + 收集 unlisten，
@@ -621,6 +634,15 @@ export default function App() {
       const pcm = Uint8Array.from(atob(payload.data), (c) => c.charCodeAt(0))
       omniAiPcmChunksRef.current.push(pcm)
       playOmniPcm(payload.data)
+      const ctx = omniAudioCtxRef.current
+      if (ctx) {
+        console.log('[FairyDbg] audio_chunk', {
+          bytes: pcm.length,
+          ctxNow: ctx.currentTime.toFixed(3),
+          queueEnd: omniNextStartRef.current.toFixed(3),
+          remain: (omniNextStartRef.current - ctx.currentTime).toFixed(3),
+        })
+      }
     })
 
     // Omni 原生工具调用：WS 端触发 → 前端执行 → omni_tool_result 回传
@@ -683,7 +705,29 @@ export default function App() {
               }])
             }
             setIsProcessing(false)
-            emitFairy('idle')
+            const ctxAtDone = omniAudioCtxRef.current
+            console.log('[FairyDbg] audio_done', {
+              ctxNow: ctxAtDone?.currentTime.toFixed(3),
+              queueEnd: omniNextStartRef.current.toFixed(3),
+              lastEnded: omniLastSourceEndedRef.current,
+            })
+            // 用真实 onended 事件等候：如果 audio_done 后还有迟到 chunk，会更新 lastSource，此处也能等到
+            let pollCount = 0
+            const waitAudioEnded = () => {
+              pollCount++
+              if (omniLastSourceEndedRef.current) {
+                const ctx = omniAudioCtxRef.current
+                console.log('[FairyDbg] idle (onended)', { polls: pollCount, ctxNow: ctx?.currentTime.toFixed(3) })
+                emitFairy('idle')
+              } else {
+                if (pollCount === 1 || pollCount % 10 === 0) {
+                  const ctx = omniAudioCtxRef.current
+                  console.log('[FairyDbg] waiting onended', { n: pollCount, ctxNow: ctx?.currentTime.toFixed(3), queueEnd: omniNextStartRef.current.toFixed(3) })
+                }
+                window.setTimeout(waitAudioEnded, 100)
+              }
+            }
+            waitAudioEnded()
             // 对话完成后刷新 system prompt，确保下一次 session 的 instructions 包含本轮对话
             refreshSystemPromptRef.current().catch(() => {})
 
@@ -814,20 +858,37 @@ export default function App() {
       }
     }
 
+    // 打断键：RAlt 按住时按 RCtrl → 取消录音/请求
+    const onCancel = () => {
+      if (!pressingRef.current) return
+      console.log('[RAlt] cancel via RCtrl')
+      pressingRef.current = false
+      const svc = voiceServiceRef.current
+      if (svc) svc.cancel()
+      try { invoke('omni_stop') } catch {}
+      emitFairy('idle')
+    }
+
     // DOM 监听：Solo 窗口聚焦时 WebView2 拦截了 Alt 的系统键路由，
     // Rust WH_KEYBOARD_LL 事件无法送达，用 DOM keydown/keyup 补位
-    const onDomDown = (e: KeyboardEvent) => { if (e.code === 'AltRight') { e.preventDefault(); onDown() } }
+    const onDomDown = (e: KeyboardEvent) => {
+      if (e.code === 'AltRight') { e.preventDefault(); onDown() }
+      else if (e.code === 'ControlRight' && pressingRef.current) { e.preventDefault(); onCancel() }
+    }
     const onDomUp   = (e: KeyboardEvent) => { if (e.code === 'AltRight') { e.preventDefault(); onUp()   } }
     window.addEventListener('keydown', onDomDown)
     window.addEventListener('keyup',   onDomUp)
 
+    let unlistenCancel: (() => void) | null = null
     import('@tauri-apps/api/event').then(({ listen }) => {
       Promise.all([
         listen('ralt-keydown', onDown),
         listen('ralt-keyup',   onUp),
-      ]).then(([u1, u2]) => {
+        listen('voice-cancel', onCancel),
+      ]).then(([u1, u2, u3]) => {
         unlistenDown = u1
         unlistenUp   = u2
+        unlistenCancel = u3
       })
     })
 
@@ -836,6 +897,7 @@ export default function App() {
       window.removeEventListener('keyup',   onDomUp)
       unlistenDown?.()
       unlistenUp?.()
+      unlistenCancel?.()
     }
   }, [getVoiceService, emitFairy])
 
