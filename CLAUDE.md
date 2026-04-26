@@ -53,6 +53,22 @@ cd clients/win/src-tauri && cargo xwin build
 npx tauri build --runner cargo-xwin
 ```
 
+## 参考文档
+
+### 人升（LifeUp）Wiki
+
+源仓库为 git submodule，转换产物供 Obsidian 阅读。
+
+**更新 Wiki 并重新生成笔记：**
+```bash
+git submodule update --remote "docs/98借鉴对象/参考软件设计——人升/官方文档-zh-cn"
+python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
+```
+
+- submodule 路径：`docs/98借鉴对象/参考软件设计——人升/官方文档-zh-cn`
+- 转换脚本：`docs/98借鉴对象/参考软件设计——人升/convert_wiki.py`
+- 输出目录：`docs/98借鉴对象/参考软件设计——人升/人升官方文档/`（已加入 .gitignore）
+
 ## 架构概览
 
 - **菜单栏应用**：纯 `MenuBarExtra`，无 Dock 图标（`NSApp.setActivationPolicy(.accessory)`）
