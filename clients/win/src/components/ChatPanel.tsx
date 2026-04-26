@@ -278,31 +278,13 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
         position: 'relative',
         background: `linear-gradient(180deg, transparent 0%, ${theme.electricBlue}06 100%)`,
       }}>
-        {/* 输入框 mono 标签 */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          marginBottom: 5,
-          fontSize: 8.5,
-          fontFamily: theme.fontMono,
-          fontWeight: 700,
-          letterSpacing: 2,
-          color: theme.electricBlue,
-          opacity: 0.55,
-        }}>
-          <span style={{ textShadow: `0 0 4px ${theme.electricBlue}99` }}>&gt; INPUT</span>
-          <span style={{
-            flex: 1, height: 1,
-            background: `linear-gradient(90deg, ${theme.electricBlue}44 0%, transparent 100%)`,
-          }} />
-          <span style={{ opacity: 0.7 }}>ENTER ⏎</span>
-        </div>
         <div className="chat-input-wrap" style={{
           position: 'relative',
           display: 'flex', alignItems: 'flex-end', gap: 8,
           background: 'rgba(0,12,28,0.6)',
           border: `1px solid ${theme.hudFrameSoft}`,
           clipPath: clip4,
-          padding: '8px 12px',
+          padding: '10px 12px',
           transition: 'border-color 0.2s, box-shadow 0.2s',
           boxShadow: `inset 0 0 12px rgba(0,229,255,0.04)`,
         }}>
@@ -313,13 +295,13 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="输入消息..."
-            rows={1}
+            rows={3}
             style={{
               flex: 1, background: 'transparent', border: 'none',
               color: theme.textPrimary,
               fontFamily: theme.fontBody,
               fontSize: 13, outline: 'none', resize: 'none',
-              lineHeight: 1.5, maxHeight: 100, overflowY: 'auto',
+              lineHeight: 1.5, minHeight: 60, maxHeight: 160, overflowY: 'auto',
             }}
           />
           <button

@@ -57,6 +57,7 @@ import DayNightChart from './components/DayNightChart'
 import ChatPanel from './components/ChatPanel'
 import SessionPicker from './components/SessionPicker'
 import SettingsPanel from './components/SettingsPanel'
+import DatePickerPopover from './components/DatePickerPopover'
 import SpanDetailPanel from './components/SpanDetailPanel'
 import AppHoverPanel from './components/AppHoverPanel'
 import BiliVideoPanel from './components/BiliVideoPanel'
@@ -211,6 +212,8 @@ async function mergeOverlappingBili(date: Date) {
 export default function App() {
   // ── Data ──
   const [selectedDate, setSelectedDate] = useState(new Date())
+  const [datePickerOpen, setDatePickerOpen] = useState(false)
+  const dateAnchorRef = useRef<HTMLButtonElement | null>(null)
   const [activities, setActivities] = useState<ChronosActivity[]>([])
   const [mtSpans, setMtSpans] = useState<MtSpan[]>([])
   const [biliSpans, setBiliSpans] = useState<BiliSpan[]>([])
@@ -1473,13 +1476,29 @@ export default function App() {
           <button onClick={prevDay} style={navBtn} title="前一天">
             <ChevronLeft size={12} />
           </button>
-          <DataRibbon
-            label="DATE"
-            value={selectedDate.toLocaleDateString('zh-CN', {
-              month: '2-digit', day: '2-digit', weekday: 'short',
-            })}
-            style={{ minWidth: 88, alignItems: 'center', textAlign: 'center' }}
-          />
+          <button
+            ref={dateAnchorRef}
+            onClick={() => setDatePickerOpen((v) => !v)}
+            title="选择日期"
+            style={{
+              background: datePickerOpen ? `${theme.electricBlue}10` : 'transparent',
+              border: `1px solid ${datePickerOpen ? `${theme.electricBlue}55` : 'transparent'}`,
+              borderRadius: 4,
+              padding: '2px 6px',
+              cursor: 'pointer',
+              transition: 'all 0.15s ease',
+            }}
+            onMouseEnter={(e) => { if (!datePickerOpen) e.currentTarget.style.background = theme.glassHover }}
+            onMouseLeave={(e) => { if (!datePickerOpen) e.currentTarget.style.background = 'transparent' }}
+          >
+            <DataRibbon
+              label="DATE"
+              value={selectedDate.toLocaleDateString('zh-CN', {
+                month: '2-digit', day: '2-digit', weekday: 'short',
+              })}
+              style={{ minWidth: 88, alignItems: 'center', textAlign: 'center' }}
+            />
+          </button>
           <button onClick={nextDay} style={navBtn} title="后一天">
             <ChevronRight size={12} />
           </button>
@@ -1721,6 +1740,15 @@ export default function App() {
       )}
 
       <CloseConfirmModal />
+
+      {datePickerOpen && (
+        <DatePickerPopover
+          anchorRef={dateAnchorRef}
+          value={selectedDate}
+          onChange={(d) => setSelectedDate(d)}
+          onClose={() => setDatePickerOpen(false)}
+        />
+      )}
     </div>
   )
 }

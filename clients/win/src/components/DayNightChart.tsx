@@ -722,19 +722,18 @@ function drawNowTick(
   lineGrad.addColorStop(1,    'rgba(0,229,255,0)')
   ctx.save()
   ctx.shadowColor = cyan
-  ctx.shadowBlur = 6
+  ctx.shadowBlur = 2
   ctx.beginPath()
-  ctx.moveTo(cx - 6, y); ctx.lineTo(cx + p.cellW + 6, y)
+  // 右端在列末收尾，避免辉光蔓延到右侧 chip
+  ctx.moveTo(cx - 6, y); ctx.lineTo(cx + p.cellW, y)
   ctx.strokeStyle = lineGrad
-  ctx.lineWidth = 1.5
+  ctx.lineWidth = 1.25
   ctx.stroke()
   ctx.restore()
 
   // ── 中段刻度（线上每 ~1/4 处一个小方点） ──
   ctx.save()
-  ctx.fillStyle = hexToRgba(cyan, 0.85)
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 4
+  ctx.fillStyle = hexToRgba(cyan, 0.7)
   for (const r of [0.25, 0.5, 0.75]) {
     const tx = cx + p.cellW * r
     ctx.fillRect(tx - 0.5, y - 2, 1, 4)
@@ -744,9 +743,7 @@ function drawNowTick(
   // ── 两端 L 角端盖 ──
   ctx.save()
   ctx.strokeStyle = cyan
-  ctx.lineWidth = 1.2
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 5
+  ctx.lineWidth = 1
   const lArm = 5
   ctx.beginPath()
   // 左端
@@ -773,72 +770,59 @@ function drawNowTick(
   const chipX = cx + p.cellW + 10
   const chipY = y - chipH / 2
 
-  // chip → 列末的指向短连线（不覆盖右端 L 角端盖）
+  // chip → 列末的指向短连线（无辉光）
   ctx.save()
-  ctx.strokeStyle = cyan
+  ctx.strokeStyle = hexToRgba(cyan, 0.9)
   ctx.lineWidth = 1
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 4
   ctx.beginPath()
   ctx.moveTo(cx + p.cellW + 3, y); ctx.lineTo(chipX, y)
   ctx.stroke()
   ctx.restore()
 
-  // chip 主体（斜切 + 顶/底保留空间，让扫描线视觉上"穿过"chip 中央）
-  chamferPath(ctx, chipX, chipY, chipW, chipH, 3)
+  // chip 主体：纯净斜切框，无辉光
   ctx.save()
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 10 * pulse
-  // 背景半透明，让扫描线能从 chip 中间隐约"贯穿"
-  ctx.fillStyle = 'rgba(2,14,28,0.78)'
+  chamferPath(ctx, chipX, chipY, chipW, chipH, 3)
+  ctx.fillStyle = 'rgba(2,14,28,0.92)'
   ctx.fill()
-  ctx.strokeStyle = cyan
+  ctx.strokeStyle = hexToRgba(cyan, 0.85)
   ctx.lineWidth = 1
   ctx.stroke()
   ctx.restore()
 
-  // 扫描线"穿过"chip：在 chip 内沿 y 再画一条细亮线（贴着文本基线），强化"文本在线上"的观感
+  // chip 顶/底 accent 细线（HUD 端口感，替代外部辉光）
   ctx.save()
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 5
-  const innerGrad = ctx.createLinearGradient(chipX, y, chipX + chipW, y)
-  innerGrad.addColorStop(0, hexToRgba(cyan, 0.0))
-  innerGrad.addColorStop(0.15, hexToRgba(cyan, 0.55))
-  innerGrad.addColorStop(0.85, hexToRgba(cyan, 0.55))
-  innerGrad.addColorStop(1, hexToRgba(cyan, 0.0))
-  ctx.strokeStyle = innerGrad
-  ctx.lineWidth = 0.8
+  ctx.strokeStyle = hexToRgba(cyan, 0.35)
+  ctx.lineWidth = 0.75
   ctx.beginPath()
-  ctx.moveTo(chipX + 1, y); ctx.lineTo(chipX + chipW - 1, y)
+  ctx.moveTo(chipX + 4, chipY - 1); ctx.lineTo(chipX + chipW - 4, chipY - 1)
+  ctx.moveTo(chipX + 4, chipY + chipH + 1); ctx.lineTo(chipX + chipW - 4, chipY + chipH + 1)
   ctx.stroke()
   ctx.restore()
 
-  // 脉冲小圆点（左端，落在 y 上）
+  // 脉冲小圆点（左端，落在 y 上）— 只在圆点上保留细微脉冲
   ctx.save()
   ctx.fillStyle = cyan
   ctx.shadowColor = cyan
-  ctx.shadowBlur = 6 * pulse
+  ctx.shadowBlur = 3 * pulse
   const dotCx = chipX + padX + dotSize / 2
   ctx.beginPath()
-  ctx.arc(dotCx, y, dotSize / 2 * (0.7 + 0.3 * pulse), 0, Math.PI * 2)
+  ctx.arc(dotCx, y, dotSize / 2 * (0.75 + 0.25 * pulse), 0, Math.PI * 2)
   ctx.fill()
   ctx.restore()
 
-  // NOW 小标签（文字在线上）
+  // NOW 小标签
   ctx.save()
   ctx.font = `700 ${p.fs(7)}px 'JetBrains Mono', 'Courier New', monospace`
-  ctx.fillStyle = hexToRgba(cyan, 0.78)
+  ctx.fillStyle = hexToRgba(cyan, 0.75)
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
   ctx.fillText('NOW', chipX + padX + dotSize + gap, y + 0.5)
   ctx.restore()
 
-  // 时间主文本（贴在线上，白色+青光）
+  // 时间主文本（白色，无外发光）
   ctx.save()
   ctx.font = `700 ${p.fs(11)}px 'JetBrains Mono', 'Courier New', monospace`
   ctx.fillStyle = '#FFFFFF'
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 6
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
   ctx.fillText(timeStr, chipX + padX + dotSize + gap + nowLabelW + 6, y + 0.5)
