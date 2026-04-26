@@ -36,3 +36,6 @@ clients/win/public/mediapipe/
 
 # 临时测试脚本
 clients/win/test-asr.mjs
+
+# 人升 Wiki 转换产物（由 convert_wiki.py 生成）
+docs/98借鉴对象/参考软件设计——人升/人升官方文档/
