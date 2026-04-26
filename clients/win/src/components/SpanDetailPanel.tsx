@@ -37,7 +37,7 @@ function fmtDuration(start: string, end: string): string {
   if (diff <= 0) return '—'
   const h = Math.floor(diff / 60)
   const m = diff % 60
-  return h > 0 ? `${h}h ${m}m` : `${m}m`
+  return h > 0 ? `${h}小时${m}分钟` : `${m}分钟`
 }
 
 function hexToRgba(hex: string, alpha: number) {
@@ -46,6 +46,21 @@ function hexToRgba(hex: string, alpha: number) {
   const g = parseInt(hex.slice(3, 5), 16)
   const b = parseInt(hex.slice(5, 7), 16)
   return `rgba(${r},${g},${b},${alpha})`
+}
+
+/** 把 DB 里偏暗的标签色提亮到最小亮度 minLum（深色面板上才看得清） */
+function brightenForDark(hex: string, minLum = 175): string {
+  if (!hex.startsWith('#') || hex.length < 7) return hex
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  if (lum >= minLum) return hex
+  const t = (minLum - lum) / (255 - lum)
+  const nr = Math.round(r + (255 - r) * t)
+  const ng = Math.round(g + (255 - g) * t)
+  const nb = Math.round(b + (255 - b) * t)
+  return `#${nr.toString(16).padStart(2, '0')}${ng.toString(16).padStart(2, '0')}${nb.toString(16).padStart(2, '0')}`
 }
 
 function parseTagTitle(title: string): { parts: string[]; markers: string[] } {
@@ -62,7 +77,8 @@ const MARKER_LABELS: Record<string, string> = {
 
 export default function SpanDetailPanel({ span }: Props) {
   const { parts: tagParts, markers } = parseTagTitle(span.title)
-  const color = span.color ?? '#4488ff'
+  // DB 中的标签色经常偏暗（如深红/深蓝），在深色面板上不可读 → 统一提亮
+  const color = brightenForDark(span.color ?? '#4488ff', 185)
   const leafIdx = tagParts.length - 1
 
   return (
@@ -72,7 +88,7 @@ export default function SpanDetailPanel({ span }: Props) {
       fontFamily: theme.fontBody,
     }}>
       {/* Section Header */}
-      <SectionHeader label="TAG · DETAIL" color={color} />
+      <SectionHeader label="标签 · 详情" color={color} />
 
       {/* 标签路径 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 10 }}>
@@ -94,11 +110,11 @@ export default function SpanDetailPanel({ span }: Props) {
                 position: 'relative',
               }}>
                 <span style={{
-                  fontSize: 8.5, fontFamily: theme.fontMono, fontWeight: 700,
-                  letterSpacing: 1.4,
-                  color: hexToRgba(color, 0.7),
+                  fontSize: 11, fontFamily: theme.fontBody, fontWeight: 700,
+                  letterSpacing: 1.5,
+                  color: hexToRgba(color, 0.85),
                 }}>
-                  ▸ FOCUS
+                  ▸ 当前
                 </span>
                 <span style={{
                   flex: 1,
@@ -168,26 +184,19 @@ export default function SpanDetailPanel({ span }: Props) {
         </div>
       )}
 
-      {/* 数据栅格 */}
+      {/* 时间轴：起点 ── 时长 ── 终点 */}
       <div style={{
-        display: 'flex', flexDirection: 'column', gap: 2,
-        padding: '8px 10px',
+        padding: '10px 14px',
         background: 'rgba(0,12,28,0.4)',
         border: `1px solid ${theme.hudFrameSoft}`,
         clipPath: clip4, WebkitClipPath: clip4,
       }}>
-        <DataRow label="START" value={fmtTime(span.start_at)} color={theme.textPrimary} />
-        <DataRow label="END" value={fmtTime(span.end_at)} color={theme.textPrimary} />
-        <Divider />
-        <DataRow
-          label="DURATION"
-          value={fmtDuration(span.start_at, span.end_at)}
+        <Timeline
+          start={fmtTime(span.start_at)}
+          end={fmtTime(span.end_at)}
+          duration={fmtDuration(span.start_at, span.end_at)}
           color={color}
-          emphasize
         />
-        {span.group_name && (
-          <DataRow label="GROUP" value={span.group_name} color={theme.textSecondary} />
-        )}
       </div>
     </div>
   )
@@ -198,8 +207,8 @@ function SectionHeader({ label, color }: { label: string; color: string }) {
     <div style={{
       display: 'flex', alignItems: 'center', gap: 8,
       marginBottom: 10,
-      fontSize: 8.5, fontFamily: theme.fontMono, fontWeight: 700,
-      letterSpacing: 2.5,
+      fontSize: 12, fontFamily: theme.fontBody, fontWeight: 700,
+      letterSpacing: 2,
       color,
     }}>
       <span style={{ textShadow: `0 0 5px ${hexToRgba(color, 0.7)}` }}>
@@ -213,44 +222,78 @@ function SectionHeader({ label, color }: { label: string; color: string }) {
   )
 }
 
-function DataRow({
-  label, value, color, emphasize,
+/**
+ * 时间轴行：
+ *   ◉ 23:52 ──────  6分钟  ────── 23:58 ◉
+ * 时长居中浮在线段上；两端时间用色点标记
+ */
+function Timeline({
+  start, end, duration, color,
 }: {
-  label: string
-  value: string
+  start: string
+  end: string
+  duration: string
   color: string
-  emphasize?: boolean
 }) {
   return (
     <div style={{
-      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-      padding: '2px 0',
+      display: 'flex', alignItems: 'center', gap: 8,
+      fontFamily: theme.fontMono,
     }}>
+      <Endpoint time={start} color={color} />
+      <Track duration={duration} color={color} />
+      <Endpoint time={end} color={color} />
+    </div>
+  )
+}
+
+function Endpoint({ time, color }: { time: string; color: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
       <span style={{
-        fontSize: 8.5, fontFamily: theme.fontMono, fontWeight: 600,
-        color: theme.textMuted, letterSpacing: 1.4,
-      }}>
-        {label}
-      </span>
+        width: 7, height: 7, borderRadius: '50%',
+        background: color,
+        boxShadow: `0 0 6px ${hexToRgba(color, 0.8)}`,
+      }} />
       <span style={{
-        fontSize: emphasize ? 13 : 11,
-        fontFamily: theme.fontMono,
-        fontWeight: emphasize ? 700 : 600,
-        color,
-        letterSpacing: emphasize ? 0.5 : 0.3,
-        textShadow: emphasize ? `0 0 6px ${hexToRgba(color, 0.55)}` : undefined,
+        fontSize: 13, fontWeight: 700,
+        color: theme.textPrimary, letterSpacing: 0.5,
       }}>
-        {value}
+        {time}
       </span>
     </div>
   )
 }
 
-function Divider() {
+function Track({ duration, color }: { duration: string; color: string }) {
   return (
     <div style={{
-      height: 1, margin: '3px 0',
-      background: `linear-gradient(90deg, transparent 0%, ${theme.hudFrameSoft} 30%, ${theme.hudFrameSoft} 70%, transparent 100%)`,
-    }} />
+      flex: 1, position: 'relative', height: 22,
+      display: 'flex', alignItems: 'center',
+    }}>
+      {/* 渐变线段 */}
+      <div style={{
+        position: 'absolute', left: 0, right: 0, top: '50%',
+        height: 2, transform: 'translateY(-50%)',
+        background: `linear-gradient(90deg, ${hexToRgba(color, 0.7)} 0%, ${hexToRgba(color, 0.45)} 50%, ${hexToRgba(color, 0.7)} 100%)`,
+        boxShadow: `0 0 5px ${hexToRgba(color, 0.45)}`,
+      }} />
+      {/* 时长标签（浮在线段中央） */}
+      <span style={{
+        position: 'relative', margin: '0 auto',
+        padding: '2px 9px',
+        fontSize: 12, fontWeight: 700,
+        color,
+        background: 'rgba(0,12,28,0.95)',
+        border: `1px solid ${hexToRgba(color, 0.55)}`,
+        borderRadius: 3,
+        letterSpacing: 0.5,
+        textShadow: `0 0 4px ${hexToRgba(color, 0.5)}`,
+        whiteSpace: 'nowrap',
+      }}>
+        {duration}
+      </span>
+    </div>
   )
 }
+

@@ -47,14 +47,31 @@ function hexToRgba(hex: string, alpha: number) {
   return `rgba(${r},${g},${b},${alpha})`
 }
 
+/** 把 DB 里偏暗的标签色提亮到最小亮度（深色面板上才看得清） */
+function brightenForDark(hex: string, minLum = 185): string {
+  if (!hex.startsWith('#') || hex.length < 7) return hex
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  if (lum >= minLum) return hex
+  const t = (minLum - lum) / (255 - lum)
+  const nr = Math.round(r + (255 - r) * t)
+  const ng = Math.round(g + (255 - g) * t)
+  const nb = Math.round(b + (255 - b) * t)
+  return `#${nr.toString(16).padStart(2, '0')}${ng.toString(16).padStart(2, '0')}${nb.toString(16).padStart(2, '0')}`
+}
+
 export default function AppHoverPanel({ span, date }: Props) {
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null)
   const [imgError, setImgError] = useState(false)
   const [iconUrl, setIconUrl] = useState<string | null>(null)
 
-  const color = span.color ?? '#4488ff'
+  const color = brightenForDark(span.color ?? '#4488ff', 185)
   const mins = durationMin(span)
-  const durStr = mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h${mins % 60 ? ` ${mins % 60}m` : ''}`
+  const durStr = mins < 60
+    ? `${mins}分钟`
+    : `${Math.floor(mins / 60)}小时${mins % 60 ? `${mins % 60}分钟` : ''}`
   const displayName = span.group_name ?? span.title
   const hasWindowTitle = !!(span.group_name && span.title !== span.group_name)
 
@@ -93,7 +110,7 @@ export default function AppHoverPanel({ span, date }: Props) {
       fontFamily: theme.fontBody,
     }}>
       {/* Section Header */}
-      <SectionHeader label="APP · DETAIL" color={color} />
+      <SectionHeader label="应用 · 详情" color={color} />
 
       {/* 程序名 + 图标 + 时长 chip */}
       <div style={{
@@ -141,9 +158,9 @@ export default function AppHoverPanel({ span, date }: Props) {
         {/* 时长 chip */}
         <span style={{
           flexShrink: 0,
-          fontSize: 10, fontWeight: 700,
+          fontSize: 11, fontWeight: 700,
           fontFamily: theme.fontMono,
-          letterSpacing: 0.8,
+          letterSpacing: 0.6,
           color,
           padding: '2px 8px',
           background: hexToRgba(color, 0.12),
@@ -162,17 +179,17 @@ export default function AppHoverPanel({ span, date }: Props) {
         padding: '0 2px',
       }}>
         <span style={{
-          fontSize: 8.5, fontFamily: theme.fontMono, fontWeight: 600,
-          color: theme.textMuted, letterSpacing: 1.4,
+          fontSize: 11, fontFamily: theme.fontBody, fontWeight: 600,
+          color: theme.textSecondary, letterSpacing: 1,
         }}>
-          TIME
+          时段
         </span>
         <span style={{
-          fontSize: 10.5, fontFamily: theme.fontMono, fontWeight: 600,
-          color: theme.textSecondary, letterSpacing: 0.3,
+          fontSize: 12, fontFamily: theme.fontMono, fontWeight: 600,
+          color: theme.textPrimary, letterSpacing: 0.3,
         }}>
           {fmt(span.start_at)}
-          <span style={{ color: hexToRgba(color, 0.6), margin: '0 4px' }}>→</span>
+          <span style={{ color: hexToRgba(color, 0.7), margin: '0 4px' }}>→</span>
           {fmt(span.end_at)}
         </span>
       </div>
@@ -181,24 +198,24 @@ export default function AppHoverPanel({ span, date }: Props) {
       {hasWindowTitle && (
         <div style={{
           marginBottom: 10,
-          padding: '5px 8px',
+          padding: '6px 9px',
           background: 'rgba(0,12,28,0.4)',
           border: `1px solid ${theme.hudFrameSoft}`,
           clipPath: clip3, WebkitClipPath: clip3,
-          fontSize: 10,
+          fontSize: 11,
           fontFamily: theme.fontMono,
           color: theme.textSecondary,
           letterSpacing: 0.2,
           lineHeight: 1.4,
           wordBreak: 'break-all',
-          opacity: 0.85,
+          opacity: 0.95,
         }}>
           <span style={{
-            fontSize: 8, fontWeight: 700,
-            color: theme.textMuted, letterSpacing: 1.4,
-            marginRight: 5,
+            fontSize: 11, fontFamily: theme.fontBody, fontWeight: 700,
+            color: theme.textSecondary, letterSpacing: 1,
+            marginRight: 6,
           }}>
-            WIN
+            窗口
           </span>
           {span.title.length > 80 ? span.title.slice(0, 80) + '…' : span.title}
         </div>
@@ -216,7 +233,7 @@ export default function AppHoverPanel({ span, date }: Props) {
           letterSpacing: 1.5,
           opacity: 0.6,
         }}>
-          ─ NO SCREENSHOT ─
+          ─ 暂无截图 ─
         </div>
       )}
     </div>
@@ -228,8 +245,8 @@ function SectionHeader({ label, color }: { label: string; color: string }) {
     <div style={{
       display: 'flex', alignItems: 'center', gap: 8,
       marginBottom: 10,
-      fontSize: 8.5, fontFamily: theme.fontMono, fontWeight: 700,
-      letterSpacing: 2.5,
+      fontSize: 12, fontFamily: theme.fontBody, fontWeight: 700,
+      letterSpacing: 2,
       color,
     }}>
       <span style={{ textShadow: `0 0 5px ${hexToRgba(color, 0.7)}` }}>
