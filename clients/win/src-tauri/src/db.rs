@@ -137,6 +137,7 @@ pub struct BiliSpan {
     pub view_at: i64,     // 观看时间戳（unix 秒）
     pub event_id: Option<String>, // 已入档时关联的事件 ID
     pub downloaded: bool, // bili_video_assets 中存在 download_status='done' 即为 true
+    pub file_size_bytes: Option<i64>, // 已下载时 = 资产合并后文件大小（多份 done 取最大）；未下载 = null
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -810,10 +811,8 @@ impl Database {
                 datetime(s.start_unix, 'unixepoch', 'localtime') AS start_dt,
                 datetime(s.view_at,    'unixepoch', 'localtime') AS end_dt,
                 s.view_at, s.event_id,
-                CASE WHEN EXISTS (
-                    SELECT 1 FROM bili_video_assets a
-                    WHERE a.bvid = s.bvid AND a.download_status = 'done'
-                ) THEN 1 ELSE 0 END AS downloaded
+                (SELECT MAX(a.file_size) FROM bili_video_assets a
+                  WHERE a.bvid = s.bvid AND a.download_status = 'done') AS file_size_bytes
             FROM spans s
             WHERE date(s.view_at,    'unixepoch', 'localtime') = ?1
                OR date(s.start_unix, 'unixepoch', 'localtime') = ?1
@@ -821,7 +820,7 @@ impl Database {
         "#;
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(params![date], |row| {
-            let downloaded_int: i64 = row.get(11)?;
+            let file_size_bytes: Option<i64> = row.get(11)?;
             Ok(BiliSpan {
                 bvid:        row.get(0)?,
                 oid:         row.get(1)?,
@@ -834,7 +833,8 @@ impl Database {
                 end_at:      row.get(8)?,
                 view_at:     row.get(9)?,
                 event_id:    row.get(10)?,
-                downloaded:  downloaded_int != 0,
+                downloaded:  file_size_bytes.is_some(),
+                file_size_bytes,
             })
         }).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())

@@ -171,6 +171,7 @@ export interface BiliSpan {
   view_at: number     // unix 秒
   event_id: string | null
   downloaded: boolean // bili_video_assets 中存在 done 状态
+  file_size_bytes: number | null // 已下载时 = 文件字节数；未下载 = null
 }
 
 // 日历角标用：某月每日的观看数 / 已下载数

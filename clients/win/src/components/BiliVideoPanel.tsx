@@ -122,6 +122,7 @@ export default function BiliVideoPanel({ span }: Props) {
   const [dl, setDl] = useState<DlProgress>({
     bvid: span.bvid, stage: 'idle', percent: 0, message: null, output_path: null, queue_position: null,
   })
+  const [doneFileSize, setDoneFileSize] = useState<number | null>(null)
 
   // 每个按钮独立的画质选择（默认取全局配置；切换 span 时重新读取）
   const defaultQuality = useMemo<QualityKey>(
@@ -150,6 +151,7 @@ export default function BiliVideoPanel({ span }: Props) {
   // 切换 span 时：重置 idle + 查 DB 恢复已下载状态 + 探测可用清晰度
   useEffect(() => {
     setDl({ bvid: span.bvid, stage: 'idle', percent: 0, message: null, output_path: null, queue_position: null })
+    setDoneFileSize(null)
     setAvailableQns(null)
     let cancelled = false
 
@@ -158,6 +160,7 @@ export default function BiliVideoPanel({ span }: Props) {
         if (cancelled) return
         const done = assets.find((a) => a.download_status === 'done' && a.download_path)
         if (done && done.download_path) {
+          setDoneFileSize(done.file_size)
           setDl((prev) => {
             if (prev.stage !== 'idle') return prev
             return {
@@ -367,6 +370,7 @@ export default function BiliVideoPanel({ span }: Props) {
           onQualityChange={setQuality}
           onDownload={handleDownload}
           onOpenFile={() => dl.output_path && openInExplorer(dl.output_path)}
+          doneFileSize={doneFileSize}
         />
       </div>
     </div>
@@ -375,8 +379,17 @@ export default function BiliVideoPanel({ span }: Props) {
 
 // ── 下载控件 ──
 
+function fmtFileSize(bytes: number | null): string {
+  if (!bytes || bytes <= 0) return ''
+  const KB = 1024, MB = KB * 1024, GB = MB * 1024
+  if (bytes >= GB) return `${(bytes / GB).toFixed(bytes >= 10 * GB ? 0 : 1)}GB`
+  if (bytes >= MB) return `${Math.round(bytes / MB)}MB`
+  if (bytes >= KB) return `${Math.round(bytes / KB)}KB`
+  return `${bytes}B`
+}
+
 function DownloadControl({
-  dl, isWorking, biliColor, quality, qualityOptions, onQualityChange, onDownload, onOpenFile,
+  dl, isWorking, biliColor, quality, qualityOptions, onQualityChange, onDownload, onOpenFile, doneFileSize,
 }: {
   dl: DlProgress
   isWorking: boolean
@@ -386,6 +399,7 @@ function DownloadControl({
   onQualityChange: (q: QualityKey) => void
   onDownload: () => void
   onOpenFile: () => void
+  doneFileSize: number | null
 }) {
   // 进度态
   if (isWorking) {
@@ -452,7 +466,7 @@ function DownloadControl({
             color: theme.expGreen, display: 'flex',
             alignItems: 'center', gap: 3,
           }}>
-            <Check size={11} /> 已保存
+            <Check size={11} /> 已保存{doneFileSize ? ` · ${fmtFileSize(doneFileSize)}` : ''}
           </span>
         </div>
       </div>
