@@ -11,7 +11,6 @@ import { theme } from '../theme'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import { MagneticButton } from './NeonUI'
 import Tooltip from './Tooltip'
-import HudSelect from './HudSelect'
 
 interface Props {
   readonly config: AgentConfig
@@ -372,109 +371,11 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
 
         {/* ── B站 ── */}
         <Section title="B站历史" icon={Tv2}>
-          <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 10 }}>
-            点击顶栏 B站图标打开监控面板，在面板内登录即可自动抓取历史记录。
+          <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 6, lineHeight: 1.6 }}>
+            B站相关设置（自动建档 / 下载路径 / 画质 / 轮询间隔）已迁移至历史记录面板。
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <label style={labelStyle}>轮询间隔（秒）</label>
-            <input
-              type="number"
-              min={30}
-              max={3600}
-              value={draft.biliIntervalSeconds}
-              onChange={(e) => {
-                setDraft((prev) => ({ ...prev, biliIntervalSeconds: Number(e.target.value) }))
-                setDirty(true)
-                setSaved(false)
-              }}
-              style={{ ...inputStyle, width: 60 }}
-            />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-            <input
-              type="checkbox"
-              id="biliAutoCreate"
-              checked={draft.biliAutoCreate}
-              onChange={(e) => {
-                setDraft((prev) => ({ ...prev, biliAutoCreate: e.target.checked }))
-                setDirty(true)
-                setSaved(false)
-              }}
-              style={{ cursor: 'pointer' }}
-            />
-            <label htmlFor="biliAutoCreate" style={{ ...labelStyle, marginBottom: 0, cursor: 'pointer' }}>
-              自动同步新视频为活动
-            </label>
-          </div>
-
-          {/* 下载存储位置 */}
-          <label style={{ ...labelStyle, marginTop: 8 }}>视频下载存储位置</label>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8 }}>
-            <input
-              type="text"
-              value={draft.biliDownloadPath}
-              onChange={(e) => {
-                setDraft((prev) => ({ ...prev, biliDownloadPath: e.target.value }))
-                setDirty(true)
-                setSaved(false)
-              }}
-              placeholder="E:\BiliDownloads"
-              style={{ ...inputStyle, flex: 1 }}
-            />
-            <MagneticButton
-              onClick={async () => {
-                const sel = await open({
-                  directory: true,
-                  multiple: false,
-                  title: '选择 B 站视频下载位置',
-                  defaultPath: draft.biliDownloadPath || undefined,
-                })
-                if (sel && typeof sel === 'string') {
-                  setDraft((prev) => ({ ...prev, biliDownloadPath: sel }))
-                  setDirty(true)
-                  setSaved(false)
-                }
-              }}
-            >
-              选择
-            </MagneticButton>
-          </div>
-          <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 8 }}>
-            合并后的 mp4 会保存到此目录。需系统已安装 ffmpeg（在 PATH 中）。
-          </div>
-
-          {/* 画质偏好 */}
-          <label style={labelStyle}>下载画质偏好</label>
-          <div style={{ marginBottom: 6 }}>
-            <HudSelect
-              value={draft.biliDownloadQuality}
-              onChange={(v) => {
-                setDraft((prev) => ({ ...prev, biliDownloadQuality: v }))
-                setDirty(true)
-                setSaved(false)
-              }}
-              options={[
-                { value: 'auto',       label: '自动',  hint: '账号最高可得' },
-                { value: '4k',         label: '4K',    hint: 'qn=120 · 大会员' },
-                { value: '1080p_plus', label: '1080P+', hint: 'qn=112 · 高码率·大会员' },
-                { value: '1080p',      label: '1080P',  hint: 'qn=80' },
-                { value: '720p',       label: '720P',   hint: 'qn=64 · 省流' },
-                { value: '480p',       label: '480P',   hint: 'qn=32 · 极省流' },
-              ]}
-            />
-          </div>
-          <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 8 }}>
-            实际拿到的清晰度受账号权限限制；选高于权限的会自动回退到可用最高。
-          </div>
-
-          <div style={{ marginTop: 4 }}>
-            <MagneticButton
-              onClick={handleApply}
-              color={dirty ? theme.expGreen : theme.textSecondary}
-              disabled={!dirty}
-            >
-              保存
-            </MagneticButton>
+          <div style={{ fontSize: 11, color: theme.textMuted }}>
+            点击顶栏 B站图标 → 面板右上角齿轮按钮。
           </div>
         </Section>
 

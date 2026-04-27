@@ -44,6 +44,17 @@ export async function openBiliLogin(): Promise<void> {
   await invoke('open_bili_login')
 }
 
+export interface BiliNavInfo {
+  is_login: boolean
+  uname: string | null
+  mid: number | null
+}
+
+/** 通过内嵌 WebView 调 nav 接口拿登录态 + 用户名（登录窗口未创建时返回 is_login=false） */
+export async function getBiliNav(): Promise<BiliNavInfo> {
+  return await invoke<BiliNavInfo>('bili_get_nav')
+}
+
 /** 格式化观看时间 */
 export function formatViewTime(timestamp: number): string {
   const date = new Date(timestamp * 1000)

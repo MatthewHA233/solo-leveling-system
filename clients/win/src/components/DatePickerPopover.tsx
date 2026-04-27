@@ -6,7 +6,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { theme, hud } from '../theme'
-import { fetchManicTimeSpans } from '../lib/local-api'
+import { fetchManicTimeSpans, fetchBiliDayCounts } from '../lib/local-api'
+import type { BiliDayCount } from '../lib/local-api'
 import Tooltip from './Tooltip'
 
 interface Props {
@@ -14,6 +15,11 @@ interface Props {
   readonly value: Date
   readonly onChange: (d: Date) => void
   readonly onClose: () => void
+  /**
+   * 'tags'  → 默认模式，圆环显示当日 ManicTime 标签时段（用于全局日期选择）
+   * 'bili'  → 显示当日 B 站观看数 / 已下载数（用于 BiliHistoryDialog）
+   */
+  readonly mode?: 'tags' | 'bili'
 }
 
 const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日']
@@ -91,7 +97,36 @@ function buildMonthGrid(viewYear: number, viewMonth: number): Date[] {
   return cells
 }
 
-export default function DatePickerPopover({ anchorRef, value, onChange, onClose }: Props) {
+// ── 月度 B 站日计数缓存（按 "YYYY-MM" 缓存整月，跨打开复用） ──
+const biliMonthCache = new Map<string, Map<string, BiliDayCount>>()
+const biliMonthInflight = new Map<string, Promise<Map<string, BiliDayCount>>>()
+async function getBiliCountsForMonth(y: number, m: number): Promise<Map<string, BiliDayCount>> {
+  const key = `${y}-${String(m + 1).padStart(2, '0')}`
+  if (biliMonthCache.has(key)) return biliMonthCache.get(key)!
+  if (biliMonthInflight.has(key)) return biliMonthInflight.get(key)!
+  const from = `${key}-01`
+  const lastDay = new Date(y, m + 1, 0).getDate()
+  const to = `${key}-${String(lastDay).padStart(2, '0')}`
+  const p = (async () => {
+    try {
+      const rows = await fetchBiliDayCounts(from, to)
+      const map = new Map<string, BiliDayCount>()
+      for (const r of rows) map.set(r.day, r)
+      biliMonthCache.set(key, map)
+      return map
+    } catch {
+      const empty = new Map<string, BiliDayCount>()
+      biliMonthCache.set(key, empty)
+      return empty
+    } finally {
+      biliMonthInflight.delete(key)
+    }
+  })()
+  biliMonthInflight.set(key, p)
+  return p
+}
+
+export default function DatePickerPopover({ anchorRef, value, onChange, onClose, mode = 'tags' }: Props) {
   const [viewMonth, setViewMonth] = useState(() => ({ y: value.getFullYear(), m: value.getMonth() }))
   const popRef = useRef<HTMLDivElement | null>(null)
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
@@ -133,18 +168,18 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose 
   const today = useMemo(() => startOfDay(new Date()), [])
   const cells = useMemo(() => buildMonthGrid(viewMonth.y, viewMonth.m), [viewMonth])
 
-  // 每个可见日期的标签时间段。未来日期跳过，今日及历史日按需 fetch
+  // 每个可见日期的标签时间段（tags 模式）
   const [tagRanges, setTagRanges] = useState<Record<string, TagRange[]>>(() => {
     const init: Record<string, TagRange[]> = {}
     for (const [k, v] of tagRangesCache) init[k] = v
     return init
   })
   useEffect(() => {
+    if (mode !== 'tags') return
     let cancelled = false
     const todayKey = dayKey(today)
     const targets = cells.filter((d) => dayKey(d) <= todayKey)
     ;(async () => {
-      // 串行控流，避免一次性发 42 个请求；命中缓存时是同步 resolve
       for (const d of targets) {
         if (cancelled) return
         const k = dayKey(d)
@@ -158,7 +193,20 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose 
       }
     })()
     return () => { cancelled = true }
-  }, [cells, today]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cells, today, mode]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // B 站日计数（bili 模式） — 一次性按月拉取，覆盖当前 viewMonth
+  const [biliCounts, setBiliCounts] = useState<Map<string, BiliDayCount>>(() => new Map())
+  useEffect(() => {
+    if (mode !== 'bili') return
+    let cancelled = false
+    ;(async () => {
+      const map = await getBiliCountsForMonth(viewMonth.y, viewMonth.m)
+      if (cancelled) return
+      setBiliCounts(map)
+    })()
+    return () => { cancelled = true }
+  }, [viewMonth, mode])
 
   const goPrevMonth = () => setViewMonth((p) => p.m === 0 ? { y: p.y - 1, m: 11 } : { y: p.y, m: p.m - 1 })
   const goNextMonth = () => setViewMonth((p) => p.m === 11 ? { y: p.y + 1, m: 0 } : { y: p.y, m: p.m + 1 })
@@ -181,8 +229,12 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose 
         }
         .dpp-cell {
           position: relative;
-          width: 30px; height: 28px;
-          display: flex; align-items: center; justify-content: center;
+          width: 30px; height: ${mode === 'bili' ? 38 : 28}px;
+          display: flex;
+          flex-direction: ${mode === 'bili' ? 'column' : 'row'};
+          align-items: center; justify-content: center;
+          gap: ${mode === 'bili' ? 1 : 0}px;
+          padding-top: ${mode === 'bili' ? 2 : 0}px;
           font-family: ${theme.fontMono};
           font-size: 11px; font-weight: 600;
           letter-spacing: 0.3px;
@@ -307,14 +359,32 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose 
             const isToday = isSameDay(d, today)
             const isSel = isSameDay(d, value)
             const k = dayKey(d)
-            const ranges = tagRanges[k] ?? []
-            const totalMin = ranges.reduce((sum, [a, b]) => sum + (b - a), 0)
             const cls = [
               'dpp-cell',
               !isCurMonth && 'muted',
               isToday && 'today',
               isSel && 'selected',
             ].filter(Boolean).join(' ')
+
+            if (mode === 'bili') {
+              const c = biliCounts.get(k)
+              const watched = c?.watched ?? 0
+              const downloaded = c?.downloaded ?? 0
+              const tip = watched > 0
+                ? `观看 ${watched}${downloaded > 0 ? ` · 下载 ${downloaded}` : ''}`
+                : ''
+              return (
+                <Tooltip key={d.toISOString()} content={tip} disabled={!tip}>
+                <button className={cls} onClick={() => { onChange(new Date(d)); onClose() }}>
+                  <span style={{ position: 'relative', zIndex: 1, lineHeight: 1 }}>{d.getDate()}</span>
+                  <BiliCountBadge watched={watched} downloaded={downloaded} active={isSel || isToday} />
+                </button>
+                </Tooltip>
+              )
+            }
+
+            const ranges = tagRanges[k] ?? []
+            const totalMin = ranges.reduce((sum, [a, b]) => sum + (b - a), 0)
             return (
               <Tooltip
                 key={d.toISOString()}
@@ -373,6 +443,36 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose 
         </div>
       </div>
     </>
+  )
+}
+
+// 单元格底部的 B 站计数：watched · downloaded
+// 没有观看 → 不渲染；只有观看 → 单个青色数字；有下载 → 青·绿
+function BiliCountBadge({ watched, downloaded, active }: {
+  watched: number; downloaded: number; active: boolean
+}) {
+  if (watched === 0) return null
+  const cyan = active ? theme.electricBlue : `${theme.electricBlue}cc`
+  const green = theme.expGreen
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 2,
+      fontFamily: theme.fontMono, fontSize: 8.5, fontWeight: 700,
+      letterSpacing: 0.2, lineHeight: 1,
+      position: 'relative', zIndex: 1,
+    }}>
+      <span style={{ color: cyan, textShadow: active ? `0 0 4px ${cyan}` : undefined }}>
+        {watched}
+      </span>
+      {downloaded > 0 && (
+        <>
+          <span style={{ color: theme.textMuted, opacity: 0.5 }}>·</span>
+          <span style={{ color: green, textShadow: `0 0 4px ${green}99` }}>
+            {downloaded}
+          </span>
+        </>
+      )}
+    </span>
   )
 }
 

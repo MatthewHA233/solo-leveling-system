@@ -83,6 +83,8 @@ export function useBiliHistory(options: UseBiliHistoryOptions = {}): UseBiliHist
       if (msg === 'BILI_WIN_CLOSED') {
         setWindowClosed(true)
         setError(null)
+      } else if (msg === 'BILI_HISTORY_BUSY') {
+        // 双触发被去重 → 静默吞掉，不影响 UI
       } else {
         setError(msg)
         setWindowClosed(false)
@@ -144,7 +146,7 @@ export function useBiliHistory(options: UseBiliHistoryOptions = {}): UseBiliHist
       setLastUpdated(new Date())  // 触发 BiliHistoryMonitor 刷新列表
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      setError(msg)
+      if (msg !== 'BILI_HISTORY_BUSY') setError(msg)
     } finally {
       setIsLoading(false)
       loadingOlderRef.current = false

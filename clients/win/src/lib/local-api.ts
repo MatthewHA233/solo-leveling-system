@@ -114,35 +114,6 @@ export async function deleteActivity(id: string): Promise<void> {
   }
 }
 
-/** 更新一条活动（含事件） */
-export async function updateActivity(
-  id: string,
-  activity: Omit<ChronosActivity, 'id'>,
-): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/activities/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      title: activity.title,
-      category: activity.category,
-      start_minute: activity.startMinute,
-      end_minute: activity.endMinute,
-      goal_alignment: activity.goalAlignment ?? null,
-      events: activity.events.map((e) => ({
-        minute: e.minute,
-        label: e.label,
-        title: e.title,
-      })),
-    }),
-  })
-
-  const json: ApiResponse<void> = await res.json()
-
-  if (!json.success) {
-    throw new Error(json.error || '更新活动失败')
-  }
-}
-
 /** 合并活动（事件 ID 不变，bvid 链接天然保留） */
 export async function mergeActivities(
   survivorId: string,
@@ -189,6 +160,7 @@ export async function fetchManicTimeSpans(date: Date): Promise<MtSpan[]> {
 
 export interface BiliSpan {
   bvid: string
+  oid: number
   title: string
   author_name: string
   cover: string       // 封面 URL
@@ -196,6 +168,35 @@ export interface BiliSpan {
   end_at: string
   duration: number    // 总时长（秒）
   progress: number    // 已看（秒）
+  view_at: number     // unix 秒
+  event_id: string | null
+  downloaded: boolean // bili_video_assets 中存在 done 状态
+}
+
+// 日历角标用：某月每日的观看数 / 已下载数
+export interface BiliDayCount {
+  day: string         // "YYYY-MM-DD"
+  watched: number
+  downloaded: number
+}
+
+/**
+ * 查询 [from, to] 范围内"有任何数据"的日期（聚合 chronos / bili / presence）
+ * 用于昼夜表前后日按钮置灰判断
+ */
+export async function fetchDataDays(from: string, to: string): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/api/activities/data-days?from=${from}&to=${to}`)
+  const json: ApiResponse<string[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '获取数据日失败')
+  return json.data
+}
+
+/** 拉取一段日期内每日观看 / 已下载计数（用于日历） */
+export async function fetchBiliDayCounts(from: string, to: string): Promise<BiliDayCount[]> {
+  const res = await fetch(`${API_BASE}/api/bilibili/day-counts?from=${from}&to=${to}`)
+  const json: ApiResponse<BiliDayCount[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '获取B站日计数失败')
+  return json.data
 }
 
 /** 查询某天的 B站观看 spans */

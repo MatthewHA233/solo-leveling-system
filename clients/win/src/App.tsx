@@ -62,16 +62,16 @@ import DatePickerPopover from './components/DatePickerPopover'
 import SpanDetailPanel from './components/SpanDetailPanel'
 import AppHoverPanel from './components/AppHoverPanel'
 import BiliVideoPanel from './components/BiliVideoPanel'
-import BiliHistoryMonitor from './components/BiliHistoryMonitor'
+import BiliHistoryDialog from './components/BiliHistoryDialog'
 import { useBiliHistory } from './lib/bilibili/useHistory'
 import { dbBiliItemToActivity } from './lib/bilibili/api'
 import { linkBiliToEvent, mergeActivities } from './lib/local-api'
-import type { DbBiliItem } from './lib/local-api'
 import type { FairyState } from './components/FairyHUD'
 import { HudFrame, HudCommandStrip, DataRibbon, NeonRule } from './components/hud'
 import { CloseConfirmModal } from './components/CloseConfirmModal'
 import Tooltip from './components/Tooltip'
 import { usePresenceDetection } from './hooks/usePresenceDetection'
+import { useDataDays, hasDataOrIsToday } from './hooks/useDataDays'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import soloLevelingLogo from './assets/SOLO LEVELING SYSTEM.png'
 
@@ -908,15 +908,20 @@ export default function App() {
 
   // ── Date Navigation ──
 
+  // 围绕当前选中日 ±14 天预取"有数据"的日期集合，用于前/后日按钮置灰
+  const dataDays = useDataDays(selectedDate, 'all')
+  const prevDate = (() => { const d = new Date(selectedDate); d.setDate(d.getDate() - 1); return d })()
+  const nextDate = (() => { const d = new Date(selectedDate); d.setDate(d.getDate() + 1); return d })()
+  const prevHasData = hasDataOrIsToday(prevDate, dataDays)
+  const nextHasData = hasDataOrIsToday(nextDate, dataDays)
+
   const prevDay = () => {
-    const d = new Date(selectedDate)
-    d.setDate(d.getDate() - 1)
-    setSelectedDate(d)
+    if (!prevHasData) return
+    setSelectedDate(prevDate)
   }
   const nextDay = () => {
-    const d = new Date(selectedDate)
-    d.setDate(d.getDate() + 1)
-    setSelectedDate(d)
+    if (!nextHasData) return
+    setSelectedDate(nextDate)
   }
   const goToday = () => {
     setSelectedDate(new Date())
@@ -971,29 +976,6 @@ export default function App() {
     sync()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [biliNewItems])
-
-  // 手动从 BiliHistoryMonitor 加入活动（多选）
-  const handleAddBiliToActivity = useCallback(async (items: DbBiliItem[]) => {
-    const toLocalDateStr = (d: Date) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-
-    const affectedDates = new Map<string, Date>()
-
-    // 只处理真正未入档的视频，跳过已有 event_id 的
-    const unlinked = items.filter((i) => i.event_id === null)
-    for (const item of unlinked) {
-      try {
-        const { bvid, date, activity } = dbBiliItemToActivity(item)
-        const { eventIds } = await createActivity(date, activity)
-        affectedDates.set(toLocalDateStr(date), date)
-        if (eventIds[0]) await linkBiliToEvent([bvid], eventIds[0]).catch(() => {})
-      } catch { /* ignore */ }
-    }
-    for (const date of affectedDates.values()) {
-      await mergeOverlappingBili(date).catch(() => {})
-    }
-    if (affectedDates.has(toLocalDateStr(selectedDate))) refreshActivities()
-  }, [selectedDate, refreshActivities])
 
   const handleDeleteMinuteRange = useCallback(async (startMin: number, endMin: number) => {
     const toDelete = activities.filter((a) => a.startMinute < endMin && a.endMinute > startMin)
@@ -1475,8 +1457,16 @@ export default function App() {
 
         {/* 日期导航区 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <Tooltip content="前一天">
-          <button onClick={prevDay} style={navBtn}>
+          <Tooltip content={prevHasData ? '前一天' : '前一天无数据'}>
+          <button
+            onClick={prevDay}
+            disabled={!prevHasData}
+            style={{
+              ...navBtn,
+              opacity: prevHasData ? 1 : 0.3,
+              cursor: prevHasData ? 'pointer' : 'not-allowed',
+            }}
+          >
             <ChevronLeft size={12} />
           </button>
           </Tooltip>
@@ -1504,8 +1494,16 @@ export default function App() {
             />
           </button>
           </Tooltip>
-          <Tooltip content="后一天">
-          <button onClick={nextDay} style={navBtn}>
+          <Tooltip content={nextHasData ? '后一天' : '后一天无数据'}>
+          <button
+            onClick={nextDay}
+            disabled={!nextHasData}
+            style={{
+              ...navBtn,
+              opacity: nextHasData ? 1 : 0.3,
+              cursor: nextHasData ? 'pointer' : 'not-allowed',
+            }}
+          >
             <ChevronRight size={12} />
           </button>
           </Tooltip>
@@ -1614,26 +1612,6 @@ export default function App() {
               config={config}
               onUpdate={handleConfigUpdate}
               onClose={() => setShowSettings(false)}
-            />
-          ) : showBili ? (
-            <BiliHistoryMonitor
-              dbStatus={dbStatus}
-              isLoading={biliLoading}
-              error={biliError}
-              lastUpdated={biliLastUpdated}
-              countdown={biliCountdown}
-              intervalSeconds={biliIntervalSec}
-              isPaused={biliPaused}
-              windowClosed={biliWinClosed}
-              cursor={biliCursor}
-              hasMoreRemote={biliHasMoreRemote}
-              onLoadOlderHistory={biliLoadOlder}
-              onPause={pauseBili}
-              onResume={resumeBili}
-              onRefresh={refreshBili}
-              onSetInterval={setBiliInterval}
-              onAddToActivity={handleAddBiliToActivity}
-              onClose={() => setShowBili(false)}
             />
           ) : (() => {
             // 固定时用 pinnedPos.minute 查对应 span，否则用 hover span
@@ -1751,6 +1729,25 @@ export default function App() {
           onClose={() => setDatePickerOpen(false)}
         />
       )}
+
+      <BiliHistoryDialog
+        open={showBili}
+        initialDate={selectedDate}
+        isLoading={biliLoading}
+        error={biliError}
+        lastUpdated={biliLastUpdated}
+        countdown={biliCountdown}
+        intervalSeconds={biliIntervalSec}
+        isPaused={biliPaused}
+        windowClosed={biliWinClosed}
+        cursor={biliCursor}
+        hasMoreRemote={biliHasMoreRemote}
+        onPause={pauseBili}
+        onResume={resumeBili}
+        onRefresh={refreshBili}
+        onSetInterval={setBiliInterval}
+        onClose={() => setShowBili(false)}
+      />
     </div>
   )
 }

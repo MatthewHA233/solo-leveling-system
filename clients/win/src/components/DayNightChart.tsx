@@ -267,12 +267,12 @@ function parseTagTitle(title: string): { parts: string[]; markers: string[] } {
   }
 }
 
-/** "2026-04-04 13:30:00" → 分钟数（810） */
+/** "2026-04-04 13:30:30" → 分钟数（810.5）。保留秒级精度，避免短于 1 分钟的 span 被丢弃 */
 function dtToMinute(dt: string): number {
   const parts = dt.split(' ')
   if (parts.length < 2) return 0
-  const [h, m] = parts[1].split(':').map(Number)
-  return h * 60 + m
+  const [h, m, s] = parts[1].split(':').map(Number)
+  return h * 60 + m + (s || 0) / 60
 }
 
 const TRACE_GAP = 5  // 轨道与高亮矩形之间的间隔
@@ -490,11 +490,18 @@ function drawBiliTracesInPipe(
 
       const isFirstSegCol = c === startCol
       const isLastSegCol  = c === endCol
-      const topInset = isFirstSegCol ? 2 : 0
-      const botInset = isLastSegCol ? 2 : 0
-      const py0 = y0 + topInset
-      const py1 = y1 - botInset
-      if (py1 <= py0) continue
+      // 短到容不下两端各 2px 内边距时，自动缩减；保证最低 2px 可见高度
+      const rawH = y1 - y0
+      const wantInset = rawH >= 6
+      const topInset = wantInset && isFirstSegCol ? 2 : 0
+      const botInset = wantInset && isLastSegCol  ? 2 : 0
+      let py0 = y0 + topInset
+      let py1 = y1 - botInset
+      if (py1 - py0 < 2) {
+        const cy = (y0 + y1) / 2
+        py0 = cy - 1
+        py1 = cy + 1
+      }
 
       const barX = lx + 1
       const barW = (rx - lx) - 1
@@ -505,7 +512,7 @@ function drawBiliTracesInPipe(
       ctx.fillRect(barX, py0, barW, py1 - py0)
       ctx.restore()
 
-      if (isFirstSegCol) {
+      if (isFirstSegCol && wantInset) {
         ctx.fillStyle = 'rgba(255,255,255,0.5)'
         ctx.fillRect(barX, py0, barW, 1)
       }
@@ -1208,24 +1215,35 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
       clamped.push({ ...span, start_at: newStart, end_at: newEnd })
     }
 
-    // 2) 重叠修正：后者开始衔接前者结束
-    const sorted = clamped.sort((a, b) => dtToMinute(a.start_at) - dtToMinute(b.start_at))
+    // 2) end_at 是精准的（B站 view_at），start_at 是合成的（view_at - progress|duration）；
+    //    悬浮检测分辨率是整数分钟，所以这里把 span 吸附到整数分钟边界：
+    //      - end 用 ceil（真实 end 在哪个整分钟内就吃掉这一分钟）
+    //      - start 至少比 end 早 1 分钟，且不越过前一段的 end
+    //      - 多段 end 落在同一分钟内时，后面顺延一分钟，避免彻底重叠
+    const fmt = (datePart: string, mins: number): string => {
+      const h  = Math.floor(mins / 60)
+      const mm = mins % 60
+      return `${datePart} ${String(h).padStart(2,'0')}:${String(mm).padStart(2,'0')}:00`
+    }
+
+    const sorted = clamped.sort((a, b) => dtToMinute(a.end_at) - dtToMinute(b.end_at))
     const result: BiliSpan[] = []
-    let prevEndMin = -Infinity
+    let prevEndInt = -Infinity
     for (const span of sorted) {
       const startMin = dtToMinute(span.start_at)
       const endMin   = dtToMinute(span.end_at)
-      if (endMin <= startMin) continue
-      const adjStart = Math.max(startMin, prevEndMin)
-      if (adjStart >= endMin) continue
-      if (adjStart !== startMin) {
-        const datePart = span.start_at.split(' ')[0] ?? ''
-        const h = Math.floor(adjStart / 60), m = adjStart % 60
-        result.push({ ...span, start_at: `${datePart} ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00` })
-      } else {
-        result.push(span)
-      }
-      prevEndMin = endMin
+      let endInt   = Math.ceil(endMin)
+      if (endInt <= prevEndInt) endInt = prevEndInt + 1
+      let startInt = Math.max(prevEndInt, Math.floor(startMin))
+      if (endInt - startInt < 1) startInt = endInt - 1
+      if (startInt < prevEndInt) startInt = prevEndInt
+      const datePart = span.start_at.split(' ')[0] ?? ''
+      result.push({
+        ...span,
+        start_at: fmt(datePart, startInt),
+        end_at:   fmt(datePart, endInt),
+      })
+      prevEndInt = endInt
     }
     return result
   }, [biliSpans, selectedDateStr])
