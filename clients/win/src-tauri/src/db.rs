@@ -790,6 +790,44 @@ impl Database {
         Ok((rows.filter_map(|r| r.ok()).collect(), total))
     }
 
+    /// 模糊搜索 B站历史：title / author_name 前缀任意位置匹配，bvid 整段精确匹配（大小写不敏感）
+    /// 按 view_at 倒序，limit 兜底。q 为空 → 返回空。
+    pub async fn search_bili_history(
+        &self, q: &str, limit: i64,
+    ) -> Result<Vec<BiliHistoryRow>, String> {
+        let q_trim = q.trim();
+        if q_trim.is_empty() {
+            return Ok(Vec::new())
+        }
+        let conn = self.conn.lock().await;
+        let like = format!("%{}%", q_trim.replace('%', "\\%").replace('_', "\\_"));
+        let sql = r#"
+            SELECT bvid, oid, title, author_name, cover, duration, progress, view_at, event_id
+            FROM bili_history
+            WHERE title       LIKE ?1 ESCAPE '\'
+               OR author_name LIKE ?1 ESCAPE '\'
+               OR bvid = ?2
+            ORDER BY view_at DESC
+            LIMIT ?3
+        "#;
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(
+            params![like, q_trim, limit],
+            |row| Ok(BiliHistoryRow {
+                bvid:        row.get(0)?,
+                oid:         row.get(1)?,
+                title:       row.get(2)?,
+                author_name: row.get(3)?,
+                cover:       row.get(4)?,
+                duration:    row.get(5)?,
+                progress:    row.get(6)?,
+                view_at:     row.get(7)?,
+                event_id:    row.get(8)?,
+            }),
+        ).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     /// 查询某天的 B站观看 spans（用于昼夜表轨道）
     /// date 格式: "2026-04-06"
     /// 跨天的 span（如 23:30 → 次日 00:30）只要与该天有交集就会返回

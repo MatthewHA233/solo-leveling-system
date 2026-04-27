@@ -244,6 +244,18 @@ export async function fetchBiliHistoryDb(
   return json.data
 }
 
+/** 模糊搜索本地 B站历史（title / author / bvid） */
+export async function searchBiliHistory(q: string, limit = 30): Promise<DbBiliItem[]> {
+  const trimmed = q.trim()
+  if (!trimmed) return []
+  const res = await fetch(
+    `${API_BASE}/api/bilibili/history/search?q=${encodeURIComponent(trimmed)}&limit=${limit}`,
+  )
+  const json: ApiResponse<DbBiliItem[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '搜索失败')
+  return json.data
+}
+
 /** 将一批 bvid 关联到事件 */
 export async function linkBiliToEvent(bvids: string[], eventId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/api/bilibili/history/link`, {

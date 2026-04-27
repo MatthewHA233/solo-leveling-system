@@ -93,6 +93,12 @@ struct BiliHistoryQuery {
 }
 
 #[derive(Deserialize)]
+struct BiliSearchQuery {
+    q: String,
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
 struct BiliDayCountQuery {
     from: String,   // "YYYY-MM-DD"
     to: String,     // "YYYY-MM-DD"
@@ -448,6 +454,18 @@ async fn get_bili_history(
     }
 }
 
+/// GET /api/bilibili/history/search?q=xxx&limit=30 — 模糊搜索 title/author/bvid
+async fn search_bili_history(
+    State(state): State<ApiState>,
+    Query(query): Query<BiliSearchQuery>,
+) -> Json<ApiResponse<Vec<BiliHistoryRow>>> {
+    let limit = query.limit.unwrap_or(30).clamp(1, 200);
+    match state.db.search_bili_history(&query.q, limit).await {
+        Ok(items) => Json(ApiResponse::ok(items)),
+        Err(e)    => Json(ApiResponse::error(&e)),
+    }
+}
+
 /// PUT /api/bilibili/history/link — 将 bvids 关联到事件
 async fn link_bili_to_event(
     State(state): State<ApiState>,
@@ -677,6 +695,7 @@ pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>, bili_dl: Arc<BiliD
         .route("/api/bilibili/playurl_result", post(recv_bili_playurl_result))
         .route("/api/bilibili/qualities_result", post(recv_bili_qualities_result))
         .route("/api/bilibili/history", get(get_bili_history))
+        .route("/api/bilibili/history/search", get(search_bili_history))
         .route("/api/bilibili/day-counts", get(get_bili_day_counts))
         .route("/api/bilibili/history/link", axum::routing::put(link_bili_to_event))
         .route("/api/activities/merge", post(merge_activities))

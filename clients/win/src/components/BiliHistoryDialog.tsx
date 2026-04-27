@@ -6,7 +6,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { X, RefreshCw, Pause, Play, LogIn, ChevronDown, ChevronLeft, ChevronRight, Settings, FolderOpen, Telescope, Sparkles } from 'lucide-react'
+import { X, RefreshCw, Pause, Play, LogIn, ChevronDown, ChevronLeft, ChevronRight, Settings, FolderOpen, Telescope, Sparkles, Search } from 'lucide-react'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { useDataDays, hasDataOrIsToday } from '../hooks/useDataDays'
 import BiliIcon from './icons/BiliIcon'
@@ -14,8 +14,8 @@ import DatePickerPopover from './DatePickerPopover'
 import BiliVideoPanel from './BiliVideoPanel'
 import HudSelect from './HudSelect'
 import { openBiliLogin, getBiliNav, formatViewTime } from '../lib/bilibili/api'
-import { fetchBiliSpans } from '../lib/local-api'
-import type { BiliSpan } from '../lib/local-api'
+import { fetchBiliSpans, searchBiliHistory } from '../lib/local-api'
+import type { BiliSpan, DbBiliItem } from '../lib/local-api'
 import type { BiliCursor, ScanProgress, ScanPageEvent, ScanFeedItem } from '../lib/bilibili/useHistory'
 import { loadConfig, updateConfig } from '../lib/agent/agent-config'
 import type { AgentConfig } from '../lib/agent/agent-config'
@@ -209,6 +209,16 @@ export default function BiliHistoryDialog({
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
 
+  // ── 搜索 ──
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<DbBiliItem[]>([])
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [flashBvid, setFlashBvid] = useState<string | null>(null)
+  const pendingScrollBvidRef = useRef<string | null>(null)
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const searchPopRef = useRef<HTMLDivElement | null>(null)
+
   // ── 深度扫描"瀑布流"状态 ──
   // 仿 B站 历史页 4 列 × 4 行 grid，刚好铺满一屏不滚动
   // 新视频从顶部下落进入，旧视频被挤出底部
@@ -286,12 +296,13 @@ export default function BiliHistoryDialog({
       if (showScanReport) setShowScanReport(false)
       else if (detailSpan) setDetailSpan(null)
       else if (settingsOpen) setSettingsOpen(false)
+      else if (searchOpen) setSearchOpen(false)
       else if (datePickerOpen) setDatePickerOpen(false)
       else onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, detailSpan, datePickerOpen, settingsOpen, showScanReport, onClose])
+  }, [open, detailSpan, datePickerOpen, settingsOpen, searchOpen, showScanReport, onClose])
 
   // 设置弹层 click-outside
   useEffect(() => {
@@ -305,6 +316,45 @@ export default function BiliHistoryDialog({
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
   }, [settingsOpen])
+
+  // 搜索弹层 click-outside
+  useEffect(() => {
+    if (!searchOpen) return
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (searchPopRef.current?.contains(t)) return
+      if (searchInputRef.current?.contains(t)) return
+      setSearchOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [searchOpen])
+
+  // 搜索 debounce
+  useEffect(() => {
+    if (!searchOpen) return
+    const q = searchQuery.trim()
+    if (!q) { setSearchResults([]); setSearchLoading(false); return }
+    setSearchLoading(true)
+    let cancelled = false
+    const t = setTimeout(() => {
+      searchBiliHistory(q, 30)
+        .then((rows) => { if (!cancelled) setSearchResults(rows) })
+        .catch(() => { if (!cancelled) setSearchResults([]) })
+        .finally(() => { if (!cancelled) setSearchLoading(false) })
+    }, 220)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [searchQuery, searchOpen])
+
+  // 跳转到目标 bvid：切日 → 等 spans 重排 → scroll + 闪烁
+  const jumpToBvid = useCallback((item: DbBiliItem) => {
+    if (!item.view_at) return
+    const target = new Date(item.view_at * 1000)
+    pendingScrollBvidRef.current = item.bvid
+    setSearchOpen(false)
+    setDetailSpan(null)
+    setDate(target)
+  }, [])
 
   // 深度扫描每页爬到的 items 由 useHistory 直接推过来 → 注入瀑布流 + 累计增量日期清单
   //   - bvid 不在扫描启动快照里 → "真·增量"（绿色描边 + 计入清单）
@@ -383,12 +433,32 @@ export default function BiliHistoryDialog({
     [spans, dayStr, cols],
   )
 
-  // 切日时回到顶部
+  // 切日时回到顶部（若有 pending 跳转目标则由下方 scroll 接管，不复位）
   useEffect(() => {
     if (!open || !galleryRef.current) return
+    if (pendingScrollBvidRef.current) return
     galleryRef.current.scrollTo({ top: 0, behavior: 'auto' })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, dayStr])
+
+  // 搜索跳转：placed 重算后 scroll 到目标卡片 + 闪烁高亮
+  useEffect(() => {
+    const targetBvid = pendingScrollBvidRef.current
+    if (!targetBvid || !galleryRef.current) return
+    const hit = placed.find((p) => p.span.bvid === targetBvid)
+    if (!hit) return
+    pendingScrollBvidRef.current = null
+    const scrollEl = galleryRef.current
+    const desiredTop = Math.max(0, hit.top - 80)
+    requestAnimationFrame(() => {
+      scrollEl.scrollTo({ top: desiredTop, behavior: 'smooth' })
+      setFlashBvid(targetBvid)
+      setHoveredId(targetBvid)
+    })
+    const tFlash = setTimeout(() => setFlashBvid(null), 1800)
+    const tHover = setTimeout(() => setHoveredId(null), 1800)
+    return () => { clearTimeout(tFlash); clearTimeout(tHover) }
+  }, [placed])
 
   // 前后日切换：基于 B站 day-counts 判断目标日是否有观看记录（today 始终可达）
   const biliDataDays = useDataDays(date, 'bili')
@@ -496,6 +566,15 @@ export default function BiliHistoryDialog({
         }
         .bhd-card.downloaded { border-color: ${theme.expGreen}55; }
         .bhd-card.downloaded:hover { border-color: ${theme.expGreen}; }
+        @keyframes bhd-flash {
+          0%, 100% { box-shadow: inset 4px 0 6px -4px rgba(255,200,0,0.4), 0 0 0 1px rgba(255,200,0,0.4); }
+          50%      { box-shadow: inset 4px 0 6px -4px rgba(255,200,0,0.95), 0 0 16px 2px rgba(255,200,0,0.95), 0 0 32px rgba(255,200,0,0.55); }
+        }
+        .bhd-card.flashing {
+          animation: bhd-flash 0.55s ease-in-out 3;
+          border-color: rgb(255, 200, 0) !important;
+          z-index: 6;
+        }
       `}</style>
 
       {/* 遮罩（无 backdrop-filter，避免滚动卡顿） */}
@@ -610,6 +689,21 @@ export default function BiliHistoryDialog({
 
           <div style={{ flex: 1 }} />
 
+          <Tooltip content="搜索（标题 / UP主 / BV号）">
+            <button
+              className="bhd-icon-btn"
+              onClick={() => {
+                setSearchOpen((v) => {
+                  const next = !v
+                  if (next) setTimeout(() => searchInputRef.current?.focus(), 30)
+                  return next
+                })
+              }}
+              style={{ color: searchOpen ? theme.electricBlue : undefined }}
+            >
+              <Search size={12} />
+            </button>
+          </Tooltip>
           <Tooltip content="B站设置">
             <button
               ref={settingsAnchorRef}
@@ -726,6 +820,99 @@ export default function BiliHistoryDialog({
           </Tooltip>
         </div>
 
+        {searchOpen && (
+          <div
+            ref={searchPopRef}
+            style={{
+              position: 'absolute',
+              top: 38,
+              right: 12,
+              zIndex: 50,
+              width: 420,
+              maxHeight: 480,
+              display: 'flex', flexDirection: 'column',
+              background: '#0a0f1c',
+              border: `1px solid ${theme.hudFrame}`,
+              clipPath: hud.chamfer8,
+              WebkitClipPath: hud.chamfer8,
+              boxShadow: `0 8px 28px rgba(0,0,0,0.7), 0 0 24px ${theme.hudHalo}`,
+              padding: 0,
+              fontFamily: theme.fontBody,
+              overflow: 'hidden',
+            }}
+          >
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 12px',
+              borderBottom: `1px solid ${theme.hudFrameSoft}`,
+            }}>
+              <Search size={13} style={{ color: theme.electricBlue, flexShrink: 0 }} />
+              <input
+                ref={searchInputRef}
+                type="text"
+                placeholder="搜索标题 / UP主 / BV号"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{
+                  flex: 1,
+                  background: 'transparent',
+                  border: 'none',
+                  outline: 'none',
+                  color: theme.textPrimary,
+                  fontFamily: theme.fontMono,
+                  fontSize: 12,
+                  letterSpacing: 0.4,
+                }}
+              />
+              {searchQuery && (
+                <button
+                  className="bhd-icon-btn"
+                  onClick={() => { setSearchQuery(''); searchInputRef.current?.focus() }}
+                  style={{ width: 20, height: 20 }}
+                >
+                  <X size={10} />
+                </button>
+              )}
+            </div>
+            <div style={{
+              flex: 1, overflowY: 'auto',
+              minHeight: 0,
+            }}>
+              {!searchQuery.trim() ? (
+                <div style={{ padding: 24, textAlign: 'center', color: theme.textMuted, fontSize: 11 }}>
+                  输入关键词以搜索本地历史库
+                </div>
+              ) : searchLoading ? (
+                <div style={{ padding: 24, textAlign: 'center', color: theme.textMuted, fontSize: 11 }}>
+                  搜索中…
+                </div>
+              ) : searchResults.length === 0 ? (
+                <div style={{ padding: 24, textAlign: 'center', color: theme.textMuted, fontSize: 11 }}>
+                  未找到匹配的视频
+                </div>
+              ) : (
+                searchResults.map((it) => (
+                  <SearchResultRow
+                    key={it.bvid}
+                    item={it}
+                    query={searchQuery.trim()}
+                    onClick={() => jumpToBvid(it)}
+                  />
+                ))
+              )}
+            </div>
+            <div style={{
+              padding: '5px 12px',
+              borderTop: `1px solid ${theme.hudFrameSoft}`,
+              fontSize: 10, color: theme.textMuted,
+              display: 'flex', justifyContent: 'space-between', letterSpacing: 0.3,
+            }}>
+              <span>{searchResults.length > 0 ? `${searchResults.length} 条结果` : ''}</span>
+              <span>点击跳转到该视频观看当天</span>
+            </div>
+          </div>
+        )}
+
         {settingsOpen && (
           <div
             ref={settingsPopRef}
@@ -836,6 +1023,7 @@ export default function BiliHistoryDialog({
                   placed={p}
                   cardW={CARD_W}
                   gap={CARD_GAP_X}
+                  flashing={flashBvid === p.span.bvid}
                   onOpenDetail={() => setDetailSpan(p.span)}
                   onHover={(h) => setHoveredId(h ? p.span.bvid : null)}
                 />
@@ -1087,14 +1275,124 @@ function TimeLabels({
 }
 
 // ══════════════════════════════════════════════
+// 搜索结果行
+// ══════════════════════════════════════════════
+function SearchResultRow({
+  item, query, onClick,
+}: {
+  item: DbBiliItem
+  query: string
+  onClick: () => void
+}) {
+  const dateLabel = useMemo(() => {
+    if (!item.view_at) return ''
+    const d = new Date(item.view_at * 1000)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    return `${y}-${m}-${day} ${hh}:${mm}`
+  }, [item.view_at])
+
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        width: '100%',
+        display: 'flex', alignItems: 'flex-start', gap: 10,
+        padding: '8px 12px',
+        background: 'transparent',
+        border: 'none',
+        borderBottom: `1px solid ${theme.hudFrameSoft}`,
+        color: theme.textPrimary,
+        cursor: 'pointer',
+        textAlign: 'left',
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = `${theme.electricBlue}14` }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+    >
+      <div style={{
+        flexShrink: 0,
+        width: 64,
+        aspectRatio: '16 / 10',
+        background: 'rgba(0,0,0,0.6)',
+        overflow: 'hidden',
+      }}>
+        <img
+          src={`http://localhost:3000/api/bilibili/cover?url=${encodeURIComponent(item.cover)}`}
+          alt=""
+          loading="lazy"
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          onError={(e) => { e.currentTarget.style.display = 'none' }}
+        />
+      </div>
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <div style={{
+          fontFamily: theme.fontBody,
+          fontSize: 11.5, fontWeight: 600,
+          color: theme.textPrimary,
+          lineHeight: 1.3,
+          display: '-webkit-box',
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+        }}>
+          <Highlight text={item.title} query={query} />
+        </div>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          fontSize: 10, color: theme.textSecondary, fontFamily: theme.fontMono,
+        }}>
+          <span style={{
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            maxWidth: '40%',
+          }}>
+            <Highlight text={item.author_name} query={query} />
+          </span>
+          <span style={{ color: theme.textMuted, opacity: 0.5 }}>·</span>
+          <span style={{ color: theme.electricBlue }}>
+            <Highlight text={item.bvid} query={query} />
+          </span>
+          <span style={{ flex: 1 }} />
+          <span style={{ color: theme.textMuted }}>{dateLabel}</span>
+        </div>
+      </div>
+    </button>
+  )
+}
+
+function Highlight({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>
+  const lower = text.toLowerCase()
+  const q = query.toLowerCase()
+  const idx = lower.indexOf(q)
+  if (idx < 0) return <>{text}</>
+  return (
+    <>
+      {text.slice(0, idx)}
+      <span style={{
+        color: 'rgb(255,200,0)',
+        background: 'rgba(255,200,0,0.12)',
+        fontWeight: 700,
+      }}>
+        {text.slice(idx, idx + query.length)}
+      </span>
+      {text.slice(idx + query.length)}
+    </>
+  )
+}
+
+// ══════════════════════════════════════════════
 // 卡片
 // ══════════════════════════════════════════════
 function Card({
-  placed, cardW, gap, onOpenDetail, onHover,
+  placed, cardW, gap, flashing, onOpenDetail, onHover,
 }: {
   placed: PlacedCard
   cardW: number
   gap: number
+  flashing: boolean
   onOpenDetail: () => void
   onHover: (hovering: boolean) => void
 }) {
@@ -1111,7 +1409,7 @@ function Card({
 
   return (
     <div
-      className={`bhd-card ${downloaded ? 'downloaded' : ''}`}
+      className={`bhd-card ${downloaded ? 'downloaded' : ''} ${flashing ? 'flashing' : ''}`}
       style={{
         left, top, width: cardW,
         borderLeft: `3px solid ${accent}`,
