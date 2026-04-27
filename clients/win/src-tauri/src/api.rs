@@ -18,8 +18,8 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::db::{
     AppendChatMessagesRequest, ChatMessage, ChatSession,
-    ChronosActivity, CreateActivityRequest, Database, UpdateActivityRequest, UpdateChatSessionRequest,
-    BiliHistoryRow, UpsertBiliItem, MergeActivitiesRequest, BiliSpan, Goal, PresenceSpan,
+    ChronosActivity, CreateActivityRequest, Database, UpdateChatSessionRequest,
+    BiliHistoryRow, UpsertBiliItem, MergeActivitiesRequest, BiliSpan, BiliDayCount, Goal, PresenceSpan,
 };
 use crate::bili_download::{BiliDownloadState, PlayUrlMeta, QualityProbe, deliver_playurl_result, deliver_probe_result};
 
@@ -27,11 +27,15 @@ use crate::bili_download::{BiliDownloadState, PlayUrlMeta, QualityProbe, deliver
 
 pub struct BiliState {
     pub pending: Mutex<Option<oneshot::Sender<Result<serde_json::Value, String>>>>,
+    pub pending_nav: Mutex<Option<oneshot::Sender<Result<serde_json::Value, String>>>>,
 }
 
 impl BiliState {
     pub fn new() -> Self {
-        Self { pending: Mutex::new(None) }
+        Self {
+            pending: Mutex::new(None),
+            pending_nav: Mutex::new(None),
+        }
     }
 }
 
@@ -86,6 +90,12 @@ struct BiliHistoryQuery {
     page: Option<i64>,
     page_size: Option<i64>,
     unlinked_only: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct BiliDayCountQuery {
+    from: String,   // "YYYY-MM-DD"
+    to: String,     // "YYYY-MM-DD"
 }
 
 #[derive(Serialize)]
@@ -190,6 +200,18 @@ struct CreateActivityResult {
     event_ids: Vec<String>,
 }
 
+/// GET /api/activities/data-days?from=2026-04-01&to=2026-04-30
+/// 返回区间内"有数据"的日期列表（聚合 chronos / bili / presence 三表）
+async fn get_data_days(
+    State(state): State<ApiState>,
+    Query(query): Query<BiliDayCountQuery>,
+) -> Json<ApiResponse<Vec<String>>> {
+    match state.db.get_data_days(&query.from, &query.to).await {
+        Ok(days) => Json(ApiResponse::ok(days)),
+        Err(e)   => Json(ApiResponse::error(&e)),
+    }
+}
+
 /// POST /api/activities
 async fn create_activity(
     State(state): State<ApiState>,
@@ -207,18 +229,6 @@ async fn delete_activity(
     Path(id): Path<String>,
 ) -> Json<ApiResponse<()>> {
     match state.db.delete_activity(&id).await {
-        Ok(()) => Json(ApiResponse::ok(())),
-        Err(e) => Json(ApiResponse::error(&e)),
-    }
-}
-
-/// PUT /api/activities/:id
-async fn update_activity(
-    State(state): State<ApiState>,
-    Path(id): Path<String>,
-    Json(body): Json<UpdateActivityRequest>,
-) -> Json<ApiResponse<()>> {
-    match state.db.update_activity(&id, body).await {
         Ok(()) => Json(ApiResponse::ok(())),
         Err(e) => Json(ApiResponse::error(&e)),
     }
@@ -317,6 +327,22 @@ fn extract_bili_items(data: &serde_json::Value) -> Vec<UpsertBiliItem> {
     }).collect()
 }
 
+/// POST /api/bilibili/nav_result — 接收 bilibili 内嵌 WebView 调 nav 接口的回调（仅用于读用户名/登录状态）
+async fn recv_bili_nav_result(
+    State(state): State<ApiState>,
+    Json(body): Json<BiliResultPayload>,
+) -> Json<ApiResponse<()>> {
+    let result = match body.ok {
+        Some(data) => Ok(data),
+        None => Err(body.error.unwrap_or_else(|| "未知错误".to_string())),
+    };
+    let mut guard = state.bili.pending_nav.lock().await;
+    if let Some(tx) = guard.take() {
+        let _ = tx.send(result);
+    }
+    Json(ApiResponse::ok(()))
+}
+
 /// POST /api/bilibili/result — 接收 bilibili 内嵌 WebView 注入 JS 的回调结果，同时入库
 async fn recv_bili_result(
     State(state): State<ApiState>,
@@ -393,6 +419,17 @@ async fn get_bili_spans_day(
     match state.db.get_bili_spans_for_date(&query.date).await {
         Ok(spans) => Json(ApiResponse::ok(spans)),
         Err(e)    => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// GET /api/bilibili/day-counts?from=2026-04-01&to=2026-04-30
+async fn get_bili_day_counts(
+    State(state): State<ApiState>,
+    Query(query): Query<BiliDayCountQuery>,
+) -> Json<ApiResponse<Vec<BiliDayCount>>> {
+    match state.db.get_bili_day_counts(&query.from, &query.to).await {
+        Ok(rows) => Json(ApiResponse::ok(rows)),
+        Err(e)   => Json(ApiResponse::error(&e)),
     }
 }
 
@@ -630,14 +667,17 @@ pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>, bili_dl: Arc<BiliD
     Router::new()
         .route("/api/health", get(health))
         .route("/api/activities", get(get_activities).post(create_activity))
-        .route("/api/activities/{id}", delete(delete_activity).put(update_activity))
+        .route("/api/activities/data-days", get(get_data_days))
+        .route("/api/activities/{id}", delete(delete_activity))
         .route("/api/sessions", get(list_chat_sessions).post(create_chat_session))
         .route("/api/sessions/{id}/messages", get(get_chat_messages).post(append_chat_messages))
         .route("/api/sessions/{id}", patch(update_chat_session).delete(delete_chat_session))
         .route("/api/bilibili/result", post(recv_bili_result))
+        .route("/api/bilibili/nav_result", post(recv_bili_nav_result))
         .route("/api/bilibili/playurl_result", post(recv_bili_playurl_result))
         .route("/api/bilibili/qualities_result", post(recv_bili_qualities_result))
         .route("/api/bilibili/history", get(get_bili_history))
+        .route("/api/bilibili/day-counts", get(get_bili_day_counts))
         .route("/api/bilibili/history/link", axum::routing::put(link_bili_to_event))
         .route("/api/activities/merge", post(merge_activities))
         .route("/api/bilibili/cover", get(proxy_bili_cover))

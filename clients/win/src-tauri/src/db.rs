@@ -53,16 +53,6 @@ pub struct CreateEventRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct UpdateActivityRequest {
-    pub title: String,
-    pub category: String,
-    pub start_minute: i32,
-    pub end_minute: i32,
-    pub goal_alignment: Option<String>,
-    pub events: Vec<CreateEventRequest>,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct MergeActivitiesRequest {
     pub survivor_id: String,
     pub absorbed_ids: Vec<String>,
@@ -136,6 +126,7 @@ pub struct BiliHistoryRow {
 #[derive(Debug, Serialize, Clone)]
 pub struct BiliSpan {
     pub bvid: String,
+    pub oid: i64,
     pub title: String,
     pub author_name: String,
     pub cover: String,    // 封面 URL
@@ -143,6 +134,16 @@ pub struct BiliSpan {
     pub end_at: String,
     pub duration: i32,    // 总时长（秒）
     pub progress: i32,    // 已看（秒）
+    pub view_at: i64,     // 观看时间戳（unix 秒）
+    pub event_id: Option<String>, // 已入档时关联的事件 ID
+    pub downloaded: bool, // bili_video_assets 中存在 download_status='done' 即为 true
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct BiliDayCount {
+    pub day: String,        // "YYYY-MM-DD"
+    pub watched: i64,       // 当日观看条目数
+    pub downloaded: i64,    // 其中已下载（assets done）的条目数
 }
 
 #[derive(Debug, Deserialize)]
@@ -513,38 +514,6 @@ impl Database {
         Ok(())
     }
 
-    /// 更新活动
-    pub async fn update_activity(&self, id: &str, req: UpdateActivityRequest) -> Result<(), String> {
-        let conn = self.conn.lock().await;
-
-        // 更新活动主体
-        conn.execute(r#"
-            UPDATE chronos_activities
-            SET title = ?, category = ?, start_minute = ?, end_minute = ?, goal_alignment = ?
-            WHERE id = ?
-        "#, params![
-            &req.title,
-            &req.category,
-            req.start_minute,
-            req.end_minute,
-            &req.goal_alignment,
-            id,
-        ]).map_err(|e| e.to_string())?;
-
-        // 删除旧事件，重新插入
-        conn.execute(
-            "DELETE FROM chronos_events WHERE activity_id = ?",
-            [id],
-        ).map_err(|e| e.to_string())?;
-
-        for event in req.events {
-            Self::create_event_inner(&conn, id, event)?;
-        }
-
-        log::info!("[Database] 更新活动: {}", id);
-        Ok(())
-    }
-
     // ── Chronos Events ──
 
     fn get_events_by_activity_inner(conn: &Connection, activity_id: &str) -> Result<Vec<ChronosEvent>, String> {
@@ -828,33 +797,108 @@ impl Database {
         let sql = r#"
             WITH spans AS (
                 SELECT
-                    bvid, title, author_name, cover, duration, progress, view_at,
+                    bvid, oid, title, author_name, cover, duration, progress, view_at, event_id,
                     view_at - CASE
-                        WHEN progress > 0 THEN MIN(progress, 3600)
-                        ELSE MIN(duration, 3600)
+                        WHEN progress > 0  THEN MIN(progress, 3600)  -- 真实部分观看（秒）
+                        WHEN progress = -1 THEN MIN(duration, 3600)  -- B站"已看完"哨兵 → 按 duration
+                        ELSE 60                                       -- progress=0：点开未播
                     END AS start_unix
                 FROM bili_history
             )
             SELECT
-                bvid, title, author_name, cover, duration, progress,
-                datetime(start_unix, 'unixepoch', 'localtime') AS start_dt,
-                datetime(view_at,    'unixepoch', 'localtime') AS end_dt
-            FROM spans
-            WHERE date(view_at,    'unixepoch', 'localtime') = ?1
-               OR date(start_unix, 'unixepoch', 'localtime') = ?1
-            ORDER BY view_at ASC
+                s.bvid, s.oid, s.title, s.author_name, s.cover, s.duration, s.progress,
+                datetime(s.start_unix, 'unixepoch', 'localtime') AS start_dt,
+                datetime(s.view_at,    'unixepoch', 'localtime') AS end_dt,
+                s.view_at, s.event_id,
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM bili_video_assets a
+                    WHERE a.bvid = s.bvid AND a.download_status = 'done'
+                ) THEN 1 ELSE 0 END AS downloaded
+            FROM spans s
+            WHERE date(s.view_at,    'unixepoch', 'localtime') = ?1
+               OR date(s.start_unix, 'unixepoch', 'localtime') = ?1
+            ORDER BY s.view_at ASC
         "#;
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(params![date], |row| {
+            let downloaded_int: i64 = row.get(11)?;
             Ok(BiliSpan {
                 bvid:        row.get(0)?,
-                title:       row.get(1)?,
-                author_name: row.get(2)?,
-                cover:       row.get(3)?,
-                duration:    row.get(4)?,
-                progress:    row.get(5)?,
-                start_at:    row.get(6)?,
-                end_at:      row.get(7)?,
+                oid:         row.get(1)?,
+                title:       row.get(2)?,
+                author_name: row.get(3)?,
+                cover:       row.get(4)?,
+                duration:    row.get(5)?,
+                progress:    row.get(6)?,
+                start_at:    row.get(7)?,
+                end_at:      row.get(8)?,
+                view_at:     row.get(9)?,
+                event_id:    row.get(10)?,
+                downloaded:  downloaded_int != 0,
+            })
+        }).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 在 [from, to] 范围内，返回所有"有数据"的日期（用于昼夜表前后日按钮）
+    /// 数据 = chronos_activities OR bili_history OR presence_spans 任意一项有记录
+    pub async fn get_data_days(
+        &self, from: &str, to: &str,
+    ) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().await;
+        let sql = r#"
+            SELECT day FROM (
+                SELECT DISTINCT date AS day
+                FROM chronos_activities
+                WHERE date BETWEEN ?1 AND ?2
+                UNION
+                SELECT DISTINCT date(view_at, 'unixepoch', 'localtime') AS day
+                FROM bili_history
+                WHERE date(view_at, 'unixepoch', 'localtime') BETWEEN ?1 AND ?2
+                UNION
+                SELECT DISTINCT substr(start_time, 1, 10) AS day
+                FROM presence_spans
+                WHERE substr(start_time, 1, 10) BETWEEN ?1 AND ?2
+            )
+            ORDER BY day ASC
+        "#;
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![from, to], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 按日聚合 B 站观看数 + 已下载数（用于日历角标）
+    /// from_date / to_date 格式 "YYYY-MM-DD"，闭区间
+    pub async fn get_bili_day_counts(
+        &self, from_date: &str, to_date: &str,
+    ) -> Result<Vec<BiliDayCount>, String> {
+        let conn = self.conn.lock().await;
+        let sql = r#"
+            WITH bili_in_range AS (
+                SELECT
+                    bvid,
+                    date(view_at, 'unixepoch', 'localtime') AS day
+                FROM bili_history
+                WHERE date(view_at, 'unixepoch', 'localtime') BETWEEN ?1 AND ?2
+            )
+            SELECT
+                day,
+                COUNT(*) AS watched,
+                SUM(CASE WHEN EXISTS (
+                    SELECT 1 FROM bili_video_assets a
+                    WHERE a.bvid = bili_in_range.bvid AND a.download_status = 'done'
+                ) THEN 1 ELSE 0 END) AS downloaded
+            FROM bili_in_range
+            GROUP BY day
+            ORDER BY day ASC
+        "#;
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![from_date, to_date], |row| {
+            Ok(BiliDayCount {
+                day:        row.get(0)?,
+                watched:    row.get(1)?,
+                downloaded: row.get(2)?,
             })
         }).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())

@@ -136,6 +136,68 @@ struct BiliSyncResult {
     cursor_view_at: i64,
 }
 
+#[derive(serde::Serialize)]
+struct BiliNavInfo {
+    is_login: bool,
+    uname: Option<String>,
+    mid: Option<i64>,
+}
+
+#[tauri::command]
+async fn bili_get_nav(
+    app: tauri::AppHandle,
+    bili: tauri::State<'_, Arc<BiliState>>,
+) -> Result<BiliNavInfo, String> {
+    // 窗口不存在 → 返回错误，让前端保留之前的判定（不要把"窗口被关"误判为"已登出"）
+    let win = app.get_webview_window("bili-login")
+        .ok_or_else(|| "BILI_WIN_NOT_OPEN".to_string())?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut guard = bili.pending_nav.lock().await;
+        if guard.is_some() {
+            // 已有 nav 请求在飞 → 不要覆盖（覆盖会让旧请求拿到 Err"请求已取消"）
+            return Err("BILI_NAV_BUSY".to_string());
+        }
+        *guard = Some(tx);
+    }
+
+    let js = r#"(async()=>{
+try{
+  const r=await fetch('https://api.bilibili.com/x/web-interface/nav',{credentials:'include'});
+  const d=await r.json();
+  await fetch('http://localhost:3000/api/bilibili/nav_result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ok:d})});
+}catch(e){
+  await fetch('http://localhost:3000/api/bilibili/nav_result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({error:e.message||String(e)})});
+}
+})();"#;
+
+    if let Err(e) = win.eval(js) {
+        // eval 失败时清掉占位，避免后续请求一直拿到 BUSY
+        bili.pending_nav.lock().await.take();
+        return Err(e.to_string());
+    }
+
+    let raw = match tokio::time::timeout(std::time::Duration::from_secs(8), rx).await {
+        Ok(Ok(result)) => result?,
+        Ok(Err(_)) => {
+            bili.pending_nav.lock().await.take();
+            return Err("BILI_NAV_BUSY".to_string());
+        }
+        Err(_) => {
+            bili.pending_nav.lock().await.take();
+            return Err("请求超时".to_string());
+        }
+    };
+
+    let data = raw.get("data");
+    let is_login = data.and_then(|d| d.get("isLogin")).and_then(|v| v.as_bool()).unwrap_or(false);
+    let uname    = data.and_then(|d| d.get("uname")).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let mid      = data.and_then(|d| d.get("mid")).and_then(|v| v.as_i64());
+
+    Ok(BiliNavInfo { is_login, uname, mid })
+}
+
 #[tauri::command]
 async fn fetch_bili_history(
     app: tauri::AppHandle,
@@ -154,6 +216,10 @@ async fn fetch_bili_history(
     let (tx, rx) = tokio::sync::oneshot::channel();
     {
         let mut guard = bili.pending.lock().await;
+        if guard.is_some() {
+            // 已有 history 请求在飞 → 拒绝新请求（覆盖会让旧请求拿到 Err"请求已取消"）
+            return Err("BILI_HISTORY_BUSY".to_string());
+        }
         *guard = Some(tx);
     }
 
@@ -169,12 +235,21 @@ try{{
 }})();"#
     );
 
-    win.eval(&js).map_err(|e| e.to_string())?;
+    if let Err(e) = win.eval(&js) {
+        bili.pending.lock().await.take();
+        return Err(e.to_string());
+    }
 
     let raw = match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
         Ok(Ok(result)) => result?,
-        Ok(Err(_)) => return Err("请求已取消".to_string()),
-        Err(_) => return Err("请求超时".to_string()),
+        Ok(Err(_)) => {
+            bili.pending.lock().await.take();
+            return Err("BILI_HISTORY_BUSY".to_string());
+        }
+        Err(_) => {
+            bili.pending.lock().await.take();
+            return Err("请求超时".to_string());
+        }
     };
 
     // 提取 cursor（供前端加载更早历史时使用）
@@ -639,6 +714,7 @@ pub fn run() {
             migrate_database,
             open_bili_login,
             fetch_bili_history,
+            bili_get_nav,
             bili_download::enqueue_bili_download,
             bili_download::probe_bili_qualities,
             get_bili_assets_by_bvid,
