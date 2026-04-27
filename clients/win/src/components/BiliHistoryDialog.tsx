@@ -6,7 +6,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { X, RefreshCw, Pause, Play, LogIn, ChevronDown, ChevronLeft, ChevronRight, Settings, FolderOpen } from 'lucide-react'
+import { X, RefreshCw, Pause, Play, LogIn, ChevronDown, ChevronLeft, ChevronRight, Settings, FolderOpen, Telescope, Sparkles } from 'lucide-react'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { useDataDays, hasDataOrIsToday } from '../hooks/useDataDays'
 import BiliIcon from './icons/BiliIcon'
@@ -16,7 +16,7 @@ import HudSelect from './HudSelect'
 import { openBiliLogin, getBiliNav, formatViewTime } from '../lib/bilibili/api'
 import { fetchBiliSpans } from '../lib/local-api'
 import type { BiliSpan } from '../lib/local-api'
-import type { BiliCursor } from '../lib/bilibili/useHistory'
+import type { BiliCursor, ScanProgress, ScanPageEvent, ScanFeedItem } from '../lib/bilibili/useHistory'
 import { loadConfig, updateConfig } from '../lib/agent/agent-config'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import { theme, hud } from '../theme'
@@ -49,9 +49,13 @@ interface Props {
   readonly windowClosed: boolean
   readonly cursor: BiliCursor | null
   readonly hasMoreRemote: boolean
+  readonly scanProgress: ScanProgress | null
+  readonly scanSnapshotBvids: Set<string> | null
+  readonly scanLastPage: ScanPageEvent | null
   readonly onPause: () => void
   readonly onResume: () => void
   readonly onRefresh: () => void
+  readonly onFullScan: () => void
   readonly onSetInterval: (s: number) => void
   readonly onClose: () => void
 }
@@ -89,11 +93,23 @@ function fmtTimeLabel(startAt: string, dayStr: string): { prefix: string | null;
   return { prefix: `${-diffDays}天后`, time }
 }
 
-function fmtDuration(seconds: number): string {
-  if (!seconds || seconds <= 0) return '—'
-  const m = Math.round(seconds / 60)
-  if (m < 60) return `${m}分钟`
-  return `${Math.floor(m / 60)}小时${m % 60 ? `${m % 60}分钟` : ''}`
+function fmtBytes(bytes: number | null | undefined): string {
+  if (!bytes || bytes <= 0) return ''
+  const KB = 1024, MB = KB * 1024, GB = MB * 1024
+  if (bytes >= GB) return `${(bytes / GB).toFixed(bytes >= 10 * GB ? 0 : 1)}GB`
+  if (bytes >= MB) return `${Math.round(bytes / MB)}MB`
+  if (bytes >= KB) return `${Math.round(bytes / KB)}KB`
+  return `${bytes}B`
+}
+
+/** "MM:SS"（<1h）或 "HH:MM:SS"（≥1h） */
+function fmtClock(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const ss = s % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m)}:${pad(ss)}` : `${pad(m)}:${pad(ss)}`
 }
 
 // → 当日相对分钟（裁剪到 [0, 1440]）；用 Date 解析容错任意格式
@@ -125,7 +141,8 @@ interface PlacedCard {
  *     底部主轴自然停在最后一行卡片范围内，不再"腾空"
  */
 function layoutMasonry(spans: BiliSpan[], dayStr: string, cols: number): { placed: PlacedCard[]; height: number } {
-  const sorted = [...spans].sort((a, b) => (a.start_at < b.start_at ? -1 : 1))
+  // 倒序：最新（end_at 更晚）在顶部，向下越来越早
+  const sorted = [...spans].sort((a, b) => (a.end_at < b.end_at ? 1 : -1))
   const placed: PlacedCard[] = []
   let cursorY = CARD_TOP_PAD
   let prevHour = -1
@@ -175,7 +192,8 @@ export default function BiliHistoryDialog({
   open, initialDate,
   isLoading, error, lastUpdated, countdown, intervalSeconds, isPaused,
   windowClosed, cursor, hasMoreRemote: _hasMoreRemote,
-  onPause, onResume, onRefresh, onSetInterval, onClose,
+  scanProgress, scanSnapshotBvids, scanLastPage,
+  onPause, onResume, onRefresh, onFullScan, onSetInterval, onClose,
 }: Props) {
   const [date, setDate] = useState<Date>(initialDate)
   const [spans, setSpans] = useState<BiliSpan[]>([])
@@ -190,6 +208,19 @@ export default function BiliHistoryDialog({
     try { return localStorage.getItem('bili.uname') } catch { return null }
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
+
+  // ── 深度扫描"瀑布流"状态 ──
+  // 仿 B站 历史页 4 列 × 4 行 grid，刚好铺满一屏不滚动
+  // 新视频从顶部下落进入，旧视频被挤出底部
+  const MAX_FEED = 16
+  const [scanFeed, setScanFeed] = useState<Array<ScanFeedItem & { id: number; isNew: boolean }>>([])
+  const seenBvidsRef = useRef<Set<string>>(new Set())
+  const cardIdRef = useRef(0)
+  const scanActive = !!scanProgress && !scanProgress.done
+
+  // ── 深度扫描"增量日期清单"：dateStr → 真·增量条数 ──
+  const [scanIncrement, setScanIncrement] = useState<Map<string, number>>(new Map())
+  const [showScanReport, setShowScanReport] = useState(false)
   const [config, setConfig] = useState<AgentConfig>(() => loadConfig())
   const settingsAnchorRef = useRef<HTMLButtonElement | null>(null)
   const settingsPopRef = useRef<HTMLDivElement | null>(null)
@@ -252,14 +283,15 @@ export default function BiliHistoryDialog({
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (detailSpan) setDetailSpan(null)
+      if (showScanReport) setShowScanReport(false)
+      else if (detailSpan) setDetailSpan(null)
       else if (settingsOpen) setSettingsOpen(false)
       else if (datePickerOpen) setDatePickerOpen(false)
       else onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, detailSpan, datePickerOpen, settingsOpen, onClose])
+  }, [open, detailSpan, datePickerOpen, settingsOpen, showScanReport, onClose])
 
   // 设置弹层 click-outside
   useEffect(() => {
@@ -273,6 +305,59 @@ export default function BiliHistoryDialog({
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
   }, [settingsOpen])
+
+  // 深度扫描每页爬到的 items 由 useHistory 直接推过来 → 注入瀑布流 + 累计增量日期清单
+  //   - bvid 不在扫描启动快照里 → "真·增量"（绿色描边 + 计入清单）
+  //   - bvid 在快照里                  → "回扫历史"（白色淡色，不计入清单）
+  // 新视频 unshift 到数组头（瀑布顶部），最多保留 MAX_FEED 张以保性能
+  useEffect(() => {
+    if (!open || !scanLastPage) return
+    const newcomers: Array<ScanFeedItem & { id: number; isNew: boolean }> = []
+    const dayDelta = new Map<string, number>()
+    for (const it of scanLastPage.items) {
+      if (seenBvidsRef.current.has(it.bvid)) continue
+      seenBvidsRef.current.add(it.bvid)
+      const isNew = scanSnapshotBvids ? !scanSnapshotBvids.has(it.bvid) : true
+      newcomers.push({ ...it, id: ++cardIdRef.current, isNew })
+      if (isNew && it.view_at > 0) {
+        const d = new Date(it.view_at * 1000)
+        const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        dayDelta.set(k, (dayDelta.get(k) ?? 0) + 1)
+      }
+    }
+    if (dayDelta.size > 0) {
+      setScanIncrement((prev) => {
+        const next = new Map(prev)
+        for (const [k, v] of dayDelta) next.set(k, (next.get(k) ?? 0) + v)
+        return next
+      })
+    }
+    if (newcomers.length === 0) return
+    setScanFeed((prev) => [...newcomers, ...prev].slice(0, MAX_FEED))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, scanLastPage])
+
+  // 新一轮扫描启动（pages=1 且报告关着）→ 清空累计
+  useEffect(() => {
+    if (scanProgress && scanProgress.pages === 1 && !scanProgress.done) {
+      setScanIncrement(new Map())
+      setShowScanReport(false)
+      setScanFeed([])
+      seenBvidsRef.current.clear()
+    }
+  }, [scanProgress])
+
+  // 扫描结束 → 弹增量清单 + 1.6s 后清空瀑布
+  useEffect(() => {
+    if (!scanProgress || !scanProgress.done) return
+    if (scanIncrement.size > 0) setShowScanReport(true)
+    const t = setTimeout(() => {
+      setScanFeed([])
+      seenBvidsRef.current.clear()
+    }, 1600)
+    return () => clearTimeout(t)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanProgress?.done])
 
   // 监测画廊宽度（决定列数）
   useEffect(() => {
@@ -333,6 +418,41 @@ export default function BiliHistoryDialog({
       <style>{`
         @keyframes bhd-overlay-in { from { opacity: 0 } to { opacity: 1 } }
         @keyframes bhd-pop { from { opacity: 0; transform: translate(-50%, -50%) scale(0.97); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+        @keyframes bhd-scan-pulse {
+          0%, 100% { box-shadow: 0 0 8px ${theme.electricBlue}88; }
+          50%      { box-shadow: 0 0 16px ${theme.electricBlue}, 0 0 28px ${theme.electricBlue}66; }
+        }
+        /* 瀑布卡片：从顶部下落 */
+        @keyframes bhd-card-drop {
+          0%   { transform: translateY(-22px) scale(0.92); opacity: 0; }
+          70%  { transform: translateY(2px)   scale(1.01); opacity: 1; }
+          100% { transform: translateY(0)     scale(1);    opacity: 1; }
+        }
+        @keyframes bhd-overlay-fade {
+          from { opacity: 1; }
+          to   { opacity: 0; }
+        }
+        @keyframes bhd-scanline {
+          0%   { transform: translateX(-100%); }
+          100% { transform: translateX(100%); }
+        }
+        .bhd-scan-card {
+          position: relative;
+          background: rgba(8, 14, 28, 0.92);
+          overflow: hidden;
+          contain: layout paint;
+          animation: bhd-card-drop 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+          will-change: transform, opacity;
+        }
+        .bhd-scan-card.is-new {
+          border: 1.5px solid ${theme.expGreen};
+          box-shadow: 0 0 14px ${theme.expGreen}88, 0 0 28px ${theme.expGreen}44, inset 0 0 18px ${theme.expGreen}22;
+        }
+        .bhd-scan-card.is-old {
+          border: 1px solid rgba(255,255,255,0.16);
+          opacity: 0.55;
+          filter: saturate(0.35) brightness(0.9);
+        }
         .bhd-icon-btn {
           background: rgba(0,229,255,0.05);
           border: 1px solid ${theme.hudFrameSoft};
@@ -345,6 +465,7 @@ export default function BiliHistoryDialog({
           transition: all 0.15s ease;
         }
         .bhd-icon-btn:hover:not(:disabled) { color: ${theme.electricBlue}; border-color: ${theme.electricBlue}; box-shadow: 0 0 8px ${theme.electricBlue}55; }
+        .bhd-icon-btn:disabled { opacity: 0.32; cursor: not-allowed; filter: grayscale(0.7); }
         .bhd-date-trigger {
           display: inline-flex; align-items: center; gap: 8px;
           padding: 5px 12px;
@@ -535,7 +656,12 @@ export default function BiliHistoryDialog({
                 : '浏览器打开 B站 初始化读取历史数据'}
           </button>
           <span style={{ fontSize: 11, color: loginError ? theme.dangerRed : theme.textSecondary, display: 'flex', alignItems: 'center', gap: 6 }}>
-            {(loginError ?? error ?? fetchErr) ? (
+            {scanActive ? (
+              <span style={{ color: theme.electricBlue, fontFamily: theme.fontMono, textShadow: `0 0 6px ${theme.electricBlue}88` }}>
+                <Sparkles size={11} style={{ display: 'inline-block', verticalAlign: -1, marginRight: 4 }} />
+                深度扫描 · {scanProgress!.pages} 页 · {scanProgress!.fetched} 条
+              </span>
+            ) : (loginError ?? error ?? fetchErr) ? (
               <>{loginError ?? error ?? fetchErr}</>
             ) : (
               <>
@@ -569,14 +695,33 @@ export default function BiliHistoryDialog({
             ]}
           />
           <div style={{ flex: 1 }} />
-          <Tooltip content={isPaused ? '继续' : '暂停'}>
-            <button className="bhd-icon-btn" onClick={isPaused ? onResume : onPause}>
+          <Tooltip content={scanActive ? '深度扫描中，已冻结自动同步' : (isPaused ? '继续' : '暂停')}>
+            <button
+              className="bhd-icon-btn"
+              onClick={isPaused ? onResume : onPause}
+              disabled={scanActive}
+            >
               {isPaused ? <Play size={12} /> : <Pause size={12} />}
             </button>
           </Tooltip>
-          <Tooltip content="立即同步">
-            <button className="bhd-icon-btn" onClick={() => { onRefresh(); loadSpans(date) }}>
+          <Tooltip content={scanActive ? '深度扫描中，无法立即同步' : '立即同步'}>
+            <button className="bhd-icon-btn" onClick={() => { onRefresh(); loadSpans(date) }} disabled={scanActive}>
               <RefreshCw size={12} />
+            </button>
+          </Tooltip>
+          <Tooltip content={scanActive ? '深度扫描中…' : '深度扫描（拉到底）'}>
+            <button
+              className="bhd-icon-btn"
+              onClick={onFullScan}
+              disabled={scanActive}
+              style={scanActive ? {
+                color: theme.electricBlue,
+                borderColor: theme.electricBlue,
+                boxShadow: `0 0 8px ${theme.electricBlue}88`,
+                animation: 'bhd-scan-pulse 1.4s ease-in-out infinite',
+              } : undefined}
+            >
+              <Telescope size={12} />
             </button>
           </Tooltip>
         </div>
@@ -702,6 +847,11 @@ export default function BiliHistoryDialog({
 
         </div>
 
+        {/* 深度扫描瀑布流（HUD 风 4 列 grid） */}
+        {scanFeed.length > 0 && scanProgress && (
+          <ScanWaterfall feed={scanFeed} progress={scanProgress} done={!!scanProgress.done} />
+        )}
+
         {/* 底栏 */}
         <div style={{
           position: 'relative',
@@ -711,13 +861,22 @@ export default function BiliHistoryDialog({
           display: 'flex', justifyContent: 'space-between',
           flexShrink: 0,
         }}>
-          <span>关闭弹窗后后台继续同步</span>
+          <span>{scanActive ? '深度扫描进行中 · 关闭弹窗会中断扫描' : '关闭弹窗后后台继续同步'}</span>
           {cursor && <span>最旧记录: {formatViewTime(cursor.viewAt)}</span>}
         </div>
 
         {/* 详情浮层：放在弹窗 body 顶层，避开滚动容器 */}
         {detailSpan && (
           <DetailOverlay span={detailSpan} onClose={() => setDetailSpan(null)} />
+        )}
+
+        {/* 深度扫描增量报告 */}
+        {showScanReport && (
+          <ScanReportOverlay
+            increment={scanIncrement}
+            onJump={(d) => { setDate(d); setShowScanReport(false); setDetailSpan(null) }}
+            onClose={() => setShowScanReport(false)}
+          />
         )}
       </div>
 
@@ -991,20 +1150,24 @@ function Card({
             textShadow: '0 0 2px #000, 0 0 2px #000, 0 0 4px rgba(0,0,0,0.9)',
             boxShadow: `0 0 6px ${theme.expGreen}66, 0 1px 2px rgba(0,0,0,0.6)`,
           }}>
-            已下载
+            已下载{span.file_size_bytes ? ` · ${fmtBytes(span.file_size_bytes)}` : ''}
           </span>
         )}
-        {/* 时长 */}
+        {/* 观看时长 / 总时长（右下角） */}
         <span style={{
-          position: 'absolute', top: 6, right: 6,
+          position: 'absolute', bottom: 6, right: 6,
           padding: '2px 6px',
-          background: 'rgba(0,0,0,0.7)',
+          background: 'rgba(0,0,0,0.72)',
           color: theme.textPrimary,
           fontFamily: theme.fontMono,
           fontSize: 10,
           letterSpacing: 0.3,
+          lineHeight: 1.2,
         }}>
-          {fmtDuration(span.duration)}
+          {(() => {
+            const watched = span.progress > 0 ? span.progress : (span.progress === -1 ? span.duration : 0)
+            return `${fmtClock(watched)} / ${fmtClock(span.duration)}`
+          })()}
         </span>
         {/* 进度条（看完了自然拉满，无需额外徽标） */}
         <div style={{
@@ -1058,6 +1221,358 @@ function Card({
         </div>
       </div>
     </div>
+  )
+}
+
+// ══════════════════════════════════════════════
+// 深度扫描瀑布流：仿 B站 历史页 4 列 grid
+// 新视频从顶部下落，旧视频被挤出底部；真增量绿框，回扫历史灰白
+// ══════════════════════════════════════════════
+function ScanWaterfall({
+  feed, progress, done,
+}: {
+  feed: Array<ScanFeedItem & { id: number; isNew: boolean }>
+  progress: ScanProgress
+  done: boolean
+}) {
+  const newCount = useMemo(() => feed.filter((c) => c.isNew).length, [feed])
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: 12, right: 12, top: 84, bottom: 32,
+        zIndex: 9,
+        background: 'rgba(2, 6, 14, 0.94)',
+        border: `1px solid ${theme.electricBlue}55`,
+        clipPath: hud.chamfer12,
+        WebkitClipPath: hud.chamfer12,
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+        boxShadow: `0 0 32px ${theme.electricBlue}33, inset 0 0 60px rgba(0,229,255,0.04)`,
+        animation: done
+          ? 'bhd-overlay-fade 1.0s ease-out 0.6s forwards'
+          : 'bhd-overlay-in 0.18s ease-out',
+      }}
+    >
+      {/* HUD header */}
+      <div style={{
+        position: 'relative',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '8px 14px',
+        borderBottom: `1px solid ${theme.electricBlue}33`,
+        background: `linear-gradient(180deg, ${theme.electricBlue}1c, transparent)`,
+        flexShrink: 0,
+      }}>
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 8,
+          fontFamily: theme.fontDisplay, fontSize: 11, fontWeight: 700,
+          letterSpacing: 2.5, color: theme.electricBlue,
+          textShadow: `0 0 8px ${theme.electricBlue}AA`,
+        }}>
+          <Sparkles size={12} />
+          DATA STREAM · DEEP SCAN
+        </span>
+        <span style={{
+          fontFamily: theme.fontMono, fontSize: 10.5,
+          color: theme.electricBlue, letterSpacing: 0.6,
+        }}>
+          P {String(progress.pages).padStart(3, '0')}
+          <span style={{ opacity: 0.5, margin: '0 6px' }}>·</span>
+          {progress.fetched} ITEMS
+          {newCount > 0 && (
+            <>
+              <span style={{ opacity: 0.5, margin: '0 6px' }}>·</span>
+              <span style={{ color: theme.expGreen, textShadow: `0 0 6px ${theme.expGreen}88` }}>
+                +{newCount} NEW
+              </span>
+            </>
+          )}
+        </span>
+        {/* 扫描线装饰 */}
+        <div style={{
+          position: 'absolute', left: 0, right: 0, bottom: 0, height: 1,
+          background: `linear-gradient(90deg, transparent, ${theme.electricBlue}, transparent)`,
+          animation: 'bhd-scanline 2.4s linear infinite',
+          opacity: 0.7,
+        }} />
+      </div>
+
+      {/* 4 列 × 4 行 grid，铺满不滚动 */}
+      <div style={{
+        flex: 1,
+        overflow: 'hidden',
+        padding: 10,
+        minHeight: 0,
+      }}>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(4, 1fr)',
+          gridTemplateRows: 'repeat(4, 1fr)',
+          gap: 8,
+          width: '100%',
+          height: '100%',
+        }}>
+          {feed.map((c) => (
+            <ScanCard key={c.id} card={c} />
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ScanCard({ card }: { card: ScanFeedItem & { id: number; isNew: boolean } }) {
+  const watched = card.progress < 0
+    ? card.duration
+    : (card.progress > 0 ? card.progress : 0)
+  const pct = card.duration > 0
+    ? Math.min(100, Math.round((card.progress < 0 ? 1 : card.progress / card.duration) * 100))
+    : 0
+  return (
+    <div
+      className={`bhd-scan-card ${card.isNew ? 'is-new' : 'is-old'}`}
+      style={{
+        display: 'flex', flexDirection: 'column',
+        minHeight: 0,
+      }}
+    >
+      {/* 增量绿色顶部色条 */}
+      {card.isNew && (
+        <div style={{
+          position: 'absolute', left: 0, right: 0, top: 0, height: 2,
+          background: theme.expGreen,
+          boxShadow: `0 0 8px ${theme.expGreen}`,
+          zIndex: 2,
+        }} />
+      )}
+
+      {/* 封面 — flex: 1 自动填充剩余空间 */}
+      <div style={{
+        position: 'relative',
+        flex: 1,
+        minHeight: 0,
+        background: 'rgba(0,0,0,0.6)',
+        overflow: 'hidden',
+      }}>
+        <img
+          src={`http://localhost:3000/api/bilibili/cover?url=${encodeURIComponent(card.cover)}`}
+          alt=""
+          loading="lazy"
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          onError={(e) => { e.currentTarget.style.display = 'none' }}
+        />
+        {card.isNew && (
+          <span style={{
+            position: 'absolute', top: 4, left: 4,
+            padding: '2px 6px',
+            background: `${theme.expGreen}F0`,
+            color: '#021004',
+            fontFamily: theme.fontDisplay,
+            fontSize: 9, fontWeight: 800, letterSpacing: 1.4,
+            boxShadow: `0 0 8px ${theme.expGreen}AA`,
+          }}>
+            NEW
+          </span>
+        )}
+        {/* 观看 / 总时长（右下） */}
+        {card.duration > 0 && (
+          <span style={{
+            position: 'absolute', bottom: 4, right: 4,
+            padding: '1px 5px',
+            background: 'rgba(0,0,0,0.78)',
+            color: theme.textPrimary,
+            fontFamily: theme.fontMono,
+            fontSize: 10,
+            letterSpacing: 0.3,
+            lineHeight: 1.2,
+          }}>
+            {fmtClock(watched)} / {fmtClock(card.duration)}
+          </span>
+        )}
+        {/* 进度条 */}
+        {card.duration > 0 && (
+          <div style={{
+            position: 'absolute', bottom: 0, left: 0, right: 0,
+            height: 2,
+            background: 'rgba(255,255,255,0.08)',
+          }}>
+            <div style={{
+              height: '100%',
+              width: `${pct}%`,
+              background: card.isNew ? theme.expGreen : theme.electricBlue,
+              boxShadow: `0 0 6px ${card.isNew ? theme.expGreen : theme.electricBlue}`,
+            }} />
+          </div>
+        )}
+      </div>
+
+      {/* 文字区 — 固定高度 */}
+      <div style={{
+        padding: '5px 7px 6px',
+        flexShrink: 0,
+        background: card.isNew ? `${theme.expGreen}10` : 'transparent',
+      }}>
+        <div style={{
+          fontFamily: theme.fontBody,
+          fontSize: 10.5, fontWeight: 600,
+          color: theme.textPrimary,
+          lineHeight: 1.3,
+          display: '-webkit-box',
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+          marginBottom: 3,
+        }}>
+          {card.title || card.bvid}
+        </div>
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          fontSize: 9.5,
+          fontFamily: theme.fontMono,
+          gap: 4,
+        }}>
+          <span style={{
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            flex: 1, minWidth: 0,
+            color: card.isNew ? theme.electricBlue : theme.textMuted,
+          }}>
+            {card.author_name || '—'}
+          </span>
+          <span style={{
+            color: card.isNew ? theme.expGreen : theme.textMuted,
+            letterSpacing: 0.3,
+            flexShrink: 0,
+            textShadow: card.isNew ? `0 0 4px ${theme.expGreen}66` : undefined,
+          }}>
+            {card.view_at > 0 ? formatViewTime(card.view_at) : ''}
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════
+// 深度扫描结束 → 增量日期清单
+// ══════════════════════════════════════════════
+function ScanReportOverlay({
+  increment, onJump, onClose,
+}: {
+  increment: Map<string, number>
+  onJump: (d: Date) => void
+  onClose: () => void
+}) {
+  const rows = useMemo(() => {
+    const arr = Array.from(increment.entries())
+      .map(([dayStr, count]) => ({ dayStr, count }))
+      .sort((a, b) => (a.dayStr < b.dayStr ? 1 : -1))  // 日期降序（最新在上）
+    return arr
+  }, [increment])
+
+  const total = useMemo(() => rows.reduce((acc, r) => acc + r.count, 0), [rows])
+
+  return (
+    <>
+      <div
+        onClick={onClose}
+        style={{
+          position: 'absolute', inset: 0, zIndex: 12,
+          background: 'rgba(2, 6, 16, 0.78)',
+          animation: 'bhd-overlay-in 0.16s ease-out',
+        }}
+      />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'absolute',
+          left: '50%', top: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: 'min(440px, 86%)',
+          maxHeight: '78%',
+          zIndex: 13,
+          display: 'flex', flexDirection: 'column',
+          background: theme.hudFill,
+          border: `1px solid ${theme.expGreen}`,
+          clipPath: hud.chamfer12, WebkitClipPath: hud.chamfer12,
+          boxShadow: `0 24px 60px rgba(0,0,0,0.85), 0 0 40px ${theme.expGreen}55`,
+          overflow: 'hidden',
+          animation: 'bhd-pop 0.18s ease-out',
+        }}
+      >
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '10px 14px',
+          borderBottom: `1px solid ${theme.hudFrameSoft}`,
+          background: `linear-gradient(180deg, ${theme.expGreen}22 0%, transparent 100%)`,
+        }}>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            fontFamily: theme.fontDisplay, fontSize: 12, fontWeight: 700,
+            letterSpacing: 1.6, color: theme.expGreen,
+            textShadow: `0 0 8px ${theme.expGreen}88`,
+          }}>
+            <Sparkles size={13} />
+            深度扫描完成 · 共 {total} 条增量
+          </span>
+          <button className="bhd-icon-btn" onClick={onClose}><X size={12} /></button>
+        </div>
+
+        {rows.length === 0 ? (
+          <div style={{ padding: 28, textAlign: 'center', color: theme.textMuted, fontSize: 12 }}>
+            未发现增量记录
+          </div>
+        ) : (
+          <div style={{ overflowY: 'auto', padding: '4px 0' }}>
+            {rows.map((r) => {
+              const [y, m, d] = r.dayStr.split('-')
+              const dateObj = new Date(Number(y), Number(m) - 1, Number(d))
+              const wd = ['日', '一', '二', '三', '四', '五', '六'][dateObj.getDay()]
+              return (
+                <button
+                  key={r.dayStr}
+                  onClick={() => onJump(dateObj)}
+                  style={{
+                    width: '100%',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '8px 16px',
+                    background: 'transparent',
+                    border: 'none',
+                    borderBottom: `1px solid ${theme.hudFrameSoft}`,
+                    color: theme.textPrimary,
+                    fontFamily: theme.fontMono,
+                    fontSize: 12,
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = `${theme.expGreen}14` }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ color: theme.electricBlue, fontWeight: 700 }}>{r.dayStr}</span>
+                    <span style={{ color: theme.textMuted, fontSize: 11 }}>周{wd}</span>
+                  </span>
+                  <span style={{
+                    color: theme.expGreen,
+                    fontWeight: 700,
+                    textShadow: `0 0 6px ${theme.expGreen}88`,
+                  }}>
+                    +{r.count}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        <div style={{
+          padding: '6px 14px',
+          borderTop: `1px solid ${theme.hudFrameSoft}`,
+          fontSize: 10.5, color: theme.textMuted, letterSpacing: 0.4,
+        }}>
+          点击日期可跳转到当天历史
+        </div>
+      </div>
+    </>
   )
 }
 

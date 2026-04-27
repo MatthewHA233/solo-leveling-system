@@ -245,8 +245,12 @@ export default function App() {
     lastUpdated: biliLastUpdated, countdown: biliCountdown,
     intervalSeconds: biliIntervalSec, isPaused: biliPaused,
     windowClosed: biliWinClosed, cursor: biliCursor, hasMoreRemote: biliHasMoreRemote,
+    scanProgress: biliScanProgress,
+    scanSnapshotBvids: biliScanSnapshotBvids,
+    scanLastPage: biliScanLastPage,
     pause: pauseBili, resume: resumeBili,
-    refresh: refreshBili, loadOlderHistory: biliLoadOlder, clearNew: clearBiliNew,
+    refresh: refreshBili,
+    fullScan: biliFullScan, clearNew: clearBiliNew,
     setIntervalSeconds: setBiliInterval,
   } = useBiliHistory({ intervalSeconds: config.biliIntervalSeconds })
 
@@ -1742,9 +1746,13 @@ export default function App() {
         windowClosed={biliWinClosed}
         cursor={biliCursor}
         hasMoreRemote={biliHasMoreRemote}
+        scanProgress={biliScanProgress}
+        scanSnapshotBvids={biliScanSnapshotBvids}
+        scanLastPage={biliScanLastPage}
         onPause={pauseBili}
         onResume={resumeBili}
         onRefresh={refreshBili}
+        onFullScan={biliFullScan}
         onSetInterval={setBiliInterval}
         onClose={() => setShowBili(false)}
       />

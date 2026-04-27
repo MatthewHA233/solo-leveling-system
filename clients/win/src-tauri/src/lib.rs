@@ -134,6 +134,18 @@ struct BiliSyncResult {
     upserted: usize,
     cursor_max: i64,
     cursor_view_at: i64,
+    items: Vec<BiliSyncItem>,
+}
+
+#[derive(serde::Serialize)]
+struct BiliSyncItem {
+    bvid: String,
+    cover: String,
+    view_at: i64,
+    title: String,
+    author_name: String,
+    progress: i64,   // -1 = 看完哨兵 / 0 = 点开 / 正数 = 已看秒数
+    duration: i64,   // 视频总时长（秒）
 }
 
 #[derive(serde::Serialize)]
@@ -255,9 +267,27 @@ try{{
     // 提取 cursor（供前端加载更早历史时使用）
     let cursor_max_out  = raw.get("data").and_then(|d| d.get("cursor")).and_then(|c| c.get("max")).and_then(|v| v.as_i64()).unwrap_or(0);
     let cursor_vat_out  = raw.get("data").and_then(|d| d.get("cursor")).and_then(|c| c.get("view_at")).and_then(|v| v.as_i64()).unwrap_or(0);
-    let upserted        = raw.get("data").and_then(|d| d.get("list")).and_then(|l| l.as_array()).map(|a| a.len()).unwrap_or(0);
+    let list_arr        = raw.get("data").and_then(|d| d.get("list")).and_then(|l| l.as_array());
+    let upserted        = list_arr.map(|a| a.len()).unwrap_or(0);
 
-    Ok(BiliSyncResult { upserted, cursor_max: cursor_max_out, cursor_view_at: cursor_vat_out })
+    // 把这一页里的 bvid + 封面 + view_at + 标题 + UP主 + 进度 + 时长 抽出来回传给前端（深度扫描瀑布卡片）
+    let items: Vec<BiliSyncItem> = list_arr
+        .map(|a| {
+            a.iter().filter_map(|it| {
+                let history = it.get("history");
+                let bvid = history.and_then(|h| h.get("bvid")).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+                let cover = it.get("cover").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let view_at = it.get("view_at").and_then(|v| v.as_i64()).unwrap_or(0);
+                let title = it.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let author_name = it.get("author_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let progress = it.get("progress").and_then(|v| v.as_i64()).unwrap_or(0);
+                let duration = it.get("duration").and_then(|v| v.as_i64()).unwrap_or(0);
+                Some(BiliSyncItem { bvid, cover, view_at, title, author_name, progress, duration })
+            }).collect()
+        })
+        .unwrap_or_default();
+
+    Ok(BiliSyncResult { upserted, cursor_max: cursor_max_out, cursor_view_at: cursor_vat_out, items })
 }
 
 // ── 数据库命令 ──

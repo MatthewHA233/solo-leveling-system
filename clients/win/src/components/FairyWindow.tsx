@@ -14,7 +14,6 @@ type FairyPayload = { state: FairyState; text: string }
 
 const FAIRY_W = 280
 const FAIRY_H = 280
-const BUBBLE_GAP = 4        // fairy 右边缘到气泡左边缘的间距
 // fairy 圆形视觉边界约在 230px（右侧有 ~50px 透明区），气泡左边缘贴近圆边
 const BUBBLE_LEFT = 248
 const BUBBLE_TOP  = 96   // 气泡距窗口顶部，往上偏（fairy 中心 y=140）
@@ -26,8 +25,6 @@ const BUBBLE_BOTTOM_MARGIN = 16  // 气泡底部到窗口底边留白
 const RIGHT_MARGIN = 8      // 窗口右侧留白
 const BUBBLE_FONT_STATE = 12  // 状态标签字号 px
 const BUBBLE_FONT_TEXT  = 12  // 正文字号 px
-const BUBBLE_LINE_H = 1.55
-const STATE_INDICATOR_H = 20  // 顶部动画条 + margin-bottom
 
 function rawTextWidth(text: string): number {
   let raw = 0
@@ -40,14 +37,6 @@ function calcBubbleWidth(text: string): number {
   if (!text) return BUBBLE_MIN_W
   const twoLine = Math.ceil(rawTextWidth(text) / 2) + BUBBLE_PAD_H
   return Math.min(Math.max(twoLine, BUBBLE_MIN_W), BUBBLE_MAX_W)
-}
-
-// 估算文本行数 → 气泡总高度
-function calcBubbleHeight(text: string, bubbleW: number): number {
-  const inner = bubbleW - BUBBLE_PAD_H
-  const lines = text ? Math.max(1, Math.ceil(rawTextWidth(text) / inner)) : 0
-  const textH = lines * (BUBBLE_FONT_TEXT * BUBBLE_LINE_H)
-  return Math.ceil(STATE_INDICATOR_H + textH + BUBBLE_PAD_V)
 }
 
 export default function FairyWindow() {
