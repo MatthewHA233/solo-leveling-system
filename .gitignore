@@ -34,8 +34,15 @@ clients/win/dist/
 # MediaPipe WASM 本地资源（体积大，运行时按需放置）
 clients/win/public/mediapipe/
 
+# FFmpeg LGPL shared build（193MB，新开发者按 README 自行放置）
+clients/win/src-tauri/resources/ffmpeg/*.exe
+clients/win/src-tauri/resources/ffmpeg/*.dll
+
 # 临时测试脚本
 clients/win/test-asr.mjs
+
+# 本地参考资料（HTML 收藏夹）
+参考设计/
 
 # 人升 Wiki 转换产物（由 convert_wiki.py 生成）
 docs/98借鉴对象/参考软件设计——人升/人升官方文档/

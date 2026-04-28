@@ -172,13 +172,15 @@ export interface BiliSpan {
   event_id: string | null
   downloaded: boolean // bili_video_assets 中存在 done 状态
   file_size_bytes: number | null // 已下载时 = 文件字节数；未下载 = null
+  transcribed: boolean // bili_video_assets 中存在 visual 或 audio 转录
 }
 
-// 日历角标用：某月每日的观看数 / 已下载数
+// 日历角标用：某月每日的观看数 / 已下载数 / 已转录数
 export interface BiliDayCount {
   day: string         // "YYYY-MM-DD"
   watched: number
   downloaded: number
+  transcribed: number
 }
 
 /**

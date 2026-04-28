@@ -138,6 +138,7 @@ pub struct BiliSpan {
     pub event_id: Option<String>, // 已入档时关联的事件 ID
     pub downloaded: bool, // bili_video_assets 中存在 download_status='done' 即为 true
     pub file_size_bytes: Option<i64>, // 已下载时 = 资产合并后文件大小（多份 done 取最大）；未下载 = null
+    pub transcribed: bool, // bili_video_assets 中存在 visual_transcript 或 audio_transcript 非空
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -145,6 +146,7 @@ pub struct BiliDayCount {
     pub day: String,        // "YYYY-MM-DD"
     pub watched: i64,       // 当日观看条目数
     pub downloaded: i64,    // 其中已下载（assets done）的条目数
+    pub transcribed: i64,   // 其中已转录（visual 或 audio 转录非空）的条目数
 }
 
 #[derive(Debug, Deserialize)]
@@ -181,6 +183,20 @@ pub struct BiliVideoAsset {
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// 画面（视觉）转录文本
+    pub visual_transcript: Option<String>,
+    /// 音频转录文本
+    pub audio_transcript: Option<String>,
+    pub visual_transcribed_at: Option<String>,
+    pub audio_transcribed_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BiliTranscriptCache {
+    pub visual: Option<String>,
+    pub audio: Option<String>,
+    pub visual_at: Option<String>,
+    pub audio_at: Option<String>,
 }
 
 // ── 数据库管理 ──
@@ -375,6 +391,12 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN audio_path TEXT");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER");
 
+        // 渐进式迁移：bili_video_assets 双转录字段（旧数据无此列时自动追加）
+        let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN visual_transcript TEXT");
+        let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN audio_transcript TEXT");
+        let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN visual_transcribed_at TEXT");
+        let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN audio_transcribed_at TEXT");
+
         conn.execute_batch(r#"
             -- B站历史表
             CREATE TABLE IF NOT EXISTS bili_history (
@@ -427,6 +449,10 @@ impl Database {
                 transcript TEXT,
                 ai_summary TEXT,
                 notes TEXT,
+                visual_transcript TEXT,
+                audio_transcript TEXT,
+                visual_transcribed_at TEXT,
+                audio_transcribed_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -850,7 +876,11 @@ impl Database {
                 datetime(s.view_at,    'unixepoch', 'localtime') AS end_dt,
                 s.view_at, s.event_id,
                 (SELECT MAX(a.file_size) FROM bili_video_assets a
-                  WHERE a.bvid = s.bvid AND a.download_status = 'done') AS file_size_bytes
+                  WHERE a.bvid = s.bvid AND a.download_status = 'done') AS file_size_bytes,
+                EXISTS (SELECT 1 FROM bili_video_assets a
+                  WHERE a.bvid = s.bvid
+                    AND (a.visual_transcript IS NOT NULL OR a.audio_transcript IS NOT NULL)
+                ) AS transcribed
             FROM spans s
             WHERE date(s.view_at,    'unixepoch', 'localtime') = ?1
                OR date(s.start_unix, 'unixepoch', 'localtime') = ?1
@@ -859,6 +889,7 @@ impl Database {
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(params![date], |row| {
             let file_size_bytes: Option<i64> = row.get(11)?;
+            let transcribed: bool = row.get(12)?;
             Ok(BiliSpan {
                 bvid:        row.get(0)?,
                 oid:         row.get(1)?,
@@ -873,6 +904,7 @@ impl Database {
                 event_id:    row.get(10)?,
                 downloaded:  file_size_bytes.is_some(),
                 file_size_bytes,
+                transcribed,
             })
         }).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -926,7 +958,12 @@ impl Database {
                 SUM(CASE WHEN EXISTS (
                     SELECT 1 FROM bili_video_assets a
                     WHERE a.bvid = bili_in_range.bvid AND a.download_status = 'done'
-                ) THEN 1 ELSE 0 END) AS downloaded
+                ) THEN 1 ELSE 0 END) AS downloaded,
+                SUM(CASE WHEN EXISTS (
+                    SELECT 1 FROM bili_video_assets a
+                    WHERE a.bvid = bili_in_range.bvid
+                      AND (a.visual_transcript IS NOT NULL OR a.audio_transcript IS NOT NULL)
+                ) THEN 1 ELSE 0 END) AS transcribed
             FROM bili_in_range
             GROUP BY day
             ORDER BY day ASC
@@ -937,6 +974,7 @@ impl Database {
                 day:        row.get(0)?,
                 watched:    row.get(1)?,
                 downloaded: row.get(2)?,
+                transcribed: row.get(3)?,
             })
         }).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1045,11 +1083,41 @@ impl Database {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let conn = self.conn.lock().await;
+
+        // 继承同 bvid 最近一条非空转录（visual / audio 各自独立取最近）
+        // 避免"重新下载"插入新行后查询取到空 transcript 行，让用户误以为转录消失
+        let inherit_visual: (Option<String>, Option<String>) = conn
+            .query_row(
+                r#"SELECT visual_transcript, visual_transcribed_at
+                   FROM bili_video_assets
+                   WHERE bvid = ? AND visual_transcript IS NOT NULL
+                   ORDER BY updated_at DESC LIMIT 1"#,
+                params![bvid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or((None, None));
+        let inherit_audio: (Option<String>, Option<String>) = conn
+            .query_row(
+                r#"SELECT audio_transcript, audio_transcribed_at
+                   FROM bili_video_assets
+                   WHERE bvid = ? AND audio_transcript IS NOT NULL
+                   ORDER BY updated_at DESC LIMIT 1"#,
+                params![bvid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or((None, None));
+
         conn.execute(
             r#"INSERT INTO bili_video_assets
-               (id, bvid, download_status, quality_request, created_at, updated_at)
-               VALUES (?, ?, 'queued', ?, ?, ?)"#,
-            params![&id, bvid, quality_request, &now, &now],
+               (id, bvid, download_status, quality_request, created_at, updated_at,
+                visual_transcript, visual_transcribed_at,
+                audio_transcript, audio_transcribed_at)
+               VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)"#,
+            params![
+                &id, bvid, quality_request, &now, &now,
+                inherit_visual.0, inherit_visual.1,
+                inherit_audio.0, inherit_audio.1,
+            ],
         ).map_err(|e| e.to_string())?;
         Ok(id)
     }
@@ -1123,7 +1191,9 @@ impl Database {
             r#"SELECT id, bvid, download_status, download_path, quality_request, quality_id,
                       video_codecs, audio_codecs, file_size, error_message,
                       started_at, completed_at, transcript, ai_summary, notes,
-                      created_at, updated_at
+                      created_at, updated_at,
+                      visual_transcript, audio_transcript,
+                      visual_transcribed_at, audio_transcribed_at
                FROM bili_video_assets WHERE bvid = ? ORDER BY created_at DESC"#,
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([bvid], BiliVideoAsset::from_row)
@@ -1138,7 +1208,9 @@ impl Database {
             r#"SELECT id, bvid, download_status, download_path, quality_request, quality_id,
                       video_codecs, audio_codecs, file_size, error_message,
                       started_at, completed_at, transcript, ai_summary, notes,
-                      created_at, updated_at
+                      created_at, updated_at,
+                      visual_transcript, audio_transcript,
+                      visual_transcribed_at, audio_transcribed_at
                FROM bili_video_assets ORDER BY created_at DESC LIMIT ?"#,
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([limit], BiliVideoAsset::from_row)
@@ -1167,7 +1239,66 @@ impl BiliVideoAsset {
             notes:            row.get(14)?,
             created_at:       row.get(15)?,
             updated_at:       row.get(16)?,
+            visual_transcript:    row.get(17).ok(),
+            audio_transcript:     row.get(18).ok(),
+            visual_transcribed_at: row.get(19).ok(),
+            audio_transcribed_at:  row.get(20).ok(),
         })
+    }
+}
+
+impl Database {
+    /// 按 download_path 读取转录缓存（visual + audio）
+    pub async fn get_bili_transcripts_by_path(
+        &self, download_path: &str,
+    ) -> Result<BiliTranscriptCache, String> {
+        let conn = self.conn.lock().await;
+        let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> = conn
+            .query_row(
+                r#"SELECT visual_transcript, audio_transcript,
+                          visual_transcribed_at, audio_transcribed_at
+                   FROM bili_video_assets
+                   WHERE download_path = ? AND download_status = 'done'
+                   ORDER BY updated_at DESC LIMIT 1"#,
+                params![download_path],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(format!("查询转录缓存失败: {}", other)),
+            })?;
+        Ok(match row {
+            Some((v, a, va, aa)) => BiliTranscriptCache {
+                visual: v, audio: a, visual_at: va, audio_at: aa,
+            },
+            None => BiliTranscriptCache {
+                visual: None, audio: None, visual_at: None, audio_at: None,
+            },
+        })
+    }
+
+    /// 按 download_path 写入指定 kind 的转录文本（"visual" / "audio"）
+    pub async fn update_bili_transcript_by_path(
+        &self, download_path: &str, kind: &str, text: &str,
+    ) -> Result<(), String> {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().await;
+        let sql = match kind {
+            "visual" => r#"UPDATE bili_video_assets
+                          SET visual_transcript = ?, visual_transcribed_at = ?, updated_at = ?
+                          WHERE download_path = ? AND download_status = 'done'"#,
+            "audio"  => r#"UPDATE bili_video_assets
+                          SET audio_transcript = ?, audio_transcribed_at = ?, updated_at = ?
+                          WHERE download_path = ? AND download_status = 'done'"#,
+            other => return Err(format!("未知 kind: {}", other)),
+        };
+        let n = conn.execute(sql, params![text, &now, &now, download_path])
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err(format!("未找到对应资产记录: {}", download_path));
+        }
+        Ok(())
     }
 }
 
