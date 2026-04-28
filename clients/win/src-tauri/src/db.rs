@@ -459,7 +459,71 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_bili_assets_bvid ON bili_video_assets(bvid);
             CREATE INDEX IF NOT EXISTS idx_bili_assets_status ON bili_video_assets(download_status);
             CREATE INDEX IF NOT EXISTS idx_bili_assets_created ON bili_video_assets(created_at DESC);
+
+            -- 模型库（id + 通用元信息）
+            CREATE TABLE IF NOT EXISTS model_registry (
+                id TEXT PRIMARY KEY,
+                category TEXT NOT NULL,           -- 'text' | 'omni' | 'realtime'
+                provider TEXT NOT NULL DEFAULT 'dashscope',
+                display_name TEXT,
+                aliases TEXT,                     -- JSON 数组，带日期版本号别名
+                modalities TEXT,                  -- JSON 数组：['text','image','video','audio_in','audio_out']
+                context_window INTEGER,
+                notes TEXT,
+                deprecated INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- 模型分档定价（同一 model_id 多行 = 多个输入 token 区间）
+            CREATE TABLE IF NOT EXISTS model_pricing (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_id TEXT NOT NULL,
+                tier_min_tokens INTEGER NOT NULL DEFAULT 0,
+                tier_max_tokens INTEGER,          -- NULL = 无上限
+                price_input_text REAL,
+                price_input_image REAL,
+                price_input_video REAL,
+                price_input_audio REAL,
+                price_output_text REAL,
+                price_output_text_thinking REAL,
+                price_output_audio REAL,
+                FOREIGN KEY (model_id) REFERENCES model_registry(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_pricing_model ON model_pricing(model_id, tier_min_tokens);
+
+            -- 功能 → 模型绑定
+            CREATE TABLE IF NOT EXISTS feature_bindings (
+                feature TEXT PRIMARY KEY,         -- 'bili_visual_transcribe' / 'fairy_chat' / ...
+                model_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- 调用日志（每次模型调用一行）
+            CREATE TABLE IF NOT EXISTS model_call_log (
+                id TEXT PRIMARY KEY,
+                feature TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                duration_ms INTEGER,
+                prompt_text_tokens INTEGER NOT NULL DEFAULT 0,
+                prompt_image_tokens INTEGER NOT NULL DEFAULT 0,
+                prompt_video_tokens INTEGER NOT NULL DEFAULT 0,
+                prompt_audio_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_text_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_audio_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_cny REAL,
+                success INTEGER NOT NULL DEFAULT 1,
+                error_message TEXT,
+                metadata TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_call_started ON model_call_log(started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_call_feature ON model_call_log(feature, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_call_model ON model_call_log(model_id, started_at DESC);
         "#).map_err(|e| format!("创建表失败: {}", e))?;
+
+        // 首次启动写入百炼模型库与默认绑定种子（已存在则跳过，幂等）
+        seed_model_registry(&conn)?;
+        seed_feature_bindings(&conn)?;
 
         log::info!("[Database] 表初始化完成");
         Ok(())
@@ -1345,5 +1409,544 @@ impl Goal {
             created_at:   row.get(4)?,
             completed_at: row.get(5)?,
         })
+    }
+}
+
+// ══════════════════════════════════════════════
+// 模型审计：registry / pricing / bindings / call_log
+// ══════════════════════════════════════════════
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModelDef {
+    pub id: String,
+    pub category: String,                 // 'text' | 'omni' | 'realtime'
+    pub provider: String,
+    pub display_name: Option<String>,
+    pub aliases: Option<String>,          // JSON
+    pub modalities: Option<String>,       // JSON
+    pub context_window: Option<i64>,
+    pub notes: Option<String>,
+    pub deprecated: bool,
+    pub updated_at: String,
+    pub pricing: Vec<ModelPricingTier>,   // 按 tier_min_tokens 升序
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModelPricingTier {
+    pub tier_min_tokens: i64,
+    pub tier_max_tokens: Option<i64>,
+    pub price_input_text: Option<f64>,
+    pub price_input_image: Option<f64>,
+    pub price_input_video: Option<f64>,
+    pub price_input_audio: Option<f64>,
+    pub price_output_text: Option<f64>,
+    pub price_output_text_thinking: Option<f64>,
+    pub price_output_audio: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FeatureBinding {
+    pub feature: String,
+    pub model_id: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModelCallLog {
+    pub id: String,
+    pub feature: String,
+    pub model_id: String,
+    pub started_at: String,
+    pub duration_ms: Option<i64>,
+    pub prompt_text_tokens: i64,
+    pub prompt_image_tokens: i64,
+    pub prompt_video_tokens: i64,
+    pub prompt_audio_tokens: i64,
+    pub completion_text_tokens: i64,
+    pub completion_audio_tokens: i64,
+    pub cost_cny: Option<f64>,
+    pub success: bool,
+    pub error_message: Option<String>,
+    pub metadata: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LogModelCallRequest {
+    pub feature: String,
+    pub model_id: String,
+    pub started_at: String,
+    pub duration_ms: Option<i64>,
+    pub prompt_text_tokens: i64,
+    pub prompt_image_tokens: i64,
+    pub prompt_video_tokens: i64,
+    pub prompt_audio_tokens: i64,
+    pub completion_text_tokens: i64,
+    pub completion_audio_tokens: i64,
+    pub success: bool,
+    pub error_message: Option<String>,
+    pub metadata: Option<String>,
+}
+
+/// 时间序列聚合点（用量页折线用）
+#[derive(Debug, Serialize, Clone)]
+pub struct CallLogBucket {
+    pub bucket: String,                   // ISO8601（按粒度截断后的桶起点）
+    pub call_count: i64,
+    pub prompt_tokens_total: i64,
+    pub completion_tokens_total: i64,
+    pub cost_cny_total: f64,
+}
+
+/// 首次启动写入种子（已存在则跳过，幂等）。
+/// 数据来源：用户人工核对的 cn-beijing 百炼价目（2026-04）。
+fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
+    use rusqlite::params;
+
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM model_registry", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if count > 0 {
+        return Ok(());
+    }
+
+    type Tier = (i64, Option<i64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>);
+    type Seed = (&'static str, &'static str, &'static str, &'static [&'static str], &'static [&'static str], i64, &'static [Tier]);
+
+    // (id, category, display_name, aliases, modalities, context_window, tiers)
+    // tier 字段顺序：(min, max, in_text, in_image, in_video, in_audio, out_text, out_audio)
+    let seeds: Vec<Seed> = vec![
+        // ── Qwen3.6 文本 ──
+        ("qwen3.6-max-preview", "text", "Qwen3.6 Max Preview", &[], &["text"], 262_144, &[
+            (0,        Some(131_072), Some(9.0),  None, None, None, Some(54.0), None),
+            (131_072,  Some(262_144), Some(15.0), None, None, None, Some(90.0), None),
+        ]),
+        ("qwen3.6-plus", "text", "Qwen3.6 Plus", &["qwen3.6-plus-2026-04-02"], &["text"], 1_048_576, &[
+            (0,        Some(262_144),   Some(2.0), None, None, None, Some(12.0), None),
+            (262_144,  Some(1_048_576), Some(8.0), None, None, None, Some(48.0), None),
+        ]),
+        ("qwen3.6-flash", "text", "Qwen3.6 Flash", &["qwen3.6-flash-2026-04-16"], &["text"], 1_048_576, &[
+            (0,        Some(262_144),   Some(1.2), None, None, None, Some(7.2),  None),
+            (262_144,  Some(1_048_576), Some(4.8), None, None, None, Some(28.8), None),
+        ]),
+        ("qwen3.6-35b-a3b", "text", "Qwen3.6 35B A3B", &[], &["text"], 262_144, &[
+            (0, Some(262_144), Some(1.8), None, None, None, Some(10.8), None),
+        ]),
+        ("qwen3.6-27b", "text", "Qwen3.6 27B", &[], &["text"], 262_144, &[
+            (0, Some(262_144), Some(3.0), None, None, None, Some(18.0), None),
+        ]),
+
+        // ── Qwen3.5 文本 ──
+        ("qwen3.5-plus", "text", "Qwen3.5 Plus", &["qwen3.5-plus-2026-04-20", "qwen3.5-plus-2026-02-15"], &["text"], 1_048_576, &[
+            (0,        Some(131_072),   Some(0.8), None, None, None, Some(4.8),  None),
+            (131_072,  Some(262_144),   Some(2.0), None, None, None, Some(12.0), None),
+            (262_144,  Some(1_048_576), Some(4.0), None, None, None, Some(24.0), None),
+        ]),
+        ("qwen3.5-flash", "text", "Qwen3.5 Flash", &["qwen3.5-flash-2026-02-23"], &["text"], 1_048_576, &[
+            (0,        Some(131_072),   Some(0.2), None, None, None, Some(2.0),  None),
+            (131_072,  Some(262_144),   Some(0.8), None, None, None, Some(8.0),  None),
+            (262_144,  Some(1_048_576), Some(1.2), None, None, None, Some(12.0), None),
+        ]),
+        ("qwen3.5-397b-a17b", "text", "Qwen3.5 397B A17B", &[], &["text"], 262_144, &[
+            (0,       Some(131_072), Some(1.2), None, None, None, Some(7.2),  None),
+            (131_072, Some(262_144), Some(3.0), None, None, None, Some(18.0), None),
+        ]),
+        ("qwen3.5-122b-a10b", "text", "Qwen3.5 122B A10B", &[], &["text"], 262_144, &[
+            (0,       Some(131_072), Some(0.8), None, None, None, Some(6.4),  None),
+            (131_072, Some(262_144), Some(2.0), None, None, None, Some(16.0), None),
+        ]),
+        ("qwen3.5-27b", "text", "Qwen3.5 27B", &[], &["text"], 262_144, &[
+            (0,       Some(131_072), Some(0.6), None, None, None, Some(4.8),  None),
+            (131_072, Some(262_144), Some(1.8), None, None, None, Some(14.4), None),
+        ]),
+        ("qwen3.5-35b-a3b", "text", "Qwen3.5 35B A3B", &[], &["text"], 262_144, &[
+            (0,       Some(131_072), Some(0.4), None, None, None, Some(3.2),  None),
+            (131_072, Some(262_144), Some(1.6), None, None, None, Some(12.8), None),
+        ]),
+
+        // ── Qwen3.5 Omni HTTP ──
+        ("qwen3.5-omni-plus", "omni", "Qwen3.5 Omni Plus", &["qwen3.5-omni-plus-2026-03-15"], &["text","image","video","audio_in","audio_out"], 0, &[
+            (0, None, Some(7.0),  Some(7.0),  Some(7.0),  Some(53.0), Some(40.0),  Some(213.0)),
+        ]),
+        ("qwen3.5-omni-flash", "omni", "Qwen3.5 Omni Flash", &["qwen3.5-omni-flash-2026-03-15"], &["text","image","video","audio_in","audio_out"], 0, &[
+            (0, None, Some(2.2),  Some(2.2),  Some(2.2),  Some(18.0), Some(13.3),  Some(72.0)),
+        ]),
+
+        // ── Qwen3.5 Omni Realtime（WS）──
+        ("qwen3.5-omni-plus-realtime", "realtime", "Qwen3.5 Omni Plus Realtime", &["qwen3.5-omni-plus-realtime-2026-03-15"], &["text","image","audio_in","audio_out"], 0, &[
+            (0, None, Some(10.0), Some(10.0), None, Some(80.0), Some(60.0), Some(300.0)),
+        ]),
+        ("qwen3.5-omni-flash-realtime", "realtime", "Qwen3.5 Omni Flash Realtime", &["qwen3.5-omni-flash-realtime-2026-03-15"], &["text","image","audio_in","audio_out"], 0, &[
+            (0, None, Some(3.3),  Some(3.3),  None, Some(27.0), Some(20.0), Some(107.0)),
+        ]),
+    ];
+
+    let now = chrono::Utc::now().to_rfc3339();
+    for (id, category, display_name, aliases, modalities, ctx, tiers) in &seeds {
+        let aliases_json = serde_json::to_string(aliases).unwrap_or_else(|_| "[]".to_string());
+        let modalities_json = serde_json::to_string(modalities).unwrap_or_else(|_| "[]".to_string());
+        let ctx_opt: Option<i64> = if *ctx > 0 { Some(*ctx) } else { None };
+
+        conn.execute(
+            "INSERT OR IGNORE INTO model_registry
+             (id, category, provider, display_name, aliases, modalities, context_window, notes, deprecated, updated_at)
+             VALUES (?, ?, 'dashscope', ?, ?, ?, ?, NULL, 0, ?)",
+            params![id, category, display_name, aliases_json, modalities_json, ctx_opt, &now],
+        ).map_err(|e| e.to_string())?;
+
+        for (min, max, in_text, in_image, in_video, in_audio, out_text, out_audio) in *tiers {
+            conn.execute(
+                "INSERT INTO model_pricing
+                 (model_id, tier_min_tokens, tier_max_tokens,
+                  price_input_text, price_input_image, price_input_video, price_input_audio,
+                  price_output_text, price_output_text_thinking, price_output_audio)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![id, min, max, in_text, in_image, in_video, in_audio, out_text, out_text, out_audio],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+
+    log::info!("[Database] model_registry 种子写入 {} 个模型", seeds.len());
+    Ok(())
+}
+
+fn seed_feature_bindings(conn: &rusqlite::Connection) -> Result<(), String> {
+    use rusqlite::params;
+
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM feature_bindings", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if count > 0 {
+        return Ok(());
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let seeds = [
+        ("fairy_chat", "qwen3.6-plus"),
+        ("fairy_omni_chat", "qwen3.5-omni-plus-realtime"),
+        ("bili_visual_transcribe", "qwen3.5-omni-plus"),
+        ("bili_audio_transcribe", "qwen3.5-omni-plus"),
+    ];
+
+    for (feature, model_id) in seeds {
+        conn.execute(
+            "INSERT OR IGNORE INTO feature_bindings (feature, model_id, updated_at) VALUES (?, ?, ?)",
+            params![feature, model_id, &now],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    log::info!("[Database] feature_bindings 种子写入 {} 条", seeds.len());
+    Ok(())
+}
+
+impl Database {
+    // ── model_registry ──
+
+    pub async fn list_models(&self) -> Result<Vec<ModelDef>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT id, category, provider, display_name, aliases, modalities,
+                    context_window, notes, deprecated, updated_at
+             FROM model_registry
+             ORDER BY category, id"
+        ).map_err(|e| e.to_string())?;
+
+        let rows = stmt.query_map([], |r| {
+            Ok(ModelDef {
+                id:             r.get(0)?,
+                category:       r.get(1)?,
+                provider:       r.get(2)?,
+                display_name:   r.get(3)?,
+                aliases:        r.get(4)?,
+                modalities:     r.get(5)?,
+                context_window: r.get(6)?,
+                notes:          r.get(7)?,
+                deprecated:     r.get::<_, i64>(8)? != 0,
+                updated_at:     r.get(9)?,
+                pricing:        Vec::new(),
+            })
+        }).map_err(|e| e.to_string())?;
+
+        let mut defs: Vec<ModelDef> = rows.filter_map(|r| r.ok()).collect();
+
+        // 第二次查询拉所有 pricing，按 model_id 分组写回
+        let mut pstmt = conn.prepare(
+            "SELECT model_id, tier_min_tokens, tier_max_tokens,
+                    price_input_text, price_input_image, price_input_video, price_input_audio,
+                    price_output_text, price_output_text_thinking, price_output_audio
+             FROM model_pricing
+             ORDER BY model_id, tier_min_tokens"
+        ).map_err(|e| e.to_string())?;
+
+        let prices = pstmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, ModelPricingTier {
+                tier_min_tokens: r.get(1)?,
+                tier_max_tokens: r.get(2)?,
+                price_input_text: r.get(3)?,
+                price_input_image: r.get(4)?,
+                price_input_video: r.get(5)?,
+                price_input_audio: r.get(6)?,
+                price_output_text: r.get(7)?,
+                price_output_text_thinking: r.get(8)?,
+                price_output_audio: r.get(9)?,
+            }))
+        }).map_err(|e| e.to_string())?;
+
+        for row in prices.flatten() {
+            if let Some(def) = defs.iter_mut().find(|d| d.id == row.0) {
+                def.pricing.push(row.1);
+            }
+        }
+
+        Ok(defs)
+    }
+
+    pub async fn upsert_model(&self, def: ModelDef) -> Result<(), String> {
+        use rusqlite::params;
+        let mut conn = self.conn.lock().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+        tx.execute(
+            "INSERT INTO model_registry
+             (id, category, provider, display_name, aliases, modalities, context_window, notes, deprecated, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               category=excluded.category, provider=excluded.provider, display_name=excluded.display_name,
+               aliases=excluded.aliases, modalities=excluded.modalities, context_window=excluded.context_window,
+               notes=excluded.notes, deprecated=excluded.deprecated, updated_at=excluded.updated_at",
+            params![
+                &def.id, &def.category, &def.provider, &def.display_name,
+                &def.aliases, &def.modalities, &def.context_window, &def.notes,
+                if def.deprecated { 1 } else { 0 }, &now,
+            ],
+        ).map_err(|e| e.to_string())?;
+
+        // 价格分档全替换：先删后插
+        tx.execute("DELETE FROM model_pricing WHERE model_id = ?", params![&def.id])
+            .map_err(|e| e.to_string())?;
+        for t in &def.pricing {
+            tx.execute(
+                "INSERT INTO model_pricing
+                 (model_id, tier_min_tokens, tier_max_tokens,
+                  price_input_text, price_input_image, price_input_video, price_input_audio,
+                  price_output_text, price_output_text_thinking, price_output_audio)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    &def.id, t.tier_min_tokens, t.tier_max_tokens,
+                    t.price_input_text, t.price_input_image, t.price_input_video, t.price_input_audio,
+                    t.price_output_text, t.price_output_text_thinking, t.price_output_audio,
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn delete_model(&self, model_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute("DELETE FROM model_registry WHERE id = ?", rusqlite::params![model_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ── feature_bindings ──
+
+    pub async fn list_feature_bindings(&self) -> Result<Vec<FeatureBinding>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT feature, model_id, updated_at FROM feature_bindings ORDER BY feature"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(FeatureBinding {
+            feature: r.get(0)?, model_id: r.get(1)?, updated_at: r.get(2)?,
+        })).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub async fn set_feature_binding(&self, feature: &str, model_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO feature_bindings (feature, model_id, updated_at) VALUES (?, ?, ?)
+             ON CONFLICT(feature) DO UPDATE SET model_id=excluded.model_id, updated_at=excluded.updated_at",
+            rusqlite::params![feature, model_id, &now],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn get_feature_model(&self, feature: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().await;
+        let result: Result<String, _> = conn.query_row(
+            "SELECT model_id FROM feature_bindings WHERE feature = ?",
+            rusqlite::params![feature],
+            |r| r.get(0),
+        );
+        Ok(result.ok())
+    }
+
+    // ── model_call_log ──
+
+    /// 按当前价目折算成本（0 token 各模态返回 0）。
+    /// 区间命中：用 prompt token 总和（含所有模态）匹配 tier_min/tier_max。
+    /// 输出：completion_audio_tokens > 0 → 整段输出按 audio 价（文本不计费）；否则按 text 价。
+    fn compute_cost(req: &LogModelCallRequest, tiers: &[ModelPricingTier]) -> Option<f64> {
+        let prompt_total = req.prompt_text_tokens + req.prompt_image_tokens
+            + req.prompt_video_tokens + req.prompt_audio_tokens;
+        let tier = tiers.iter().find(|t| {
+            prompt_total >= t.tier_min_tokens
+                && t.tier_max_tokens.map_or(true, |m| prompt_total < m)
+        })?;
+
+        let price = |tok: i64, p: Option<f64>| -> f64 {
+            if tok <= 0 { 0.0 } else { (tok as f64) * p.unwrap_or(0.0) / 1_000_000.0 }
+        };
+
+        let mut total = 0.0;
+        total += price(req.prompt_text_tokens,  tier.price_input_text);
+        total += price(req.prompt_image_tokens, tier.price_input_image.or(tier.price_input_text));
+        total += price(req.prompt_video_tokens, tier.price_input_video.or(tier.price_input_text));
+        total += price(req.prompt_audio_tokens, tier.price_input_audio);
+
+        if req.completion_audio_tokens > 0 {
+            // 按"文本+音频"输出口径：仅按音频计费
+            total += price(req.completion_audio_tokens, tier.price_output_audio);
+        } else {
+            total += price(req.completion_text_tokens, tier.price_output_text);
+        }
+        Some(total)
+    }
+
+    pub async fn log_model_call(&self, req: LogModelCallRequest) -> Result<String, String> {
+        use rusqlite::params;
+
+        // 取该 model 的当前定价表（独立 query，scope 内 release）
+        let tiers: Vec<ModelPricingTier> = {
+            let conn = self.conn.lock().await;
+            let mut stmt = conn.prepare(
+                "SELECT tier_min_tokens, tier_max_tokens,
+                        price_input_text, price_input_image, price_input_video, price_input_audio,
+                        price_output_text, price_output_text_thinking, price_output_audio
+                 FROM model_pricing
+                 WHERE model_id = ?
+                 ORDER BY tier_min_tokens"
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map(params![&req.model_id], |r| Ok(ModelPricingTier {
+                tier_min_tokens: r.get(0)?,
+                tier_max_tokens: r.get(1)?,
+                price_input_text: r.get(2)?,
+                price_input_image: r.get(3)?,
+                price_input_video: r.get(4)?,
+                price_input_audio: r.get(5)?,
+                price_output_text: r.get(6)?,
+                price_output_text_thinking: r.get(7)?,
+                price_output_audio: r.get(8)?,
+            })).map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        let cost = Self::compute_cost(&req, &tiers);
+        let id = Uuid::new_v4().to_string();
+
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO model_call_log
+             (id, feature, model_id, started_at, duration_ms,
+              prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
+              completion_text_tokens, completion_audio_tokens,
+              cost_cny, success, error_message, metadata)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                &id, &req.feature, &req.model_id, &req.started_at, &req.duration_ms,
+                &req.prompt_text_tokens, &req.prompt_image_tokens, &req.prompt_video_tokens, &req.prompt_audio_tokens,
+                &req.completion_text_tokens, &req.completion_audio_tokens,
+                &cost, if req.success { 1 } else { 0 }, &req.error_message, &req.metadata,
+            ],
+        ).map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+
+    /// 查询调用列表（按时间倒序）。time_from / time_to 为 ISO8601；feature/model_id 可选过滤。
+    pub async fn query_call_log(
+        &self,
+        time_from: Option<String>,
+        time_to: Option<String>,
+        feature: Option<String>,
+        model_id: Option<String>,
+        limit: Option<i64>,
+    ) -> Result<Vec<ModelCallLog>, String> {
+        let conn = self.conn.lock().await;
+        let mut sql = String::from(
+            "SELECT id, feature, model_id, started_at, duration_ms,
+                    prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
+                    completion_text_tokens, completion_audio_tokens,
+                    cost_cny, success, error_message, metadata
+             FROM model_call_log WHERE 1=1"
+        );
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(t) = time_from { sql.push_str(" AND started_at >= ?"); args.push(Box::new(t)); }
+        if let Some(t) = time_to   { sql.push_str(" AND started_at <  ?"); args.push(Box::new(t)); }
+        if let Some(f) = feature   { sql.push_str(" AND feature = ?");     args.push(Box::new(f)); }
+        if let Some(m) = model_id  { sql.push_str(" AND model_id = ?");    args.push(Box::new(m)); }
+        sql.push_str(" ORDER BY started_at DESC");
+        if let Some(l) = limit     { sql.push_str(&format!(" LIMIT {}", l.max(1))); }
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let arg_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(arg_refs.as_slice(), |r| Ok(ModelCallLog {
+            id: r.get(0)?, feature: r.get(1)?, model_id: r.get(2)?,
+            started_at: r.get(3)?, duration_ms: r.get(4)?,
+            prompt_text_tokens: r.get(5)?, prompt_image_tokens: r.get(6)?,
+            prompt_video_tokens: r.get(7)?, prompt_audio_tokens: r.get(8)?,
+            completion_text_tokens: r.get(9)?, completion_audio_tokens: r.get(10)?,
+            cost_cny: r.get(11)?, success: r.get::<_, i64>(12)? != 0,
+            error_message: r.get(13)?, metadata: r.get(14)?,
+        })).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 时间序列聚合（按桶切分），用于折线图。
+    /// granularity: "minute" / "hour" / "day"
+    pub async fn aggregate_call_log(
+        &self,
+        time_from: String,
+        time_to: String,
+        granularity: String,
+        feature: Option<String>,
+        model_id: Option<String>,
+    ) -> Result<Vec<CallLogBucket>, String> {
+        let bucket_expr = match granularity.as_str() {
+            "minute" => "substr(started_at, 1, 16) || ':00'",
+            "hour"   => "substr(started_at, 1, 13) || ':00:00'",
+            _        => "substr(started_at, 1, 10)",
+        };
+
+        let conn = self.conn.lock().await;
+        let mut sql = format!(
+            "SELECT {bucket} AS bucket,
+                    COUNT(*) AS call_count,
+                    COALESCE(SUM(prompt_text_tokens + prompt_image_tokens + prompt_video_tokens + prompt_audio_tokens), 0) AS p_total,
+                    COALESCE(SUM(completion_text_tokens + completion_audio_tokens), 0) AS c_total,
+                    COALESCE(SUM(cost_cny), 0) AS cost_total
+             FROM model_call_log
+             WHERE started_at >= ? AND started_at < ?",
+            bucket = bucket_expr,
+        );
+        let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(time_from), Box::new(time_to),
+        ];
+        if let Some(f) = feature  { sql.push_str(" AND feature = ?");  args.push(Box::new(f)); }
+        if let Some(m) = model_id { sql.push_str(" AND model_id = ?"); args.push(Box::new(m)); }
+        sql.push_str(" GROUP BY bucket ORDER BY bucket ASC");
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let arg_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(arg_refs.as_slice(), |r| Ok(CallLogBucket {
+            bucket: r.get(0)?,
+            call_count: r.get(1)?,
+            prompt_tokens_total: r.get(2)?,
+            completion_tokens_total: r.get(3)?,
+            cost_cny_total: r.get(4)?,
+        })).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 }

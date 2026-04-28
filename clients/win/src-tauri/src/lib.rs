@@ -403,6 +403,123 @@ async fn update_bili_transcript(
     db.update_bili_transcript_by_path(&file_path, &kind, &text).await
 }
 
+// ── 模型审计：registry / bindings / call_log ──
+
+#[tauri::command]
+async fn list_models(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<db::ModelDef>, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.list_models().await
+}
+
+#[tauri::command]
+async fn upsert_model(
+    def: db::ModelDef,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.upsert_model(def).await
+}
+
+#[tauri::command]
+async fn delete_model(
+    model_id: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.delete_model(&model_id).await
+}
+
+#[tauri::command]
+async fn list_feature_bindings(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<db::FeatureBinding>, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.list_feature_bindings().await
+}
+
+#[tauri::command]
+async fn set_feature_binding(
+    feature: String,
+    model_id: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.set_feature_binding(&feature, &model_id).await
+}
+
+#[tauri::command]
+async fn get_feature_model(
+    feature: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Option<String>, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.get_feature_model(&feature).await
+}
+
+#[tauri::command]
+async fn log_model_call(
+    req: db::LogModelCallRequest,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.log_model_call(req).await
+}
+
+#[tauri::command]
+async fn query_call_log(
+    time_from: Option<String>,
+    time_to: Option<String>,
+    feature: Option<String>,
+    model_id: Option<String>,
+    limit: Option<i64>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<db::ModelCallLog>, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.query_call_log(time_from, time_to, feature, model_id, limit).await
+}
+
+#[tauri::command]
+async fn aggregate_call_log(
+    time_from: String,
+    time_to: String,
+    granularity: String,
+    feature: Option<String>,
+    model_id: Option<String>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<db::CallLogBucket>, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.aggregate_call_log(time_from, time_to, granularity, feature, model_id).await
+}
+
 #[tauri::command]
 async fn get_recent_bili_assets(
     limit: Option<i64>,
@@ -782,6 +899,15 @@ pub fn run() {
             qwen_asr::qwen_asr_transcribe,
             qwen_video::qwen_video_upload,
             ffmpeg::ensure_h264_playable,
+            list_models,
+            upsert_model,
+            delete_model,
+            list_feature_bindings,
+            set_feature_binding,
+            get_feature_model,
+            log_model_call,
+            query_call_log,
+            aggregate_call_log,
             read_file,
             write_file,
             save_audio_file,

@@ -351,3 +351,86 @@ export async function closePresenceSpan(id: string, endTime: string): Promise<vo
     body: JSON.stringify({ end_time: endTime }),
   })
 }
+
+// ══════════════════════════════════════════════
+// 模型审计：registry / bindings / call_log
+// 通过 tauri invoke 调用，不走 HTTP
+// ══════════════════════════════════════════════
+
+export type ModelCategory = 'text' | 'omni' | 'realtime'
+
+export interface ModelPricingTier {
+  tier_min_tokens: number
+  tier_max_tokens: number | null
+  price_input_text: number | null
+  price_input_image: number | null
+  price_input_video: number | null
+  price_input_audio: number | null
+  price_output_text: number | null
+  price_output_text_thinking: number | null
+  price_output_audio: number | null
+}
+
+export interface ModelDef {
+  id: string
+  category: ModelCategory
+  provider: string                    // 'dashscope'
+  display_name: string | null
+  aliases: string | null              // JSON 数组字符串
+  modalities: string | null           // JSON 数组字符串
+  context_window: number | null
+  notes: string | null
+  deprecated: boolean
+  updated_at: string
+  pricing: ModelPricingTier[]
+}
+
+export interface FeatureBinding {
+  feature: string                     // 'bili_visual_transcribe' / 'fairy_chat' / ...
+  model_id: string
+  updated_at: string
+}
+
+export interface ModelCallLog {
+  id: string
+  feature: string
+  model_id: string
+  started_at: string
+  duration_ms: number | null
+  prompt_text_tokens: number
+  prompt_image_tokens: number
+  prompt_video_tokens: number
+  prompt_audio_tokens: number
+  completion_text_tokens: number
+  completion_audio_tokens: number
+  cost_cny: number | null
+  success: boolean
+  error_message: string | null
+  metadata: string | null
+}
+
+export interface LogModelCallRequest {
+  feature: string
+  model_id: string
+  started_at: string
+  duration_ms?: number | null
+  prompt_text_tokens: number
+  prompt_image_tokens: number
+  prompt_video_tokens: number
+  prompt_audio_tokens: number
+  completion_text_tokens: number
+  completion_audio_tokens: number
+  success: boolean
+  error_message?: string | null
+  metadata?: string | null
+}
+
+export interface CallLogBucket {
+  bucket: string
+  call_count: number
+  prompt_tokens_total: number
+  completion_tokens_total: number
+  cost_cny_total: number
+}
+
+export type CallLogGranularity = 'minute' | 'hour' | 'day'
