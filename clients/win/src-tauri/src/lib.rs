@@ -10,7 +10,9 @@ mod fish_tts;
 mod manictime;
 mod qwen_asr;
 mod qwen_omni;
+mod qwen_video;
 mod bili_download;
+mod ffmpeg;
 #[cfg(windows)]
 mod hotkey;
 
@@ -373,6 +375,32 @@ async fn get_bili_assets_by_bvid(
         g.as_ref().ok_or("数据库未初始化")?.clone()
     };
     db.get_bili_assets_by_bvid(&bvid).await
+}
+
+#[tauri::command]
+async fn get_bili_transcripts(
+    file_path: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<db::BiliTranscriptCache, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.get_bili_transcripts_by_path(&file_path).await
+}
+
+#[tauri::command]
+async fn update_bili_transcript(
+    file_path: String,
+    kind: String,
+    text: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.update_bili_transcript_by_path(&file_path, &kind, &text).await
 }
 
 #[tauri::command]
@@ -749,7 +777,11 @@ pub fn run() {
             bili_download::probe_bili_qualities,
             get_bili_assets_by_bvid,
             get_recent_bili_assets,
+            get_bili_transcripts,
+            update_bili_transcript,
             qwen_asr::qwen_asr_transcribe,
+            qwen_video::qwen_video_upload,
+            ffmpeg::ensure_h264_playable,
             read_file,
             write_file,
             save_audio_file,

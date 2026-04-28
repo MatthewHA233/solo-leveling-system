@@ -4,9 +4,11 @@ import './index.css'
 import App from './App.tsx'
 import CameraWindow from './components/CameraWindow.tsx'
 import FairyWindow from './components/FairyWindow.tsx'
+import DebugPrepWindow from './components/DebugPrepWindow.tsx'
 
-const isCameraWindow = window.location.hash === '#camera'
-const isFairyWindow  = window.location.hash === '#fairy'
+const isCameraWindow    = window.location.hash === '#camera'
+const isFairyWindow     = window.location.hash === '#fairy'
+const isDebugPrepWindow = window.location.hash === '#debug-prep'
 
 // Fairy 窗口：React 渲染前同步清除背景，防止 index.css 的暗色 body 背景闪出矩形
 if (isFairyWindow) {
@@ -20,6 +22,8 @@ createRoot(document.getElementById('root')!).render(
       ? <FairyWindow />
       : isCameraWindow
         ? <CameraWindow />
-        : <App />}
+        : isDebugPrepWindow
+          ? <DebugPrepWindow />
+          : <App />}
   </StrictMode>,
 )
