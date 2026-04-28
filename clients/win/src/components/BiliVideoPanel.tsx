@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { Download, Check, AlertTriangle, Loader2, FolderOpen } from 'lucide-react'
+import { Download, Check, AlertTriangle, Loader2, FolderOpen, BrainCircuit } from 'lucide-react'
 import type { BiliSpan } from '../lib/local-api'
 import { theme } from '../theme'
 import { loadConfig } from '../lib/agent/agent-config'
@@ -41,6 +41,14 @@ function qnToQualityKey(qn: number | null | undefined): QualityKey | null {
 
 interface Props {
   span: BiliSpan
+  /** 是否已开启转录面板（决定按钮态） */
+  transcribeOpen?: boolean
+  /** 请求打开/关闭转录面板（由父组件决定面板挂载位置） */
+  onToggleTranscribe?: (filePath: string) => void
+  /** 有本地视频时，点击封面/播放按钮调用此回调（让父级进 theater） */
+  onPlayLocal?: () => void
+  /** 影院模式生效中：父级已挂载真实视频，封面应该隐去 */
+  theaterActive?: boolean
 }
 
 type DlStage =
@@ -113,7 +121,7 @@ function openInExplorer(filePath: string) {
   invoke('open_url_in_browser', { url: `file:///${filePath.replace(/\\/g, '/')}` }).catch(() => {})
 }
 
-export default function BiliVideoPanel({ span }: Props) {
+export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscribe, onPlayLocal, theaterActive }: Props) {
   const progressPct = span.duration > 0
     ? Math.min(100, Math.round((span.progress / span.duration) * 100))
     : 0
@@ -243,13 +251,14 @@ export default function BiliVideoPanel({ span }: Props) {
         </span>
       </div>
 
-      {/* 封面（点击打开浏览器） */}
-      {span.cover && (
+      {/* 封面（有本地视频→点击进入影院模式；否则打开浏览器；影院模式下隐藏） */}
+      {span.cover && !theaterActive && (
+        <Tooltip content={onPlayLocal ? '播放本地视频' : '在浏览器打开'}>
         <div
-          onClick={() => openBili(span.bvid)}
+          onClick={() => { if (onPlayLocal) onPlayLocal(); else openBili(span.bvid) }}
           style={{
             marginBottom: 8, borderRadius: 4, overflow: 'hidden',
-            border: `1px solid ${theme.divider}`,
+            border: `1px solid ${onPlayLocal ? theme.shadowPurple : theme.divider}`,
             cursor: 'pointer', position: 'relative',
           }}
         >
@@ -279,6 +288,7 @@ export default function BiliVideoPanel({ span }: Props) {
             </svg>
           </div>
         </div>
+        </Tooltip>
       )}
 
       {/* 视频标题（点击打开浏览器） */}
@@ -350,16 +360,30 @@ export default function BiliVideoPanel({ span }: Props) {
         </div>
       )}
 
-      {/* BV号 */}
+      {/* BV号 + 已保存指示 */}
       <div style={{
-        marginTop: 6, fontSize: 9,
+        marginTop: 6,
+        display: 'flex', alignItems: 'center', gap: 8,
         fontFamily: theme.fontMono,
-        color: theme.textMuted,
       }}>
-        {span.bvid}
+        <span style={{
+          fontSize: 11, fontWeight: 600,
+          color: theme.textSecondary, letterSpacing: 0.5,
+        }}>
+          {span.bvid}
+        </span>
+        {dl.stage === 'done' && (
+          <span style={{
+            marginLeft: 'auto', fontSize: 10,
+            color: theme.expGreen, display: 'flex',
+            alignItems: 'center', gap: 3,
+          }}>
+            <Check size={11} /> 已保存{doneFileSize ? ` · ${fmtFileSize(doneFileSize)}` : ''}
+          </span>
+        )}
       </div>
 
-      {/* ── 下载控制 ── */}
+      {/* ── 下载控制（done 时把"多模态转录"按钮并入同一行） ── */}
       <div style={{ marginTop: 10 }}>
         <DownloadControl
           dl={dl}
@@ -370,10 +394,60 @@ export default function BiliVideoPanel({ span }: Props) {
           onQualityChange={setQuality}
           onDownload={handleDownload}
           onOpenFile={() => dl.output_path && openInExplorer(dl.output_path)}
-          doneFileSize={doneFileSize}
+          transcribeOpen={!!transcribeOpen}
+          onToggleTranscribe={onToggleTranscribe}
         />
       </div>
     </div>
+  )
+}
+
+// ── 科技感转录按钮 ──
+
+function TranscribeButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  const C = '#b378ff'
+  return (
+    <>
+      <style>{`
+        @keyframes btx-btn-sweep {
+          0%   { transform: translateX(-110%); }
+          60%  { transform: translateX(110%); }
+          100% { transform: translateX(110%); }
+        }
+        @keyframes btx-btn-pulse {
+          0%, 100% { box-shadow: inset 0 0 12px ${C}22, 0 0 0 ${C}00; }
+          50%      { box-shadow: inset 0 0 16px ${C}55, 0 0 12px ${C}66; }
+        }
+        .btx-btn { position: relative; overflow: hidden; }
+        .btx-btn::before {
+          content: ''; position: absolute; inset: 0;
+          background: linear-gradient(110deg, transparent 30%, ${C}55 50%, transparent 70%);
+          transform: translateX(-110%);
+          pointer-events: none;
+        }
+        .btx-btn:hover::before { animation: btx-btn-sweep 0.9s ease-out; }
+        .btx-btn.active { animation: btx-btn-pulse 2s ease-in-out infinite; }
+      `}</style>
+      <Tooltip content={active ? '关闭转录面板' : '打开多模态转录'}>
+      <button
+        className={`btx-btn ${active ? 'active' : ''}`}
+        onClick={onClick}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          padding: '4px 10px',
+          fontFamily: theme.fontBody, fontSize: 11, fontWeight: 600,
+          letterSpacing: 0.5,
+          color: C,
+          background: active ? `${C}28` : `${C}14`,
+          border: `1px solid ${C}`, borderRadius: 3,
+          cursor: 'pointer',
+        }}
+      >
+        <BrainCircuit size={12} />
+        多模态转录
+      </button>
+      </Tooltip>
+    </>
   )
 }
 
@@ -389,7 +463,8 @@ function fmtFileSize(bytes: number | null): string {
 }
 
 function DownloadControl({
-  dl, isWorking, biliColor, quality, qualityOptions, onQualityChange, onDownload, onOpenFile, doneFileSize,
+  dl, isWorking, biliColor, quality, qualityOptions, onQualityChange, onDownload, onOpenFile,
+  transcribeOpen, onToggleTranscribe,
 }: {
   dl: DlProgress
   isWorking: boolean
@@ -399,7 +474,8 @@ function DownloadControl({
   onQualityChange: (q: QualityKey) => void
   onDownload: () => void
   onOpenFile: () => void
-  doneFileSize: number | null
+  transcribeOpen: boolean
+  onToggleTranscribe?: (filePath: string) => void
 }) {
   // 进度态
   if (isWorking) {
@@ -445,7 +521,7 @@ function DownloadControl({
   if (dl.stage === 'done') {
     return (
       <div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
           <button
             onClick={onDownload}
             style={btnStyle(biliColor, 'rgba(251,114,153,0.10)')}
@@ -461,13 +537,12 @@ function DownloadControl({
               <FolderOpen size={12} /> 打开
             </button>
           </Tooltip>
-          <span style={{
-            marginLeft: 'auto', fontSize: 10,
-            color: theme.expGreen, display: 'flex',
-            alignItems: 'center', gap: 3,
-          }}>
-            <Check size={11} /> 已保存{doneFileSize ? ` · ${fmtFileSize(doneFileSize)}` : ''}
-          </span>
+          {dl.output_path && onToggleTranscribe && (
+            <TranscribeButton
+              active={transcribeOpen}
+              onClick={() => onToggleTranscribe(dl.output_path!)}
+            />
+          )}
         </div>
       </div>
     )

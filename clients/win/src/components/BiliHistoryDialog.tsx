@@ -5,13 +5,17 @@
 // 绿色高亮特权给"已下载"（看完只看进度条）
 // ══════════════════════════════════════════════
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties } from 'react'
 import { X, RefreshCw, Pause, Play, LogIn, ChevronDown, ChevronLeft, ChevronRight, Settings, FolderOpen, Telescope, Sparkles, Search } from 'lucide-react'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { useDataDays, hasDataOrIsToday } from '../hooks/useDataDays'
 import BiliIcon from './icons/BiliIcon'
-import DatePickerPopover from './DatePickerPopover'
+import DatePickerPopover, { invalidateBiliMonthCache } from './DatePickerPopover'
 import BiliVideoPanel from './BiliVideoPanel'
+import BiliTranscribePanel from './BiliTranscribePanel'
+import HudVideoPlayer, { type HudVideoHandle } from './HudVideoPlayer'
 import HudSelect from './HudSelect'
 import { openBiliLogin, getBiliNav, formatViewTime } from '../lib/bilibili/api'
 import { fetchBiliSpans, searchBiliHistory } from '../lib/local-api'
@@ -34,6 +38,21 @@ const HOUR_GAP_EXTRA = 28      // 两个不同小时之间的额外间距
 const CARD_H = 200
 const MAX_COLS = 4             // 一行最多 4 张卡片
 const GAP_DASHED_MIN = 60      // ≥1h 主轴虚线警示
+
+// 头部计数 chip 样式：active=true 时背景/边框由调用处填色
+function countChipStyle(active: boolean): CSSProperties {
+  return {
+    fontFamily: theme.fontMono, fontSize: 11, fontWeight: 700,
+    letterSpacing: 0.5, lineHeight: 1.2,
+    padding: '2px 6px',
+    margin: '0 2px',
+    border: '1px solid transparent',
+    borderRadius: 3,
+    cursor: 'pointer',
+    transition: 'background 0.12s ease, border-color 0.12s ease',
+    outline: active ? undefined : 'none',
+  }
+}
 
 interface Props {
   readonly open: boolean
@@ -265,6 +284,19 @@ export default function BiliHistoryDialog({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastUpdated])
 
+  // 下载完成 / 转录完成 → 刷新当日列表（让卡片绿框 + chip 数字立即更新）
+  // 同时清掉日历的月度计数缓存，下次打开 DatePicker 会重拉
+  useEffect(() => {
+    if (!open) return
+    const u = listen<{ stage: string }>('bili-download-progress', (e) => {
+      if (e.payload.stage === 'done') {
+        invalidateBiliMonthCache()
+        loadSpans(date)
+      }
+    })
+    return () => { u.then((fn) => fn()).catch(() => {}) }
+  }, [open, date, loadSpans])
+
   // 拉登录态 + 用户名：只在"明确登录/明确未登录"时改状态；
   // 网络抖动 / 命令超时 / 与同步抢窗口失败 → 保留之前的判定，避免误闪"未登录"。
   useEffect(() => {
@@ -428,9 +460,19 @@ export default function BiliHistoryDialog({
     return Math.min(n, MAX_COLS)
   }, [containerW])
 
+  const [filter, setFilter] = useState<'all' | 'downloaded' | 'transcribed'>('all')
+  // 切日时清掉过滤
+  useEffect(() => { setFilter('all') }, [dayStr])
+
+  const filteredSpans = useMemo(() => {
+    if (filter === 'downloaded')  return spans.filter((s) => s.downloaded)
+    if (filter === 'transcribed') return spans.filter((s) => s.transcribed)
+    return spans
+  }, [spans, filter])
+
   const { placed, height } = useMemo(
-    () => layoutMasonry(spans, dayStr, cols),
-    [spans, dayStr, cols],
+    () => layoutMasonry(filteredSpans, dayStr, cols),
+    [filteredSpans, dayStr, cols],
   )
 
   // 切日时回到顶部（若有 pending 跳转目标则由下方 scroll 接管，不复位）
@@ -481,6 +523,7 @@ export default function BiliHistoryDialog({
   const dateLabel = date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
   const weekday = ['日', '一', '二', '三', '四', '五', '六'][date.getDay()]
   const downloadedCount = spans.filter((s) => s.downloaded).length
+  const transcribedCount = spans.filter((s) => s.transcribed).length
   const totalCount = spans.length
 
   return (
@@ -566,6 +609,8 @@ export default function BiliHistoryDialog({
         }
         .bhd-card.downloaded { border-color: ${theme.expGreen}55; }
         .bhd-card.downloaded:hover { border-color: ${theme.expGreen}; }
+        .bhd-card.transcribed { border-color: ${theme.shadowPurple}66; }
+        .bhd-card.transcribed:hover { border-color: ${theme.shadowPurple}; }
         @keyframes bhd-flash {
           0%, 100% { box-shadow: inset 4px 0 6px -4px rgba(255,200,0,0.4), 0 0 0 1px rgba(255,200,0,0.4); }
           50%      { box-shadow: inset 4px 0 6px -4px rgba(255,200,0,0.95), 0 0 16px 2px rgba(255,200,0,0.95), 0 0 32px rgba(255,200,0,0.55); }
@@ -575,6 +620,7 @@ export default function BiliHistoryDialog({
           border-color: rgb(255, 200, 0) !important;
           z-index: 6;
         }
+        @keyframes bhd-blink { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
       `}</style>
 
       {/* 遮罩（无 backdrop-filter，避免滚动卡顿） */}
@@ -664,27 +710,68 @@ export default function BiliHistoryDialog({
           <span style={{
             fontFamily: theme.fontMono, fontSize: 11,
             color: theme.textSecondary, letterSpacing: 0.5,
+            display: 'inline-flex', alignItems: 'center', gap: 0,
           }}>
             {loading ? (
               <span style={{ color: theme.textMuted }}>加载中…</span>
             ) : (
-              <span style={{
-                color: theme.electricBlue,
-                textShadow: `0 0 6px ${theme.electricBlue}66`,
-                fontWeight: 700,
-              }}>
-                {totalCount} 条
-              </span>
+              <Tooltip content={filter === 'all' ? '当前显示：全部' : '点击显示全部'}>
+                <button
+                  type="button"
+                  onClick={() => setFilter('all')}
+                  style={{
+                    ...countChipStyle(filter === 'all'),
+                    color: theme.electricBlue,
+                    textShadow: `0 0 6px ${theme.electricBlue}66`,
+                    borderColor: filter === 'all' ? `${theme.electricBlue}99` : 'transparent',
+                    background: filter === 'all' ? `${theme.electricBlue}1A` : 'transparent',
+                  }}
+                >
+                  {totalCount} 条
+                </button>
+              </Tooltip>
             )}
             {downloadedCount > 0 && (
               <>
-                <span style={{ color: theme.textMuted, opacity: 0.6 }}>{' · '}</span>
-                <span style={{ color: theme.expGreen, textShadow: `0 0 6px ${theme.expGreen}88`, fontWeight: 700 }}>
-                  {downloadedCount} 已下载
-                </span>
+                <span style={{ color: theme.textMuted, opacity: 0.6 }}>·</span>
+                <Tooltip content={filter === 'downloaded' ? '点击取消过滤' : '只看已下载'}>
+                  <button
+                    type="button"
+                    onClick={() => setFilter((f) => f === 'downloaded' ? 'all' : 'downloaded')}
+                    style={{
+                      ...countChipStyle(filter === 'downloaded'),
+                      color: theme.expGreen,
+                      textShadow: `0 0 6px ${theme.expGreen}88`,
+                      borderColor: filter === 'downloaded' ? `${theme.expGreen}99` : 'transparent',
+                      background: filter === 'downloaded' ? `${theme.expGreen}1A` : 'transparent',
+                    }}
+                  >
+                    {downloadedCount} 已下载
+                  </button>
+                </Tooltip>
               </>
             )}
-            {isLoading && <span style={{ color: theme.textMuted }}>{' · 同步中'}</span>}
+            {transcribedCount > 0 && (
+              <>
+                <span style={{ color: theme.textMuted, opacity: 0.6 }}>·</span>
+                <Tooltip content={filter === 'transcribed' ? '点击取消过滤' : '只看已转录'}>
+                  <button
+                    type="button"
+                    onClick={() => setFilter((f) => f === 'transcribed' ? 'all' : 'transcribed')}
+                    style={{
+                      ...countChipStyle(filter === 'transcribed'),
+                      color: '#C9A8FF',
+                      textShadow: `0 0 6px ${theme.shadowPurple}AA`,
+                      borderColor: filter === 'transcribed' ? `${theme.shadowPurple}99` : 'transparent',
+                      background: filter === 'transcribed' ? `${theme.shadowPurple}1A` : 'transparent',
+                    }}
+                  >
+                    {transcribedCount} 已转录
+                  </button>
+                </Tooltip>
+              </>
+            )}
+            {isLoading && <span style={{ color: theme.textMuted, marginLeft: 4 }}>· 同步中</span>}
           </span>
 
           <div style={{ flex: 1 }} />
@@ -1176,8 +1263,10 @@ function FishboneRail({
         const cardTopMid = cx + cardW / 2
         const dropY = p.top
         const downloaded = p.span.downloaded
+        const transcribed = p.span.transcribed
         const isHi = hoveredId === p.span.bvid
-        const color = isHi ? (downloaded ? theme.expGreen : theme.electricBlue) : 'rgba(255,255,255,0.55)'
+        const hiColor = transcribed ? theme.shadowPurple : (downloaded ? theme.expGreen : theme.electricBlue)
+        const color = isHi ? hiColor : 'rgba(255,255,255,0.55)'
         // 走线：从节点 → 右走到 col 专属竖线 → 上走到行上方 lane → 右走到卡顶中线 → 下走入卡片
         // 每个 col 都有专属的竖线 x 和 lane y，避免与其他列重合
         const railExitX = RAIL_X + 6 + p.col * 6     // 92 / 98 / 104 / 110（< 卡片起始 x=134）
@@ -1224,7 +1313,8 @@ function TimeLabels({
       {placed.map((p) => {
         const isHi = hoveredId === p.span.bvid
         const downloaded = p.span.downloaded
-        const accent = downloaded ? theme.expGreen : theme.electricBlue
+        const transcribed = p.span.transcribed
+        const accent = transcribed ? theme.shadowPurple : (downloaded ? theme.expGreen : theme.electricBlue)
         const { prefix, time } = fmtTimeLabel(p.span.start_at, dayStr)
         return (
           <div
@@ -1398,18 +1488,20 @@ function Card({
 }) {
   const { span, col, top } = placed
   const downloaded = span.downloaded
+  const transcribed = span.transcribed
   // B站 progress=-1 表示"已看完"哨兵，按 100% 显示；其余按 progress/duration
   const progress = span.progress < 0
     ? 1
     : (span.duration > 0 ? Math.min(1, span.progress / span.duration) : 0)
   const pct = Math.round(progress * 100)
-  const accent = downloaded ? theme.expGreen : theme.electricBlue
+  const accent = transcribed ? theme.shadowPurple : (downloaded ? theme.expGreen : theme.electricBlue)
+  const TRANSCRIBED_COLOR = theme.shadowPurple
 
   const left = RAIL_AREA_W + BRANCH_W + col * (cardW + gap)
 
   return (
     <div
-      className={`bhd-card ${downloaded ? 'downloaded' : ''} ${flashing ? 'flashing' : ''}`}
+      className={`bhd-card ${downloaded ? 'downloaded' : ''} ${transcribed ? 'transcribed' : ''} ${flashing ? 'flashing' : ''}`}
       style={{
         left, top, width: cardW,
         borderLeft: `3px solid ${accent}`,
@@ -1449,6 +1541,21 @@ function Card({
             boxShadow: `0 0 6px ${theme.expGreen}66, 0 1px 2px rgba(0,0,0,0.6)`,
           }}>
             已下载{span.file_size_bytes ? ` · ${fmtBytes(span.file_size_bytes)}` : ''}
+          </span>
+        )}
+        {transcribed && (
+          <span style={{
+            position: 'absolute', top: 6, right: 6,
+            padding: '2px 7px',
+            fontFamily: theme.fontBody,
+            fontSize: 10, fontWeight: 700, letterSpacing: 0.5,
+            background: 'rgba(2,6,14,0.88)',
+            border: `1px solid ${TRANSCRIBED_COLOR}`,
+            color: '#C9A8FF',
+            textShadow: '0 0 2px #000, 0 0 2px #000, 0 0 4px rgba(0,0,0,0.9)',
+            boxShadow: `0 0 6px ${TRANSCRIBED_COLOR}77, 0 1px 2px rgba(0,0,0,0.6)`,
+          }}>
+            已转录
           </span>
         )}
         {/* 观看时长 / 总时长（右下角） */}
@@ -1875,9 +1982,87 @@ function ScanReportOverlay({
 }
 
 // ══════════════════════════════════════════════
-// 卡片详情浮层：在弹窗内右侧浮出 BiliVideoPanel
+// 卡片详情浮层：在弹窗内右侧浮出 BiliVideoPanel；左侧可挂转录面板
 // ══════════════════════════════════════════════
+interface BiliVideoAssetLite {
+  download_status: string
+  download_path: string | null
+}
+
 function DetailOverlay({ span, onClose }: { span: BiliSpan; onClose: () => void }) {
+  const [transcribeFile, setTranscribeFile] = useState<string | null>(null)
+  // theater 模式下右侧面板扩宽 + 内嵌本地视频播放器
+  const [theater, setTheater] = useState(false)
+  const [downloadedPath, setDownloadedPath] = useState<string | null>(null)
+  const [currentSec, setCurrentSec] = useState<number | null>(null)
+  const videoHandleRef = useRef<HudVideoHandle | null>(null)
+
+  // 切换 span 时：复位面板状态；查 download_path；若 transcribed → 自动打开转录
+  useEffect(() => {
+    setTranscribeFile(null)
+    setTheater(false)
+    setDownloadedPath(null)
+    setCurrentSec(null)
+    let cancelled = false
+    invoke<BiliVideoAssetLite[]>('get_bili_assets_by_bvid', { bvid: span.bvid })
+      .then((assets) => {
+        if (cancelled) return
+        const done = assets.find((a) => a.download_status === 'done' && a.download_path)
+        if (done?.download_path) {
+          setDownloadedPath(done.download_path)
+          if (span.transcribed) setTranscribeFile(done.download_path)
+        }
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [span.bvid, span.transcribed])
+
+  // 监听下载完成事件：完成后立刻把 downloadedPath 灌入，让封面切到"本地播放"
+  useEffect(() => {
+    let cancelled = false
+    const u = listen<{ bvid: string; stage: string; output_path?: string | null }>(
+      'bili-download-progress',
+      (e) => {
+        if (cancelled) return
+        if (e.payload.bvid !== span.bvid) return
+        if (e.payload.stage !== 'done') return
+        if (e.payload.output_path) {
+          setDownloadedPath(e.payload.output_path)
+        } else {
+          // 兜底：重新查询 DB
+          invoke<BiliVideoAssetLite[]>('get_bili_assets_by_bvid', { bvid: span.bvid })
+            .then((assets) => {
+              if (cancelled) return
+              const done = assets.find((a) => a.download_status === 'done' && a.download_path)
+              if (done?.download_path) setDownloadedPath(done.download_path)
+            })
+            .catch(() => {})
+        }
+      },
+    )
+    return () => { cancelled = true; u.then((fn) => fn()).catch(() => {}) }
+  }, [span.bvid])
+
+  const handleToggleTranscribe = useCallback((filePath: string) => {
+    setTranscribeFile((prev) => (prev === filePath ? null : filePath))
+  }, [])
+
+  // 点封面播放：有本地文件则进 theater，否则浏览器 fallback
+  const handlePlayLocal = useCallback(() => {
+    if (downloadedPath) {
+      setTheater(true)
+    } else {
+      invoke('open_url_in_browser', { url: `https://www.bilibili.com/video/${span.bvid}` }).catch(() => {})
+    }
+  }, [downloadedPath, span.bvid])
+
+  const handleSeek = useCallback((sec: number) => {
+    if (!theater) setTheater(true)
+    requestAnimationFrame(() => videoHandleRef.current?.seek(sec))
+  }, [theater])
+
+  const overlayWidth = theater ? 640 : 380
+
   return (
     <>
       <div
@@ -1893,7 +2078,7 @@ function DetailOverlay({ span, onClose }: { span: BiliSpan; onClose: () => void 
         style={{
           position: 'absolute',
           right: 24, top: 24, bottom: 24,
-          width: 380,
+          width: overlayWidth,
           zIndex: 11,
           background: theme.hudFill,
           border: `1px solid ${theme.electricBlue}88`,
@@ -1901,6 +2086,7 @@ function DetailOverlay({ span, onClose }: { span: BiliSpan; onClose: () => void 
           boxShadow: `0 16px 48px rgba(0,0,0,0.8), 0 0 32px ${theme.electricBlue}55`,
           display: 'flex', flexDirection: 'column',
           overflow: 'hidden',
+          transition: 'width 320ms cubic-bezier(.2,.8,.2,1), box-shadow 320ms ease',
         }}
       >
         <div style={{
@@ -1914,21 +2100,61 @@ function DetailOverlay({ span, onClose }: { span: BiliSpan; onClose: () => void 
             letterSpacing: 2, color: theme.electricBlue,
             textShadow: `0 0 6px ${theme.electricBlue}AA`,
           }}>
-            视频 · 详情
+            视频 · 详情{theater ? ' · 影院' : ''}
           </span>
-          <button
-            className="bhd-icon-btn"
-            onClick={onClose}
-            title="关闭"
-            style={{ width: 22, height: 22 }}
-          >
-            <X size={12} />
-          </button>
+          <span style={{ flex: 1 }} />
+          {theater && (
+            <Tooltip content="收起播放器">
+              <button
+                className="bhd-icon-btn"
+                onClick={() => setTheater(false)}
+                style={{ width: 22, height: 22, marginRight: 4 }}
+              >
+                <ChevronRight size={12} />
+              </button>
+            </Tooltip>
+          )}
+          <Tooltip content="关闭">
+            <button
+              className="bhd-icon-btn"
+              onClick={onClose}
+              style={{ width: 22, height: 22 }}
+            >
+              <X size={12} />
+            </button>
+          </Tooltip>
         </div>
+        {theater && downloadedPath && (
+          <div style={{ flexShrink: 0, borderBottom: `1px solid ${theme.hudFrameSoft}` }}>
+            <HudVideoPlayer
+              ref={videoHandleRef}
+              filePath={downloadedPath}
+              onTimeUpdate={(sec) => setCurrentSec(sec)}
+            />
+          </div>
+        )}
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          <BiliVideoPanel span={span} />
+          <BiliVideoPanel
+            span={span}
+            transcribeOpen={!!transcribeFile}
+            onToggleTranscribe={handleToggleTranscribe}
+            onPlayLocal={downloadedPath ? handlePlayLocal : undefined}
+            theaterActive={theater && !!downloadedPath}
+          />
         </div>
       </div>
+
+      {transcribeFile && (
+        <BiliTranscribePanel
+          filePath={transcribeFile}
+          bvid={span.bvid}
+          title={span.title}
+          onClose={() => setTranscribeFile(null)}
+          currentSec={theater ? currentSec : null}
+          onSeek={downloadedPath ? handleSeek : undefined}
+          rightAnchor={overlayWidth}
+        />
+      )}
     </>
   )
 }

@@ -100,6 +100,11 @@ function buildMonthGrid(viewYear: number, viewMonth: number): Date[] {
 // ── 月度 B 站日计数缓存（按 "YYYY-MM" 缓存整月，跨打开复用） ──
 const biliMonthCache = new Map<string, Map<string, BiliDayCount>>()
 const biliMonthInflight = new Map<string, Promise<Map<string, BiliDayCount>>>()
+
+/** 下载/转录写入后调用：清空月度计数缓存，下次打开日历重拉 */
+export function invalidateBiliMonthCache() {
+  biliMonthCache.clear()
+}
 async function getBiliCountsForMonth(y: number, m: number): Promise<Map<string, BiliDayCount>> {
   const key = `${y}-${String(m + 1).padStart(2, '0')}`
   if (biliMonthCache.has(key)) return biliMonthCache.get(key)!
@@ -370,14 +375,15 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose,
               const c = biliCounts.get(k)
               const watched = c?.watched ?? 0
               const downloaded = c?.downloaded ?? 0
+              const transcribed = c?.transcribed ?? 0
               const tip = watched > 0
-                ? `观看 ${watched}${downloaded > 0 ? ` · 下载 ${downloaded}` : ''}`
+                ? `观看 ${watched}${downloaded > 0 ? ` · 下载 ${downloaded}` : ''}${transcribed > 0 ? ` · 转录 ${transcribed}` : ''}`
                 : ''
               return (
                 <Tooltip key={d.toISOString()} content={tip} disabled={!tip}>
                 <button className={cls} onClick={() => { onChange(new Date(d)); onClose() }}>
                   <span style={{ position: 'relative', zIndex: 1, lineHeight: 1 }}>{d.getDate()}</span>
-                  <BiliCountBadge watched={watched} downloaded={downloaded} active={isSel || isToday} />
+                  <BiliCountBadge watched={watched} downloaded={downloaded} transcribed={transcribed} active={isSel || isToday} />
                 </button>
                 </Tooltip>
               )
@@ -446,19 +452,29 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose,
   )
 }
 
-// 单元格底部的 B 站计数：watched · downloaded
-// 没有观看 → 不渲染；只有观看 → 单个青色数字；有下载 → 青·绿
-function BiliCountBadge({ watched, downloaded, active }: {
-  watched: number; downloaded: number; active: boolean
+// 单元格底部的 B 站计数：watched · downloaded · transcribed
+// 没有观看 → 不渲染；只有观看 → 单个青色数字；有下载 → 青·绿；有转录 → 加紫色一段
+function BiliCountBadge({ watched, downloaded, transcribed, active }: {
+  watched: number; downloaded: number; transcribed: number; active: boolean
 }) {
   if (watched === 0) return null
   const cyan = active ? theme.electricBlue : `${theme.electricBlue}cc`
   const green = theme.expGreen
+  const purple = '#C9A8FF'
+  const hasThree = downloaded > 0 && transcribed > 0
+  const fontSize = hasThree ? 7 : 8.5
+  const sepStyle = {
+    color: theme.textMuted,
+    opacity: 0.45,
+    margin: hasThree ? '0 0.5px' : '0 1px',
+    transform: hasThree ? 'scale(0.7)' : undefined,
+    display: 'inline-block',
+  } as const
   return (
     <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 2,
-      fontFamily: theme.fontMono, fontSize: 8.5, fontWeight: 700,
-      letterSpacing: 0.2, lineHeight: 1,
+      display: 'inline-flex', alignItems: 'center', gap: 0,
+      fontFamily: theme.fontMono, fontSize, fontWeight: 700,
+      letterSpacing: 0, lineHeight: 1,
       position: 'relative', zIndex: 1,
     }}>
       <span style={{ color: cyan, textShadow: active ? `0 0 4px ${cyan}` : undefined }}>
@@ -466,9 +482,17 @@ function BiliCountBadge({ watched, downloaded, active }: {
       </span>
       {downloaded > 0 && (
         <>
-          <span style={{ color: theme.textMuted, opacity: 0.5 }}>·</span>
+          <span style={sepStyle}>·</span>
           <span style={{ color: green, textShadow: `0 0 4px ${green}99` }}>
             {downloaded}
+          </span>
+        </>
+      )}
+      {transcribed > 0 && (
+        <>
+          <span style={sepStyle}>·</span>
+          <span style={{ color: purple, textShadow: `0 0 4px ${theme.shadowPurple}AA` }}>
+            {transcribed}
           </span>
         </>
       )}
