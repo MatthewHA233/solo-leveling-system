@@ -477,6 +477,64 @@ async fn get_feature_model(
 }
 
 #[tauri::command]
+async fn list_model_api_keys(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<db::ModelApiKey>, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.list_model_api_keys().await
+}
+
+#[tauri::command]
+async fn get_active_model_api_key(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Option<db::ModelApiKey>, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.get_active_model_api_key().await
+}
+
+#[tauri::command]
+async fn upsert_model_api_key(
+    req: db::UpsertModelApiKeyRequest,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<db::ModelApiKey, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.upsert_model_api_key(req).await
+}
+
+#[tauri::command]
+async fn set_active_model_api_key(
+    id: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.set_active_model_api_key(&id).await
+}
+
+#[tauri::command]
+async fn delete_model_api_key(
+    id: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.delete_model_api_key(&id).await
+}
+
+#[tauri::command]
 async fn log_model_call(
     req: db::LogModelCallRequest,
     state: tauri::State<'_, Arc<AppState>>,
@@ -494,6 +552,7 @@ async fn query_call_log(
     time_to: Option<String>,
     feature: Option<String>,
     model_id: Option<String>,
+    api_key_id: Option<String>,
     limit: Option<i64>,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<db::ModelCallLog>, String> {
@@ -501,7 +560,7 @@ async fn query_call_log(
         let g = state.db.read().await;
         g.as_ref().ok_or("数据库未初始化")?.clone()
     };
-    db.query_call_log(time_from, time_to, feature, model_id, limit).await
+    db.query_call_log(time_from, time_to, feature, model_id, api_key_id, limit).await
 }
 
 #[tauri::command]
@@ -511,13 +570,14 @@ async fn aggregate_call_log(
     granularity: String,
     feature: Option<String>,
     model_id: Option<String>,
+    api_key_id: Option<String>,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<db::CallLogBucket>, String> {
     let db = {
         let g = state.db.read().await;
         g.as_ref().ok_or("数据库未初始化")?.clone()
     };
-    db.aggregate_call_log(time_from, time_to, granularity, feature, model_id).await
+    db.aggregate_call_log(time_from, time_to, granularity, feature, model_id, api_key_id).await
 }
 
 #[tauri::command]
@@ -905,6 +965,11 @@ pub fn run() {
             list_feature_bindings,
             set_feature_binding,
             get_feature_model,
+            list_model_api_keys,
+            get_active_model_api_key,
+            upsert_model_api_key,
+            set_active_model_api_key,
+            delete_model_api_key,
             log_model_call,
             query_call_log,
             aggregate_call_log,

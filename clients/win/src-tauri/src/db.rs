@@ -466,7 +466,6 @@ impl Database {
                 category TEXT NOT NULL,           -- 'text' | 'omni' | 'realtime'
                 provider TEXT NOT NULL DEFAULT 'dashscope',
                 display_name TEXT,
-                aliases TEXT,                     -- JSON 数组，带日期版本号别名
                 modalities TEXT,                  -- JSON 数组：['text','image','video','audio_in','audio_out']
                 context_window INTEGER,
                 notes TEXT,
@@ -498,9 +497,21 @@ impl Database {
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            -- 百炼 API Key 库（本地保存，调用日志按 id 归属）
+            CREATE TABLE IF NOT EXISTS model_api_keys (
+                id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_model_api_keys_active ON model_api_keys(is_active);
+
             -- 调用日志（每次模型调用一行）
             CREATE TABLE IF NOT EXISTS model_call_log (
                 id TEXT PRIMARY KEY,
+                api_key_id TEXT,
                 feature TEXT NOT NULL,
                 model_id TEXT NOT NULL,
                 started_at TEXT NOT NULL,
@@ -520,6 +531,10 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_call_feature ON model_call_log(feature, started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_call_model ON model_call_log(model_id, started_at DESC);
         "#).map_err(|e| format!("创建表失败: {}", e))?;
+
+        // 渐进式迁移：旧库里 model_call_log 已存在时补 api_key_id
+        let _ = conn.execute_batch("ALTER TABLE model_call_log ADD COLUMN api_key_id TEXT");
+        let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_call_api_key ON model_call_log(api_key_id, started_at DESC)");
 
         // 首次启动写入百炼模型库与默认绑定种子（已存在则跳过，幂等）
         seed_model_registry(&conn)?;
@@ -1422,7 +1437,6 @@ pub struct ModelDef {
     pub category: String,                 // 'text' | 'omni' | 'realtime'
     pub provider: String,
     pub display_name: Option<String>,
-    pub aliases: Option<String>,          // JSON
     pub modalities: Option<String>,       // JSON
     pub context_window: Option<i64>,
     pub notes: Option<String>,
@@ -1452,8 +1466,27 @@ pub struct FeatureBinding {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModelApiKey {
+    pub id: String,
+    pub label: String,
+    pub api_key: String,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UpsertModelApiKeyRequest {
+    pub id: Option<String>,
+    pub label: String,
+    pub api_key: String,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ModelCallLog {
     pub id: String,
+    pub api_key_id: Option<String>,
     pub feature: String,
     pub model_id: String,
     pub started_at: String,
@@ -1472,6 +1505,7 @@ pub struct ModelCallLog {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LogModelCallRequest {
+    pub api_key_id: Option<String>,
     pub feature: String,
     pub model_id: String,
     pub started_at: String,
@@ -1510,102 +1544,116 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
     }
 
     type Tier = (i64, Option<i64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>);
-    type Seed = (&'static str, &'static str, &'static str, &'static [&'static str], &'static [&'static str], i64, &'static [Tier]);
+    type Seed = (&'static [&'static str], &'static str, &'static str, &'static [&'static str], i64, &'static [Tier]);
 
-    // (id, category, display_name, aliases, modalities, context_window, tiers)
+    // (ids, category, display_name, modalities, context_window, tiers)
+    // ids 第一项为主 id（display_name 取它），其余为同价表别名（每个独立成行）
     // tier 字段顺序：(min, max, in_text, in_image, in_video, in_audio, out_text, out_audio)
     let seeds: Vec<Seed> = vec![
         // ── Qwen3.6 文本 ──
-        ("qwen3.6-max-preview", "text", "Qwen3.6 Max Preview", &[], &["text"], 262_144, &[
+        (&["qwen3.6-max-preview"], "text", "Qwen3.6 Max Preview", &["text"], 262_144, &[
             (0,        Some(131_072), Some(9.0),  None, None, None, Some(54.0), None),
             (131_072,  Some(262_144), Some(15.0), None, None, None, Some(90.0), None),
         ]),
-        ("qwen3.6-plus", "text", "Qwen3.6 Plus", &["qwen3.6-plus-2026-04-02"], &["text"], 1_048_576, &[
+        (&["qwen3.6-plus", "qwen3.6-plus-2026-04-02"], "text", "Qwen3.6 Plus", &["text"], 1_048_576, &[
             (0,        Some(262_144),   Some(2.0), None, None, None, Some(12.0), None),
             (262_144,  Some(1_048_576), Some(8.0), None, None, None, Some(48.0), None),
         ]),
-        ("qwen3.6-flash", "text", "Qwen3.6 Flash", &["qwen3.6-flash-2026-04-16"], &["text"], 1_048_576, &[
+        (&["qwen3.6-flash", "qwen3.6-flash-2026-04-16"], "text", "Qwen3.6 Flash", &["text"], 1_048_576, &[
             (0,        Some(262_144),   Some(1.2), None, None, None, Some(7.2),  None),
             (262_144,  Some(1_048_576), Some(4.8), None, None, None, Some(28.8), None),
         ]),
-        ("qwen3.6-35b-a3b", "text", "Qwen3.6 35B A3B", &[], &["text"], 262_144, &[
+        (&["qwen3.6-35b-a3b"], "text", "Qwen3.6 35B A3B", &["text"], 262_144, &[
             (0, Some(262_144), Some(1.8), None, None, None, Some(10.8), None),
         ]),
-        ("qwen3.6-27b", "text", "Qwen3.6 27B", &[], &["text"], 262_144, &[
+        (&["qwen3.6-27b"], "text", "Qwen3.6 27B", &["text"], 262_144, &[
             (0, Some(262_144), Some(3.0), None, None, None, Some(18.0), None),
         ]),
 
         // ── Qwen3.5 文本 ──
-        ("qwen3.5-plus", "text", "Qwen3.5 Plus", &["qwen3.5-plus-2026-04-20", "qwen3.5-plus-2026-02-15"], &["text"], 1_048_576, &[
+        (&["qwen3.5-plus", "qwen3.5-plus-2026-04-20", "qwen3.5-plus-2026-02-15"], "text", "Qwen3.5 Plus", &["text"], 1_048_576, &[
             (0,        Some(131_072),   Some(0.8), None, None, None, Some(4.8),  None),
             (131_072,  Some(262_144),   Some(2.0), None, None, None, Some(12.0), None),
             (262_144,  Some(1_048_576), Some(4.0), None, None, None, Some(24.0), None),
         ]),
-        ("qwen3.5-flash", "text", "Qwen3.5 Flash", &["qwen3.5-flash-2026-02-23"], &["text"], 1_048_576, &[
+        (&["qwen3.5-flash", "qwen3.5-flash-2026-02-23"], "text", "Qwen3.5 Flash", &["text"], 1_048_576, &[
             (0,        Some(131_072),   Some(0.2), None, None, None, Some(2.0),  None),
             (131_072,  Some(262_144),   Some(0.8), None, None, None, Some(8.0),  None),
             (262_144,  Some(1_048_576), Some(1.2), None, None, None, Some(12.0), None),
         ]),
-        ("qwen3.5-397b-a17b", "text", "Qwen3.5 397B A17B", &[], &["text"], 262_144, &[
+        (&["qwen3.5-397b-a17b"], "text", "Qwen3.5 397B A17B", &["text"], 262_144, &[
             (0,       Some(131_072), Some(1.2), None, None, None, Some(7.2),  None),
             (131_072, Some(262_144), Some(3.0), None, None, None, Some(18.0), None),
         ]),
-        ("qwen3.5-122b-a10b", "text", "Qwen3.5 122B A10B", &[], &["text"], 262_144, &[
+        (&["qwen3.5-122b-a10b"], "text", "Qwen3.5 122B A10B", &["text"], 262_144, &[
             (0,       Some(131_072), Some(0.8), None, None, None, Some(6.4),  None),
             (131_072, Some(262_144), Some(2.0), None, None, None, Some(16.0), None),
         ]),
-        ("qwen3.5-27b", "text", "Qwen3.5 27B", &[], &["text"], 262_144, &[
+        (&["qwen3.5-27b"], "text", "Qwen3.5 27B", &["text"], 262_144, &[
             (0,       Some(131_072), Some(0.6), None, None, None, Some(4.8),  None),
             (131_072, Some(262_144), Some(1.8), None, None, None, Some(14.4), None),
         ]),
-        ("qwen3.5-35b-a3b", "text", "Qwen3.5 35B A3B", &[], &["text"], 262_144, &[
+        (&["qwen3.5-35b-a3b"], "text", "Qwen3.5 35B A3B", &["text"], 262_144, &[
             (0,       Some(131_072), Some(0.4), None, None, None, Some(3.2),  None),
             (131_072, Some(262_144), Some(1.6), None, None, None, Some(12.8), None),
         ]),
 
         // ── Qwen3.5 Omni HTTP ──
-        ("qwen3.5-omni-plus", "omni", "Qwen3.5 Omni Plus", &["qwen3.5-omni-plus-2026-03-15"], &["text","image","video","audio_in","audio_out"], 0, &[
+        (&["qwen3.5-omni-plus", "qwen3.5-omni-plus-2026-03-15"], "omni", "Qwen3.5 Omni Plus", &["text","image","video","audio_in","audio_out"], 0, &[
             (0, None, Some(7.0),  Some(7.0),  Some(7.0),  Some(53.0), Some(40.0),  Some(213.0)),
         ]),
-        ("qwen3.5-omni-flash", "omni", "Qwen3.5 Omni Flash", &["qwen3.5-omni-flash-2026-03-15"], &["text","image","video","audio_in","audio_out"], 0, &[
+        (&["qwen3.5-omni-flash", "qwen3.5-omni-flash-2026-03-15"], "omni", "Qwen3.5 Omni Flash", &["text","image","video","audio_in","audio_out"], 0, &[
             (0, None, Some(2.2),  Some(2.2),  Some(2.2),  Some(18.0), Some(13.3),  Some(72.0)),
         ]),
 
         // ── Qwen3.5 Omni Realtime（WS）──
-        ("qwen3.5-omni-plus-realtime", "realtime", "Qwen3.5 Omni Plus Realtime", &["qwen3.5-omni-plus-realtime-2026-03-15"], &["text","image","audio_in","audio_out"], 0, &[
+        (&["qwen3.5-omni-plus-realtime", "qwen3.5-omni-plus-realtime-2026-03-15"], "realtime", "Qwen3.5 Omni Plus Realtime", &["text","image","audio_in","audio_out"], 0, &[
             (0, None, Some(10.0), Some(10.0), None, Some(80.0), Some(60.0), Some(300.0)),
         ]),
-        ("qwen3.5-omni-flash-realtime", "realtime", "Qwen3.5 Omni Flash Realtime", &["qwen3.5-omni-flash-realtime-2026-03-15"], &["text","image","audio_in","audio_out"], 0, &[
+        (&["qwen3.5-omni-flash-realtime", "qwen3.5-omni-flash-realtime-2026-03-15"], "realtime", "Qwen3.5 Omni Flash Realtime", &["text","image","audio_in","audio_out"], 0, &[
             (0, None, Some(3.3),  Some(3.3),  None, Some(27.0), Some(20.0), Some(107.0)),
         ]),
     ];
 
     let now = chrono::Utc::now().to_rfc3339();
-    for (id, category, display_name, aliases, modalities, ctx, tiers) in &seeds {
-        let aliases_json = serde_json::to_string(aliases).unwrap_or_else(|_| "[]".to_string());
+    let mut written = 0usize;
+    for (ids, category, display_name, modalities, ctx, tiers) in &seeds {
         let modalities_json = serde_json::to_string(modalities).unwrap_or_else(|_| "[]".to_string());
         let ctx_opt: Option<i64> = if *ctx > 0 { Some(*ctx) } else { None };
 
-        conn.execute(
-            "INSERT OR IGNORE INTO model_registry
-             (id, category, provider, display_name, aliases, modalities, context_window, notes, deprecated, updated_at)
-             VALUES (?, ?, 'dashscope', ?, ?, ?, ?, NULL, 0, ?)",
-            params![id, category, display_name, aliases_json, modalities_json, ctx_opt, &now],
-        ).map_err(|e| e.to_string())?;
+        let main_id = ids[0];
+        for id in *ids {
+            // 主 id 用基础名；别名 id 在末尾附上日期段（YYYY-MM-DD）
+            let row_display_name = if *id == main_id {
+                display_name.to_string()
+            } else if let Some(rest) = id.strip_prefix(main_id).and_then(|s| s.strip_prefix('-')) {
+                format!("{} {}", display_name, rest)
+            } else {
+                display_name.to_string()
+            };
 
-        for (min, max, in_text, in_image, in_video, in_audio, out_text, out_audio) in *tiers {
             conn.execute(
-                "INSERT INTO model_pricing
-                 (model_id, tier_min_tokens, tier_max_tokens,
-                  price_input_text, price_input_image, price_input_video, price_input_audio,
-                  price_output_text, price_output_text_thinking, price_output_audio)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![id, min, max, in_text, in_image, in_video, in_audio, out_text, out_text, out_audio],
+                "INSERT OR IGNORE INTO model_registry
+                 (id, category, provider, display_name, modalities, context_window, notes, deprecated, updated_at)
+                 VALUES (?, ?, 'dashscope', ?, ?, ?, NULL, 0, ?)",
+                params![id, category, row_display_name, modalities_json, ctx_opt, &now],
             ).map_err(|e| e.to_string())?;
+
+            for (min, max, in_text, in_image, in_video, in_audio, out_text, out_audio) in *tiers {
+                conn.execute(
+                    "INSERT INTO model_pricing
+                     (model_id, tier_min_tokens, tier_max_tokens,
+                      price_input_text, price_input_image, price_input_video, price_input_audio,
+                      price_output_text, price_output_text_thinking, price_output_audio)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![id, min, max, in_text, in_image, in_video, in_audio, out_text, out_text, out_audio],
+                ).map_err(|e| e.to_string())?;
+            }
+            written += 1;
         }
     }
 
-    log::info!("[Database] model_registry 种子写入 {} 个模型", seeds.len());
+    log::info!("[Database] model_registry 种子写入 {} 个模型", written);
     Ok(())
 }
 
@@ -1623,6 +1671,7 @@ fn seed_feature_bindings(conn: &rusqlite::Connection) -> Result<(), String> {
     let seeds = [
         ("fairy_chat", "qwen3.6-plus"),
         ("fairy_omni_chat", "qwen3.5-omni-plus-realtime"),
+        ("session_title", "qwen3.5-flash"),
         ("bili_visual_transcribe", "qwen3.5-omni-plus"),
         ("bili_audio_transcribe", "qwen3.5-omni-plus"),
     ];
@@ -1644,10 +1693,10 @@ impl Database {
     pub async fn list_models(&self) -> Result<Vec<ModelDef>, String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
-            "SELECT id, category, provider, display_name, aliases, modalities,
+            "SELECT id, category, provider, display_name, modalities,
                     context_window, notes, deprecated, updated_at
              FROM model_registry
-             ORDER BY category, id"
+             ORDER BY category DESC, id DESC"
         ).map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([], |r| {
@@ -1656,12 +1705,11 @@ impl Database {
                 category:       r.get(1)?,
                 provider:       r.get(2)?,
                 display_name:   r.get(3)?,
-                aliases:        r.get(4)?,
-                modalities:     r.get(5)?,
-                context_window: r.get(6)?,
-                notes:          r.get(7)?,
-                deprecated:     r.get::<_, i64>(8)? != 0,
-                updated_at:     r.get(9)?,
+                modalities:     r.get(4)?,
+                context_window: r.get(5)?,
+                notes:          r.get(6)?,
+                deprecated:     r.get::<_, i64>(7)? != 0,
+                updated_at:     r.get(8)?,
                 pricing:        Vec::new(),
             })
         }).map_err(|e| e.to_string())?;
@@ -1708,15 +1756,15 @@ impl Database {
 
         tx.execute(
             "INSERT INTO model_registry
-             (id, category, provider, display_name, aliases, modalities, context_window, notes, deprecated, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             (id, category, provider, display_name, modalities, context_window, notes, deprecated, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                category=excluded.category, provider=excluded.provider, display_name=excluded.display_name,
-               aliases=excluded.aliases, modalities=excluded.modalities, context_window=excluded.context_window,
+               modalities=excluded.modalities, context_window=excluded.context_window,
                notes=excluded.notes, deprecated=excluded.deprecated, updated_at=excluded.updated_at",
             params![
                 &def.id, &def.category, &def.provider, &def.display_name,
-                &def.aliases, &def.modalities, &def.context_window, &def.notes,
+                &def.modalities, &def.context_window, &def.notes,
                 if def.deprecated { 1 } else { 0 }, &now,
             ],
         ).map_err(|e| e.to_string())?;
@@ -1782,6 +1830,145 @@ impl Database {
             |r| r.get(0),
         );
         Ok(result.ok())
+    }
+
+    // ── model_api_keys ──
+
+    pub async fn list_model_api_keys(&self) -> Result<Vec<ModelApiKey>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT id, label, api_key, is_active, created_at, updated_at
+             FROM model_api_keys
+             ORDER BY is_active DESC, updated_at DESC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(ModelApiKey {
+            id: r.get(0)?,
+            label: r.get(1)?,
+            api_key: r.get(2)?,
+            is_active: r.get::<_, i64>(3)? != 0,
+            created_at: r.get(4)?,
+            updated_at: r.get(5)?,
+        })).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub async fn get_active_model_api_key(&self) -> Result<Option<ModelApiKey>, String> {
+        let conn = self.conn.lock().await;
+        let result = conn.query_row(
+            "SELECT id, label, api_key, is_active, created_at, updated_at
+             FROM model_api_keys
+             WHERE is_active = 1
+             ORDER BY updated_at DESC
+             LIMIT 1",
+            [],
+            |r| Ok(ModelApiKey {
+                id: r.get(0)?,
+                label: r.get(1)?,
+                api_key: r.get(2)?,
+                is_active: r.get::<_, i64>(3)? != 0,
+                created_at: r.get(4)?,
+                updated_at: r.get(5)?,
+            })
+        );
+        Ok(result.ok())
+    }
+
+    pub async fn upsert_model_api_key(&self, req: UpsertModelApiKeyRequest) -> Result<ModelApiKey, String> {
+        use rusqlite::params;
+
+        let mut conn = self.conn.lock().await;
+        let id = req.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let label = if req.label.trim().is_empty() {
+            "百炼 API Key".to_string()
+        } else {
+            req.label.trim().to_string()
+        };
+        let api_key = req.api_key.trim().to_string();
+        if api_key.is_empty() {
+            return Err("API Key 不能为空".to_string());
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let should_activate = req.is_active || {
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM model_api_keys WHERE is_active = 1", [], |r| r.get(0))
+                .unwrap_or(0);
+            count == 0
+        };
+
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        if should_activate {
+            tx.execute("UPDATE model_api_keys SET is_active = 0", [])
+                .map_err(|e| e.to_string())?;
+        }
+        tx.execute(
+            "INSERT INTO model_api_keys (id, label, api_key, is_active, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               label=excluded.label,
+               api_key=excluded.api_key,
+               is_active=excluded.is_active,
+               updated_at=excluded.updated_at",
+            params![&id, &label, &api_key, if should_activate { 1 } else { 0 }, &now, &now],
+        ).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+
+        Ok(ModelApiKey {
+            id,
+            label,
+            api_key,
+            is_active: should_activate,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub async fn set_active_model_api_key(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM model_api_keys WHERE id = ?",
+            rusqlite::params![id],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        if exists == 0 {
+            return Err("API Key 不存在".to_string());
+        }
+        conn.execute(
+            "UPDATE model_api_keys SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END,
+                    updated_at = CASE WHEN id = ? THEN ? ELSE updated_at END",
+            rusqlite::params![id, id, Utc::now().to_rfc3339()],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn delete_model_api_key(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        let was_active: bool = conn.query_row(
+            "SELECT is_active FROM model_api_keys WHERE id = ?",
+            rusqlite::params![id],
+            |r| Ok(r.get::<_, i64>(0)? != 0),
+        ).unwrap_or(false);
+
+        conn.execute("DELETE FROM model_call_log WHERE api_key_id = ?", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+
+        conn.execute("DELETE FROM model_api_keys WHERE id = ?", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+
+        if was_active {
+            let next_id: Option<String> = conn.query_row(
+                "SELECT id FROM model_api_keys ORDER BY updated_at DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            ).ok();
+            if let Some(next_id) = next_id {
+                conn.execute(
+                    "UPDATE model_api_keys SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END",
+                    rusqlite::params![next_id],
+                ).map_err(|e| e.to_string())?;
+            }
+        }
+
+        Ok(())
     }
 
     // ── model_call_log ──
@@ -1850,13 +2037,13 @@ impl Database {
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT INTO model_call_log
-             (id, feature, model_id, started_at, duration_ms,
+             (id, api_key_id, feature, model_id, started_at, duration_ms,
               prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
               completion_text_tokens, completion_audio_tokens,
               cost_cny, success, error_message, metadata)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
-                &id, &req.feature, &req.model_id, &req.started_at, &req.duration_ms,
+                &id, &req.api_key_id, &req.feature, &req.model_id, &req.started_at, &req.duration_ms,
                 &req.prompt_text_tokens, &req.prompt_image_tokens, &req.prompt_video_tokens, &req.prompt_audio_tokens,
                 &req.completion_text_tokens, &req.completion_audio_tokens,
                 &cost, if req.success { 1 } else { 0 }, &req.error_message, &req.metadata,
@@ -1872,11 +2059,12 @@ impl Database {
         time_to: Option<String>,
         feature: Option<String>,
         model_id: Option<String>,
+        api_key_id: Option<String>,
         limit: Option<i64>,
     ) -> Result<Vec<ModelCallLog>, String> {
         let conn = self.conn.lock().await;
         let mut sql = String::from(
-            "SELECT id, feature, model_id, started_at, duration_ms,
+            "SELECT id, api_key_id, feature, model_id, started_at, duration_ms,
                     prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
                     completion_text_tokens, completion_audio_tokens,
                     cost_cny, success, error_message, metadata
@@ -1887,19 +2075,20 @@ impl Database {
         if let Some(t) = time_to   { sql.push_str(" AND started_at <  ?"); args.push(Box::new(t)); }
         if let Some(f) = feature   { sql.push_str(" AND feature = ?");     args.push(Box::new(f)); }
         if let Some(m) = model_id  { sql.push_str(" AND model_id = ?");    args.push(Box::new(m)); }
+        if let Some(k) = api_key_id { sql.push_str(" AND api_key_id = ?");  args.push(Box::new(k)); }
         sql.push_str(" ORDER BY started_at DESC");
         if let Some(l) = limit     { sql.push_str(&format!(" LIMIT {}", l.max(1))); }
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let arg_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(arg_refs.as_slice(), |r| Ok(ModelCallLog {
-            id: r.get(0)?, feature: r.get(1)?, model_id: r.get(2)?,
-            started_at: r.get(3)?, duration_ms: r.get(4)?,
-            prompt_text_tokens: r.get(5)?, prompt_image_tokens: r.get(6)?,
-            prompt_video_tokens: r.get(7)?, prompt_audio_tokens: r.get(8)?,
-            completion_text_tokens: r.get(9)?, completion_audio_tokens: r.get(10)?,
-            cost_cny: r.get(11)?, success: r.get::<_, i64>(12)? != 0,
-            error_message: r.get(13)?, metadata: r.get(14)?,
+            id: r.get(0)?, api_key_id: r.get(1)?, feature: r.get(2)?, model_id: r.get(3)?,
+            started_at: r.get(4)?, duration_ms: r.get(5)?,
+            prompt_text_tokens: r.get(6)?, prompt_image_tokens: r.get(7)?,
+            prompt_video_tokens: r.get(8)?, prompt_audio_tokens: r.get(9)?,
+            completion_text_tokens: r.get(10)?, completion_audio_tokens: r.get(11)?,
+            cost_cny: r.get(12)?, success: r.get::<_, i64>(13)? != 0,
+            error_message: r.get(14)?, metadata: r.get(15)?,
         })).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -1913,6 +2102,7 @@ impl Database {
         granularity: String,
         feature: Option<String>,
         model_id: Option<String>,
+        api_key_id: Option<String>,
     ) -> Result<Vec<CallLogBucket>, String> {
         let bucket_expr = match granularity.as_str() {
             "minute" => "substr(started_at, 1, 16) || ':00'",
@@ -1936,6 +2126,7 @@ impl Database {
         ];
         if let Some(f) = feature  { sql.push_str(" AND feature = ?");  args.push(Box::new(f)); }
         if let Some(m) = model_id { sql.push_str(" AND model_id = ?"); args.push(Box::new(m)); }
+        if let Some(k) = api_key_id { sql.push_str(" AND api_key_id = ?"); args.push(Box::new(k)); }
         sql.push_str(" GROUP BY bucket ORDER BY bucket ASC");
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;

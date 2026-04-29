@@ -165,6 +165,7 @@ pub async fn connect(
 
     // 接收任务：WebSocket stream → Tauri 事件
     let tx_clone = tx.clone();
+    let model_for_recv = model.clone();
     tokio::spawn(async move {
         let mut session_ready = false;
         // item_id → (call_id, name) ：用于 arguments.delta/done 事件找回对应 call
@@ -228,6 +229,17 @@ pub async fn connect(
                             let _ = app_handle.emit("omni://status", json!({
                                 "status": "audio_done"
                             }));
+                        }
+
+                        // 一轮响应结束：携带 usage 用于审计计费
+                        "response.done" => {
+                            if let Some(usage) = v["response"]["usage"].as_object() {
+                                log::info!("[OmniRealtime] response.done usage={}", Value::Object(usage.clone()));
+                                let _ = app_handle.emit("omni://usage", json!({
+                                    "model": model_for_recv,
+                                    "usage": Value::Object(usage.clone()),
+                                }));
+                            }
                         }
 
                         // 工具调用 item 首次出现：登记 item_id ↔ call_id/name 映射
