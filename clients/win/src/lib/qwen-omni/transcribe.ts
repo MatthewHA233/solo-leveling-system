@@ -11,6 +11,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { createJsonlLineBuffer, type TranscriptSegment } from './segments'
+import type { DashScopeUsage } from '../model-audit'
 
 const CHAT_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
 
@@ -77,6 +78,7 @@ export interface TranscribeCallbacks {
   onChunk: (delta: string) => void
   /** 完整一段 segment 解析出来时回调（可能一次多个） */
   onSegment?: (segments: TranscriptSegment[]) => void
+  onUsage?: (usage: DashScopeUsage) => void
   onDone: (fullText: string) => void
   onError: (msg: string) => void
 }
@@ -185,6 +187,7 @@ export function streamTranscribeFromOss(opts: {
               const delta: string | undefined = json?.choices?.[0]?.delta?.content
               const finishReason: string | undefined = json?.choices?.[0]?.finish_reason
               const usage = json?.usage
+              if (usage) callbacks.onUsage?.(usage)
               if (delta) {
                 totalText += delta
                 callbacks.onChunk(delta)

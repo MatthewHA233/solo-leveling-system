@@ -376,7 +376,6 @@ export interface ModelDef {
   category: ModelCategory
   provider: string                    // 'dashscope'
   display_name: string | null
-  aliases: string | null              // JSON 数组字符串
   modalities: string | null           // JSON 数组字符串
   context_window: number | null
   notes: string | null
@@ -391,8 +390,25 @@ export interface FeatureBinding {
   updated_at: string
 }
 
+export interface ModelApiKey {
+  id: string
+  label: string
+  api_key: string
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface UpsertModelApiKeyRequest {
+  id?: string | null
+  label: string
+  api_key: string
+  is_active: boolean
+}
+
 export interface ModelCallLog {
   id: string
+  api_key_id: string | null
   feature: string
   model_id: string
   started_at: string
@@ -410,6 +426,7 @@ export interface ModelCallLog {
 }
 
 export interface LogModelCallRequest {
+  api_key_id?: string | null
   feature: string
   model_id: string
   started_at: string

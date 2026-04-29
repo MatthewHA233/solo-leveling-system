@@ -13,6 +13,7 @@ export interface AgentConfig {
   readonly aiProvider: 'openai' | 'gemini'
   readonly aiEnabled: boolean
   readonly aiMode: 'regular' | 'omni'   // 当前激活的模型模式
+  readonly dashscopeApiKey: string | null
 
   // ── Gemini (legacy) ──
   readonly geminiApiKey: string | null
@@ -76,15 +77,16 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
   aiProvider: 'openai',
   aiEnabled: true,
-  aiMode: 'regular',
+  aiMode: 'omni',
 
   geminiApiKey: null,
   geminiApiBase: 'https://generativelanguage.googleapis.com',
   geminiModel: 'gemini-2.0-flash',
 
   openaiApiKey: import.meta.env.VITE_OPENAI_API_KEY ?? null,
+  dashscopeApiKey: import.meta.env.VITE_OPENAI_API_KEY ?? null,
   openaiApiBase: import.meta.env.VITE_OPENAI_API_BASE ?? 'https://dashscope.aliyuncs.com/compatible-mode',
-  openaiCardModel: import.meta.env.VITE_OPENAI_CARD_MODEL ?? 'qwen-plus',
+  openaiCardModel: import.meta.env.VITE_OPENAI_CARD_MODEL ?? 'qwen3.6-plus',
 
   omniApiKey: null,
   omniApiBase: import.meta.env.VITE_OPENAI_API_BASE ?? 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
@@ -150,7 +152,19 @@ export function loadConfig(): AgentConfig {
           (cleaned as Record<string, unknown>)[k] = v
         }
       }
-      return { ...DEFAULT_CONFIG, ...cleaned }
+      const migrated = { ...DEFAULT_CONFIG, ...cleaned }
+      const dashscopeApiKey = migrated.dashscopeApiKey
+        ?? migrated.openaiApiKey
+        ?? migrated.omniApiKey
+        ?? migrated.asrApiKey
+        ?? null
+      return {
+        ...migrated,
+        dashscopeApiKey,
+        openaiApiKey: migrated.openaiApiKey ?? dashscopeApiKey,
+        omniApiKey: migrated.omniApiKey ?? null,
+        asrApiKey: migrated.asrApiKey ?? null,
+      }
     }
   } catch {
     // fall through
@@ -164,11 +178,36 @@ export function saveConfig(config: AgentConfig): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(config))
 }
 
+export function getDashScopeApiKey(config: AgentConfig): string | null {
+  return config.dashscopeApiKey
+    ?? config.openaiApiKey
+    ?? config.omniApiKey
+    ?? config.asrApiKey
+    ?? null
+}
+
+export function getOmniApiKey(config: AgentConfig): string | null {
+  return config.omniApiKey
+    ?? config.dashscopeApiKey
+    ?? config.openaiApiKey
+    ?? null
+}
+
+export function getAsrApiKey(config: AgentConfig): string | null {
+  return config.asrApiKey
+    ?? config.dashscopeApiKey
+    ?? config.openaiApiKey
+    ?? null
+}
+
 export function updateConfig(
   current: AgentConfig,
   updates: Partial<AgentConfig>,
 ): AgentConfig {
   const next = { ...current, ...updates }
+  if (updates.dashscopeApiKey !== undefined) {
+    next.openaiApiKey = updates.dashscopeApiKey
+  }
   saveConfig(next)
   return next
 }

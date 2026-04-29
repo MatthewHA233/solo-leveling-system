@@ -9,6 +9,7 @@
 
 import { Stream } from './stream'
 import { normalizeMessagesForAPI } from './normalize'
+import { logModelUsage, type DashScopeUsage } from '../model-audit'
 import type { Message, UserMessage, AssistantMessage, ContentBlock, ToolDefinition } from './types'
 
 // ── 流式事件类型 ──
@@ -43,6 +44,7 @@ export interface QueryOptions {
   maxTokens?: number   // 默认 8000（Claude Code 的 CAPPED_DEFAULT_MAX_TOKENS 设计：保守槽位保留）
   signal?: AbortSignal
   tools?: readonly ToolDefinition[]  // function calling tools
+  feature?: string
   // 调试：每次实际发出 API 请求前调用，传入完整 payload 快照
   onRequestSnapshot?: (snapshot: ApiRequestSnapshot) => void
   // 内部：当前 queryLoop 迭代编号（由 query-loop.ts 注入）
@@ -157,10 +159,7 @@ interface SSEChunk {
     }
     finish_reason?: string | null
   }[]
-  usage?: {
-    prompt_tokens?: number
-    completion_tokens?: number
-  }
+  usage?: DashScopeUsage
 }
 
 // ── 核心：queryModel ──
@@ -217,6 +216,7 @@ export function queryModel(
           model: options.model,
           messages: openAIMessages,
           stream: true,
+          stream_options: { include_usage: true },
           max_tokens: maxTokens,
           ...(options.tools && options.tools.length > 0 && { tools: options.tools }),
         }),
@@ -245,6 +245,9 @@ export function queryModel(
       let inputTokens = 0
       let outputTokens = 0
       let stopReason = 'stop'
+      const startedAt = new Date().toISOString()
+      const startedMs = Date.now()
+      let usageLogged = false
 
       try {
         while (true) {
@@ -273,6 +276,22 @@ export function queryModel(
               if (parsed.usage) {
                 inputTokens = parsed.usage.prompt_tokens ?? inputTokens
                 outputTokens = parsed.usage.completion_tokens ?? outputTokens
+                if (!usageLogged) {
+                  usageLogged = true
+                  void logModelUsage({
+                    feature: options.feature ?? 'fairy_chat',
+                    modelId: options.model,
+                    startedAt,
+                    durationMs: Date.now() - startedMs,
+                    usage: parsed.usage,
+                    success: true,
+                    metadata: {
+                      iteration: options._iteration ?? 0,
+                      maxTokens,
+                      toolCount: options.tools?.length ?? 0,
+                    },
+                  })
+                }
               }
 
               if (!choice) continue

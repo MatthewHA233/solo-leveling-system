@@ -8,6 +8,7 @@
 
 import type { AgentConfig } from '../agent/agent-config'
 import type { SessionMessage } from '../agent/agent-memory'
+import { getFeatureModel } from '../model-audit'
 import { chat } from './ai-client'
 
 const MAX_INPUT_CHARS = 1000
@@ -45,12 +46,15 @@ export async function generateSessionTitle(
   if (!text.trim()) return null
 
   try {
+    const titleModel = await getFeatureModel('session_title', 'qwen3.5-flash')
     const reply = await chat(
       config,
       [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: text },
       ],
+      titleModel,
+      'session_title',
     )
 
     // 容错解析：优先 JSON，其次正则抓 title 字段，最后兜底取首行

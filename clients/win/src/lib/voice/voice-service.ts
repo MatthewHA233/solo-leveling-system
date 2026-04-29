@@ -8,7 +8,8 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
-import type { AgentConfig } from '../agent/agent-config'
+import { getAsrApiKey, getOmniApiKey, type AgentConfig } from '../agent/agent-config'
+import { getFeatureModel } from '../model-audit'
 import { createVoiceRecorder, createStreamingRecorder, pcm16ChunksToWavBlob } from './voice-recorder'
 import type { VoiceRecorder, StreamingVoiceRecorder } from './voice-recorder'
 
@@ -91,14 +92,15 @@ export function createVoiceService(
 
     const config = getConfig()
 
-    const omniApiKey = config.omniApiKey || config.openaiApiKey
+    const omniApiKey = getOmniApiKey(config)
     if (config.aiMode === 'omni' && omniApiKey) {
       // ── Omni 全模态模式：流式录音 → Omni WS → 转写 ──
       streamRecorder = createStreamingRecorder()
       try {
+        const omniModel = await getFeatureModel('fairy_omni_chat', config.omniModel)
         await invoke('omni_connect', {
           apiKey: omniApiKey,
-          model: config.omniModel,
+          model: omniModel,
           voice: config.omniVoice || '',
           systemPrompt: getSystemPrompt(),
           tools: getOmniTools(),
@@ -206,12 +208,12 @@ export function createVoiceService(
 
       callbacks.onUserAudio?.(result.wavBase64, result.durationMs, sessionMsgId)
 
-      if (config.openaiApiKey) {
+      const asrApiKey = getAsrApiKey(config)
+      if (asrApiKey) {
         try {
-          const asrKey = config.asrApiKey ?? config.openaiApiKey ?? ''
           const transcript = await invoke<string>('qwen_asr_transcribe', {
             wavBase64: result.wavBase64,
-            apiKey: asrKey,
+            apiKey: asrApiKey,
             model: config.asrModel,
             wsUrl: ASR_WS_URL,
           })

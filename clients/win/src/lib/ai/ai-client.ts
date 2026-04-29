@@ -4,8 +4,10 @@
 // ══════════════════════════════════════════════
 
 import type { AgentConfig } from '../agent/agent-config'
+import { getDashScopeApiKey } from '../agent/agent-config'
 import type { LLMMessage } from '../agent/agent-memory'
 import type { ToolDefinition } from '../llm/types'
+import { logModelUsage, type DashScopeUsage } from '../model-audit'
 
 // ── Stream Chunk Types ──
 
@@ -23,7 +25,7 @@ export async function* streamChat(
 ): AsyncGenerator<StreamChunk> {
   const apiKey = config.aiProvider === 'gemini'
     ? config.geminiApiKey
-    : config.openaiApiKey
+    : getDashScopeApiKey(config)
 
   if (!apiKey) {
     throw new Error('API Key 未配置')
@@ -44,6 +46,9 @@ export async function* streamChat(
     messages,
     stream: true,
     enable_thinking: false,  // 统一关闭思考模式，减少首 token 延迟
+  }
+  if (config.aiProvider !== 'gemini') {
+    body.stream_options = { include_usage: true }
   }
 
   if (tools && tools.length > 0) {
@@ -70,6 +75,9 @@ export async function* streamChat(
 
   const decoder = new TextDecoder()
   let buffer = ''
+  const startedAt = new Date().toISOString()
+  const startedMs = Date.now()
+  let usageLogged = false
 
   while (true) {
     const { done, value } = await reader.read()
@@ -87,6 +95,18 @@ export async function* streamChat(
 
       try {
         const parsed = JSON.parse(data) as SSEChunk
+        if (parsed.usage && config.aiProvider !== 'gemini' && !usageLogged) {
+          usageLogged = true
+          void logModelUsage({
+            feature: 'fairy_chat',
+            modelId: model,
+            startedAt,
+            durationMs: Date.now() - startedMs,
+            usage: parsed.usage,
+            success: true,
+            metadata: { source: 'agent-loop', toolCount: tools?.length ?? 0 },
+          })
+        }
         const choice = parsed.choices?.[0]
         if (!choice) continue
 
@@ -127,10 +147,11 @@ export async function chat(
   config: AgentConfig,
   messages: readonly LLMMessage[],
   model?: string,
+  feature: string = 'fairy_chat',
 ): Promise<string> {
   const apiKey = config.aiProvider === 'gemini'
     ? config.geminiApiKey
-    : config.openaiApiKey
+    : getDashScopeApiKey(config)
 
   if (!apiKey) throw new Error('API Key 未配置')
 
@@ -144,6 +165,8 @@ export async function chat(
 
   const url = `${baseUrl}/v1/chat/completions`
 
+  const startedAt = new Date().toISOString()
+  const startedMs = Date.now()
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -160,6 +183,19 @@ export async function chat(
 
   const result = await response.json() as {
     choices: { message: { content: string } }[]
+    usage?: DashScopeUsage
+  }
+
+  if (config.aiProvider !== 'gemini' && result.usage) {
+    void logModelUsage({
+      feature,
+      modelId: useModel,
+      startedAt,
+      durationMs: Date.now() - startedMs,
+      usage: result.usage,
+      success: true,
+      metadata: { source: feature === 'fairy_chat' ? 'chat-non-stream' : feature },
+    })
   }
 
   return result.choices[0]?.message?.content ?? ''
@@ -182,4 +218,5 @@ interface SSEChunk {
     }
     finish_reason?: string
   }[]
+  usage?: DashScopeUsage
 }
