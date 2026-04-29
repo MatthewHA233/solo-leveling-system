@@ -45,6 +45,8 @@ interface Props {
   readonly messages: readonly ChatMessage[]
   readonly isProcessing: boolean
   readonly onSend: (text: string) => void
+  readonly aiMode?: 'regular' | 'omni'
+  readonly onToggleAiMode?: () => void
   readonly cameraReady?: boolean
   readonly cameraPresent?: boolean
   readonly cameraWindowOpen?: boolean
@@ -55,12 +57,13 @@ interface Props {
   readonly sessionsOpen?: boolean
 }
 
-export default function ChatPanel({ messages, isProcessing, onSend, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
+export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'omni', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
   const [input, setInput] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [activeDebugSnaps, setActiveDebugSnaps] = useState<ApiRequestSnapshot[] | null>(null)
   const [activeOmniDebug, setActiveOmniDebug] = useState<OmniDebugInfo | null>(null)
+  const isOmniMode = aiMode === 'omni'
 
   useEffect(() => {
     const el = scrollRef.current
@@ -304,9 +307,36 @@ export default function ChatPanel({ messages, isProcessing, onSend, cameraReady,
               fontSize: 13, outline: 'none', resize: 'none',
               lineHeight: 1.5, minHeight: 64, maxHeight: 200, overflowY: 'auto',
               // 右下留出圆形按钮空间
-              paddingRight: 34, paddingBottom: 2,
+              paddingRight: 64, paddingBottom: 2,
             }}
           />
+          <Tooltip
+            content={isOmniMode ? '当前：Omni 全模态，点击切换普通聊天' : '当前：普通聊天，点击切换 Omni 全模态'}
+            wrapStyle={{ position: 'absolute', right: 44, bottom: 10 }}
+          >
+          <button
+            onClick={onToggleAiMode}
+            disabled={!onToggleAiMode || isProcessing}
+            style={{
+              background: isOmniMode ? `${theme.shadowPurple}18` : `${theme.electricBlue}12`,
+              border: `1px solid ${isOmniMode ? theme.shadowPurple + '88' : theme.electricBlue + '66'}`,
+              padding: 0,
+              width: 24, height: 24,
+              color: isOmniMode ? '#C9A8FF' : theme.electricBlue,
+              boxShadow: isOmniMode
+                ? `0 0 8px ${theme.shadowPurple}66, inset 0 0 4px ${theme.shadowPurple}33`
+                : `0 0 8px ${theme.electricBlue}44, inset 0 0 4px ${theme.electricBlue}22`,
+              opacity: isProcessing ? 0.45 : 1,
+              cursor: !onToggleAiMode || isProcessing ? 'not-allowed' : 'pointer',
+              transition: 'all 0.15s ease',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              clipPath: clip4,
+              WebkitClipPath: clip4,
+            }}
+          >
+            {isOmniMode ? <Radio size={12} /> : <MessageSquare size={12} />}
+          </button>
+          </Tooltip>
           {/* 浮动 send：圆形小按钮，钉在右下角内侧 */}
           <Tooltip content="发送 (Enter)" wrapStyle={{ position: 'absolute', right: 14, bottom: 10 }}>
           <button

@@ -58,7 +58,7 @@ class Macroblock {
     const spreadY = this.ny * (height * 0.4)
 
     let targetX: number, targetY: number, targetZ: number
-    let targetSize: number, targetRot: number
+    let targetSize: number, targetRot = 0
     let r: number, g: number, b: number, targetAlpha = 1
 
     if (progress < 0.1) {

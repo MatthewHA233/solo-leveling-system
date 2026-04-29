@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ChevronLeft, ChevronRight, Settings } from 'lucide-react'
+import { Boxes, ChevronLeft, ChevronRight, Settings } from 'lucide-react'
 import BiliIcon from './components/icons/BiliIcon'
 import { fetchActivities } from './lib/chronos-api'
 import { createActivity, deleteActivity, fetchManicTimeSpans, fetchBiliSpans, fetchGoals, parseGoalTags } from './lib/local-api'
@@ -13,8 +13,9 @@ import type { ChronosActivity } from './types'
 import { theme, hud } from './theme'
 
 // Agent
-import { loadConfig, updateConfig } from './lib/agent/agent-config'
+import { getDashScopeApiKey, getOmniApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
+import { getFeatureModel, logModelUsage, realtimeUsageToDashScope, type RealtimeUsage } from './lib/model-audit'
 import { buildSystemPrompt, buildConversationSummary } from './lib/ai/prompt-templates'
 import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from './lib/ai/prompt-templates'
 
@@ -63,6 +64,7 @@ import SpanDetailPanel from './components/SpanDetailPanel'
 import AppHoverPanel from './components/AppHoverPanel'
 import BiliVideoPanel from './components/BiliVideoPanel'
 import BiliHistoryDialog from './components/BiliHistoryDialog'
+import ModelDialog from './components/ModelDialog'
 import { useBiliHistory } from './lib/bilibili/useHistory'
 import { dbBiliItemToActivity } from './lib/bilibili/api'
 import { linkBiliToEvent, mergeActivities } from './lib/local-api'
@@ -232,6 +234,7 @@ export default function App() {
   // ── Layout ──
   const [showSettings, setShowSettings] = useState(false)
   const [showBili, setShowBili] = useState(false)
+  const [showModels, setShowModels] = useState(false)
 
 
   // ── Activity Editor ──
@@ -683,6 +686,20 @@ export default function App() {
           }
     })
 
+    // Omni Realtime 一轮结束携带 usage：写入审计
+    registerListen<{ model: string; usage: RealtimeUsage }>('omni://usage', ({ payload }) => {
+      const startedMs = altDownTimeRef.current || Date.now()
+      void logModelUsage({
+        feature: 'fairy_omni_chat',
+        modelId: payload.model,
+        startedAt: new Date(startedMs).toISOString(),
+        durationMs: Date.now() - startedMs,
+        usage: realtimeUsageToDashScope(payload.usage),
+        success: true,
+        metadata: { source: 'omni-realtime' },
+      })
+    })
+
     registerListen<{ status: string; message?: string }>('omni://status', ({ payload }) => {
           if (payload.status === 'audio_done') {
             const chunks = omniAiPcmChunksRef.current
@@ -1064,7 +1081,7 @@ export default function App() {
     // ── Omni 全模态：文字输入直接走 WS，返回音频+文本，不走独立 LLM ──
     if (configRef.current.aiMode === 'omni') {
       const cfg = configRef.current
-      const omniApiKey = cfg.omniApiKey || cfg.openaiApiKey
+      const omniApiKey = getOmniApiKey(cfg)
       if (!omniApiKey) {
         setChatMessages((prev) => [...prev, {
           id: crypto.randomUUID(), role: 'system' as const,
@@ -1073,17 +1090,18 @@ export default function App() {
         setIsProcessing(false)
         return
       }
+      const omniModel = await getFeatureModel('fairy_omni_chat', cfg.omniModel)
       // 记录 debug 快照（text_chunk 建气泡时写入 ChatMessage）
       omniDebugInfoRef.current = {
         systemPrompt,
-        model: cfg.omniModel,
+        model: omniModel,
         voice: cfg.omniVoice || 'Tina',
         ts: new Date().toISOString(),
         items: [{ type: 'text', content: text, ts: new Date().toISOString() }],
       }
       try {
         await invoke('omni_connect', {
-          apiKey: omniApiKey, model: cfg.omniModel,
+          apiKey: omniApiKey, model: omniModel,
           voice: cfg.omniVoice || '', systemPrompt,
           tools: toRealtimeTools(TOOL_DEFINITIONS),
         })
@@ -1172,14 +1190,18 @@ export default function App() {
       }
     }
 
+    const chatModel = await getFeatureModel('fairy_chat', config.openaiCardModel || 'qwen3.6-plus')
+    const dashscopeApiKey = getDashScopeApiKey(config) ?? ''
+
     try {
       const newHistory = await runQueryLoop({
         messages: [...conversationRef.current.slice(-20), userMsg],
         systemPrompt,
         apiOptions: {
-          apiKey: config.openaiApiKey ?? '',
+          apiKey: dashscopeApiKey,
           apiBase: config.openaiApiBase,
-          model: config.openaiCardModel,
+          model: chatModel,
+          feature: 'fairy_chat',
           maxTokens: 8000,
           tools: TOOL_DEFINITIONS,
           onRequestSnapshot: (snap) => capturedSnapshots.push(snap),
@@ -1550,7 +1572,10 @@ export default function App() {
         {/* B站历史 */}
         <Tooltip content="B站历史记录">
         <button
-          onClick={() => { setShowBili(!showBili); if (!showBili) setShowSettings(false) }}
+          onClick={() => {
+            setShowBili(!showBili)
+            if (!showBili) { setShowSettings(false); setShowModels(false) }
+          }}
           style={{
             ...navBtn,
             color: showBili ? theme.electricBlue : theme.textSecondary,
@@ -1563,10 +1588,32 @@ export default function App() {
         </button>
         </Tooltip>
 
+        {/* Models */}
+        <Tooltip content="模型">
+        <button
+          onClick={() => {
+            setShowModels(!showModels)
+            if (!showModels) { setShowSettings(false); setShowBili(false) }
+          }}
+          style={{
+            ...navBtn,
+            color: showModels ? theme.electricBlue : theme.textSecondary,
+            border: `1px solid ${showModels ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
+            background: showModels ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
+            textShadow: showModels ? `0 0 6px ${theme.electricBlue}AA` : undefined,
+          }}
+        >
+          <Boxes size={13} />
+        </button>
+        </Tooltip>
+
         {/* Settings */}
         <Tooltip content="设置">
         <button
-          onClick={() => { setShowSettings(!showSettings); if (!showSettings) setShowBili(false) }}
+          onClick={() => {
+            setShowSettings(!showSettings)
+            if (!showSettings) { setShowBili(false); setShowModels(false) }
+          }}
           style={{
             ...navBtn,
             color: showSettings ? theme.electricBlue : theme.textSecondary,
@@ -1644,6 +1691,8 @@ export default function App() {
                     messages={chatMessages}
                     isProcessing={isProcessing}
                     onSend={handleSend}
+                    aiMode={config.aiMode}
+                    onToggleAiMode={() => handleConfigUpdate({ aiMode: config.aiMode === 'omni' ? 'regular' : 'omni' })}
                     cameraReady={presence.ready}
                     cameraPresent={presence.state === 'present'}
                     cameraWindowOpen={cameraWindowOpen}
@@ -1755,6 +1804,13 @@ export default function App() {
         onFullScan={biliFullScan}
         onSetInterval={setBiliInterval}
         onClose={() => setShowBili(false)}
+      />
+
+      <ModelDialog
+        open={showModels}
+        config={config}
+        onUpdate={handleConfigUpdate}
+        onClose={() => setShowModels(false)}
       />
     </div>
   )

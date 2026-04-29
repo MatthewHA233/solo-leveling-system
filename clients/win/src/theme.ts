@@ -11,7 +11,7 @@ export const theme = {
   warningOrange: '#FF9933',
   textPrimary:   '#E0F0FF',
   textSecondary: '#8AABB0',
-  textMuted:     '#506070',
+  textMuted:     '#9CB5BD',
   // ── Surfaces ──
   glass:         'rgba(255,255,255,0.04)',
   glassHover:    'rgba(0,229,255,0.06)',

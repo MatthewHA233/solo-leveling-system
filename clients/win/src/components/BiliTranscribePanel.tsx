@@ -9,7 +9,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Square, Copy, Check, AlertTriangle, Loader2, RotateCcw, X, Play, Cpu, Eye, AudioLines } from 'lucide-react'
 import { theme, hud } from '../theme'
-import { loadConfig } from '../lib/agent/agent-config'
+import { getDashScopeApiKey, loadConfig } from '../lib/agent/agent-config'
+import { getFeatureModel, logModelUsage } from '../lib/model-audit'
 import {
   uploadVideo,
   streamTranscribeFromOss,
@@ -57,7 +58,7 @@ const STAGE_COLOR: Record<Stage, string> = {
   error: '#ff5468',
 }
 
-const TRANSCRIBE_MODEL = 'qwen3.5-omni-plus'
+const FALLBACK_TRANSCRIBE_MODEL = 'qwen3.5-omni-plus'
 const ACCENT = '#b378ff'
 
 function copyToClipboard(text: string): Promise<boolean> {
@@ -160,9 +161,9 @@ export default function BiliTranscribePanel({
   }, [])
 
   // 复用 oss URL：第一次调用上传，后续直接拿 promise
-  const ensureOss = useCallback(async (apiKey: string): Promise<string> => {
+  const ensureOss = useCallback(async (apiKey: string, model: string): Promise<string> => {
     if (ossPromiseRef.current) return ossPromiseRef.current
-    const p = uploadVideo(filePath, apiKey, TRANSCRIBE_MODEL)
+    const p = uploadVideo(filePath, apiKey, model)
       .catch((e) => { ossPromiseRef.current = null; throw e })
     ossPromiseRef.current = p
     return p
@@ -170,16 +171,18 @@ export default function BiliTranscribePanel({
 
   const start = useCallback(async (kind: TranscribeKind) => {
     const cfg = loadConfig()
-    const apiKey = cfg.omniApiKey || cfg.openaiApiKey
+    const apiKey = getDashScopeApiKey(cfg)
     if (!apiKey) {
       setKindState(kind, { stage: 'error', errMsg: '未配置 API Key（设置 → AI 模型 → 全模态 Omni）' })
       return
     }
+    const feature = kind === 'visual' ? 'bili_visual_transcribe' : 'bili_audio_transcribe'
+    const model = await getFeatureModel(feature, FALLBACK_TRANSCRIBE_MODEL)
     setKindState(kind, { stage: 'uploading', text: '', segments: [], errMsg: null, cachedAt: null })
 
     let url: string
     try {
-      url = await ensureOss(apiKey)
+      url = await ensureOss(apiKey, model)
     } catch (e) {
       setKindState(kind, { stage: 'error', errMsg: `上传失败：${String(e)}` })
       return
@@ -189,8 +192,11 @@ export default function BiliTranscribePanel({
 
     const prompt = kind === 'visual' ? VISUAL_TRANSCRIBE_PROMPT : AUDIO_TRANSCRIBE_PROMPT
     const ref = kind === 'visual' ? abortVisualRef : abortAudioRef
+    const startedAt = new Date().toISOString()
+    const startedMs = Date.now()
+    let usageLogged = false
     ref.current = streamTranscribeFromOss({
-      ossUrl: url, apiKey, model: TRANSCRIBE_MODEL, prompt, kind,
+      ossUrl: url, apiKey, model, prompt, kind,
       callbacks: {
         onChunk: (delta) => {
           if (kind === 'visual') setVisual((s) => ({ ...s, text: s.text + delta }))
@@ -200,6 +206,18 @@ export default function BiliTranscribePanel({
           if (kind === 'visual') setVisual((s) => ({ ...s, segments: [...s.segments, ...segs] }))
           else setAudio((s) => ({ ...s, segments: [...s.segments, ...segs] }))
         },
+        onUsage: (usage) => {
+          usageLogged = true
+          void logModelUsage({
+            feature,
+            modelId: model,
+            startedAt,
+            durationMs: Date.now() - startedMs,
+            usage,
+            success: true,
+            metadata: { bvid, title, filePath, ossUrl: url, kind },
+          })
+        },
         onDone: (full) => {
           setKindState(kind, { stage: 'done' })
           if (full.trim()) {
@@ -207,10 +225,23 @@ export default function BiliTranscribePanel({
               .catch((e) => console.warn('[Transcribe] 写入 DB 失败', e))
           }
         },
-        onError: (msg) => setKindState(kind, { stage: 'error', errMsg: msg }),
+        onError: (msg) => {
+          setKindState(kind, { stage: 'error', errMsg: msg })
+          if (!usageLogged) {
+            void logModelUsage({
+              feature,
+              modelId: model,
+              startedAt,
+              durationMs: Date.now() - startedMs,
+              success: false,
+              errorMessage: msg,
+              metadata: { bvid, title, filePath, ossUrl: url, kind },
+            })
+          }
+        },
       },
     })
-  }, [ensureOss, filePath, setKindState])
+  }, [bvid, ensureOss, filePath, setKindState, title])
 
   const stop = useCallback((kind: TranscribeKind) => {
     if (kind === 'visual') { abortVisualRef.current?.(); abortVisualRef.current = null }
@@ -420,7 +451,7 @@ export default function BiliTranscribePanel({
           fontFamily: theme.fontMono, fontSize: 9,
           color: theme.textMuted, letterSpacing: 0.5,
         }}>
-          {TRANSCRIBE_MODEL}
+          {FALLBACK_TRANSCRIBE_MODEL}
         </span>
       </div>
 

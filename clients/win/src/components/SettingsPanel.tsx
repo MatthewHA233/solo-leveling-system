@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useCallback, useEffect } from 'react'
-import { X, ChevronRight, Zap, Mic, Lock, Database, Tv2, Bot, Eye, EyeOff, Copy, Check } from 'lucide-react'
+import { X, ChevronRight, Mic, Lock, Database, Tv2, Bot, Eye, EyeOff, Copy, Check } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { theme } from '../theme'
@@ -60,7 +60,6 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
   })
 
   const [dirty, setDirty] = useState(false)
-  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle')
   const [saved, setSaved] = useState(false)
 
   // ── 数据库状态 ──
@@ -106,22 +105,6 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }, [draft, onUpdate])
-
-  const handleTest = useCallback(async () => {
-    setTestStatus('testing')
-    try {
-      const base = draft.openaiApiBase.replace(/\/$/, '')
-      const res = await fetch(`${base}/v1/models`, {
-        headers: draft.openaiApiKey
-          ? { Authorization: `Bearer ${draft.openaiApiKey}` }
-          : {},
-      })
-      setTestStatus(res.ok ? 'ok' : 'fail')
-    } catch {
-      setTestStatus('fail')
-    }
-    setTimeout(() => setTestStatus('idle'), 3000)
-  }, [draft.openaiApiBase, draft.openaiApiKey])
 
   const handleSelectDbPath = useCallback(async () => {
     const selected = await open({
@@ -218,85 +201,6 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
           </div>
         </Section>
 
-        {/* ── AI 模型 ── */}
-        <Section title="AI 模型" icon={Zap}>
-          {/* 标签页 */}
-          <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
-            {(['regular', 'omni'] as const).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => { setDraft((p) => ({ ...p, aiMode: mode })); setDirty(true); setSaved(false) }}
-                style={{
-                  flex: 1, padding: '5px 8px', borderRadius: 4, cursor: 'pointer',
-                  fontFamily: "'Exo 2', sans-serif", fontSize: 11,
-                  border: `1px solid ${draft.aiMode === mode ? theme.electricBlue : theme.glassBorder}`,
-                  background: draft.aiMode === mode ? 'rgba(0,180,255,0.12)' : 'rgba(255,255,255,0.03)',
-                  color: draft.aiMode === mode ? theme.electricBlue : theme.textSecondary,
-                  transition: 'all 0.15s ease',
-                }}
-              >
-                {mode === 'regular' ? '常规聊天' : '全模态 Omni'}
-              </button>
-            ))}
-          </div>
-
-          {draft.aiMode === 'regular' ? (
-            <>
-              <Field label="API Key" type="password"
-                value={draft.openaiApiKey}
-                onChange={(v) => update('openaiApiKey', v)}
-                placeholder="sk-..."
-              />
-              <Field label="API Base"
-                value={draft.openaiApiBase}
-                onChange={(v) => update('openaiApiBase', v)}
-              />
-              <Field label="聊天模型"
-                value={draft.openaiCardModel}
-                onChange={(v) => update('openaiCardModel', v)}
-              />
-            </>
-          ) : (
-            <>
-              <Field label="API Key" type="password"
-                value={draft.omniApiKey}
-                onChange={(v) => update('omniApiKey', v)}
-                placeholder="留空则复用常规 API Key"
-              />
-              <Field label="API Base（硬编码，不可改）"
-                value="wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
-                onChange={() => {}}
-                placeholder=""
-                disabled
-              />
-              <Field label="模型 ID"
-                value={draft.omniModel}
-                onChange={(v) => update('omniModel', v)}
-                placeholder="qwen3.5-omni-plus-realtime"
-              />
-            </>
-          )}
-
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <MagneticButton
-              onClick={handleApply}
-              color={dirty ? theme.expGreen : theme.textSecondary}
-              disabled={!dirty}
-            >
-              {saved ? '已应用 ✓' : '确认并应用'}
-            </MagneticButton>
-            <MagneticButton
-              onClick={handleTest}
-              disabled={testStatus === 'testing'}
-            >
-              {testStatus === 'testing' ? '测试中...'
-                : testStatus === 'ok' ? '连接成功 ✓'
-                : testStatus === 'fail' ? '连接失败 ✗'
-                : '测试连接'}
-            </MagneticButton>
-          </div>
-        </Section>
-
         {/* ── 语音 ── */}
         <Section title="语音" icon={Mic}>
           <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 10 }}>
@@ -305,16 +209,9 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
 
           {draft.aiMode === 'regular' ? (
             <>
-              <Field label="ASR API Key" type="password"
-                value={draft.asrApiKey}
-                onChange={(v) => update('asrApiKey', v)}
-                placeholder="不填则复用 AI 模型 API Key"
-              />
-              <Field label="ASR 模型"
-                value={draft.asrModel}
-                onChange={(v) => update('asrModel', v)}
-                placeholder="qwen3-asr-flash-realtime"
-              />
+              <div style={{ fontSize: 11, color: theme.textSecondary, marginBottom: 8 }}>
+                ASR 复用顶栏「模型」里的 DashScope API Key。
+              </div>
               <Field label="Fish API Key" type="password"
                 value={draft.fishApiKey}
                 onChange={(v) => update('fishApiKey', v)}
@@ -610,4 +507,3 @@ const textareaStyle: React.CSSProperties = {
   resize: 'vertical',
   lineHeight: 1.5,
 }
-
