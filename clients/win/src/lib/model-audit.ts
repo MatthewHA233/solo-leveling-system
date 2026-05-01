@@ -77,6 +77,10 @@ export async function getFeatureModel(feature: string, fallback: string): Promis
   }
 }
 
+export async function setFeatureModel(feature: string, modelId: string): Promise<void> {
+  await invoke('set_feature_binding', { feature, modelId })
+}
+
 export async function listModelApiKeys(): Promise<ModelApiKey[]> {
   return invoke<ModelApiKey[]>('list_model_api_keys')
 }

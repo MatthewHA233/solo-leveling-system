@@ -55,6 +55,8 @@ interface FeatureSpec {
   readonly label: string
   readonly category: ModelCategory
   readonly hint: string
+  readonly requiredModalities?: readonly string[]
+  readonly allowedCategories?: readonly ModelCategory[]
 }
 
 const CATEGORY_LABEL: Record<ModelCategory, string> = {
@@ -67,8 +69,9 @@ const FEATURE_SPECS: readonly FeatureSpec[] = [
   { feature: 'fairy_chat', label: 'Fairy 常规聊天', category: 'text', hint: '主对话与文字思考' },
   { feature: 'fairy_omni_chat', label: 'Fairy 全模态聊天', category: 'realtime', hint: '语音/摄像头实时会话' },
   { feature: 'session_title', label: '会话自动起标题', category: 'text', hint: '会话累计若干轮后生成 3-8 字标题（建议低价模型）' },
-  { feature: 'bili_visual_transcribe', label: 'B 站视觉转录', category: 'omni', hint: '视频画面理解与时间戳' },
-  { feature: 'bili_audio_transcribe', label: 'B 站音频转录', category: 'omni', hint: '视频音轨转写与总结' },
+  { feature: 'bili_omni_transcribe', label: 'B 站音视频全模态转录', category: 'omni', hint: '带音轨的视频文件转录；必须同时支持 video + audio_in', requiredModalities: ['video', 'audio_in'], allowedCategories: ['omni'] },
+  { feature: 'bili_visual_transcribe', label: 'B 站仅画面转录', category: 'text', hint: '只读视频画面/屏幕正文；qwen3.6-plus 这类视频模型只能放这里', requiredModalities: ['video'] },
+  { feature: 'bili_audio_transcribe', label: 'B 站仅音频转录', category: 'omni', hint: '提取音轨后走 input_audio；只显示支持音频输入的模型', requiredModalities: ['audio_in'], allowedCategories: ['omni'] },
 ]
 
 const FEATURE_LABEL = new Map(FEATURE_SPECS.map((f) => [f.feature, f.label]))
@@ -97,6 +100,18 @@ function parseList(json: string | null): string[] {
   } catch {
     return []
   }
+}
+
+function hasAllModalities(model: ModelDef, required: readonly string[] | undefined): boolean {
+  if (!required || required.length === 0) return true
+  const modalities = new Set(parseList(model.modalities))
+  return required.every((m) => modalities.has(m))
+}
+
+function matchesFeatureSpec(model: ModelDef, spec: FeatureSpec): boolean {
+  if (spec.allowedCategories && !spec.allowedCategories.includes(model.category)) return false
+  if (spec.requiredModalities) return hasAllModalities(model, spec.requiredModalities)
+  return model.category === spec.category
 }
 
 function formatTokens(n: number): string {
@@ -256,6 +271,13 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
   useEffect(() => {
     if (!open) return
     loadBase()
+  }, [open, loadBase])
+
+  useEffect(() => {
+    if (!open) return
+    const onBindingUpdated = () => { void loadBase() }
+    window.addEventListener('model-feature-binding-updated', onBindingUpdated)
+    return () => window.removeEventListener('model-feature-binding-updated', onBindingUpdated)
   }, [open, loadBase])
 
   useEffect(() => {
@@ -448,6 +470,9 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
     setErr(null)
     try {
       await invoke('set_feature_binding', { feature: featureName, modelId: nextModelId })
+      window.dispatchEvent(new CustomEvent('model-feature-binding-updated', {
+        detail: { feature: featureName, modelId: nextModelId },
+      }))
       setSaved(`${FEATURE_LABEL.get(featureName) ?? featureName} 已绑定`)
       setTimeout(() => setSaved(null), 1800)
       await loadBase()
@@ -1866,9 +1891,12 @@ function BindingsTab({
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 10 }}>
         {specs.map((spec) => {
           const options = models
-            .filter((m) => m.category === spec.category)
+            .filter((m) => matchesFeatureSpec(m, spec))
             .map((m) => ({ value: m.id, label: m.id, hint: m.display_name ?? CATEGORY_LABEL[m.category] }))
-          const value = bindingByFeature.get(spec.feature) ?? options[0]?.value ?? ''
+          const boundValue = bindingByFeature.get(spec.feature)
+          const value = boundValue && options.some((o) => o.value === boundValue)
+            ? boundValue
+            : options[0]?.value ?? boundValue ?? ''
           return (
             <div key={spec.feature} style={bindingRowStyle}>
               <div style={{ minWidth: 0 }}>

@@ -1,22 +1,29 @@
 /**
  * BiliTranscribePanel — 视频详情左侧的转录面板（HUD 风格）
  *
- * 双 Tab：画面（visual） / 音频（audio）；同一次 OSS 上传被两路复用。
+ * 模式：音视频合并（默认）/ 仅音频 / 仅画面
+ * 提示词：文字/PPT（默认）/ 通用
  * DB 缓存：进入时读取已存在的转录直接展示；流式完成后写回 DB。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Square, Copy, Check, AlertTriangle, Loader2, RotateCcw, X, Play, Cpu, Eye, AudioLines } from 'lucide-react'
 import { theme, hud } from '../theme'
 import { getDashScopeApiKey, loadConfig } from '../lib/agent/agent-config'
-import { getFeatureModel, logModelUsage } from '../lib/model-audit'
+import { getFeatureModel, logModelUsage, setFeatureModel } from '../lib/model-audit'
+import type { ModelDef } from '../lib/local-api'
 import {
   uploadVideo,
+  extractAudio,
   streamTranscribeFromOss,
   VISUAL_TRANSCRIBE_PROMPT,
   AUDIO_TRANSCRIBE_PROMPT,
+  COMBINED_GENERAL_PROMPT,
+  COMBINED_TEXT_PROMPT,
   type TranscribeKind,
+  type PromptType,
+  type MediaType,
 } from '../lib/qwen-omni/transcribe'
 import {
   parseTranscript,
@@ -24,6 +31,7 @@ import {
   type TranscriptSegment,
 } from '../lib/qwen-omni/segments'
 import Tooltip from './Tooltip'
+import HudSelect from './HudSelect'
 import TranscribePrepOverlay from './TranscribePrepOverlay'
 import TranscribeIdleAnimation from './TranscribeIdleAnimation'
 
@@ -58,7 +66,6 @@ const STAGE_COLOR: Record<Stage, string> = {
   error: '#ff5468',
 }
 
-const FALLBACK_TRANSCRIBE_MODEL = 'qwen3.5-omni-plus'
 const ACCENT = '#b378ff'
 
 function copyToClipboard(text: string): Promise<boolean> {
@@ -95,117 +102,290 @@ const INIT_KIND_STATE: KindState = {
   stage: 'idle', text: '', segments: [], errMsg: null, cachedAt: null,
 }
 
+type TrackMode = 'combined' | 'audio' | 'visual'
+
+const TRANSCRIBE_FEATURE_BY_MODE: Record<TrackMode, string> = {
+  combined: 'bili_omni_transcribe',
+  audio: 'bili_audio_transcribe',
+  visual: 'bili_visual_transcribe',
+}
+
+const FALLBACK_TRANSCRIBE_MODEL_BY_MODE: Record<TrackMode, string> = {
+  combined: 'qwen3.5-omni-plus',
+  audio: 'qwen3.5-omni-flash',
+  visual: 'qwen3.5-flash',
+}
+
+interface UploadedMedia {
+  ossUrl: string
+  mediaType: MediaType
+  localPath?: string
+  audioFormat?: string
+}
+
 interface TranscriptCache {
   visual: string | null
   audio: string | null
+  combined: string | null
   visual_at: string | null
   audio_at: string | null
+  combined_at: string | null
+}
+
+function getPrompt(track: TrackMode, prompt: PromptType): string {
+  if (track === 'audio') return AUDIO_TRANSCRIBE_PROMPT
+  if (track === 'visual') return VISUAL_TRANSCRIBE_PROMPT
+  return prompt === 'text' ? COMBINED_TEXT_PROMPT : COMBINED_GENERAL_PROMPT
+}
+
+function inferAudioFormat(path: string): string {
+  const filename = path.split(/[\\/]/).pop() ?? path
+  const ext = filename.split('.').pop()?.toLowerCase()
+  return ext || 'm4a'
+}
+
+function parseModalities(json: string | null): string[] {
+  if (!json) return []
+  try {
+    const parsed = JSON.parse(json)
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    return []
+  }
+}
+
+function modelSupports(model: ModelDef | undefined, modality: string): boolean {
+  return model ? parseModalities(model.modalities).includes(modality) : false
+}
+
+function modelSupportsMode(model: ModelDef, mode: TrackMode): boolean {
+  if (mode === 'audio') {
+    return model.category === 'omni' && modelSupports(model, 'audio_in')
+  }
+  if (mode === 'visual') return modelSupports(model, 'video')
+  return model.category === 'omni' && modelSupports(model, 'video') && modelSupports(model, 'audio_in')
+}
+
+function featureForMode(mode: TrackMode): string {
+  return TRANSCRIBE_FEATURE_BY_MODE[mode]
 }
 
 export default function BiliTranscribePanel({
   filePath, bvid, title, onClose, currentSec = null, onSeek, rightAnchor = 380,
 }: Props) {
-  const [activeKind, setActiveKind] = useState<TranscribeKind>('audio')
-  const [visual, setVisual] = useState<KindState>(INIT_KIND_STATE)
-  const [audio, setAudio] = useState<KindState>(INIT_KIND_STATE)
+  const [trackMode, setTrackMode] = useState<TrackMode>('combined')
+  const [promptType, setPromptType] = useState<PromptType>('text')
+  const [featureModels, setFeatureModels] = useState<Record<TrackMode, string>>(FALLBACK_TRANSCRIBE_MODEL_BY_MODE)
+  const [allModels, setAllModels] = useState<ModelDef[]>([])
+  const [result, setResult] = useState<KindState>(INIT_KIND_STATE)
+  const [localMediaPath, setLocalMediaPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const ossPromiseRef = useRef<Promise<string> | null>(null)
-  const abortVisualRef = useRef<(() => void) | null>(null)
-  const abortAudioRef = useRef<(() => void) | null>(null)
+  const ossPromiseRef = useRef<Promise<UploadedMedia> | null>(null)
+  const abortRef = useRef<(() => void) | null>(null)
   const transcriptRef = useRef<HTMLDivElement | null>(null)
+  // 用于切换视频时 flush 当前进行中的转录内容到 DB
+  const resultRef = useRef<KindState>(INIT_KIND_STATE)
+  const trackModeRef = useRef<TrackMode>('combined')
 
-  const setKindState = useCallback((kind: TranscribeKind, patch: Partial<KindState>) => {
-    if (kind === 'visual') setVisual((s) => ({ ...s, ...patch }))
-    else setAudio((s) => ({ ...s, ...patch }))
+  // 同步 result / trackMode 到 ref，供切换视频时读取
+  useEffect(() => { resultRef.current = result }, [result])
+  useEffect(() => { trackModeRef.current = trackMode }, [trackMode])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [modelRows, combinedModel, audioModel, visualModel] = await Promise.all([
+          invoke<ModelDef[]>('list_models'),
+          getFeatureModel(TRANSCRIBE_FEATURE_BY_MODE.combined, FALLBACK_TRANSCRIBE_MODEL_BY_MODE.combined),
+          getFeatureModel(TRANSCRIBE_FEATURE_BY_MODE.audio, FALLBACK_TRANSCRIBE_MODEL_BY_MODE.audio),
+          getFeatureModel(TRANSCRIBE_FEATURE_BY_MODE.visual, FALLBACK_TRANSCRIBE_MODEL_BY_MODE.visual),
+        ])
+        if (cancelled) return
+        setAllModels(modelRows)
+        setFeatureModels({ combined: combinedModel, audio: audioModel, visual: visualModel })
+      } catch (e) {
+        if (!cancelled) console.warn('[Transcribe] 读取转录模型绑定失败', e)
+      }
+    })()
+    return () => { cancelled = true }
   }, [])
 
-  // 切换 bvid / filePath 时重置 + 加载 DB 缓存
   useEffect(() => {
-    abortVisualRef.current?.(); abortVisualRef.current = null
-    abortAudioRef.current?.();  abortAudioRef.current = null
+    const onBindingUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ feature?: string; modelId?: string }>).detail
+      if (!detail?.feature || !detail.modelId) return
+      const mode = (Object.entries(TRANSCRIBE_FEATURE_BY_MODE) as Array<[TrackMode, string]>)
+        .find(([, feature]) => feature === detail.feature)?.[0]
+      if (!mode) return
+      setFeatureModels((prev) => ({ ...prev, [mode]: detail.modelId! }))
+      ossPromiseRef.current = null
+    }
+    window.addEventListener('model-feature-binding-updated', onBindingUpdated)
+    return () => window.removeEventListener('model-feature-binding-updated', onBindingUpdated)
+  }, [])
+
+  const transcribeModels = useMemo(
+    () => allModels.filter((m) => modelSupportsMode(m, trackMode)),
+    [allModels, trackMode],
+  )
+
+  const boundModel = featureModels[trackMode] ?? FALLBACK_TRANSCRIBE_MODEL_BY_MODE[trackMode]
+
+  const currentModel = useMemo(() => {
+    if (transcribeModels.some((m) => m.id === boundModel)) return boundModel
+    return transcribeModels[0]?.id ?? boundModel
+  }, [boundModel, transcribeModels])
+
+  const modelOptions = useMemo(() => {
+    const opts = transcribeModels.map((m) => ({
+      value: m.id,
+      label: m.id,
+      hint: m.display_name || 'DashScope',
+    }))
+    return opts
+  }, [transcribeModels])
+
+  const currentModelDef = useMemo(
+    () => allModels.find((m) => m.id === currentModel),
+    [allModels, currentModel],
+  )
+
+  const changeCurrentModel = useCallback(async (modelId: string) => {
+    const mode = trackMode
+    const feature = featureForMode(mode)
+    setFeatureModels((prev) => ({ ...prev, [mode]: modelId }))
     ossPromiseRef.current = null
-    setVisual(INIT_KIND_STATE)
-    setAudio(INIT_KIND_STATE)
+    try {
+      await setFeatureModel(feature, modelId)
+      window.dispatchEvent(new CustomEvent('model-feature-binding-updated', {
+        detail: { feature, modelId },
+      }))
+    } catch (e) {
+      setResult((s) => ({ ...s, errMsg: `模型绑定更新失败：${String(e)}` }))
+    }
+  }, [trackMode])
+
+  // 切换 filePath 时重置；cleanup 会用旧 filePath flush 进行中的部分内容
+  useEffect(() => {
+    abortRef.current?.(); abortRef.current = null
+    ossPromiseRef.current = null
+    setResult(INIT_KIND_STATE)
+    setLocalMediaPath(null)
     setCopied(false)
 
     let cancelled = false
     invoke<TranscriptCache>('get_bili_transcripts', { filePath })
       .then((cache) => {
         if (cancelled) return
-        if (cache.visual) {
-          setVisual({
+        const text = cache.combined ?? cache.visual ?? cache.audio
+        const at = cache.combined_at ?? cache.visual_at ?? cache.audio_at
+        const kind: TranscribeKind = cache.combined ? 'combined' : cache.visual ? 'visual' : 'audio'
+        if (text) {
+          setResult({
             stage: 'done',
-            text: cache.visual,
-            segments: parseTranscript(cache.visual, 'visual'),
+            text,
+            segments: parseTranscript(text, kind),
             errMsg: null,
-            cachedAt: cache.visual_at,
-          })
-        }
-        if (cache.audio) {
-          setAudio({
-            stage: 'done',
-            text: cache.audio,
-            segments: parseTranscript(cache.audio, 'audio'),
-            errMsg: null,
-            cachedAt: cache.audio_at,
+            cachedAt: at,
           })
         }
       })
       .catch((e) => console.warn('[Transcribe] 读取缓存失败', e))
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      const prev = resultRef.current
+      if ((prev.stage === 'uploading' || prev.stage === 'streaming') && prev.text.trim()) {
+        invoke('update_bili_transcript', {
+          filePath,
+          kind: trackModeRef.current,
+          text: prev.text,
+        }).catch(() => {})
+      }
+    }
   }, [filePath])
 
-  useEffect(() => () => {
-    abortVisualRef.current?.()
-    abortAudioRef.current?.()
-  }, [])
+  useEffect(() => () => { abortRef.current?.() }, [])
 
-  // 复用 oss URL：第一次调用上传，后续直接拿 promise
-  const ensureOss = useCallback(async (apiKey: string, model: string): Promise<string> => {
+  // trackMode 变化时清空 OSS 缓存，确保用新的媒体类型重新上传
+  useEffect(() => {
+    ossPromiseRef.current = null
+    setLocalMediaPath(null)
+  }, [trackMode])
+
+  const ensureOss = useCallback(async (apiKey: string, model: string): Promise<UploadedMedia> => {
     if (ossPromiseRef.current) return ossPromiseRef.current
-    const p = uploadVideo(filePath, apiKey, model)
-      .catch((e) => { ossPromiseRef.current = null; throw e })
-    ossPromiseRef.current = p
-    return p
-  }, [filePath])
+    const p = (async (): Promise<UploadedMedia> => {
+      if (trackMode === 'audio') {
+        const audioPath = await extractAudio(filePath)
+        setLocalMediaPath(audioPath)
+        const ossUrl = await uploadVideo(audioPath, apiKey, model)
+        return {
+          ossUrl,
+          mediaType: 'audio',
+          localPath: audioPath,
+          audioFormat: inferAudioFormat(audioPath),
+        }
+      }
+      const ossUrl = await uploadVideo(filePath, apiKey, model)
+      setLocalMediaPath(filePath)
+      return {
+        ossUrl,
+        mediaType: 'video',
+        localPath: filePath,
+      }
+    })()
+    const cached = p.catch((e) => { ossPromiseRef.current = null; throw e })
+    ossPromiseRef.current = cached
+    return cached
+  }, [filePath, trackMode])
 
-  const start = useCallback(async (kind: TranscribeKind) => {
+  const start = useCallback(async () => {
     const cfg = loadConfig()
     const apiKey = getDashScopeApiKey(cfg)
     if (!apiKey) {
-      setKindState(kind, { stage: 'error', errMsg: '未配置 API Key（设置 → AI 模型 → 全模态 Omni）' })
+      setResult((s) => ({ ...s, stage: 'error', errMsg: '未配置 API Key（设置 → AI 模型 → 全模态 Omni）' }))
       return
     }
-    const feature = kind === 'visual' ? 'bili_visual_transcribe' : 'bili_audio_transcribe'
-    const model = await getFeatureModel(feature, FALLBACK_TRANSCRIBE_MODEL)
-    setKindState(kind, { stage: 'uploading', text: '', segments: [], errMsg: null, cachedAt: null })
+    const feature = featureForMode(trackMode)
+    const model = currentModel || await getFeatureModel(feature, FALLBACK_TRANSCRIBE_MODEL_BY_MODE[trackMode])
+    const modelDef = currentModelDef ?? transcribeModels.find((m) => m.id === model)
+    if (allModels.length > 0 && (!modelDef || !modelSupportsMode(modelDef, trackMode))) {
+      setResult((s) => ({
+        ...s,
+        stage: 'error',
+        errMsg: `${model} 不支持当前转录模式。音视频需要 Omni 这类同时支持 video + audio_in 的模型；qwen3.6-plus 只能用于仅画面。`,
+      }))
+      return
+    }
+    setResult({ stage: 'uploading', text: '', segments: [], errMsg: null, cachedAt: null })
 
-    let url: string
+    let media: UploadedMedia
     try {
-      url = await ensureOss(apiKey, model)
+      media = await ensureOss(apiKey, model)
     } catch (e) {
-      setKindState(kind, { stage: 'error', errMsg: `上传失败：${String(e)}` })
+      setResult((s) => ({ ...s, stage: 'error', errMsg: `上传失败：${String(e)}` }))
       return
     }
 
-    setKindState(kind, { stage: 'streaming' })
+    setResult((s) => ({ ...s, stage: 'streaming' }))
 
-    const prompt = kind === 'visual' ? VISUAL_TRANSCRIBE_PROMPT : AUDIO_TRANSCRIBE_PROMPT
-    const ref = kind === 'visual' ? abortVisualRef : abortAudioRef
+    const prompt = getPrompt(trackMode, promptType)
     const startedAt = new Date().toISOString()
     const startedMs = Date.now()
     let usageLogged = false
-    ref.current = streamTranscribeFromOss({
-      ossUrl: url, apiKey, model, prompt, kind,
+
+    abortRef.current = streamTranscribeFromOss({
+      ossUrl: media.ossUrl,
+      apiKey,
+      model,
+      prompt,
+      kind: trackMode,
+      mediaType: media.mediaType,
+      audioFormat: media.audioFormat,
       callbacks: {
-        onChunk: (delta) => {
-          if (kind === 'visual') setVisual((s) => ({ ...s, text: s.text + delta }))
-          else setAudio((s) => ({ ...s, text: s.text + delta }))
-        },
-        onSegment: (segs) => {
-          if (kind === 'visual') setVisual((s) => ({ ...s, segments: [...s.segments, ...segs] }))
-          else setAudio((s) => ({ ...s, segments: [...s.segments, ...segs] }))
-        },
+        onChunk: (delta) => setResult((s) => ({ ...s, text: s.text + delta })),
+        onSegment: (segs) => setResult((s) => ({ ...s, segments: [...s.segments, ...segs] })),
         onUsage: (usage) => {
           usageLogged = true
           void logModelUsage({
@@ -215,18 +395,33 @@ export default function BiliTranscribePanel({
             durationMs: Date.now() - startedMs,
             usage,
             success: true,
-            metadata: { bvid, title, filePath, ossUrl: url, kind },
+            metadata: { bvid, title, filePath, ossUrl: media.ossUrl, localPath: media.localPath, trackMode, promptType },
           })
         },
         onDone: (full) => {
-          setKindState(kind, { stage: 'done' })
-          if (full.trim()) {
-            invoke('update_bili_transcript', { filePath, kind, text: full })
+          const trimmed = full.trim()
+          setResult((s) => {
+            // 流式没解析出段落时（如模型用了 JSON 数组格式），对完整文本重新解析
+            const segments = s.segments.length > 0
+              ? s.segments
+              : trimmed ? parseTranscript(trimmed, trackMode) : []
+            const noSegments = segments.length === 0 && trimmed.length > 0
+            return {
+              ...s,
+              stage: noSegments ? 'error' : 'done',
+              segments,
+              errMsg: noSegments
+                ? `模型未按 JSONL 格式输出，原文（前 300 字）：\n${trimmed.slice(0, 300)}`
+                : null,
+            }
+          })
+          if (trimmed) {
+            invoke('update_bili_transcript', { filePath, kind: trackMode, text: full })
               .catch((e) => console.warn('[Transcribe] 写入 DB 失败', e))
           }
         },
         onError: (msg) => {
-          setKindState(kind, { stage: 'error', errMsg: msg })
+          setResult((s) => ({ ...s, stage: 'error', errMsg: msg }))
           if (!usageLogged) {
             void logModelUsage({
               feature,
@@ -235,48 +430,39 @@ export default function BiliTranscribePanel({
               durationMs: Date.now() - startedMs,
               success: false,
               errorMessage: msg,
-              metadata: { bvid, title, filePath, ossUrl: url, kind },
+              metadata: { bvid, title, filePath, ossUrl: media.ossUrl, localPath: media.localPath, trackMode, promptType },
             })
           }
         },
       },
     })
-  }, [bvid, ensureOss, filePath, setKindState, title])
+  }, [allModels.length, bvid, currentModel, currentModelDef, ensureOss, filePath, promptType, title, trackMode, transcribeModels])
 
-  const stop = useCallback((kind: TranscribeKind) => {
-    if (kind === 'visual') { abortVisualRef.current?.(); abortVisualRef.current = null }
-    else { abortAudioRef.current?.(); abortAudioRef.current = null }
-    setKindState(kind, { stage: 'idle' })
-  }, [setKindState])
+  const stop = useCallback(() => {
+    abortRef.current?.(); abortRef.current = null
+    setResult((s) => ({ ...s, stage: 'idle' }))
+  }, [])
 
-  const current = activeKind === 'visual' ? visual : audio
-  const isRunning = current.stage === 'uploading' || current.stage === 'streaming'
+  const isRunning = result.stage === 'uploading' || result.stage === 'streaming'
 
   const handleCopy = useCallback(async () => {
-    if (!current.text) return
-    const ok = await copyToClipboard(current.text)
+    if (!result.text) return
+    const ok = await copyToClipboard(result.text)
     if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500) }
-    else setKindState(activeKind, { errMsg: '复制失败：剪贴板不可用' })
-  }, [current.text, activeKind, setKindState])
+    else setResult((s) => ({ ...s, errMsg: '复制失败：剪贴板不可用' }))
+  }, [result.text])
 
-  // 流式自动滚到底（基于 segments 数量增长）
+  // 流式自动滚到底
   useEffect(() => {
-    if (current.stage === 'streaming' && transcriptRef.current) {
+    if (result.stage === 'streaming' && transcriptRef.current) {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight
     }
-  }, [current.segments.length, current.stage])
+  }, [result.segments.length, result.stage])
 
-  // 切换 tab 时滚到顶
-  useEffect(() => {
-    if (transcriptRef.current) transcriptRef.current.scrollTop = 0
-    setCopied(false)
-  }, [activeKind])
-
-  // 当前播放秒数对应的高亮段索引
   const activeSegIdx = useMemo(() => {
     if (currentSec == null) return -1
-    return current.segments.findIndex((s) => currentSec >= s.start && currentSec < s.end)
-  }, [currentSec, current.segments])
+    return result.segments.findIndex((s) => currentSec >= s.start && currentSec < s.end)
+  }, [currentSec, result.segments])
 
   return (
     <div
@@ -352,76 +538,85 @@ export default function BiliTranscribePanel({
         <span style={{
           display: 'inline-flex', alignItems: 'center', gap: 4,
           padding: '1px 6px',
-          border: `1px solid ${STAGE_COLOR[current.stage]}66`,
-          background: `${STAGE_COLOR[current.stage]}11`,
+          border: `1px solid ${STAGE_COLOR[result.stage]}66`,
+          background: `${STAGE_COLOR[result.stage]}11`,
           fontSize: 9, fontFamily: theme.fontMono,
           letterSpacing: 1,
-          color: STAGE_COLOR[current.stage],
+          color: STAGE_COLOR[result.stage],
         }}>
           {isRunning && <Loader2 size={9} style={{ animation: 'spin 1.4s linear infinite' }} />}
           <span style={{
             display: 'inline-block', width: 5, height: 5, borderRadius: '50%',
-            background: STAGE_COLOR[current.stage],
+            background: STAGE_COLOR[result.stage],
             animation: isRunning ? 'btx-pulse-ring 1.4s ease-out infinite' : undefined,
           }} />
-          {STAGE_LABEL[current.stage]}
+          {STAGE_LABEL[result.stage]}
         </span>
 
         <span style={{ flex: 1 }} />
 
         <Tooltip content="关闭">
-          <button
-            onClick={onClose}
-            className="bhd-icon-btn"
-            style={{ width: 22, height: 22 }}
-          >
+          <button onClick={onClose} className="bhd-icon-btn" style={{ width: 22, height: 22 }}>
             <X size={12} />
           </button>
         </Tooltip>
       </div>
 
-      {/* Tab 切换 */}
+      {/* 模式选择行 */}
       <div style={{
-        display: 'flex',
-        borderBottom: `1px solid ${ACCENT}33`,
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '6px 12px',
+        borderBottom: `1px solid ${ACCENT}22`,
         flexShrink: 0,
-        background: 'rgba(0,0,0,0.25)',
+        background: 'rgba(0,0,0,0.2)',
+        flexWrap: 'wrap',
       }}>
-        <TabBtn
-          active={activeKind === 'audio'}
-          onClick={() => setActiveKind('audio')}
-          icon={<AudioLines size={11} />}
-          label="音频"
-          stage={audio.stage}
-        />
-        <TabBtn
-          active={activeKind === 'visual'}
-          onClick={() => setActiveKind('visual')}
-          icon={<Eye size={11} />}
-          label="画面"
-          stage={visual.stage}
-        />
+        {/* 提示词类型 */}
+        <ModeGroup>
+          <ModeBtn active={promptType === 'text'} onClick={() => setPromptType('text')} disabled={isRunning}>
+            文字/PPT
+          </ModeBtn>
+          <ModeBtn active={promptType === 'general'} onClick={() => setPromptType('general')} disabled={isRunning}>
+            通用
+          </ModeBtn>
+        </ModeGroup>
+
+        <div style={{ width: 1, height: 14, background: `${ACCENT}33`, flexShrink: 0 }} />
+
+        {/* 轨道模式 */}
+        <ModeGroup>
+          <ModeBtn active={trackMode === 'combined'} onClick={() => setTrackMode('combined')} disabled={isRunning}>
+            <AudioLines size={9} /> 音视频
+          </ModeBtn>
+          <ModeBtn active={trackMode === 'audio'} onClick={() => setTrackMode('audio')} disabled={isRunning}>
+            <AudioLines size={9} /> 仅音频
+          </ModeBtn>
+          <ModeBtn active={trackMode === 'visual'} onClick={() => setTrackMode('visual')} disabled={isRunning}>
+            <Eye size={9} /> 仅画面
+          </ModeBtn>
+        </ModeGroup>
+
       </div>
 
       {/* 操作栏 */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 6,
-        padding: '8px 12px',
+        padding: '7px 12px',
         borderBottom: `1px solid ${theme.hudFrameSoft}`,
         flexShrink: 0,
       }}>
-        {!isRunning && current.stage !== 'done' && (
-          <button onClick={() => start(activeKind)} style={techBtn(ACCENT, true)}>
-            {current.stage === 'error' ? <RotateCcw size={11} /> : <Play size={11} />}
-            {current.stage === 'error' ? '重试' : '启动'}
+        {!isRunning && result.stage !== 'done' && (
+          <button onClick={start} style={techBtn(ACCENT, true)}>
+            {result.stage === 'error' ? <RotateCcw size={11} /> : <Play size={11} />}
+            {result.stage === 'error' ? '重试' : '启动'}
           </button>
         )}
         {isRunning && (
-          <button onClick={() => stop(activeKind)} style={techBtn(theme.dangerRed, false)}>
+          <button onClick={stop} style={techBtn(theme.dangerRed, false)}>
             <Square size={10} /> 中止
           </button>
         )}
-        {current.stage === 'done' && (
+        {result.stage === 'done' && (
           <>
             <Tooltip content={copied ? '已复制' : '复制全部'}>
               <button
@@ -432,10 +627,10 @@ export default function BiliTranscribePanel({
                 {copied ? '已复制' : '复制'}
               </button>
             </Tooltip>
-            <button onClick={() => start(activeKind)} style={techBtn(ACCENT, true)}>
+            <button onClick={start} style={techBtn(ACCENT, true)}>
               <RotateCcw size={11} /> 重新转录
             </button>
-            {current.cachedAt && (
+            {result.cachedAt && (
               <span style={{
                 fontFamily: theme.fontMono, fontSize: 9,
                 color: theme.textMuted, letterSpacing: 0.5,
@@ -447,12 +642,17 @@ export default function BiliTranscribePanel({
         )}
 
         <span style={{ flex: 1 }} />
-        <span style={{
-          fontFamily: theme.fontMono, fontSize: 9,
-          color: theme.textMuted, letterSpacing: 0.5,
-        }}>
-          {FALLBACK_TRANSCRIBE_MODEL}
-        </span>
+        <Tooltip content={trackMode === 'audio' ? '仅音频转录模型' : trackMode === 'visual' ? '仅画面转录模型' : '音视频全模态转录模型'}>
+          <div style={{ maxWidth: 280 }}>
+            <HudSelect
+              inline
+              value={currentModel}
+              options={modelOptions}
+              onChange={changeCurrentModel}
+              disabled={isRunning}
+            />
+          </div>
+        </Tooltip>
       </div>
 
       {/* 元数据 */}
@@ -475,10 +675,26 @@ export default function BiliTranscribePanel({
         }}>
           {title}
         </span>
+        {localMediaPath && (
+          <span
+            title={localMediaPath}
+            style={{
+              maxWidth: 260,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontFamily: theme.fontMono,
+              fontSize: 9,
+              color: theme.textMuted,
+            }}
+          >
+            {trackMode === 'audio' ? 'AUDIO' : 'LOCAL'}: {localMediaPath}
+          </span>
+        )}
       </div>
 
       {/* 错误 */}
-      {current.errMsg && (
+      {result.errMsg && (
         <div style={{
           padding: '8px 12px',
           fontSize: 10, color: theme.dangerRed,
@@ -489,7 +705,7 @@ export default function BiliTranscribePanel({
           flexShrink: 0,
         }}>
           <AlertTriangle size={11} style={{ flexShrink: 0, marginTop: 1 }} />
-          <span>{current.errMsg}</span>
+          <span>{result.errMsg}</span>
         </div>
       )}
 
@@ -510,35 +726,35 @@ export default function BiliTranscribePanel({
           animation: isRunning ? 'btx-grid-shift 0.6s linear infinite' : undefined,
         }}
       >
-        {current.segments.length === 0 && current.stage !== 'done' && current.stage !== 'error' && (
+        {result.segments.length === 0 && result.stage !== 'done' && result.stage !== 'error' && (
           <>
             <TranscribeIdleAnimation
               stage={
-                current.stage === 'uploading' ? 'uploading'
-                : current.stage === 'streaming' ? 'streaming'
+                result.stage === 'uploading' ? 'uploading'
+                : result.stage === 'streaming' ? 'streaming'
                 : 'idle'
               }
             />
-            {current.stage === 'idle' && (
-              <EmptyState kind={activeKind} onStart={() => start(activeKind)} />
+            {result.stage === 'idle' && (
+              <EmptyState trackMode={trackMode} modelId={currentModel} onStart={start} />
             )}
-            {(current.stage === 'uploading' || current.stage === 'streaming') && (
-              <TranscribePrepOverlay stage={current.stage} />
+            {(result.stage === 'uploading' || result.stage === 'streaming') && (
+              <TranscribePrepOverlay stage={result.stage} />
             )}
           </>
         )}
-        {current.segments.length > 0 && (
+        {result.segments.length > 0 && (
           <SegmentList
-            segments={current.segments}
+            segments={result.segments}
             activeIdx={activeSegIdx}
-            kind={activeKind}
+            trackMode={trackMode}
             onSeek={onSeek}
             streaming={isRunning}
           />
         )}
 
         {/* 流光扫描线（仅 streaming 时） */}
-        {current.stage === 'streaming' && (
+        {result.stage === 'streaming' && (
           <div style={{
             position: 'absolute', inset: 0, pointerEvents: 'none',
             overflow: 'hidden',
@@ -556,58 +772,60 @@ export default function BiliTranscribePanel({
   )
 }
 
-function TabBtn({
-  active, onClick, icon, label, stage,
+function ModeGroup({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', gap: 0 }}>
+      {children}
+    </div>
+  )
+}
+
+function ModeBtn({
+  active, onClick, disabled, children,
 }: {
   active: boolean
   onClick: () => void
-  icon: React.ReactNode
-  label: string
-  stage: Stage
+  disabled?: boolean
+  children: React.ReactNode
 }) {
-  const dotColor = STAGE_COLOR[stage]
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       style={{
-        flex: 1,
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-        padding: '7px 10px',
-        background: active ? `${ACCENT}1A` : 'transparent',
-        color: active ? ACCENT : theme.textSecondary,
-        border: 'none',
-        borderBottom: active ? `2px solid ${ACCENT}` : '2px solid transparent',
-        fontFamily: theme.fontMono, fontSize: 11, fontWeight: 700,
-        letterSpacing: 1.2,
-        cursor: 'pointer',
-        transition: 'all 0.15s ease',
-        textShadow: active ? `0 0 6px ${ACCENT}88` : 'none',
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        padding: '3px 9px',
+        fontFamily: theme.fontMono, fontSize: 9, fontWeight: 700, letterSpacing: 0.8,
+        color: active ? '#0a0f1a' : disabled ? theme.textMuted : `${ACCENT}CC`,
+        background: active ? ACCENT : 'transparent',
+        border: `1px solid ${active ? ACCENT : `${ACCENT}44`}`,
+        borderRadius: 0,
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled && !active ? 0.45 : 1,
+        transition: 'all 0.12s ease',
+        whiteSpace: 'nowrap',
       }}
     >
-      {icon}
-      <span>{label}</span>
-      <span style={{
-        display: 'inline-block', width: 5, height: 5, borderRadius: '50%',
-        background: dotColor,
-        boxShadow: stage === 'streaming' || stage === 'uploading' ? `0 0 6px ${dotColor}` : 'none',
-      }} />
+      {children}
     </button>
   )
 }
 
 const KIND_LABEL: Record<NonNullable<TranscriptSegment['kind']>, string> = {
   speech: '人声', bgm: '音乐', sfx: '音效', ambient: '环境',
+  scene: '画面', slide: '幻灯片',
 }
 const KIND_COLOR: Record<NonNullable<TranscriptSegment['kind']>, string> = {
   speech: '#7DF9FF', bgm: '#FFB37C', sfx: '#FFE07C', ambient: '#7CFFA0',
+  scene: '#b378ff', slide: '#78c4ff',
 }
 
 function SegmentList({
-  segments, activeIdx, kind, onSeek, streaming,
+  segments, activeIdx, trackMode, onSeek, streaming,
 }: {
   segments: TranscriptSegment[]
   activeIdx: number
-  kind: TranscribeKind
+  trackMode: TrackMode
   onSeek?: (sec: number) => void
   streaming: boolean
 }) {
@@ -616,6 +834,7 @@ function SegmentList({
       {segments.map((seg, i) => {
         const active = i === activeIdx
         const seekable = !!onSeek
+        const kindColor = seg.kind ? KIND_COLOR[seg.kind] : undefined
         return (
           <div
             key={`${seg.start}-${i}`}
@@ -625,7 +844,7 @@ function SegmentList({
             style={{
               marginBottom: 10,
               padding: '4px 8px',
-              borderLeft: `2px solid ${active ? ACCENT : `${ACCENT}33`}`,
+              borderLeft: `2px solid ${active ? (kindColor ?? ACCENT) : `${ACCENT}33`}`,
               background: active ? `${ACCENT}1A` : 'transparent',
               cursor: seekable ? 'pointer' : 'default',
               transition: 'background 0.18s ease, border-color 0.18s ease',
@@ -642,7 +861,7 @@ function SegmentList({
               textShadow: active ? `0 0 6px ${ACCENT}88` : undefined,
             }}>
               <span>{formatTimecode(seg.start)} – {formatTimecode(seg.end)}</span>
-              {kind === 'audio' && seg.kind && (
+              {seg.kind && (
                 <span style={{
                   padding: '0 4px',
                   fontSize: 9,
@@ -652,12 +871,12 @@ function SegmentList({
                   {KIND_LABEL[seg.kind]}
                 </span>
               )}
-              {kind === 'audio' && seg.speaker && (
+              {seg.speaker && (
                 <span style={{ color: theme.textSecondary, fontFamily: theme.fontBody }}>
                   · {seg.speaker}
                 </span>
               )}
-              {kind === 'visual' && seg.tags && seg.tags.length > 0 && (
+              {trackMode === 'visual' && seg.tags && seg.tags.length > 0 && (
                 <span style={{ color: theme.textMuted, fontSize: 9 }}>
                   · {seg.tags.join('/')}
                 </span>
@@ -665,7 +884,7 @@ function SegmentList({
             </div>
             <div style={{
               whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-              color: active ? theme.textPrimary : theme.textPrimary,
+              color: theme.textPrimary,
             }}>
               {seg.text}
             </div>
@@ -692,10 +911,10 @@ function SegmentList({
   )
 }
 
-function EmptyState({ kind, onStart }: { kind: TranscribeKind; onStart: () => void }) {
-  const streamName = kind === 'visual' ? '画面流' : '音频流'
-  const streamCode = kind === 'visual' ? 'VIDEO_STREAM' : 'AUDIO_STREAM'
-  const tags = kind === 'visual' ? '镜头│动作│字幕│UI' : '人声│字幕│音乐│环境音'
+function EmptyState({ trackMode, modelId, onStart }: { trackMode: TrackMode; modelId: string; onStart: () => void }) {
+  const streamName = trackMode === 'visual' ? '画面流' : trackMode === 'audio' ? '音频流' : '音视频流'
+  const streamCode = trackMode === 'visual' ? 'VIDEO_STREAM' : trackMode === 'audio' ? 'AUDIO_STREAM' : 'AV_STREAM'
+  const tags = trackMode === 'visual' ? '镜头│动作│字幕│UI' : trackMode === 'audio' ? '人声│字幕│音乐│环境音' : '人声│幻灯片│字幕│场景'
   const [hover, setHover] = useState(false)
   // 三层黑色描边，把文字"压"出粒子背景
   const ts = '0 0 12px rgba(0,0,0,1), 0 0 6px rgba(0,0,0,1), 0 0 3px rgba(0,0,0,1), 0 1px 2px rgba(0,0,0,1)'
@@ -748,7 +967,7 @@ function EmptyState({ kind, onStart }: { kind: TranscribeKind; onStart: () => vo
           color: ACCENT, textShadow: `0 0 8px ${ACCENT}, ${ts}`,
           marginTop: 8,
         }}>
-          [ {streamCode} · QWEN3.5-OMNI-PLUS ]
+          [ {streamCode} · {modelId} ]
         </div>
 
         {/* 渐变分隔 */}
