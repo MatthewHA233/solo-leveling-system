@@ -11,11 +11,9 @@ export interface TranscriptSegment {
   start: number   // 秒（小数）
   end: number     // 秒
   text: string
-  // 画面专属
   tags?: string[]
-  // 音频专属
   speaker?: string | null
-  kind?: 'speech' | 'bgm' | 'sfx' | 'ambient'
+  kind?: 'speech' | 'bgm' | 'sfx' | 'ambient' | 'scene' | 'slide'
 }
 
 /** 把 mm:ss(.xxx) 转秒数 */
@@ -63,21 +61,60 @@ export function parseJsonlLine(
     const text = typeof j.text === 'string' ? j.text : ''
     if (!Number.isFinite(start) || !Number.isFinite(end)) return null
     const seg: TranscriptSegment = { start, end, text }
-    if (kind === 'visual' && Array.isArray(j.tags)) {
+    if (kind !== 'audio' && Array.isArray(j.tags)) {
       seg.tags = (j.tags as unknown[]).filter((x): x is string => typeof x === 'string')
     }
-    if (kind === 'audio') {
+    if (kind !== 'visual') {
       if (typeof j.speaker === 'string' || j.speaker === null) {
         seg.speaker = j.speaker as string | null
       }
-      if (j.kind === 'speech' || j.kind === 'bgm' || j.kind === 'sfx' || j.kind === 'ambient') {
-        seg.kind = j.kind
+      const VALID_KINDS = ['speech', 'bgm', 'sfx', 'ambient', 'scene', 'slide'] as const
+      if (VALID_KINDS.includes(j.kind as (typeof VALID_KINDS)[number])) {
+        seg.kind = j.kind as TranscriptSegment['kind']
       }
     }
     return seg
   } catch {
     return null
   }
+}
+
+function extractJsonObjects(text: string): string[] {
+  const stripped = stripFence(text)
+  const objects: string[] = []
+  let start = -1
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let i = 0; i < stripped.length; i += 1) {
+    const ch = stripped[i]
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (ch === '\\') {
+        escaped = true
+      } else if (ch === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (ch === '"') {
+      inString = true
+    } else if (ch === '{') {
+      if (depth === 0) start = i
+      depth += 1
+    } else if (ch === '}') {
+      if (depth > 0) depth -= 1
+      if (depth === 0 && start >= 0) {
+        objects.push(stripped.slice(start, i + 1))
+        start = -1
+      }
+    }
+  }
+
+  return objects
 }
 
 /** 解析整段 JSONL 文本（已存 DB 或流结束后） */
@@ -87,6 +124,12 @@ export function parseJsonl(text: string, kind: TranscribeKind): TranscriptSegmen
   for (const line of stripped.split('\n')) {
     const seg = parseJsonlLine(line, kind)
     if (seg) segs.push(seg)
+  }
+  if (segs.length === 0) {
+    for (const obj of extractJsonObjects(stripped)) {
+      const seg = parseJsonlLine(obj, kind)
+      if (seg) segs.push(seg)
+    }
   }
   return segs
 }
@@ -115,9 +158,23 @@ export function parseLegacyText(text: string, _kind: TranscribeKind): Transcript
   return segs
 }
 
-/** 统一入口：嗅探格式后分发 */
+/** 统一入口：嗅探格式后分发（支持 JSONL / JSON 数组 / 旧版时间戳文本） */
 export function parseTranscript(text: string, kind: TranscribeKind): TranscriptSegment[] {
   if (!text || !text.trim()) return []
+  // 先剥围栏，判断实际内容格式
+  const stripped = stripFence(text.trim())
+  // JSON 数组格式（模型忽略了"不要外层数组"指令）
+  if (stripped.startsWith('[')) {
+    try {
+      const arr = JSON.parse(stripped)
+      if (Array.isArray(arr)) {
+        return arr.flatMap((item) => {
+          const seg = parseJsonlLine(JSON.stringify(item), kind)
+          return seg ? [seg] : []
+        })
+      }
+    } catch { /* fall through */ }
+  }
   return isJsonl(text) ? parseJsonl(text, kind) : parseLegacyText(text, kind)
 }
 
@@ -161,8 +218,8 @@ export function createJsonlLineBuffer(kind: TranscribeKind): JsonlLineBuffer {
       const out: TranscriptSegment[] = []
       const tail = buf.trim().replace(/```$/, '').trim()
       if (tail) {
-        const seg = parseJsonlLine(tail, kind)
-        if (seg) out.push(seg)
+        const segs = parseJsonl(tail, kind)
+        out.push(...segs)
       }
       buf = ''
       return out
