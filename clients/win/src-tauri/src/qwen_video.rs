@@ -16,6 +16,7 @@
 use reqwest::multipart::{Form, Part};
 use serde::Deserialize;
 use std::path::Path;
+use tauri::AppHandle;
 
 #[derive(Debug, Deserialize)]
 struct PolicyResponse {
@@ -37,38 +38,29 @@ struct PolicyData {
     x_oss_forbid_overwrite: String,
 }
 
-/// 上传本地文件到 DashScope 临时存储，返回 oss://... URL
-#[tauri::command]
-pub async fn qwen_video_upload(
-    api_key: String,
-    model: String,
-    file_path: String,
-) -> Result<String, String> {
-    let path = Path::new(&file_path);
+/// 内部上传逻辑，被 qwen_video_upload 和音频上传复用
+async fn upload_to_dashscope(api_key: &str, model: &str, path: &Path) -> Result<String, String> {
     if !path.exists() {
-        return Err(format!("文件不存在: {}", file_path));
+        return Err(format!("文件不存在: {}", path.display()));
     }
     let raw_filename = path
         .file_name()
         .and_then(|s| s.to_str())
         .ok_or("文件名解析失败")?
         .to_string();
-    // OSS object key + 后续 oss:// URL 必须 URL 安全；DashScope 拒绝含中文 / 空格 / ? ! 等的路径
     let filename = sanitize_filename(&raw_filename);
 
-    // 1) 获取上传凭证
     let client = reqwest::Client::builder()
         .build()
         .map_err(|e| format!("HTTP client 构建失败: {}", e))?;
 
-    // model 名只含字母数字 + . - _，URL 安全，无需额外编码
     let policy_url = format!(
         "https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model={}",
         model
     );
     let policy_resp = client
         .get(&policy_url)
-        .bearer_auth(&api_key)
+        .bearer_auth(api_key)
         .send()
         .await
         .map_err(|e| format!("getPolicy 请求失败: {}", e))?;
@@ -85,7 +77,6 @@ pub async fn qwen_video_upload(
         .map_err(|e| format!("getPolicy JSON 解析失败: {} (body={})", e, body_text))?;
     let p = policy.data;
 
-    // 2) 检查文件大小
     let metadata = std::fs::metadata(path).map_err(|e| format!("读取文件元数据失败: {}", e))?;
     let size_mb = metadata.len() as f64 / 1024.0 / 1024.0;
     if size_mb > p.max_file_size_mb as f64 {
@@ -95,13 +86,9 @@ pub async fn qwen_video_upload(
         ));
     }
 
-    // 3) 构造 OSS object key（policy 返回 upload_dir 是该 model 下的目录前缀）
     let object_key = format!("{}/{}", p.upload_dir.trim_end_matches('/'), filename);
-
-    // 4) 读取文件
     let file_bytes = std::fs::read(path).map_err(|e| format!("读取文件失败: {}", e))?;
 
-    // 5) 构造 multipart form（顺序按 OSS 规范：所有签名字段在前，file 放最后）
     let form = Form::new()
         .text("OSSAccessKeyId", p.oss_access_key_id.clone())
         .text("Signature", p.signature)
@@ -131,13 +118,74 @@ pub async fn qwen_video_upload(
         return Err(format!("OSS 上传失败 [{}]: {}", up_status, txt));
     }
 
-    // 6) 返回 oss://{object_key}
-    // 注意：DashScope 文档示例 `oss://dashscope-instant/xxx/.../cat.png` 中
-    // "dashscope-instant" 是 object key 的前缀，不是物理 OSS bucket。
-    // 物理 bucket（dashscope-file-mgr）在 upload_host 里，对模型侧不可见。
+    // DashScope 文档：oss://{object_key} 中前缀不是物理 bucket
     let oss_url = format!("oss://{}", object_key);
-    log::info!("[QwenVideo] 上传成功 {} → {}", file_path, oss_url);
+    log::info!("[QwenVideo] 上传成功 {} → {}", path.display(), oss_url);
     Ok(oss_url)
+}
+
+/// 上传本地文件到 DashScope 临时存储，返回 oss://... URL
+#[tauri::command]
+pub async fn qwen_video_upload(
+    api_key: String,
+    model: String,
+    file_path: String,
+) -> Result<String, String> {
+    upload_to_dashscope(&api_key, &model, Path::new(&file_path)).await
+}
+
+/// 用 FFmpeg 从视频中提取音轨，输出 <stem>_audio.m4a，返回路径
+/// 已有缓存且比输入新则复用
+#[tauri::command]
+pub async fn qwen_audio_extract(
+    file_path: String,
+    app: AppHandle,
+) -> Result<String, String> {
+    let input = std::path::PathBuf::from(&file_path);
+    if !input.exists() {
+        return Err(format!("文件不存在: {}", file_path));
+    }
+
+    let stem = input
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "video".into());
+    let parent = input.parent().unwrap_or_else(|| Path::new("."));
+    let output = parent.join(format!("{stem}_audio.m4a"));
+
+    // 缓存命中
+    if let (Ok(om), Ok(im)) = (std::fs::metadata(&output), std::fs::metadata(&input)) {
+        if om.len() > 0 {
+            if let (Ok(ot), Ok(it)) = (om.modified(), im.modified()) {
+                if ot >= it {
+                    log::info!("[QwenAudio] 缓存命中: {}", output.display());
+                    return Ok(output.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    let dir = crate::ffmpeg::find_ffmpeg_dir_pub(&app)?;
+    let ffmpeg = dir.join("ffmpeg.exe");
+
+    let out = tokio::process::Command::new(&ffmpeg)
+        .args(["-hide_banner", "-y", "-nostats"])
+        .arg("-i").arg(&input)
+        .args(["-vn", "-c:a", "aac", "-b:a", "128k"])
+        .arg(&output)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("ffmpeg 音频提取失败: {e}"))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("音频提取失败: {}", stderr.chars().rev().take(200).collect::<String>().chars().rev().collect::<String>()));
+    }
+
+    log::info!("[QwenAudio] 提取完成: {}", output.display());
+    Ok(output.to_string_lossy().to_string())
 }
 
 /// 把文件名变 URL 安全：仅保留 ASCII 字母数字 + . - _，其余按 utf-8 字节 hex 编码

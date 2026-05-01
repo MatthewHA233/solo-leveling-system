@@ -958,6 +958,7 @@ pub fn run() {
             update_bili_transcript,
             qwen_asr::qwen_asr_transcribe,
             qwen_video::qwen_video_upload,
+            qwen_video::qwen_audio_extract,
             ffmpeg::ensure_h264_playable,
             list_models,
             upsert_model,

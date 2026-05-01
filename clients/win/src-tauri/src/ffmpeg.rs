@@ -37,6 +37,11 @@ struct ProgressEvent {
     encoder: Option<String>,
 }
 
+/// 公开给其他模块使用（qwen_video 音频提取）
+pub fn find_ffmpeg_dir_pub(app: &AppHandle) -> Result<PathBuf, String> {
+    find_ffmpeg_dir(app)
+}
+
 /// 解析 ffmpeg 资源目录（先查 Tauri resource_dir，再尝试相对 exe 的 dev fallback）
 fn find_ffmpeg_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let mut tried: Vec<PathBuf> = Vec::new();
@@ -96,7 +101,6 @@ async fn probe(ffprobe: &Path, input: &Path) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// 列出 ffmpeg build 中实际存在的编码器名（用于过滤优先级表）
 async fn list_encoders(ffmpeg: &Path) -> Result<String, String> {
     let output = Command::new(ffmpeg)
         .args(["-hide_banner", "-encoders"])
@@ -108,7 +112,6 @@ async fn list_encoders(ffmpeg: &Path) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// 选编码器优先级 + 在当前 build 中的可用性筛选 + 失败缓存过滤
 fn pick_encoders(encoders_dump: &str) -> Vec<&'static str> {
     let priority = [
         "h264_nvenc",

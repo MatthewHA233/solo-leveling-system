@@ -195,8 +195,10 @@ pub struct BiliVideoAsset {
 pub struct BiliTranscriptCache {
     pub visual: Option<String>,
     pub audio: Option<String>,
+    pub combined: Option<String>,
     pub visual_at: Option<String>,
     pub audio_at: Option<String>,
+    pub combined_at: Option<String>,
 }
 
 // ── 数据库管理 ──
@@ -391,11 +393,13 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN audio_path TEXT");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER");
 
-        // 渐进式迁移：bili_video_assets 双转录字段（旧数据无此列时自动追加）
+        // 渐进式迁移：bili_video_assets 转录字段（旧数据库无此列时自动追加）
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN visual_transcript TEXT");
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN audio_transcript TEXT");
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN visual_transcribed_at TEXT");
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN audio_transcribed_at TEXT");
+        let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN combined_transcript TEXT");
+        let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN combined_transcribed_at TEXT");
 
         conn.execute_batch(r#"
             -- B站历史表
@@ -958,7 +962,7 @@ impl Database {
                   WHERE a.bvid = s.bvid AND a.download_status = 'done') AS file_size_bytes,
                 EXISTS (SELECT 1 FROM bili_video_assets a
                   WHERE a.bvid = s.bvid
-                    AND (a.visual_transcript IS NOT NULL OR a.audio_transcript IS NOT NULL)
+                    AND (a.visual_transcript IS NOT NULL OR a.audio_transcript IS NOT NULL OR a.combined_transcript IS NOT NULL)
                 ) AS transcribed
             FROM spans s
             WHERE date(s.view_at,    'unixepoch', 'localtime') = ?1
@@ -1041,7 +1045,7 @@ impl Database {
                 SUM(CASE WHEN EXISTS (
                     SELECT 1 FROM bili_video_assets a
                     WHERE a.bvid = bili_in_range.bvid
-                      AND (a.visual_transcript IS NOT NULL OR a.audio_transcript IS NOT NULL)
+                      AND (a.visual_transcript IS NOT NULL OR a.audio_transcript IS NOT NULL OR a.combined_transcript IS NOT NULL)
                 ) THEN 1 ELSE 0 END) AS transcribed
             FROM bili_in_range
             GROUP BY day
@@ -1327,20 +1331,21 @@ impl BiliVideoAsset {
 }
 
 impl Database {
-    /// 按 download_path 读取转录缓存（visual + audio）
+    /// 按 download_path 读取转录缓存（visual + audio + combined）
     pub async fn get_bili_transcripts_by_path(
         &self, download_path: &str,
     ) -> Result<BiliTranscriptCache, String> {
         let conn = self.conn.lock().await;
-        let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> = conn
+        type Row = (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
+        let row: Option<Row> = conn
             .query_row(
-                r#"SELECT visual_transcript, audio_transcript,
-                          visual_transcribed_at, audio_transcribed_at
+                r#"SELECT visual_transcript, audio_transcript, combined_transcript,
+                          visual_transcribed_at, audio_transcribed_at, combined_transcribed_at
                    FROM bili_video_assets
                    WHERE download_path = ? AND download_status = 'done'
                    ORDER BY updated_at DESC LIMIT 1"#,
                 params![download_path],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .map(Some)
             .or_else(|e| match e {
@@ -1348,16 +1353,18 @@ impl Database {
                 other => Err(format!("查询转录缓存失败: {}", other)),
             })?;
         Ok(match row {
-            Some((v, a, va, aa)) => BiliTranscriptCache {
-                visual: v, audio: a, visual_at: va, audio_at: aa,
+            Some((v, a, c, va, aa, ca)) => BiliTranscriptCache {
+                visual: v, audio: a, combined: c,
+                visual_at: va, audio_at: aa, combined_at: ca,
             },
             None => BiliTranscriptCache {
-                visual: None, audio: None, visual_at: None, audio_at: None,
+                visual: None, audio: None, combined: None,
+                visual_at: None, audio_at: None, combined_at: None,
             },
         })
     }
 
-    /// 按 download_path 写入指定 kind 的转录文本（"visual" / "audio"）
+    /// 按 download_path 写入指定 kind 的转录文本（"visual" / "audio" / "combined"）
     pub async fn update_bili_transcript_by_path(
         &self, download_path: &str, kind: &str, text: &str,
     ) -> Result<(), String> {
@@ -1369,6 +1376,9 @@ impl Database {
                           WHERE download_path = ? AND download_status = 'done'"#,
             "audio"  => r#"UPDATE bili_video_assets
                           SET audio_transcript = ?, audio_transcribed_at = ?, updated_at = ?
+                          WHERE download_path = ? AND download_status = 'done'"#,
+            "combined" => r#"UPDATE bili_video_assets
+                          SET combined_transcript = ?, combined_transcribed_at = ?, updated_at = ?
                           WHERE download_path = ? AND download_status = 'done'"#,
             other => return Err(format!("未知 kind: {}", other)),
         };
@@ -1531,17 +1541,10 @@ pub struct CallLogBucket {
     pub cost_cny_total: f64,
 }
 
-/// 首次启动写入种子（已存在则跳过，幂等）。
+/// 同步官方模型种子（插入新模型，更新已有官方模型的模态/价格）。
 /// 数据来源：用户人工核对的 cn-beijing 百炼价目（2026-04）。
 fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
     use rusqlite::params;
-
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM model_registry", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-    if count > 0 {
-        return Ok(());
-    }
 
     type Tier = (i64, Option<i64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>);
     type Seed = (&'static [&'static str], &'static str, &'static str, &'static [&'static str], i64, &'static [Tier]);
@@ -1555,47 +1558,47 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
             (0,        Some(131_072), Some(9.0),  None, None, None, Some(54.0), None),
             (131_072,  Some(262_144), Some(15.0), None, None, None, Some(90.0), None),
         ]),
-        (&["qwen3.6-plus", "qwen3.6-plus-2026-04-02"], "text", "Qwen3.6 Plus", &["text"], 1_048_576, &[
-            (0,        Some(262_144),   Some(2.0), None, None, None, Some(12.0), None),
-            (262_144,  Some(1_048_576), Some(8.0), None, None, None, Some(48.0), None),
+        (&["qwen3.6-plus", "qwen3.6-plus-2026-04-02"], "text", "Qwen3.6 Plus", &["text","image","video"], 1_048_576, &[
+            (0,        Some(262_144),   Some(2.0), Some(2.0), Some(2.0), None, Some(12.0), None),
+            (262_144,  Some(1_048_576), Some(8.0), Some(8.0), Some(8.0), None, Some(48.0), None),
         ]),
-        (&["qwen3.6-flash", "qwen3.6-flash-2026-04-16"], "text", "Qwen3.6 Flash", &["text"], 1_048_576, &[
-            (0,        Some(262_144),   Some(1.2), None, None, None, Some(7.2),  None),
-            (262_144,  Some(1_048_576), Some(4.8), None, None, None, Some(28.8), None),
+        (&["qwen3.6-flash", "qwen3.6-flash-2026-04-16"], "text", "Qwen3.6 Flash", &["text","image","video"], 1_048_576, &[
+            (0,        Some(262_144),   Some(1.2), Some(1.2), Some(1.2), None, Some(7.2),  None),
+            (262_144,  Some(1_048_576), Some(4.8), Some(4.8), Some(4.8), None, Some(28.8), None),
         ]),
-        (&["qwen3.6-35b-a3b"], "text", "Qwen3.6 35B A3B", &["text"], 262_144, &[
-            (0, Some(262_144), Some(1.8), None, None, None, Some(10.8), None),
+        (&["qwen3.6-35b-a3b"], "text", "Qwen3.6 35B A3B", &["text","image","video"], 262_144, &[
+            (0, Some(262_144), Some(1.8), Some(1.8), Some(1.8), None, Some(10.8), None),
         ]),
         (&["qwen3.6-27b"], "text", "Qwen3.6 27B", &["text"], 262_144, &[
             (0, Some(262_144), Some(3.0), None, None, None, Some(18.0), None),
         ]),
 
         // ── Qwen3.5 文本 ──
-        (&["qwen3.5-plus", "qwen3.5-plus-2026-04-20", "qwen3.5-plus-2026-02-15"], "text", "Qwen3.5 Plus", &["text"], 1_048_576, &[
-            (0,        Some(131_072),   Some(0.8), None, None, None, Some(4.8),  None),
-            (131_072,  Some(262_144),   Some(2.0), None, None, None, Some(12.0), None),
-            (262_144,  Some(1_048_576), Some(4.0), None, None, None, Some(24.0), None),
+        (&["qwen3.5-plus", "qwen3.5-plus-2026-04-20", "qwen3.5-plus-2026-02-15"], "text", "Qwen3.5 Plus", &["text","image","video"], 1_048_576, &[
+            (0,        Some(131_072),   Some(0.8), Some(0.8), Some(0.8), None, Some(4.8),  None),
+            (131_072,  Some(262_144),   Some(2.0), Some(2.0), Some(2.0), None, Some(12.0), None),
+            (262_144,  Some(1_048_576), Some(4.0), Some(4.0), Some(4.0), None, Some(24.0), None),
         ]),
-        (&["qwen3.5-flash", "qwen3.5-flash-2026-02-23"], "text", "Qwen3.5 Flash", &["text"], 1_048_576, &[
-            (0,        Some(131_072),   Some(0.2), None, None, None, Some(2.0),  None),
-            (131_072,  Some(262_144),   Some(0.8), None, None, None, Some(8.0),  None),
-            (262_144,  Some(1_048_576), Some(1.2), None, None, None, Some(12.0), None),
+        (&["qwen3.5-flash", "qwen3.5-flash-2026-02-23"], "text", "Qwen3.5 Flash", &["text","image","video"], 1_048_576, &[
+            (0,        Some(131_072),   Some(0.2), Some(0.2), Some(0.2), None, Some(2.0),  None),
+            (131_072,  Some(262_144),   Some(0.8), Some(0.8), Some(0.8), None, Some(8.0),  None),
+            (262_144,  Some(1_048_576), Some(1.2), Some(1.2), Some(1.2), None, Some(12.0), None),
         ]),
-        (&["qwen3.5-397b-a17b"], "text", "Qwen3.5 397B A17B", &["text"], 262_144, &[
-            (0,       Some(131_072), Some(1.2), None, None, None, Some(7.2),  None),
-            (131_072, Some(262_144), Some(3.0), None, None, None, Some(18.0), None),
+        (&["qwen3.5-397b-a17b"], "text", "Qwen3.5 397B A17B", &["text","image","video"], 262_144, &[
+            (0,       Some(131_072), Some(1.2), Some(1.2), Some(1.2), None, Some(7.2),  None),
+            (131_072, Some(262_144), Some(3.0), Some(3.0), Some(3.0), None, Some(18.0), None),
         ]),
-        (&["qwen3.5-122b-a10b"], "text", "Qwen3.5 122B A10B", &["text"], 262_144, &[
-            (0,       Some(131_072), Some(0.8), None, None, None, Some(6.4),  None),
-            (131_072, Some(262_144), Some(2.0), None, None, None, Some(16.0), None),
+        (&["qwen3.5-122b-a10b"], "text", "Qwen3.5 122B A10B", &["text","image","video"], 262_144, &[
+            (0,       Some(131_072), Some(0.8), Some(0.8), Some(0.8), None, Some(6.4),  None),
+            (131_072, Some(262_144), Some(2.0), Some(2.0), Some(2.0), None, Some(16.0), None),
         ]),
-        (&["qwen3.5-27b"], "text", "Qwen3.5 27B", &["text"], 262_144, &[
-            (0,       Some(131_072), Some(0.6), None, None, None, Some(4.8),  None),
-            (131_072, Some(262_144), Some(1.8), None, None, None, Some(14.4), None),
+        (&["qwen3.5-27b"], "text", "Qwen3.5 27B", &["text","image","video"], 262_144, &[
+            (0,       Some(131_072), Some(0.6), Some(0.6), Some(0.6), None, Some(4.8),  None),
+            (131_072, Some(262_144), Some(1.8), Some(1.8), Some(1.8), None, Some(14.4), None),
         ]),
-        (&["qwen3.5-35b-a3b"], "text", "Qwen3.5 35B A3B", &["text"], 262_144, &[
-            (0,       Some(131_072), Some(0.4), None, None, None, Some(3.2),  None),
-            (131_072, Some(262_144), Some(1.6), None, None, None, Some(12.8), None),
+        (&["qwen3.5-35b-a3b"], "text", "Qwen3.5 35B A3B", &["text","image","video"], 262_144, &[
+            (0,       Some(131_072), Some(0.4), Some(0.4), Some(0.4), None, Some(3.2),  None),
+            (131_072, Some(262_144), Some(1.6), Some(1.6), Some(1.6), None, Some(12.8), None),
         ]),
 
         // ── Qwen3.5 Omni HTTP ──
@@ -1633,12 +1636,21 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
             };
 
             conn.execute(
-                "INSERT OR IGNORE INTO model_registry
+                "INSERT INTO model_registry
                  (id, category, provider, display_name, modalities, context_window, notes, deprecated, updated_at)
-                 VALUES (?, ?, 'dashscope', ?, ?, ?, NULL, 0, ?)",
+                 VALUES (?, ?, 'dashscope', ?, ?, ?, NULL, 0, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   category=excluded.category,
+                   provider=excluded.provider,
+                   display_name=excluded.display_name,
+                   modalities=excluded.modalities,
+                   context_window=excluded.context_window,
+                   updated_at=excluded.updated_at",
                 params![id, category, row_display_name, modalities_json, ctx_opt, &now],
             ).map_err(|e| e.to_string())?;
 
+            conn.execute("DELETE FROM model_pricing WHERE model_id = ?", params![id])
+                .map_err(|e| e.to_string())?;
             for (min, max, in_text, in_image, in_video, in_audio, out_text, out_audio) in *tiers {
                 conn.execute(
                     "INSERT INTO model_pricing
@@ -1660,23 +1672,32 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
 fn seed_feature_bindings(conn: &rusqlite::Connection) -> Result<(), String> {
     use rusqlite::params;
 
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM feature_bindings", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-    if count > 0 {
-        return Ok(());
-    }
-
     let now = chrono::Utc::now().to_rfc3339();
-    let seeds = [
-        ("fairy_chat", "qwen3.6-plus"),
-        ("fairy_omni_chat", "qwen3.5-omni-plus-realtime"),
-        ("session_title", "qwen3.5-flash"),
-        ("bili_visual_transcribe", "qwen3.5-omni-plus"),
-        ("bili_audio_transcribe", "qwen3.5-omni-plus"),
+    let existing = |feature: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT model_id FROM feature_bindings WHERE feature = ? LIMIT 1",
+            params![feature],
+            |r| r.get::<_, String>(0),
+        ).ok()
+    };
+    let bili_omni_default = existing("bili_omni_transcribe")
+        .or_else(|| existing("bili_combined_transcribe"))
+        .unwrap_or_else(|| "qwen3.5-omni-plus".to_string());
+    let bili_visual_default = existing("bili_visual_transcribe")
+        .unwrap_or_else(|| "qwen3.5-flash".to_string());
+    let bili_audio_default = existing("bili_audio_transcribe")
+        .unwrap_or_else(|| "qwen3.5-omni-flash".to_string());
+
+    let seeds: Vec<(&str, String)> = vec![
+        ("fairy_chat", "qwen3.6-plus".to_string()),
+        ("fairy_omni_chat", "qwen3.5-omni-plus-realtime".to_string()),
+        ("session_title", "qwen3.5-flash".to_string()),
+        ("bili_omni_transcribe", bili_omni_default),
+        ("bili_visual_transcribe", bili_visual_default),
+        ("bili_audio_transcribe", bili_audio_default),
     ];
 
-    for (feature, model_id) in seeds {
+    for (feature, model_id) in &seeds {
         conn.execute(
             "INSERT OR IGNORE INTO feature_bindings (feature, model_id, updated_at) VALUES (?, ?, ?)",
             params![feature, model_id, &now],
