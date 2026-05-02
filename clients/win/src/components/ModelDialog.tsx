@@ -14,6 +14,7 @@ import {
   EyeOff,
   KeyRound,
   Link2,
+  LogIn,
   Plus,
   RefreshCw,
   Save,
@@ -30,18 +31,46 @@ import type {
   ModelCallLog,
   ModelCategory,
   ModelDef,
+  ModelFreeQuota,
   ModelPricingTier,
 } from '../lib/local-api'
+import { MODEL_SELECT_POPUP_WIDTH, modelSelectOption } from '../lib/model-display'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import {
   deleteModelApiKey,
+  getBailianAccount,
+  listModelFreeQuotas,
   listModelApiKeys,
+  openBailianModelDetail,
+  openBailianLogin,
+  scanBailianFreeQuota,
   setActiveModelApiKey,
+  takeBailianQuotaProgress,
   upsertModelApiKey,
 } from '../lib/model-audit'
 
 type TabKey = 'usage' | 'library' | 'bindings'
 type ViewMode = 'day' | 'week' | 'month'
+
+interface BailianQuotaProgress {
+  stage: 'start' | 'model_start' | 'model_done' | 'model_error' | 'finish' | 'fatal'
+  model_id?: string
+  index?: number
+  total?: number
+  scanned?: number
+  ok?: number
+  failed?: number
+  row?: ModelFreeQuota
+  error?: string
+}
+
+interface BailianQuotaLog {
+  id: string
+  stage: BailianQuotaProgress['stage']
+  modelId: string
+  message: string
+  color: string
+}
 
 interface Props {
   readonly open: boolean
@@ -77,6 +106,14 @@ const FEATURE_SPECS: readonly FeatureSpec[] = [
 const FEATURE_LABEL = new Map(FEATURE_SPECS.map((f) => [f.feature, f.label]))
 
 const MODEL_ICON_URL = 'https://img.alicdn.com/imgextra/i3/O1CN01Kmx9dR1wcHOaMMXAk_!!6000000006328-55-tps-28-28.svg'
+
+function normalizeBailianName(name: string | null | undefined): string | null {
+  const s = name?.trim()
+  if (!s) return null
+  if (/^\d{6,}$/.test(s)) return null
+  if (/^(账号|账户|账号 ID|主账号|头像|退出登录|个人认证|企业认证)$/.test(s)) return null
+  return s
+}
 
 function emptyTier(): ModelPricingTier {
   return {
@@ -227,18 +264,29 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
   const [newApiKeyLabel, setNewApiKeyLabel] = useState('百炼 API Key')
   const [newApiKeyValue, setNewApiKeyValue] = useState('')
   const [pendingDeleteKey, setPendingDeleteKey] = useState<ModelApiKey | null>(null)
+  const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
+  const [scanningQuota, setScanningQuota] = useState(false)
+  const [bailianName, setBailianName] = useState<string | null>(null)
+  const [openingBailian, setOpeningBailian] = useState(false)
+  const [pollingBailianLogin, setPollingBailianLogin] = useState(false)
+  const bailianLoginPollRef = useRef<number | null>(null)
+  const [quotaProgress, setQuotaProgress] = useState<BailianQuotaProgress | null>(null)
+  const [quotaLogs, setQuotaLogs] = useState<BailianQuotaLog[]>([])
+  const [quotaModalOpen, setQuotaModalOpen] = useState(false)
 
   const loadBase = useCallback(async () => {
     setErr(null)
     try {
-      const [modelRows, bindingRows, keyRows] = await Promise.all([
+      const [modelRows, bindingRows, keyRows, quotaRows] = await Promise.all([
         invoke<ModelDef[]>('list_models'),
         invoke<FeatureBinding[]>('list_feature_bindings'),
         listModelApiKeys(),
+        listModelFreeQuotas(),
       ])
       setModels(modelRows)
       setBindings(bindingRows)
       setApiKeys(keyRows)
+      setFreeQuotas(quotaRows)
     } catch (e) {
       setErr(String(e))
     }
@@ -285,6 +333,56 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
     loadUsage()
   }, [open, loadUsage])
 
+  const refreshBailianAccount = useCallback(async (): Promise<string | null> => {
+    try {
+      const account = await getBailianAccount()
+      const name = normalizeBailianName(account.display_name)
+      if (account.is_login && name) {
+        setBailianName(name)
+        try { localStorage.setItem('bailian.displayName', name) } catch {}
+        return name
+      } else if (!account.is_login) {
+        setBailianName(null)
+      }
+      return null
+    } catch {
+      return null
+    }
+  }, [])
+
+  const stopBailianLoginPolling = useCallback(() => {
+    if (bailianLoginPollRef.current !== null) {
+      window.clearInterval(bailianLoginPollRef.current)
+      bailianLoginPollRef.current = null
+    }
+    setPollingBailianLogin(false)
+  }, [])
+
+  const startBailianLoginPolling = useCallback(() => {
+    if (bailianLoginPollRef.current !== null) return
+    setPollingBailianLogin(true)
+    setBailianName(null)
+
+    const tick = async () => {
+      const name = await refreshBailianAccount()
+      if (name) {
+        stopBailianLoginPolling()
+        setSaved(`百炼已登录：${name}`)
+        window.setTimeout(() => setSaved(null), 1800)
+      }
+    }
+
+    window.setTimeout(() => { void tick() }, 700)
+    bailianLoginPollRef.current = window.setInterval(() => {
+      void tick()
+    }, 1800)
+  }, [refreshBailianAccount, stopBailianLoginPolling])
+
+  useEffect(() => {
+    if (open) return
+    stopBailianLoginPolling()
+  }, [open, stopBailianLoginPolling])
+
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
@@ -308,16 +406,21 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
       acc.completionText += c.completion_text_tokens
       acc.completionAudio += c.completion_audio_tokens
       acc.cost += c.cost_cny ?? 0
+      acc.saved += c.free_quota_saved_cny ?? 0
       const bd = breakdownCallCost(c, modelPricingMap.get(c.model_id))
+      const grossCost = [...bd.inputs, ...bd.outputs].reduce((s, p) => s + p.cost, 0)
+      const netRatio = grossCost > 0 ? Math.max(0, Math.min(1, ((c.cost_cny ?? grossCost) / grossCost))) : 1
       for (const p of bd.inputs) {
-        if (p.label === '文本') acc.costPromptText += p.cost
-        else if (p.label === '图像') acc.costPromptImage += p.cost
-        else if (p.label === '视频') acc.costPromptVideo += p.cost
-        else if (p.label === '音频') acc.costPromptAudio += p.cost
+        const netCost = p.cost * netRatio
+        if (p.label === '文本') acc.costPromptText += netCost
+        else if (p.label === '图像') acc.costPromptImage += netCost
+        else if (p.label === '视频') acc.costPromptVideo += netCost
+        else if (p.label === '音频') acc.costPromptAudio += netCost
       }
       for (const p of bd.outputs) {
-        if (p.label === '文本') acc.costCompletionText += p.cost
-        else if (p.label === '音频') acc.costCompletionAudio += p.cost
+        const netCost = p.cost * netRatio
+        if (p.label === '文本') acc.costCompletionText += netCost
+        else if (p.label === '音频') acc.costCompletionAudio += netCost
       }
       return acc
     }, {
@@ -325,18 +428,11 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
       promptText: 0, promptImage: 0, promptVideo: 0, promptAudio: 0,
       completionText: 0, completionAudio: 0,
       cost: 0,
+      saved: 0,
       costPromptText: 0, costPromptImage: 0, costPromptVideo: 0, costPromptAudio: 0,
       costCompletionText: 0, costCompletionAudio: 0,
     })
   }, [calls, modelPricingMap])
-
-  const modelOptions = useMemo(() => {
-    return models.map((m) => ({
-      value: m.id,
-      label: m.id,
-      hint: CATEGORY_LABEL[m.category as ModelCategory] ?? m.category,
-    }))
-  }, [models])
 
   const bindingByFeature = useMemo(() => {
     return new Map(bindings.map((b) => [b.feature, b.model_id]))
@@ -345,6 +441,124 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
   const activeApiKey = useMemo(() => {
     return apiKeys.find((k) => k.is_active) ?? null
   }, [apiKeys])
+
+  const freeQuotaByModel = useMemo(() => {
+    return new Map(freeQuotas.map((q) => [q.model_id, q]))
+  }, [freeQuotas])
+
+  const openBailian = useCallback(async () => {
+    setErr(null)
+    setOpeningBailian(true)
+    try {
+      await openBailianLogin()
+      startBailianLoginPolling()
+    } catch (e) {
+      setErr(String(e))
+    } finally {
+      setOpeningBailian(false)
+    }
+  }, [startBailianLoginPolling])
+
+  const applyQuotaProgress = useCallback((event: BailianQuotaProgress) => {
+    setQuotaProgress((prev) => ({ ...(prev ?? {}), ...event }))
+    const modelId = event.model_id ?? ''
+    const row = event.row
+    const message = event.stage === 'model_start'
+      ? `${event.index ?? '-'} / ${event.total ?? '-'} opening detail`
+      : event.stage === 'model_done'
+        ? `${event.index ?? '-'} / ${event.total ?? '-'} ${row?.raw_quota ?? (row ? `${formatTokens(row.remaining_tokens)} / ${formatTokens(row.total_tokens)}` : 'done')}`
+        : event.stage === 'model_error'
+          ? `${event.index ?? '-'} / ${event.total ?? '-'} ${event.error ?? row?.error_message ?? 'error'}`
+          : event.stage === 'finish'
+            ? `finished: OK ${event.ok ?? 0} / ERR ${event.failed ?? 0}`
+            : event.stage === 'fatal'
+              ? event.error ?? 'fatal error'
+              : `start: ${event.total ?? 0} models`
+    const color = event.stage === 'model_done' || event.stage === 'finish'
+      ? theme.expGreen
+      : event.stage === 'model_error' || event.stage === 'fatal'
+        ? theme.dangerRed
+        : theme.electricBlue
+    setQuotaLogs((prev) => [{
+      id: `scan-${event.stage}-${modelId}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      stage: event.stage,
+      modelId,
+      message,
+      color,
+    }, ...prev].slice(0, 24))
+  }, [])
+
+  const drainQuotaProgress = useCallback(async () => {
+    try {
+      const events = await takeBailianQuotaProgress()
+      for (const event of events) {
+        if (event && typeof event === 'object' && 'stage' in event) {
+          applyQuotaProgress(event as BailianQuotaProgress)
+        }
+      }
+    } catch {
+      // Progress is best-effort; the scan result path remains authoritative.
+    }
+  }, [applyQuotaProgress])
+
+  const scanFreeQuota = useCallback(async () => {
+    setErr(null)
+    setScanningQuota(true)
+    startBailianLoginPolling()
+    setQuotaModalOpen(true)
+    setQuotaProgress({ stage: 'start', total: models.length, scanned: 0, ok: 0, failed: 0 })
+    setQuotaLogs([{
+      id: `start-local-${Date.now()}`,
+      stage: 'start',
+      modelId: '',
+      message: `准备扫描 ${models.length} 个模型；如未登录，请先在百炼窗口完成登录`,
+      color: theme.electricBlue,
+    }])
+    await drainQuotaProgress()
+    const progressTimer = window.setInterval(() => {
+      void drainQuotaProgress()
+    }, 500)
+    try {
+      const codes = models.map((m) => m.id)
+      const rows = await scanBailianFreeQuota(codes)
+      setFreeQuotas(rows)
+      window.dispatchEvent(new CustomEvent('model-free-quota-updated'))
+      void refreshBailianAccount()
+      const failed = rows.filter((row) => row.error_message).length
+      setQuotaProgress({ stage: 'finish', total: rows.length, scanned: rows.length, ok: rows.length - failed, failed })
+      setQuotaLogs((prev) => [{
+        id: `finish-local-${Date.now()}`,
+        stage: 'finish',
+        modelId: '',
+        message: `扫描完成：OK ${rows.length - failed} / ERR ${failed}`,
+        color: failed ? theme.warningOrange : theme.expGreen,
+      }, ...prev].slice(0, 24))
+      setSaved(`Free quota scanned: ${rows.length}`)
+      setTimeout(() => setSaved(null), 1800)
+    } catch (e) {
+      const raw = String(e)
+      const message = raw.includes('BAILIAN_NOT_LOGGED_IN')
+        ? '请先登录百炼，登录完成后会自动识别，再重新扫描'
+        : raw
+      setErr(message)
+      if (raw.includes('BAILIAN_NOT_LOGGED_IN')) {
+        startBailianLoginPolling()
+      }
+      setQuotaProgress((prev) => ({ ...(prev ?? { total: models.length, scanned: 0, ok: 0, failed: 0 }), stage: 'fatal', error: message }))
+      setQuotaLogs((prev) => [{
+        id: `scan-error-${Date.now()}`,
+        stage: 'fatal',
+        modelId: '',
+        message,
+        color: theme.dangerRed,
+      }, ...prev].slice(0, 18))
+      setQuotaModalOpen(true)
+    } finally {
+      window.clearInterval(progressTimer)
+      await drainQuotaProgress()
+      setScanningQuota(false)
+    }
+  }, [drainQuotaProgress, models, refreshBailianAccount, startBailianLoginPolling])
 
   const startCreateApiKey = useCallback(() => {
     setNewApiKeyLabel(nextApiKeyLabel(apiKeys))
@@ -489,6 +703,7 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
       <style>{`
         @keyframes model-dialog-in { from { opacity: 0 } to { opacity: 1 } }
         @keyframes model-dialog-pop { from { opacity: 0; transform: translate(-50%, -50%) scale(0.98); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+        @keyframes model-dialog-spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }
         .model-dialog-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
         .model-dialog-scroll::-webkit-scrollbar-thumb { background: rgba(0,229,255,0.22); border-radius: 0; }
         .model-dialog-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); }
@@ -577,6 +792,16 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
           </Tooltip>
         </div>
 
+        {quotaModalOpen && (scanningQuota || quotaLogs.length > 0) && createPortal(
+          <BailianQuotaScanPanel
+            progress={quotaProgress}
+            logs={quotaLogs}
+            scanning={scanningQuota}
+            onClose={() => setQuotaModalOpen(false)}
+          />,
+          document.body
+        )}
+
         <main className="model-dialog-scroll" style={{ flex: 1, overflow: 'auto', padding: 16 }}>
           {tab === 'usage' && (
             <UsageTab
@@ -589,6 +814,7 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
               feature={feature}
               modelId={modelId}
               models={models}
+              freeQuotaByModel={freeQuotaByModel}
               allModels={models}
               modelPricingMap={modelPricingMap}
               onViewMode={setViewMode}
@@ -602,10 +828,25 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
             <LibraryTab
               category={category === 'all' ? 'text' : category}
               models={models.filter((m) => m.category === (category === 'all' ? 'text' : category))}
+              freeQuotaByModel={freeQuotaByModel}
               onCategory={setCategory}
               onAdd={addModel}
               onEdit={editModel}
               onDelete={deleteModel}
+              onOpenBailian={openBailian}
+              onScanFreeQuota={scanFreeQuota}
+              onOpenQuotaPanel={() => setQuotaModalOpen(true)}
+              onOpenBailianDetail={(modelCode) => {
+                setErr(null)
+                startBailianLoginPolling()
+                void openBailianModelDetail(modelCode).catch((e) => setErr(String(e)))
+              }}
+              scanningQuota={scanningQuota}
+              hasQuotaLogs={quotaLogs.length > 0}
+              bailianName={bailianName}
+              openingBailian={openingBailian}
+              pollingBailianLogin={pollingBailianLogin}
+              canScanQuota={models.length > 0}
             />
           )}
 
@@ -613,9 +854,9 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
             <BindingsTab
               specs={FEATURE_SPECS}
               models={models}
+              freeQuotaByModel={freeQuotaByModel}
               bindingByFeature={bindingByFeature}
               onBind={setBinding}
-              modelOptions={modelOptions}
             />
           )}
         </main>
@@ -719,6 +960,145 @@ function confirmBtnStyle(color: string): CSSProperties {
   }
 }
 
+function BailianQuotaScanPanel({
+  progress,
+  logs,
+  scanning,
+  onClose,
+}: {
+  progress: BailianQuotaProgress | null
+  logs: BailianQuotaLog[]
+  scanning: boolean
+  onClose: () => void
+}) {
+  const total = progress?.total ?? 0
+  const scanned = progress?.scanned ?? (progress?.index ? Math.max(0, progress.index - 1) : 0)
+  const pct = total > 0 ? Math.max(0, Math.min(100, (scanned / total) * 100)) : 0
+  const current = progress?.model_id ?? logs.find((l) => l.modelId)?.modelId ?? ''
+  const ok = progress?.ok ?? 0
+  const failed = progress?.failed ?? 0
+
+  return (
+    <div
+      role="presentation"
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 9999,
+        display: 'grid',
+        placeItems: 'center',
+        padding: 24,
+        background: 'rgba(0,0,0,0.46)',
+      }}
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label="百炼额度扫描"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 'min(760px, calc(100vw - 32px))',
+          maxHeight: 'min(620px, calc(100vh - 48px))',
+          display: 'grid',
+          gridTemplateRows: 'auto auto minmax(0, 1fr)',
+          gap: 14,
+          padding: 16,
+          border: `1px solid ${theme.hudFrame}`,
+          background: 'rgba(6,13,22,0.98)',
+          boxShadow: `0 0 0 1px ${theme.glassBorder}, 0 24px 80px rgba(0,0,0,0.55)`,
+        }}
+      >
+        <header style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <RefreshCw
+            size={15}
+            color={scanning ? theme.electricBlue : theme.textMuted}
+            style={scanning ? { animation: 'model-dialog-spin 1s linear infinite' } : undefined}
+          />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ color: theme.textPrimary, fontWeight: 900, fontSize: 14 }}>百炼额度扫描</div>
+            <div style={{ color: theme.textMuted, fontFamily: theme.fontMono, fontSize: 10, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {current || (scanning ? '等待百炼页面回传状态' : '扫描结果')}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              width: 28,
+              height: 28,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'rgba(255,255,255,0.04)',
+              border: `1px solid ${theme.glassBorder}`,
+              color: theme.textSecondary,
+              cursor: 'pointer',
+            }}
+          >
+            <X size={14} />
+          </button>
+        </header>
+
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontFamily: theme.fontMono, fontSize: 11 }}>
+            <span style={{ color: theme.textMuted }}>{scanned}/{total}</span>
+            <span style={{ color: theme.expGreen }}>OK {ok}</span>
+            <span style={{ color: failed > 0 ? theme.dangerRed : theme.textMuted }}>ERR {failed}</span>
+          </div>
+          <div style={{ height: 5, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+            <div style={{ width: `${pct}%`, height: '100%', background: theme.electricBlue, transition: 'width 180ms ease' }} />
+          </div>
+        </div>
+
+        <div style={{
+          display: 'grid',
+          gap: 7,
+          overflow: 'auto',
+          paddingRight: 2,
+        }}>
+          {logs.length === 0 ? (
+            <div style={{ color: theme.textMuted, fontSize: 12 }}>
+              等待百炼页面开始回传扫描状态
+            </div>
+          ) : logs.map((log) => (
+            <div key={log.id} style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(120px, 0.9fr) minmax(0, 1.4fr)',
+              gap: 10,
+              alignItems: 'center',
+              minHeight: 30,
+              padding: '6px 8px',
+              border: `1px solid ${theme.hudFrameSoft}`,
+              background: 'rgba(255,255,255,0.025)',
+            }}>
+              <span style={{
+                color: log.color,
+                fontFamily: theme.fontMono,
+                fontSize: 10,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}>
+                {log.modelId || log.stage}
+              </span>
+              <span style={{
+                color: theme.textSecondary,
+                fontSize: 12,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}>
+                {log.message}
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function UsageTab({
   calls,
   loading,
@@ -728,6 +1108,7 @@ function UsageTab({
   feature,
   modelId,
   models,
+  freeQuotaByModel,
   allModels,
   modelPricingMap,
   activeKeyLabel,
@@ -743,6 +1124,7 @@ function UsageTab({
     promptText: number; promptImage: number; promptVideo: number; promptAudio: number
     completionText: number; completionAudio: number
     cost: number
+    saved: number
     costPromptText: number; costPromptImage: number; costPromptVideo: number; costPromptAudio: number
     costCompletionText: number; costCompletionAudio: number
   }
@@ -751,6 +1133,7 @@ function UsageTab({
   feature: string
   modelId: string
   models: ModelDef[]
+  freeQuotaByModel: Map<string, ModelFreeQuota>
   allModels: ModelDef[]
   modelPricingMap: Map<string, ModelPricingTier[]>
   activeKeyLabel: string | null
@@ -761,7 +1144,7 @@ function UsageTab({
 }) {
   const modelChoices = [
     { value: 'all', label: '全部模型', hint: '不过滤' },
-    ...models.map((m) => ({ value: m.id, label: m.id, hint: CATEGORY_LABEL[m.category] })),
+    ...models.map((m) => modelSelectOption(m, freeQuotaByModel.get(m.id))),
   ]
 
   return (
@@ -812,10 +1195,15 @@ function UsageTab({
               { label: '音频', value: totals.completionAudio, cost: totals.costCompletionAudio },
             ]}
           />
-          <Metric label="成本" value={formatCny(totals.cost)} accent={theme.dangerRed} />
+          <Metric
+            label="成本"
+            value={formatCny(totals.cost)}
+            accent={theme.dangerRed}
+            note={totals.saved > 0 ? `免费额度节省 ${formatCny(totals.saved)}` : undefined}
+          />
         </div>
 
-        <StackedBarChart calls={calls} allModels={allModels} viewMode={viewMode} anchorDate={anchorDate} />
+        <StackedBarChart calls={calls} viewMode={viewMode} anchorDate={anchorDate} />
       </section>
 
       <section style={panelStyle}>
@@ -835,7 +1223,12 @@ function UsageTab({
             ]}
             onChange={onFeature}
           />
-          <HudSelect value={modelId} options={modelChoices} onChange={onModel} />
+          <HudSelect
+            value={modelId}
+            options={modelChoices}
+            onChange={onModel}
+            popupWidth={MODEL_SELECT_POPUP_WIDTH}
+          />
         </div>
 
         <div className="model-dialog-scroll" style={{ maxHeight: 600, overflow: 'auto', paddingRight: 2 }}>
@@ -1139,9 +1532,8 @@ const BAR_PALETTE = [
   '#7000FF', '#FFD700', '#FF69B4', '#00CED1', '#FFA500',
 ]
 
-function StackedBarChart({ calls, allModels, viewMode, anchorDate }: {
+function StackedBarChart({ calls, viewMode, anchorDate }: {
   calls: ModelCallLog[]
-  allModels: ModelDef[]
   viewMode: ViewMode
   anchorDate: Date
 }) {
@@ -1151,14 +1543,11 @@ function StackedBarChart({ calls, allModels, viewMode, anchorDate }: {
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null)
   const chartRef = useRef<HTMLDivElement>(null)
 
-  const modelPricingMap = useMemo(() => new Map(allModels.map((m) => [m.id, m.pricing])), [allModels])
-
   const callValue = useCallback((c: ModelCallLog): number => {
     if (metric === 'calls') return 1
     if (metric === 'tokens') return c.prompt_text_tokens + c.prompt_image_tokens + c.prompt_video_tokens + c.prompt_audio_tokens + c.completion_text_tokens + c.completion_audio_tokens
-    const bd = breakdownCallCost(c, modelPricingMap.get(c.model_id))
-    return bd.inputs.reduce((s, p) => s + p.cost, 0) + bd.outputs.reduce((s, p) => s + p.cost, 0)
-  }, [metric, modelPricingMap])
+    return c.cost_cny ?? 0
+  }, [metric])
 
   // 生成时间桶列表（按 viewMode 生成完整序列，确保空桶也显示）
   const bucketKeys = useMemo((): string[] => {
@@ -1454,17 +1843,39 @@ function StackedBarChart({ calls, allModels, viewMode, anchorDate }: {
 function LibraryTab({
   category,
   models,
+  freeQuotaByModel,
   onCategory,
   onAdd,
   onEdit,
   onDelete,
+  onOpenBailian,
+  onScanFreeQuota,
+  onOpenQuotaPanel,
+  onOpenBailianDetail,
+  scanningQuota,
+  hasQuotaLogs,
+  bailianName,
+  openingBailian,
+  pollingBailianLogin,
+  canScanQuota,
 }: {
   category: ModelCategory
   models: ModelDef[]
+  freeQuotaByModel: Map<string, ModelFreeQuota>
   onCategory: (v: ModelCategory | 'all') => void
   onAdd: () => void
   onEdit: (m: ModelDef) => void
   onDelete: (id: string) => void
+  onOpenBailian: () => void
+  onScanFreeQuota: () => void
+  onOpenQuotaPanel: () => void
+  onOpenBailianDetail: (modelCode: string) => void
+  scanningQuota: boolean
+  hasQuotaLogs: boolean
+  bailianName: string | null
+  openingBailian: boolean
+  pollingBailianLogin: boolean
+  canScanQuota: boolean
 }) {
   return (
     <section style={panelStyle}>
@@ -1474,6 +1885,48 @@ function LibraryTab({
           <div style={mutedStyle}>点击「修改」编辑参数 · 价格单位：元 / 百万 Token · 历史调用成本不回溯</div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Tooltip content={bailianName ? '打开百炼窗口' : '打开百炼登录窗口，登录后自动识别'}>
+            <button
+              type="button"
+              onClick={onOpenBailian}
+              disabled={openingBailian}
+              style={{
+                ...textActionBtnStyle(bailianName ? theme.textSecondary : pollingBailianLogin ? theme.electricBlue : theme.warningOrange),
+                background: bailianName ? 'rgba(255,255,255,0.04)' : pollingBailianLogin ? `${theme.electricBlue}18` : `${theme.warningOrange}18`,
+                border: `1px solid ${bailianName ? theme.glassBorder : pollingBailianLogin ? theme.electricBlue : theme.warningOrange}`,
+                opacity: openingBailian ? 0.6 : 1,
+                cursor: openingBailian ? 'default' : 'pointer',
+              }}
+            >
+              {pollingBailianLogin ? <RefreshCw size={12} style={{ animation: 'model-dialog-spin 1s linear infinite' }} /> : <LogIn size={12} />}
+              {openingBailian ? '打开中' : bailianName ? `已登录 ${bailianName}` : pollingBailianLogin ? '等待登录' : '登录百炼'}
+            </button>
+          </Tooltip>
+          <Tooltip content={bailianName ? '扫描百炼免费额度' : '需要先登录百炼才能扫描'}>
+            <button
+              type="button"
+              onClick={onScanFreeQuota}
+              disabled={scanningQuota || !canScanQuota}
+              style={{
+                ...textActionBtnStyle(bailianName ? theme.expGreen : theme.warningOrange),
+                opacity: scanningQuota || !canScanQuota ? 0.55 : 1,
+                cursor: scanningQuota || !canScanQuota ? 'default' : 'pointer',
+              }}
+            >
+              <RefreshCw size={12} style={scanningQuota ? { animation: 'model-dialog-spin 1s linear infinite' } : undefined} />
+              {scanningQuota ? '扫描中' : '扫描免费额度'}
+            </button>
+          </Tooltip>
+          {(scanningQuota || hasQuotaLogs) && (
+            <button
+              type="button"
+              onClick={onOpenQuotaPanel}
+              style={textActionBtnStyle(scanningQuota ? theme.electricBlue : theme.textSecondary)}
+            >
+              <RefreshCw size={12} style={scanningQuota ? { animation: 'model-dialog-spin 1s linear infinite' } : undefined} />
+              {scanningQuota ? '扫描过程' : '扫描结果'}
+            </button>
+          )}
           <Segmented
             value={category}
             options={[
@@ -1504,8 +1957,10 @@ function LibraryTab({
               <ModelCard
                 key={model.id}
                 model={model}
+                quota={freeQuotaByModel.get(model.id)}
                 onEdit={() => onEdit(model)}
                 onDelete={() => onDelete(model.id)}
+                onOpenBailianDetail={() => onOpenBailianDetail(model.id)}
               />
             ))}
           </div>
@@ -1517,12 +1972,16 @@ function LibraryTab({
 
 function ModelCard({
   model,
+  quota,
   onEdit,
   onDelete,
+  onOpenBailianDetail,
 }: {
   model: ModelDef
+  quota?: ModelFreeQuota
   onEdit: () => void
   onDelete: () => void
+  onOpenBailianDetail: () => void
 }) {
   const modalities = parseList(model.modalities)
   const displayName = model.display_name?.trim() || model.id
@@ -1538,9 +1997,30 @@ function ModelCard({
           style={{ flexShrink: 0, filter: 'drop-shadow(0 0 4px rgba(0,229,255,0.4))' }}
         />
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ color: theme.textPrimary, fontWeight: 800, fontSize: 13, lineHeight: 1.3, wordBreak: 'break-all' }}>
+          <button
+            type="button"
+            onClick={onOpenBailianDetail}
+            title="打开百炼模型详情"
+            style={{
+              appearance: 'none',
+              background: 'transparent',
+              border: 'none',
+              color: theme.textPrimary,
+              cursor: 'pointer',
+              display: 'block',
+              fontFamily: 'inherit',
+              fontSize: 13,
+              fontWeight: 800,
+              lineHeight: 1.3,
+              margin: 0,
+              padding: 0,
+              textAlign: 'left',
+              whiteSpace: 'normal',
+              wordBreak: 'break-all',
+            }}
+          >
             {displayName}
-          </div>
+          </button>
           <div style={{ color: theme.textMuted, fontFamily: theme.fontMono, fontSize: 10, marginTop: 2, wordBreak: 'break-all' }}>
             {model.id}
           </div>
@@ -1559,6 +2039,37 @@ function ModelCard({
           {model.context_window ? formatTokens(model.context_window) : '-'}
         </span>
       </div>
+
+      {quota && (
+        <div style={{ marginBottom: 8, fontSize: 11, display: 'grid', gap: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <span style={mutedStyle}>免费额度</span>
+            <span style={{
+              color: quota.error_message ? theme.dangerRed : quota.remaining_tokens > 0 ? theme.expGreen : theme.textMuted,
+              fontFamily: theme.fontMono,
+              fontWeight: 800,
+            }}>
+              {quota.error_message
+                ? 'ERR'
+                : quota.total_tokens > 0
+                  ? `${formatTokens(quota.remaining_tokens)} / ${formatTokens(quota.total_tokens)}`
+                  : quota.not_supported ? '不支持' : '0 / 0'}
+            </span>
+          </div>
+          {quota.total_tokens > 0 && (
+            <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+              <div style={{
+                width: `${Math.max(0, Math.min(100, (quota.remaining_tokens / quota.total_tokens) * 100))}%`,
+                height: '100%',
+                background: quota.remaining_tokens > 0 ? theme.expGreen : theme.dangerRed,
+              }} />
+            </div>
+          )}
+          <div style={{ color: theme.textMuted, fontFamily: theme.fontMono, fontSize: 10 }}>
+            {quota.expire_date ? `expires ${quota.expire_date}` : new Date(quota.scanned_at).toLocaleString('zh-CN')}
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gap: 6, marginBottom: 6 }}>
         {model.pricing.map((tier, idx) => {
@@ -1870,14 +2381,15 @@ function EditorField({ label, hint, children }: { label: string; hint?: string; 
 function BindingsTab({
   specs,
   models,
+  freeQuotaByModel,
   bindingByFeature,
   onBind,
 }: {
   specs: readonly FeatureSpec[]
   models: ModelDef[]
+  freeQuotaByModel: Map<string, ModelFreeQuota>
   bindingByFeature: Map<string, string>
   onBind: (feature: string, modelId: string) => void
-  modelOptions: { value: string; label: string; hint?: string }[]
 }) {
   return (
     <section style={panelStyle}>
@@ -1892,7 +2404,9 @@ function BindingsTab({
         {specs.map((spec) => {
           const options = models
             .filter((m) => matchesFeatureSpec(m, spec))
-            .map((m) => ({ value: m.id, label: m.id, hint: m.display_name ?? CATEGORY_LABEL[m.category] }))
+            .map((m) => {
+              return modelSelectOption(m, freeQuotaByModel.get(m.id))
+            })
           const boundValue = bindingByFeature.get(spec.feature)
           const value = boundValue && options.some((o) => o.value === boundValue)
             ? boundValue
@@ -1909,6 +2423,7 @@ function BindingsTab({
                 options={options.length > 0 ? options : [{ value: '', label: '暂无可选模型' }]}
                 onChange={(v) => v && onBind(spec.feature, v)}
                 disabled={options.length === 0}
+                popupWidth={MODEL_SELECT_POPUP_WIDTH}
               />
             </div>
           )
@@ -2181,14 +2696,17 @@ const CallRow = React.memo(function CallRow({ call, apiKeyLabel, pricing }: { ca
   const bd = breakdownCallCost(call, pricing)
   const inputParts = bd.inputs.map((p) => ({ label: p.label, value: p.tokens, cost: p.cost }))
   const outputParts = bd.outputs.map((p) => ({ label: p.label, value: p.tokens, cost: p.cost }))
+  const saved = call.free_quota_saved_cny ?? 0
+  const freeTokens = call.free_quota_tokens ?? 0
   return (
     <div style={callRowStyle}>
       {/* 标题行：功能名 + 错误标记（仅失败时）+ 成本右对齐 */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
         <span style={{ color: theme.electricBlue, fontWeight: 700, fontSize: 13 }}>{FEATURE_LABEL.get(call.feature) ?? call.feature}</span>
         {!call.success && <span style={{ color: theme.dangerRed, fontWeight: 700, fontSize: 11 }}>ERR</span>}
+        {saved > 0 && <span style={{ color: theme.expGreen, fontWeight: 800, fontSize: 10 }}>FREE</span>}
         <span style={{ flex: 1 }} />
-        <span style={{ color: theme.dangerRed, fontFamily: theme.fontMono, fontWeight: 700, fontSize: 13 }}>{formatCny(call.cost_cny)}</span>
+        <span style={{ color: (call.cost_cny ?? 0) > 0 ? theme.dangerRed : theme.expGreen, fontFamily: theme.fontMono, fontWeight: 700, fontSize: 13 }}>{formatCny(call.cost_cny)}</span>
       </div>
       {/* 模型 ID + 时间戳同行 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginTop: 5 }}>
@@ -2198,6 +2716,11 @@ const CallRow = React.memo(function CallRow({ call, apiKeyLabel, pricing }: { ca
       <div style={{ color: theme.textMuted, fontSize: 10, marginTop: 2 }}>
         API Key：{apiKeyLabel ?? (call.api_key_id ? call.api_key_id.slice(0, 8) : '未归属')}
       </div>
+      {saved > 0 && (
+        <div style={{ color: theme.expGreen, fontSize: 10, marginTop: 3, fontFamily: theme.fontMono }}>
+          免费额度抵扣 {formatTokens(freeTokens)}，节省 {formatCny(saved)}
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, marginTop: 8 }}>
         <MiniMetric label="输入" value={formatTokens(prompt)} sub={inputParts} accent={theme.electricBlue} />
         <MiniMetric label="输出" value={formatTokens(completion)} sub={outputParts} accent={theme.warningOrange} />
@@ -2221,11 +2744,12 @@ function PriceBox({ label, value, onChange }: { label: string; value: number | n
   )
 }
 
-function Metric({ label, value, accent }: { label: string; value: string; accent?: string }) {
+function Metric({ label, value, accent, note }: { label: string; value: string; accent?: string; note?: string }) {
   return (
     <div style={metricStyle}>
       <div style={mutedStyle}>{label}</div>
       <div style={{ color: accent ?? theme.electricBlue, fontFamily: theme.fontMono, fontSize: 18, fontWeight: 800 }}>{value}</div>
+      {note && <div style={{ color: theme.expGreen, fontFamily: theme.fontMono, fontSize: 10, marginTop: 4 }}>{note}</div>}
     </div>
   )
 }
@@ -2477,6 +3001,28 @@ function smallBtnStyle(color: string): CSSProperties {
     height: 28,
     clipPath: hud.chamfer8,
     WebkitClipPath: hud.chamfer8,
+  }
+}
+
+function textActionBtnStyle(color: string): CSSProperties {
+  return {
+    border: `1px solid ${color}55`,
+    background: `${color}12`,
+    color,
+    cursor: 'pointer',
+    padding: '0 10px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 28,
+    minWidth: 0,
+    clipPath: hud.chamfer8,
+    WebkitClipPath: hud.chamfer8,
+    fontFamily: theme.fontBody,
+    fontSize: 11,
+    fontWeight: 700,
+    whiteSpace: 'nowrap',
   }
 }
 
