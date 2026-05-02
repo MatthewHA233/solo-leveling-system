@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { LogModelCallRequest, ModelApiKey, UpsertModelApiKeyRequest } from './local-api'
+import type { LogModelCallRequest, ModelApiKey, ModelCallLog, ModelFreeQuota, UpsertModelApiKeyRequest } from './local-api'
 
 export interface DashScopeUsage {
   prompt_tokens?: number
@@ -68,6 +68,11 @@ export interface LogUsageOptions {
   metadata?: Record<string, unknown> | null
 }
 
+export interface BailianAccountInfo {
+  is_login: boolean
+  display_name: string | null
+}
+
 export async function getFeatureModel(feature: string, fallback: string): Promise<string> {
   try {
     const model = await invoke<string | null>('get_feature_model', { feature })
@@ -101,6 +106,34 @@ export async function deleteModelApiKey(id: string): Promise<void> {
   await invoke('delete_model_api_key', { id })
 }
 
+export async function openBailianLogin(): Promise<void> {
+  await invoke('open_bailian_login')
+}
+
+export async function openBailianModelDetail(modelCode: string): Promise<void> {
+  await invoke('open_bailian_model_detail', { modelCode })
+}
+
+export async function getBailianAccount(): Promise<BailianAccountInfo> {
+  return invoke<BailianAccountInfo>('bailian_get_account')
+}
+
+export async function takeBailianQuotaProgress(): Promise<unknown[]> {
+  return invoke<unknown[]>('bailian_take_quota_progress')
+}
+
+export async function scanBailianFreeQuota(modelCodes: string[]): Promise<ModelFreeQuota[]> {
+  return invoke<ModelFreeQuota[]>('scan_bailian_free_quota', { modelCodes })
+}
+
+export async function listModelFreeQuotas(): Promise<ModelFreeQuota[]> {
+  return invoke<ModelFreeQuota[]>('list_model_free_quotas')
+}
+
+export async function getModelCallLog(id: string): Promise<ModelCallLog | null> {
+  return invoke<ModelCallLog | null>('get_model_call_log', { id })
+}
+
 export function usageToLogRequest(options: LogUsageOptions): LogModelCallRequest {
   const usage = options.usage
   const details = usage?.prompt_tokens_details
@@ -128,14 +161,19 @@ export function usageToLogRequest(options: LogUsageOptions): LogModelCallRequest
   }
 }
 
-export async function logModelUsage(options: LogUsageOptions): Promise<string | null> {
+export async function logModelUsage(options: LogUsageOptions): Promise<ModelCallLog | null> {
   try {
     const apiKeyId = options.apiKeyId !== undefined
       ? options.apiKeyId
       : (await getActiveModelApiKey())?.id ?? null
-    return await invoke<string>('log_model_call', {
+    const id = await invoke<string>('log_model_call', {
       req: usageToLogRequest({ ...options, apiKeyId }),
     })
+    const row = await getModelCallLog(id)
+    if (row) {
+      window.dispatchEvent(new CustomEvent('model-usage-logged', { detail: row }))
+    }
+    return row
   } catch (e) {
     console.warn('[ModelAudit] log_model_call failed:', e)
     return null
