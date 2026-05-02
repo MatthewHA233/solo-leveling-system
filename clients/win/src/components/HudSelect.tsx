@@ -17,6 +17,8 @@ export interface HudSelectOption<T extends string> {
   readonly label: string
   /** 右侧灰色辅助说明（小字） */
   readonly hint?: string
+  /** 右侧小圆环进度，0-100 */
+  readonly meter?: number
 }
 
 interface Props<T extends string> {
@@ -25,6 +27,7 @@ interface Props<T extends string> {
   readonly onChange: (v: T) => void
   readonly placeholder?: string
   readonly disabled?: boolean
+  readonly popupWidth?: number
   /** true：触发器宽度跟随内容，与按钮同行排列；默认 false（占满父容器宽度） */
   readonly inline?: boolean
 }
@@ -33,16 +36,18 @@ interface PopPos {
   left: number
   top: number
   minWidth: number      // 至少与触发器同宽
+  width: number
   maxHeight: number     // 限定到可用空间，超出滚动
   placement: 'below' | 'above'
 }
 
 const VIEWPORT_MARGIN = 8       // 距视窗边的安全边距
 const HARD_MAX_HEIGHT = 320     // 即使空间够大也别太长
+const HARD_MAX_WIDTH = 460
 const TRIGGER_GAP = 4
 
 export default function HudSelect<T extends string>({
-  value, options, onChange, placeholder, disabled, inline,
+  value, options, onChange, placeholder, disabled, inline, popupWidth,
 }: Props<T>) {
   const [open, setOpen] = useState(false)
   const [hover, setHover] = useState(false)
@@ -51,7 +56,6 @@ export default function HudSelect<T extends string>({
   const [pos, setPos] = useState<PopPos | null>(null)
 
   const current = options.find((o) => o.value === value)
-
   // 计算最佳放置：优先下方，下方不够就比较两侧空间，挑大的
   const reposition = () => {
     if (!triggerRef.current) return
@@ -71,7 +75,10 @@ export default function HudSelect<T extends string>({
     const maxHeight = Math.max(80, Math.min(HARD_MAX_HEIGHT, available))
 
     // 水平方向：优先与触发器左对齐；若 popup 比触发器宽且会越界，向左收
-    const popW = popRef.current?.offsetWidth ?? tr.width
+    const viewportMaxWidth = Math.max(120, vw - VIEWPORT_MARGIN * 2)
+    const targetWidth = popupWidth ?? Math.max(tr.width, HARD_MAX_WIDTH)
+    const width = Math.min(targetWidth, viewportMaxWidth)
+    const popW = width
     let left = tr.left
     if (left + popW > vw - VIEWPORT_MARGIN) {
       left = Math.max(VIEWPORT_MARGIN, vw - popW - VIEWPORT_MARGIN)
@@ -87,10 +94,11 @@ export default function HudSelect<T extends string>({
         prev.left === left &&
         prev.top === top &&
         prev.minWidth === tr.width &&
+        prev.width === width &&
         prev.maxHeight === maxHeight &&
         prev.placement === placement
       ) return prev
-      return { left, top, minWidth: tr.width, maxHeight, placement }
+      return { left, top, minWidth: tr.width, width, maxHeight, placement }
     })
   }
 
@@ -153,6 +161,7 @@ export default function HudSelect<T extends string>({
         onMouseLeave={() => setHover(false)}
         style={{
           width: inline ? 'auto' : '100%',
+          minWidth: 0,
           display: inline ? 'inline-flex' : 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -175,7 +184,7 @@ export default function HudSelect<T extends string>({
           boxShadow: open ? 'inset 0 0 8px rgba(0,229,255,0.15)' : undefined,
         }}
       >
-        <span style={{ whiteSpace: 'nowrap' }}>
+        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
           {current?.label ?? placeholder ?? '请选择'}
         </span>
         <ChevronDown
@@ -196,8 +205,9 @@ export default function HudSelect<T extends string>({
             position: 'fixed',
             left: pos.left,
             top: pos.top,
-            minWidth: pos.minWidth,
-            maxWidth: `calc(100vw - ${VIEWPORT_MARGIN * 2}px)`,
+            minWidth: popupWidth ? undefined : pos.minWidth,
+            width: pos.width,
+            maxWidth: pos.width,
             maxHeight: pos.maxHeight,
             zIndex: 9999,
             background: theme.panelDeep,
@@ -218,6 +228,7 @@ export default function HudSelect<T extends string>({
                 key={opt.value}
                 label={opt.label}
                 hint={opt.hint}
+                meter={opt.meter}
                 selected={selected}
                 onClick={() => { onChange(opt.value); setOpen(false) }}
               />
@@ -231,22 +242,32 @@ export default function HudSelect<T extends string>({
 }
 
 function HudSelectRow({
-  label, hint, selected, onClick,
+  label, hint, meter, selected, onClick,
 }: {
   label: string
   hint?: string
+  meter?: number
   selected: boolean
   onClick: () => void
 }) {
   const [hover, setHover] = useState(false)
   const active = selected || hover
+  const hasMeter = typeof meter === 'number' && Number.isFinite(meter)
+  const pct = hasMeter ? Math.max(0, Math.min(100, meter)) : 0
+  const visiblePct = pct >= 100 ? 100 : Math.min(pct, 94)
+  const ringColor = pct > 35 ? theme.expGreen : pct > 10 ? theme.warningOrange : theme.dangerRed
+  const ringR = 6
+  const ringC = 2 * Math.PI * ringR
   return (
     <div
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        display: 'flex',
+        display: 'grid',
+        gridTemplateColumns: hasMeter || hint
+          ? '12px minmax(0, 1fr) 132px 16px'
+          : '12px minmax(0, 1fr)',
         alignItems: 'center',
         gap: 8,
         padding: '6px 8px',
@@ -261,17 +282,22 @@ function HudSelectRow({
         fontFamily: theme.fontBody,
         fontSize: 12,
         whiteSpace: 'nowrap',
+        minWidth: 0,
         transition: 'background 0.1s ease, color 0.1s ease',
       }}
     >
       <span style={{
         width: 12, display: 'inline-flex',
         alignItems: 'center', justifyContent: 'center',
-        flexShrink: 0,
       }}>
         {selected ? <Check size={11} style={{ color: theme.electricBlue }} /> : null}
       </span>
-      <span style={{ flex: 1, whiteSpace: 'nowrap' }}>
+      <span style={{
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}>
         {label}
       </span>
       {hint && (
@@ -279,10 +305,42 @@ function HudSelectRow({
           fontSize: 10,
           color: theme.textMuted,
           letterSpacing: 0.3,
-          flexShrink: 0,
-          marginLeft: 12,
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          textAlign: 'right',
         }}>
           {hint}
+        </span>
+      )}
+      {hasMeter && (
+        <span
+          title={`${Math.round(pct)}%`}
+          style={{
+            width: 16,
+            height: 16,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style={{ display: 'block', overflow: 'visible' }}>
+            <circle cx="8" cy="8" r={ringR} fill="none" stroke="rgba(255,255,255,0.14)" strokeWidth="3" />
+            <circle
+              cx="8"
+              cy="8"
+              r={ringR}
+              fill="none"
+              stroke={ringColor}
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeDasharray={ringC}
+              strokeDashoffset={ringC * (1 - visiblePct / 100)}
+              transform="rotate(-90 8 8)"
+              style={{ filter: `drop-shadow(0 0 4px ${ringColor}88)` }}
+            />
+          </svg>
         </span>
       )}
     </div>
