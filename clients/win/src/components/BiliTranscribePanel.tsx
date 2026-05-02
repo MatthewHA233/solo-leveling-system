@@ -11,8 +11,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { Square, Copy, Check, AlertTriangle, Loader2, RotateCcw, X, Play, Cpu, Eye, AudioLines } from 'lucide-react'
 import { theme, hud } from '../theme'
 import { getDashScopeApiKey, loadConfig } from '../lib/agent/agent-config'
-import { getFeatureModel, logModelUsage, setFeatureModel } from '../lib/model-audit'
-import type { ModelDef } from '../lib/local-api'
+import { getFeatureModel, listModelFreeQuotas, logModelUsage, setFeatureModel } from '../lib/model-audit'
+import type { ModelCallLog, ModelDef, ModelFreeQuota } from '../lib/local-api'
+import { MODEL_SELECT_POPUP_WIDTH, modelSelectOption } from '../lib/model-display'
 import {
   uploadVideo,
   extractAudio,
@@ -32,6 +33,7 @@ import {
 } from '../lib/qwen-omni/segments'
 import Tooltip from './Tooltip'
 import HudSelect from './HudSelect'
+import ModelUsageBadge from './ModelUsageBadge'
 import TranscribePrepOverlay from './TranscribePrepOverlay'
 import TranscribeIdleAnimation from './TranscribeIdleAnimation'
 
@@ -177,6 +179,8 @@ export default function BiliTranscribePanel({
   const [promptType, setPromptType] = useState<PromptType>('text')
   const [featureModels, setFeatureModels] = useState<Record<TrackMode, string>>(FALLBACK_TRANSCRIBE_MODEL_BY_MODE)
   const [allModels, setAllModels] = useState<ModelDef[]>([])
+  const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
+  const [lastUsage, setLastUsage] = useState<ModelCallLog | null>(null)
   const [result, setResult] = useState<KindState>(INIT_KIND_STATE)
   const [localMediaPath, setLocalMediaPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -195,14 +199,16 @@ export default function BiliTranscribePanel({
     let cancelled = false
     ;(async () => {
       try {
-        const [modelRows, combinedModel, audioModel, visualModel] = await Promise.all([
+        const [modelRows, quotaRows, combinedModel, audioModel, visualModel] = await Promise.all([
           invoke<ModelDef[]>('list_models'),
+          listModelFreeQuotas(),
           getFeatureModel(TRANSCRIBE_FEATURE_BY_MODE.combined, FALLBACK_TRANSCRIBE_MODEL_BY_MODE.combined),
           getFeatureModel(TRANSCRIBE_FEATURE_BY_MODE.audio, FALLBACK_TRANSCRIBE_MODEL_BY_MODE.audio),
           getFeatureModel(TRANSCRIBE_FEATURE_BY_MODE.visual, FALLBACK_TRANSCRIBE_MODEL_BY_MODE.visual),
         ])
         if (cancelled) return
         setAllModels(modelRows)
+        setFreeQuotas(quotaRows)
         setFeatureModels({ combined: combinedModel, audio: audioModel, visual: visualModel })
       } catch (e) {
         if (!cancelled) console.warn('[Transcribe] 读取转录模型绑定失败', e)
@@ -225,6 +231,25 @@ export default function BiliTranscribePanel({
     return () => window.removeEventListener('model-feature-binding-updated', onBindingUpdated)
   }, [])
 
+  useEffect(() => {
+    const features = new Set(Object.values(TRANSCRIBE_FEATURE_BY_MODE))
+    const onUsage = (event: Event) => {
+      const call = (event as CustomEvent<ModelCallLog>).detail
+      if (call?.feature && features.has(call.feature)) {
+        setLastUsage(call)
+        void listModelFreeQuotas().then(setFreeQuotas).catch(() => {})
+      }
+    }
+    window.addEventListener('model-usage-logged', onUsage)
+    return () => window.removeEventListener('model-usage-logged', onUsage)
+  }, [])
+
+  useEffect(() => {
+    const onQuotaUpdated = () => { void listModelFreeQuotas().then(setFreeQuotas).catch(() => {}) }
+    window.addEventListener('model-free-quota-updated', onQuotaUpdated)
+    return () => window.removeEventListener('model-free-quota-updated', onQuotaUpdated)
+  }, [])
+
   const transcribeModels = useMemo(
     () => allModels.filter((m) => modelSupportsMode(m, trackMode)),
     [allModels, trackMode],
@@ -238,13 +263,10 @@ export default function BiliTranscribePanel({
   }, [boundModel, transcribeModels])
 
   const modelOptions = useMemo(() => {
-    const opts = transcribeModels.map((m) => ({
-      value: m.id,
-      label: m.id,
-      hint: m.display_name || 'DashScope',
-    }))
+    const quotaByModel = new Map(freeQuotas.map((q) => [q.model_id, q]))
+    const opts = transcribeModels.map((m) => modelSelectOption(m, quotaByModel.get(m.id)))
     return opts
-  }, [transcribeModels])
+  }, [freeQuotas, transcribeModels])
 
   const currentModelDef = useMemo(
     () => allModels.find((m) => m.id === currentModel),
@@ -396,7 +418,7 @@ export default function BiliTranscribePanel({
             usage,
             success: true,
             metadata: { bvid, title, filePath, ossUrl: media.ossUrl, localPath: media.localPath, trackMode, promptType },
-          })
+          }).then((row) => { if (row) setLastUsage(row) })
         },
         onDone: (full) => {
           const trimmed = full.trim()
@@ -431,7 +453,7 @@ export default function BiliTranscribePanel({
               success: false,
               errorMessage: msg,
               metadata: { bvid, title, filePath, ossUrl: media.ossUrl, localPath: media.localPath, trackMode, promptType },
-            })
+            }).then((row) => { if (row) setLastUsage(row) })
           }
         },
       },
@@ -642,6 +664,7 @@ export default function BiliTranscribePanel({
         )}
 
         <span style={{ flex: 1 }} />
+        <ModelUsageBadge call={lastUsage} compact />
         <Tooltip content={trackMode === 'audio' ? '仅音频转录模型' : trackMode === 'visual' ? '仅画面转录模型' : '音视频全模态转录模型'}>
           <div style={{ maxWidth: 280 }}>
             <HudSelect
@@ -650,6 +673,7 @@ export default function BiliTranscribePanel({
               options={modelOptions}
               onChange={changeCurrentModel}
               disabled={isRunning}
+              popupWidth={MODEL_SELECT_POPUP_WIDTH}
             />
           </div>
         </Tooltip>

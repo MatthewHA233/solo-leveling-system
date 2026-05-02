@@ -4,12 +4,17 @@
 // 使用 HudFrame 保持与其它 HUD 面板一致的视觉语言
 // ══════════════════════════════════════════════
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MessageSquare, Plus, Search, X, Trash2 } from 'lucide-react'
+import { invoke } from '@tauri-apps/api/core'
 import { theme } from '../theme'
 import { HudFrame } from './hud'
 import Tooltip from './Tooltip'
 import type { ChatSessionInfo } from '../lib/agent/agent-memory'
+import type { ModelDef, ModelFreeQuota } from '../lib/local-api'
+import { getFeatureModel, listModelFreeQuotas, setFeatureModel } from '../lib/model-audit'
+import { MODEL_SELECT_POPUP_WIDTH, modelSelectOption } from '../lib/model-display'
+import HudSelect from './HudSelect'
 
 interface Props {
   readonly sessions: readonly ChatSessionInfo[]
@@ -28,6 +33,9 @@ export default function SessionPicker({
 }: Props) {
   const [query, setQuery] = useState('')
   const [confirmId, setConfirmId] = useState<string | null>(null)
+  const [models, setModels] = useState<ModelDef[]>([])
+  const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
+  const [titleModel, setTitleModel] = useState('qwen3.5-flash')
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -40,6 +48,39 @@ export default function SessionPicker({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [modelRows, quotaRows, boundModel] = await Promise.all([
+          invoke<ModelDef[]>('list_models'),
+          listModelFreeQuotas(),
+          getFeatureModel('session_title', 'qwen3.5-flash'),
+        ])
+        if (cancelled) return
+        setModels(modelRows)
+        setFreeQuotas(quotaRows)
+        setTitleModel(boundModel)
+      } catch {}
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    const onBindingUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ feature?: string; modelId?: string }>).detail
+      if (detail?.feature === 'session_title' && detail.modelId) setTitleModel(detail.modelId)
+    }
+    window.addEventListener('model-feature-binding-updated', onBindingUpdated)
+    return () => window.removeEventListener('model-feature-binding-updated', onBindingUpdated)
+  }, [])
+
+  useEffect(() => {
+    const onQuotaUpdated = () => { void listModelFreeQuotas().then(setFreeQuotas).catch(() => {}) }
+    window.addEventListener('model-free-quota-updated', onQuotaUpdated)
+    return () => window.removeEventListener('model-free-quota-updated', onQuotaUpdated)
+  }, [])
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return sessions
@@ -49,6 +90,27 @@ export default function SessionPicker({
       return t.includes(q) || sm.includes(q)
     })
   }, [sessions, query])
+
+  const titleModelOptions = useMemo(() => {
+    const quotaByModel = new Map(freeQuotas.map((q) => [q.model_id, q]))
+    const textModels = models.filter((m) => m.category === 'text')
+    return textModels.map((m) => modelSelectOption(m, quotaByModel.get(m.id)))
+  }, [freeQuotas, models])
+
+  const currentTitleModel = useMemo(() => {
+    if (titleModelOptions.some((opt) => opt.value === titleModel)) return titleModel
+    return titleModelOptions[0]?.value ?? titleModel
+  }, [titleModel, titleModelOptions])
+
+  const changeTitleModel = useCallback(async (modelId: string) => {
+    setTitleModel(modelId)
+    try {
+      await setFeatureModel('session_title', modelId)
+      window.dispatchEvent(new CustomEvent('model-feature-binding-updated', {
+        detail: { feature: 'session_title', modelId },
+      }))
+    } catch {}
+  }, [])
 
   const accent = theme.electricBlue
 
@@ -146,6 +208,30 @@ export default function SessionPicker({
             color: theme.textPrimary, fontFamily: theme.fontBody,
             fontSize: 12, outline: 'none',
           }}
+        />
+      </div>
+
+      {/* Title model */}
+      <div style={{
+        position: 'relative', zIndex: 1,
+        margin: '8px 14px 0',
+        display: 'grid',
+        gap: 5,
+        flexShrink: 0,
+      }}>
+        <div style={{
+          color: theme.textMuted,
+          fontFamily: theme.fontMono,
+          fontSize: 9.5,
+          letterSpacing: 0.8,
+        }}>
+          会话总结模型
+        </div>
+        <HudSelect
+          value={currentTitleModel}
+          options={titleModelOptions.length > 0 ? titleModelOptions : [{ value: currentTitleModel, label: currentTitleModel }]}
+          onChange={changeTitleModel}
+          popupWidth={MODEL_SELECT_POPUP_WIDTH}
         />
       </div>
 

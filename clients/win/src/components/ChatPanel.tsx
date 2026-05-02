@@ -2,15 +2,21 @@
 // Chat Panel — AI 对话面板
 // ══════════════════════════════════════════════
 
-import { useRef, useEffect, useState } from 'react'
+import { useCallback, useMemo, useRef, useEffect, useState } from 'react'
 import { Send, MessageSquare, Camera, Volume2, VolumeX, Bug, Radio, History } from 'lucide-react'
+import { invoke } from '@tauri-apps/api/core'
 import { theme } from '../theme'
 import type { ChatMessage, OmniDebugInfo } from '../App'
 import type { ApiRequestSnapshot } from '../lib/llm/api'
+import type { ModelCallLog, ModelDef, ModelFreeQuota } from '../lib/local-api'
+import { MODEL_SELECT_POPUP_WIDTH, modelSelectOption } from '../lib/model-display'
+import { getFeatureModel, listModelFreeQuotas, setFeatureModel } from '../lib/model-audit'
 import DebugRequestModal from './DebugRequestModal'
 import OmniDebugModal from './OmniDebugModal'
 import { HudFrame } from './hud'
 import Tooltip from './Tooltip'
+import HudSelect from './HudSelect'
+import ModelUsageBadge from './ModelUsageBadge'
 
 // 气泡倒角 clip-path（尖角留"尾巴"侧用于指向发送者）
 // 用户：右下为尾，其余三角 8px 斜切
@@ -59,6 +65,13 @@ interface Props {
 
 export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'omni', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
   const [input, setInput] = useState('')
+  const [models, setModels] = useState<ModelDef[]>([])
+  const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
+  const [featureModels, setFeatureModels] = useState<Record<'fairy_chat' | 'fairy_omni_chat', string>>({
+    fairy_chat: 'qwen3.6-plus',
+    fairy_omni_chat: 'qwen3.5-omni-plus-realtime',
+  })
+  const [lastUsage, setLastUsage] = useState<ModelCallLog | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [activeDebugSnaps, setActiveDebugSnaps] = useState<ApiRequestSnapshot[] | null>(null)
@@ -73,6 +86,75 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
   useEffect(() => {
     inputRef.current?.focus()
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [rows, quotaRows, chatModel, omniModel] = await Promise.all([
+          invoke<ModelDef[]>('list_models'),
+          listModelFreeQuotas(),
+          getFeatureModel('fairy_chat', 'qwen3.6-plus'),
+          getFeatureModel('fairy_omni_chat', 'qwen3.5-omni-plus-realtime'),
+        ])
+        if (cancelled) return
+        setModels(rows)
+        setFreeQuotas(quotaRows)
+        setFeatureModels({ fairy_chat: chatModel, fairy_omni_chat: omniModel })
+      } catch {}
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    const onBindingUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ feature?: string; modelId?: string }>).detail
+      if ((detail?.feature === 'fairy_chat' || detail?.feature === 'fairy_omni_chat') && detail.modelId) {
+        setFeatureModels((prev) => ({ ...prev, [detail.feature!]: detail.modelId! }))
+      }
+    }
+    window.addEventListener('model-feature-binding-updated', onBindingUpdated)
+    return () => window.removeEventListener('model-feature-binding-updated', onBindingUpdated)
+  }, [])
+
+  useEffect(() => {
+    const onUsage = (event: Event) => {
+      const call = (event as CustomEvent<ModelCallLog>).detail
+      if (call?.feature === 'fairy_chat' || call?.feature === 'fairy_omni_chat') {
+        setLastUsage(call)
+        void listModelFreeQuotas().then(setFreeQuotas).catch(() => {})
+      }
+    }
+    window.addEventListener('model-usage-logged', onUsage)
+    return () => window.removeEventListener('model-usage-logged', onUsage)
+  }, [])
+
+  useEffect(() => {
+    const onQuotaUpdated = () => { void listModelFreeQuotas().then(setFreeQuotas).catch(() => {}) }
+    window.addEventListener('model-free-quota-updated', onQuotaUpdated)
+    return () => window.removeEventListener('model-free-quota-updated', onQuotaUpdated)
+  }, [])
+
+  const currentFeature: 'fairy_chat' | 'fairy_omni_chat' = isOmniMode ? 'fairy_omni_chat' : 'fairy_chat'
+  const currentModel = featureModels[currentFeature]
+  const freeQuotaByModel = useMemo(() => new Map(freeQuotas.map((q) => [q.model_id, q])), [freeQuotas])
+  const modelOptions = useMemo(() => {
+    const wanted = isOmniMode ? 'realtime' : 'text'
+    const filtered = models.filter((m) => m.category === wanted)
+    return (filtered.length > 0 ? filtered : models).map((m) => {
+      return modelSelectOption(m, freeQuotaByModel.get(m.id))
+    })
+  }, [freeQuotaByModel, isOmniMode, models])
+
+  const changeModel = useCallback(async (modelId: string) => {
+    setFeatureModels((prev) => ({ ...prev, [currentFeature]: modelId }))
+    try {
+      await setFeatureModel(currentFeature, modelId)
+      window.dispatchEvent(new CustomEvent('model-feature-binding-updated', {
+        detail: { feature: currentFeature, modelId },
+      }))
+    } catch {}
+  }, [currentFeature])
 
   const handleSend = () => {
     const trimmed = input.trim()
@@ -171,7 +253,6 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
         }}>
           ONLINE
         </span>
-
         {/* 右侧按钮组 */}
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
           {/* TTS 开关 */}
@@ -306,64 +387,90 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
               fontFamily: theme.fontBody,
               fontSize: 13, outline: 'none', resize: 'none',
               lineHeight: 1.5, minHeight: 64, maxHeight: 200, overflowY: 'auto',
-              // 右下留出圆形按钮空间
-              paddingRight: 64, paddingBottom: 2,
+              paddingRight: 2, paddingBottom: 2,
             }}
           />
-          <Tooltip
-            content={isOmniMode ? '当前：Omni 全模态，点击切换普通聊天' : '当前：普通聊天，点击切换 Omni 全模态'}
-            wrapStyle={{ position: 'absolute', right: 44, bottom: 10 }}
-          >
-          <button
-            onClick={onToggleAiMode}
-            disabled={!onToggleAiMode || isProcessing}
+          <div
             style={{
-              background: isOmniMode ? `${theme.shadowPurple}18` : `${theme.electricBlue}12`,
-              border: `1px solid ${isOmniMode ? theme.shadowPurple + '88' : theme.electricBlue + '66'}`,
-              padding: 0,
-              width: 24, height: 24,
-              color: isOmniMode ? '#C9A8FF' : theme.electricBlue,
-              boxShadow: isOmniMode
-                ? `0 0 8px ${theme.shadowPurple}66, inset 0 0 4px ${theme.shadowPurple}33`
-                : `0 0 8px ${theme.electricBlue}44, inset 0 0 4px ${theme.electricBlue}22`,
-              opacity: isProcessing ? 0.45 : 1,
-              cursor: !onToggleAiMode || isProcessing ? 'not-allowed' : 'pointer',
-              transition: 'all 0.15s ease',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              clipPath: clip4,
-              WebkitClipPath: clip4,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              marginTop: 8,
+              minHeight: 26,
+              width: '100%',
+              boxSizing: 'border-box',
             }}
           >
-            {isOmniMode ? <Radio size={12} /> : <MessageSquare size={12} />}
-          </button>
-          </Tooltip>
-          {/* 浮动 send：圆形小按钮，钉在右下角内侧 */}
-          <Tooltip content="发送 (Enter)" wrapStyle={{ position: 'absolute', right: 14, bottom: 10 }}>
-          <button
-            className="send-btn"
-            onClick={handleSend}
-            disabled={!input.trim() || isProcessing}
-            style={{
-              background: input.trim() && !isProcessing
-                ? `radial-gradient(circle at 35% 35%, ${theme.electricBlue}55 0%, ${theme.electricBlue}1A 70%)`
-                : 'rgba(255,255,255,0.04)',
-              border: `1px solid ${input.trim() && !isProcessing ? theme.electricBlue + '88' : theme.hudFrameSoft}`,
-              borderRadius: '50%',
-              padding: 0,
-              width: 24, height: 24,
-              color: input.trim() && !isProcessing ? theme.electricBlue : theme.textMuted,
-              boxShadow: input.trim() && !isProcessing
-                ? `0 0 8px ${theme.electricBlue}55, inset 0 0 4px ${theme.electricBlue}33`
-                : undefined,
-              opacity: input.trim() && !isProcessing ? 1 : 0.55,
-              cursor: input.trim() && !isProcessing ? 'pointer' : 'default',
-              transition: 'all 0.15s ease',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}
-          >
-            <Send size={11} style={{ marginLeft: -1 }} />
-          </button>
-          </Tooltip>
+            <Tooltip
+              content={isOmniMode ? 'Fairy 全模态聊天模型' : 'Fairy 常规聊天模型'}
+              display="flex"
+              wrapStyle={{ flex: '1 1 auto', minWidth: 0, maxWidth: 224 }}
+            >
+              <div style={{ width: '100%', minWidth: 0 }}>
+                <HudSelect
+                  value={currentModel}
+                  options={modelOptions}
+                  onChange={changeModel}
+                  disabled={isProcessing}
+                  popupWidth={MODEL_SELECT_POPUP_WIDTH}
+                />
+              </div>
+            </Tooltip>
+            <ModelUsageBadge call={lastUsage} compact />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
+            <Tooltip content={isOmniMode ? '当前：Omni 全模态，点击切换普通聊天' : '当前：普通聊天，点击切换 Omni 全模态'}>
+              <button
+                onClick={onToggleAiMode}
+                disabled={!onToggleAiMode || isProcessing}
+                style={{
+                  background: isOmniMode ? `${theme.shadowPurple}18` : `${theme.electricBlue}12`,
+                  border: `1px solid ${isOmniMode ? theme.shadowPurple + '88' : theme.electricBlue + '66'}`,
+                  padding: 0,
+                  width: 24, height: 24,
+                  color: isOmniMode ? '#C9A8FF' : theme.electricBlue,
+                  boxShadow: isOmniMode
+                    ? `0 0 8px ${theme.shadowPurple}66, inset 0 0 4px ${theme.shadowPurple}33`
+                    : `0 0 8px ${theme.electricBlue}44, inset 0 0 4px ${theme.electricBlue}22`,
+                  opacity: isProcessing ? 0.45 : 1,
+                  cursor: !onToggleAiMode || isProcessing ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.15s ease',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  clipPath: clip4,
+                  WebkitClipPath: clip4,
+                }}
+              >
+                {isOmniMode ? <Radio size={12} /> : <MessageSquare size={12} />}
+              </button>
+            </Tooltip>
+            <Tooltip content="发送 (Enter)">
+              <button
+                className="send-btn"
+                onClick={handleSend}
+                disabled={!input.trim() || isProcessing}
+                style={{
+                  background: input.trim() && !isProcessing
+                    ? `radial-gradient(circle at 35% 35%, ${theme.electricBlue}55 0%, ${theme.electricBlue}1A 70%)`
+                    : 'rgba(255,255,255,0.04)',
+                  border: `1px solid ${input.trim() && !isProcessing ? theme.electricBlue + '88' : theme.hudFrameSoft}`,
+                  borderRadius: '50%',
+                  padding: 0,
+                  width: 24, height: 24,
+                  color: input.trim() && !isProcessing ? theme.electricBlue : theme.textMuted,
+                  boxShadow: input.trim() && !isProcessing
+                    ? `0 0 8px ${theme.electricBlue}55, inset 0 0 4px ${theme.electricBlue}33`
+                    : undefined,
+                  opacity: input.trim() && !isProcessing ? 1 : 0.55,
+                  cursor: input.trim() && !isProcessing ? 'pointer' : 'default',
+                  transition: 'all 0.15s ease',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  flex: '0 0 auto',
+                }}
+              >
+                <Send size={11} style={{ marginLeft: -1 }} />
+              </button>
+            </Tooltip>
+            </div>
+          </div>
         </div>
       </div>
     </div>
