@@ -1410,7 +1410,7 @@ function SearchResultRow({
         overflow: 'hidden',
       }}>
         <img
-          src={`http://localhost:3000/api/bilibili/cover?url=${encodeURIComponent(item.cover)}`}
+          src={`http://localhost:49733/api/bilibili/cover?url=${encodeURIComponent(item.cover)}`}
           alt=""
           loading="lazy"
           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
@@ -1520,7 +1520,7 @@ function Card({
         overflow: 'hidden',
       }}>
         <img
-          src={`http://localhost:3000/api/bilibili/cover?url=${encodeURIComponent(span.cover)}`}
+          src={`http://localhost:49733/api/bilibili/cover?url=${encodeURIComponent(span.cover)}`}
           alt=""
           loading="lazy"
           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
@@ -1760,7 +1760,7 @@ function ScanCard({ card }: { card: ScanFeedItem & { id: number; isNew: boolean 
         overflow: 'hidden',
       }}>
         <img
-          src={`http://localhost:3000/api/bilibili/cover?url=${encodeURIComponent(card.cover)}`}
+          src={`http://localhost:49733/api/bilibili/cover?url=${encodeURIComponent(card.cover)}`}
           alt=""
           loading="lazy"
           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}

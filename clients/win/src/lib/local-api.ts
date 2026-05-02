@@ -5,7 +5,7 @@
 
 import type { ChronosActivity, ChronosEvent } from '../types'
 
-const API_BASE = 'http://localhost:3000'
+const API_BASE = 'http://localhost:49733'
 
 interface ApiResponse<T> {
   success: boolean
@@ -420,9 +420,25 @@ export interface ModelCallLog {
   completion_text_tokens: number
   completion_audio_tokens: number
   cost_cny: number | null
+  free_quota_tokens: number
+  free_quota_saved_cny: number
   success: boolean
   error_message: string | null
   metadata: string | null
+}
+
+export interface ModelFreeQuota {
+  model_id: string
+  has_free_quota: boolean
+  not_supported: boolean
+  used_tokens: number
+  total_tokens: number
+  remaining_tokens: number
+  used_percent: string | null
+  expire_date: string | null
+  raw_quota: string | null
+  scanned_at: string
+  error_message: string | null
 }
 
 export interface LogModelCallRequest {

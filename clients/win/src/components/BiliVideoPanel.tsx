@@ -263,7 +263,7 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
           }}
         >
           <img
-            src={`http://localhost:3000/api/bilibili/cover?url=${encodeURIComponent(span.cover)}`}
+            src={`http://localhost:49733/api/bilibili/cover?url=${encodeURIComponent(span.cover)}`}
             alt={span.title}
             style={{
               width: '100%', display: 'block',

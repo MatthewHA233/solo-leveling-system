@@ -79,7 +79,7 @@ export default function AppHoverPanel({ span, date }: Props) {
   useEffect(() => {
     if (!span.group_name) return
     let objUrl: string | null = null
-    fetch(`http://localhost:3000/api/manictime/app-icon?name=${encodeURIComponent(span.group_name)}`)
+    fetch(`http://localhost:49733/api/manictime/app-icon?name=${encodeURIComponent(span.group_name)}`)
       .then((r) => { if (!r.ok) throw new Error('no icon'); return r.blob() })
       .then((blob) => { objUrl = URL.createObjectURL(blob); setIconUrl(objUrl) })
       .catch(() => setIconUrl(null))
@@ -92,7 +92,7 @@ export default function AppHoverPanel({ span, date }: Props) {
 
     const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
     const timeStr = span.start_at.split(' ')[1] ?? '00:00:00'
-    const url = `http://localhost:3000/api/manictime/screenshot?date=${dateStr}&time=${encodeURIComponent(timeStr)}`
+    const url = `http://localhost:49733/api/manictime/screenshot?date=${dateStr}&time=${encodeURIComponent(timeStr)}`
 
     let objectUrl: string | null = null
     fetch(url)

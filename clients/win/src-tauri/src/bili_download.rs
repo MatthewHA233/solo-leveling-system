@@ -313,7 +313,7 @@ pub async fn probe_bili_qualities(
     let js = format!(
         r#"(async()=>{{
   const BV='{bvid}';
-  const post=(body)=>fetch('http://localhost:3000/api/bilibili/qualities_result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
+  const post=(body)=>fetch('http://localhost:49733/api/bilibili/qualities_result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
   try {{
     const r1=await fetch('https://api.bilibili.com/x/player/pagelist?bvid='+BV,{{credentials:'include'}});
     const d1=await r1.json();
@@ -533,7 +533,7 @@ async fn fetch_playurl_via_webview(
         *guard = Some(tx);
     }
 
-    // JS：拿 cid → 拿 playurl(DASH) → POST 回 localhost:3000
+    // JS：拿 cid → 拿 playurl(DASH) → POST 回 localhost:49733
     // 把 base_url + backup_url[] 一起带回（让 Rust 端选 host）
     // qn_request 决定向 B 站请求的清晰度上限；max_id 在客户端再过滤一次（防止返回更高）
     let js = format!(
@@ -541,7 +541,7 @@ async fn fetch_playurl_via_webview(
   const BV='{bvid}';
   const QN={qn_request};
   const MAX_ID={max_id};
-  const post=(body)=>fetch('http://localhost:3000/api/bilibili/playurl_result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
+  const post=(body)=>fetch('http://localhost:49733/api/bilibili/playurl_result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
   const collectUrls=(m)=>{{
     const arr=[m.baseUrl||m.base_url];
     const bk=m.backupUrl||m.backup_url||[];

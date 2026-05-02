@@ -1291,7 +1291,7 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
       const img = new Image()
       img.onload  = () => { cache.set(name, img); redrawRef.current?.() }
       img.onerror = () => { cache.set(name, null) }
-      img.src = `http://localhost:3000/api/manictime/app-icon?name=${encodeURIComponent(name)}`
+      img.src = `http://localhost:49733/api/manictime/app-icon?name=${encodeURIComponent(name)}`
       return null
     }
 

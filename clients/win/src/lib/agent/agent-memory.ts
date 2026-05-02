@@ -214,7 +214,7 @@ export function loadMemory(): AgentMemoryState {
 
 // ── Session API (SQLite via Axum) ──
 
-const API_BASE = 'http://localhost:3000'
+const API_BASE = 'http://localhost:49733'
 
 export interface ChatSessionInfo {
   readonly id: string
