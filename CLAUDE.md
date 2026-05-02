@@ -53,6 +53,65 @@ cd clients/win/src-tauri && cargo xwin build
 npx tauri build --runner cargo-xwin
 ```
 
+### Windows Rust 修改后的开发工作流
+
+只要改了 `clients/win/src-tauri/src/**/*.rs`，需要按下面顺序处理。不要直接在应用运行时编译，因为 `solo-agent.exe` 会占用 debug 产物。
+
+```powershell
+# 1. 关闭当前由 Codex/开发流程启动的应用进程
+Get-Process solo-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# 2. 编译纯后端 debug 产物
+cd D:\my_pro\GitHub\solo-leveling-system\clients\win\src-tauri
+cargo xwin build
+
+# 3. 如需继续调试 WebView2/MCP，用远程调试端口重新启动 exe
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
+D:\my_pro\GitHub\solo-leveling-system\clients\win\src-tauri\target\x86_64-pc-windows-msvc\debug\solo-agent.exe
+```
+
+注意：前端 Vite dev server 由用户自己保持运行，Codex 不要自动运行 `npm run dev` 或 `npm run build`，除非用户明确要求。
+
+### WebView2 DevTools MCP 调试
+
+用于调试 Tauri 内嵌 WebView2 页面，例如 `bailian-login`。Chrome DevTools MCP 可以连接到 WebView2 暴露出来的远程调试端口，这样 Codex 就能直接查看真实 DOM、页面文本、控制台和截图，不必靠猜测页面结构。
+
+CC Switch 里新增 MCP 时，完整 JSON 配置如下：
+
+```json
+{
+  "type": "stdio",
+  "command": "cmd",
+  "args": [
+    "/c",
+    "npx",
+    "-y",
+    "chrome-devtools-mcp@latest",
+    "--browser-url=http://127.0.0.1:9222",
+    "--no-usage-statistics"
+  ],
+  "env": {
+    "SystemRoot": "C:\\Windows",
+    "PROGRAMFILES": "C:\\Program Files"
+  }
+}
+```
+
+启动开发版应用时，需要先打开 WebView2 远程调试端口：
+
+```powershell
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
+D:\my_pro\GitHub\solo-leveling-system\clients\win\src-tauri\target\x86_64-pc-windows-msvc\debug\solo-agent.exe
+```
+
+使用 MCP 前，先确认端口已经可访问：
+
+```text
+http://127.0.0.1:9222/json/version
+```
+
+正常情况下，MCP 能看到主 Vite 页面、`bili-login`、`bailian-login` 和 `#fairy` 等 WebView 页面。在 Codex 中可先用 `chrome devtools` 搜索工具，然后调用 `list_pages`、`select_page`、`take_snapshot`、`list_console_messages` 或截图工具来调试当前 WebView2 会话。
+
 ## 参考文档
 
 ### 人升（LifeUp）Wiki
