@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use fish_tts::{FishTTSConfig, FishTTSConnection};
 use db::Database;
-use api::BiliState;
+use api::{BailianState, BiliState};
 use bili_download::BiliDownloadState;
 use tauri::Manager;
 use base64::Engine as _;
@@ -157,6 +157,12 @@ struct BiliNavInfo {
     mid: Option<i64>,
 }
 
+#[derive(serde::Serialize)]
+struct BailianAccountInfo {
+    is_login: bool,
+    display_name: Option<String>,
+}
+
 #[tauri::command]
 async fn bili_get_nav(
     app: tauri::AppHandle,
@@ -180,9 +186,9 @@ async fn bili_get_nav(
 try{
   const r=await fetch('https://api.bilibili.com/x/web-interface/nav',{credentials:'include'});
   const d=await r.json();
-  await fetch('http://localhost:3000/api/bilibili/nav_result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ok:d})});
+  await fetch('http://localhost:49733/api/bilibili/nav_result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ok:d})});
 }catch(e){
-  await fetch('http://localhost:3000/api/bilibili/nav_result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({error:e.message||String(e)})});
+  await fetch('http://localhost:49733/api/bilibili/nav_result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({error:e.message||String(e)})});
 }
 })();"#;
 
@@ -242,9 +248,9 @@ async fn fetch_bili_history(
 try{{
   const r=await fetch('https://api.bilibili.com/x/web-interface/history/cursor?max={max}&view_at={vat}&ps={ps}&business=archive',{{credentials:'include'}});
   const d=await r.json();
-  await fetch('http://localhost:3000/api/bilibili/result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{ok:d}})}});
+  await fetch('http://localhost:49733/api/bilibili/result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{ok:d}})}});
 }}catch(e){{
-  await fetch('http://localhost:3000/api/bilibili/result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{error:e.message||String(e)}})}});
+  await fetch('http://localhost:49733/api/bilibili/result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{error:e.message||String(e)}})}});
 }}
 }})();"#
     );
@@ -290,6 +296,420 @@ try{{
         .unwrap_or_default();
 
     Ok(BiliSyncResult { upserted, cursor_max: cursor_max_out, cursor_view_at: cursor_vat_out, items })
+}
+
+#[tauri::command]
+async fn open_bailian_login(app: tauri::AppHandle) -> Result<(), String> {
+    let url = "https://bailian.console.aliyun.com/cn-beijing/?tab=model#/model-market/all";
+    if let Some(win) = app.get_webview_window("bailian-login") {
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+        win.eval(&format!("window.location.href = {:?};", url))
+            .map_err(|e| e.to_string())?;
+    } else {
+        tauri::WebviewWindowBuilder::new(
+            &app,
+            "bailian-login",
+            tauri::WebviewUrl::External(
+                url.parse().map_err(|e: url::ParseError| e.to_string())?
+            ),
+        )
+        .title("Bailian - login and quota scanner")
+        .inner_size(1280.0, 860.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_bailian_model_detail(app: tauri::AppHandle, model_code: String) -> Result<(), String> {
+    let model_code = model_code.trim();
+    if model_code.is_empty() {
+        return Err("MODEL_CODE_EMPTY".to_string());
+    }
+    let encoded_model = url::form_urlencoded::byte_serialize(model_code.as_bytes()).collect::<String>();
+    let url = format!(
+        "https://bailian.console.aliyun.com/cn-beijing/?tab=model#/model-market/detail/{}?serviceSite=asia-pacific-china",
+        encoded_model
+    );
+
+    if let Some(win) = app.get_webview_window("bailian-login") {
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+        win.eval(&format!("window.location.href = {:?};", url))
+            .map_err(|e| e.to_string())?;
+    } else {
+        tauri::WebviewWindowBuilder::new(
+            &app,
+            "bailian-login",
+            tauri::WebviewUrl::External(
+                url.parse().map_err(|e: url::ParseError| e.to_string())?
+            ),
+        )
+        .title("Bailian - model quota detail")
+        .inner_size(1280.0, 860.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn bailian_get_account(
+    app: tauri::AppHandle,
+    bailian: tauri::State<'_, Arc<BailianState>>,
+) -> Result<BailianAccountInfo, String> {
+    let win = app.get_webview_window("bailian-login")
+        .ok_or_else(|| "BAILIAN_WIN_NOT_OPEN".to_string())?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut guard = bailian.pending_account.lock().await;
+        if guard.is_some() {
+            return Err("BAILIAN_ACCOUNT_BUSY".to_string());
+        }
+        *guard = Some(tx);
+    }
+
+    let js = r#"(async()=>{
+const post = async (payload) => {
+  await fetch('http://localhost:49733/api/bailian/account_result', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+};
+const pickName = () => {
+  const candidates = [];
+  const badName = (s) => {
+    if (!s) return true;
+    if (/^\d{6,}$/.test(s)) return true;
+    return /^(账号|账户|账号 ID|主账号|头像|退出登录|个人认证|企业认证|控制台|费用|工单|备案|帮助|消息|购物车)$/.test(s);
+  };
+  const push = (v, score = 0) => {
+    if (typeof v === 'string') {
+      const s = v.trim();
+      if (s && s.length <= 80 && !/^https?:\/\//i.test(s) && !badName(s)) candidates.push({ value: s, score });
+    }
+  };
+  const visit = (v, depth = 0) => {
+    if (!v || depth > 4) return;
+    if (typeof v === 'string') {
+      if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) push(v);
+      return;
+    }
+    if (Array.isArray(v)) {
+      v.slice(0, 20).forEach((x) => visit(x, depth + 1));
+      return;
+    }
+    if (typeof v === 'object') {
+      for (const key of ['displayName','display_name','nickName','nickname','userName','username','loginName','login_name','accountName','account_name','email','mail']) {
+        push(v[key], /mail|email/i.test(key) ? 20 : 30);
+      }
+      Object.keys(v).slice(0, 50).forEach((key) => visit(v[key], depth + 1));
+    }
+  };
+  try {
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i) || '';
+      if (!/(user|account|profile|aliyun|console|login|session)/i.test(key)) continue;
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      try { visit(JSON.parse(raw)); } catch { visit(raw); }
+    }
+  } catch {}
+  const text = document.body.innerText || '';
+  const email = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+  push(email, 20);
+  const lines = text.split('\n').map((s) => s.trim()).filter(Boolean);
+  for (const marker of ['退出登录', '头像']) {
+    const idx = lines.findIndex((s) => s === marker || s.includes(marker));
+    if (idx >= 0) {
+      for (let i = idx + 1; i <= Math.min(lines.length - 1, idx + 4); i += 1) {
+        push(lines[i], marker === '退出登录' ? 120 : 100);
+      }
+    }
+  }
+  for (const marker of ['用户名', '用户名称', '登录名']) {
+    const idx = lines.findIndex((s) => s.includes(marker));
+    if (idx >= 0) {
+      push(lines[idx + 1], 80);
+      const inline = lines[idx].replace(/^(用户名|用户名称|登录名)[：:\s]*/, '').trim();
+      if (inline !== lines[idx]) push(inline, 80);
+    }
+  }
+  const mainAccountIdx = lines.findIndex((s) => s === '主账号' || s.includes('主账号'));
+  if (mainAccountIdx > 0) {
+    push(lines[mainAccountIdx - 1], 140);
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0]?.value || null;
+};
+try {
+  const name = pickName();
+  await post({ ok: { is_login: !!name, display_name: name } });
+} catch (error) {
+  await post({ error: error?.message || String(error) });
+}
+})();"#;
+
+    if let Err(e) = win.eval(js) {
+        bailian.pending_account.lock().await.take();
+        return Err(e.to_string());
+    }
+
+    let raw = match tokio::time::timeout(std::time::Duration::from_secs(8), rx).await {
+        Ok(Ok(result)) => result?,
+        Ok(Err(_)) => {
+            bailian.pending_account.lock().await.take();
+            return Err("BAILIAN_ACCOUNT_BUSY".to_string());
+        }
+        Err(_) => {
+            bailian.pending_account.lock().await.take();
+            return Err("请求超时".to_string());
+        }
+    };
+
+    let is_login = raw.get("is_login").and_then(|v| v.as_bool()).unwrap_or(false);
+    let display_name = raw.get("display_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+    Ok(BailianAccountInfo { is_login, display_name })
+}
+
+#[tauri::command]
+async fn bailian_take_quota_progress(
+    bailian: tauri::State<'_, Arc<BailianState>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut progress = bailian.quota_progress.lock().await;
+    Ok(progress.drain(..).collect())
+}
+
+#[tauri::command]
+async fn scan_bailian_free_quota(
+    app: tauri::AppHandle,
+    bailian: tauri::State<'_, Arc<BailianState>>,
+    model_codes: Vec<String>,
+) -> Result<Vec<db::ModelFreeQuota>, String> {
+    if model_codes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let win = match app.get_webview_window("bailian-login") {
+        Some(win) => win,
+        None => {
+            open_bailian_login(app.clone()).await?;
+            app.get_webview_window("bailian-login")
+                .ok_or_else(|| "BAILIAN_WIN_NOT_OPEN".to_string())?
+        }
+    };
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut guard = bailian.pending_quota.lock().await;
+        if guard.is_some() {
+            return Err("BAILIAN_QUOTA_BUSY".to_string());
+        }
+        *guard = Some(tx);
+    }
+
+    let model_codes_json = serde_json::to_string(&model_codes).map_err(|e| e.to_string())?;
+    let js = format!(r#"(async()=>{{
+const modelCodes = {model_codes_json};
+const BASE = 'https://bailian.console.aliyun.com/cn-beijing/?tab=model';
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const post = async (payload) => {{
+  await fetch('http://localhost:49733/api/bailian/quota_result', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify(payload),
+  }});
+}};
+const progress = async (payload) => {{
+  try {{
+    await fetch('http://localhost:49733/api/bailian/quota_progress', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify(payload),
+    }});
+  }} catch {{}}
+}};
+const getLines = () => (document.body.innerText || '').split('\n').map((s) => s.trim()).filter(Boolean);
+const pageReadyForLoginCheck = () => {{
+  const body = document.body.innerText || '';
+  return body.includes('模型广场') || body.includes('登录') || body.includes('退出登录') || body.includes('主账号') || body.includes('账号 ID');
+}};
+const waitForLoginShell = async () => {{
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {{
+    if (pageReadyForLoginCheck()) return true;
+    await sleep(500);
+  }}
+  return false;
+}};
+const pageLooksLoggedIn = () => {{
+  const texts = getLines();
+  const body = document.body.innerText || '';
+  if (body.includes('退出登录') || body.includes('主账号') || body.includes('账号 ID')) return true;
+  if (!body.trim()) return false;
+  return !texts.some((text) => text === '登录') && !body.includes('请登录');
+}};
+const waitForQuota = async (code) => {{
+  const deadline = Date.now() + 18000;
+  while (Date.now() < deadline) {{
+    const body = document.body.textContent || '';
+    if (body.includes('免费额度') && body.includes(code)) return true;
+    await sleep(500);
+  }}
+  return false;
+}};
+const quotaSignature = (code) => {{
+  const texts = getLines();
+  const tokenText = texts.find((text) => /^[\d,]+\/[\d,]+$/.test(text)) || '';
+  const notSupportedText = texts.find((text) => text.includes('不支持')) || '';
+  const expireText = texts.find((text) => text.includes('过期')) || '';
+  const body = document.body.textContent || '';
+  return body.includes(code) && (tokenText || notSupportedText)
+    ? [tokenText, notSupportedText, expireText].join('|')
+    : '';
+}};
+const waitForQuotaStable = async (code) => {{
+  const deadline = Date.now() + 22000;
+  let last = '';
+  let stable = 0;
+  while (Date.now() < deadline) {{
+    const sig = quotaSignature(code);
+    if (sig) {{
+      if (sig === last) stable += 1;
+      else {{
+        last = sig;
+        stable = 1;
+      }}
+      if (stable >= 2) return true;
+    }}
+    await sleep(500);
+  }}
+  return false;
+}};
+const parseIntToken = (value) => Number.parseInt(String(value || '0').replace(/,/g, ''), 10) || 0;
+const parseCurrent = (code) => {{
+  const texts = getLines();
+  const anchor = texts.findIndex((t) => t.includes('免费额度'));
+  const windowTexts = anchor >= 0 ? texts.slice(anchor, anchor + 30) : texts;
+  const tokenText = windowTexts.find((text) => /^[\d,]+\/[\d,]+$/.test(text)) || '0/0';
+  const [remainingRaw, totalRaw] = tokenText.split('/');
+  const parsedRemaining = parseIntToken(remainingRaw);
+  const parsedTotal = parseIntToken(totalRaw);
+  const isZeroQuotaExhausted = tokenText.replace(/\s/g, '') === '0/0';
+  const remaining = isZeroQuotaExhausted ? 0 : parsedRemaining;
+  const total = isZeroQuotaExhausted ? 1000000 : parsedTotal;
+  const used = Math.max(0, total - remaining);
+  const notSupported = !isZeroQuotaExhausted && windowTexts.some((t) => t.includes('不支持开启'));
+  const expireText = windowTexts.find((text) => text.startsWith('过期时间'));
+  const scales = new Set(['0%', '10%', '50%', '100%']);
+  const usedPercent = windowTexts.find((text) => /^\d+%$/.test(text) && !scales.has(text)) || null;
+  return {{
+    model_id: code,
+    has_free_quota: !notSupported && total > 0,
+    not_supported: notSupported,
+    used_tokens: used,
+    total_tokens: total,
+    remaining_tokens: remaining,
+    used_percent: usedPercent,
+    expire_date: expireText ? expireText.replace(/^过期时间[：:]\s*/, '').trim() : null,
+    raw_quota: tokenText,
+    scanned_at: new Date().toISOString(),
+    error_message: null,
+  }};
+}};
+try {{
+  const results = [];
+  await progress({{ stage: 'start', total: modelCodes.length, scanned: 0, ok: 0, failed: 0 }});
+  await waitForLoginShell();
+  if (!pageLooksLoggedIn()) {{
+    throw new Error('BAILIAN_NOT_LOGGED_IN');
+  }}
+  for (let index = 0; index < modelCodes.length; index += 1) {{
+    const code = modelCodes[index];
+    await progress({{ stage: 'model_start', model_id: code, index: index + 1, total: modelCodes.length }});
+    try {{
+      window.location.hash = '/model-market/detail/' + encodeURIComponent(code) + '?serviceSite=asia-pacific-china';
+      await sleep(1300);
+      const ok = await waitForQuotaStable(code);
+      if (!ok) throw new Error('timeout waiting for quota section');
+      await sleep(600);
+      const row = parseCurrent(code);
+      results.push(row);
+      await progress({{
+        stage: row.error_message ? 'model_error' : 'model_done',
+        model_id: code,
+        index: index + 1,
+        total: modelCodes.length,
+        row,
+        scanned: results.length,
+        ok: results.filter((r) => !r.error_message).length,
+        failed: results.filter((r) => r.error_message).length,
+      }});
+    }} catch (error) {{
+      const row = {{
+        model_id: code,
+        has_free_quota: false,
+        not_supported: false,
+        used_tokens: 0,
+        total_tokens: 0,
+        remaining_tokens: 0,
+        used_percent: null,
+        expire_date: null,
+        raw_quota: null,
+        scanned_at: new Date().toISOString(),
+        error_message: error?.message || String(error),
+      }};
+      results.push(row);
+      await progress({{
+        stage: 'model_error',
+        model_id: code,
+        index: index + 1,
+        total: modelCodes.length,
+        row,
+        scanned: results.length,
+        ok: results.filter((r) => !r.error_message).length,
+        failed: results.filter((r) => r.error_message).length,
+        error: row.error_message,
+      }});
+    }}
+    await sleep(400);
+  }}
+  await progress({{
+    stage: 'finish',
+    total: modelCodes.length,
+    scanned: results.length,
+    ok: results.filter((r) => !r.error_message).length,
+    failed: results.filter((r) => r.error_message).length,
+  }});
+  await post({{ ok: results }});
+}} catch (error) {{
+  await progress({{ stage: 'fatal', error: error?.message || String(error) }});
+  await post({{ error: error?.message || String(error) }});
+}}
+}})();"#);
+
+    if let Err(e) = win.eval(&js) {
+        bailian.pending_quota.lock().await.take();
+        return Err(e.to_string());
+    }
+
+    match tokio::time::timeout(std::time::Duration::from_secs(60 * 20), rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => {
+            bailian.pending_quota.lock().await.take();
+            Err("BAILIAN_QUOTA_BUSY".to_string())
+        }
+        Err(_) => {
+            bailian.pending_quota.lock().await.take();
+            Err("Bailian quota scan timeout".to_string())
+        }
+    }
 }
 
 // ── 数据库命令 ──
@@ -547,6 +967,18 @@ async fn log_model_call(
 }
 
 #[tauri::command]
+async fn get_model_call_log(
+    id: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Option<db::ModelCallLog>, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.get_model_call_log(&id).await
+}
+
+#[tauri::command]
 async fn query_call_log(
     time_from: Option<String>,
     time_to: Option<String>,
@@ -578,6 +1010,17 @@ async fn aggregate_call_log(
         g.as_ref().ok_or("数据库未初始化")?.clone()
     };
     db.aggregate_call_log(time_from, time_to, granularity, feature, model_id, api_key_id).await
+}
+
+#[tauri::command]
+async fn list_model_free_quotas(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<db::ModelFreeQuota>, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.list_model_free_quotas().await
 }
 
 #[tauri::command]
@@ -822,6 +1265,7 @@ pub fn run() {
     });
 
     let bili_state = Arc::new(BiliState::new());
+    let bailian_state = Arc::new(BailianState::new());
     let bili_dl_state = Arc::new(BiliDownloadState::new());
 
     // 把 DB 注入到下载状态（用于写资产表）
@@ -843,14 +1287,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .manage(bili_state.clone())
+        .manage(bailian_state.clone())
         .manage(bili_dl_state.clone())
         .setup(move |app| {
             // 启动 HTTP 服务器（在 Tauri runtime 内）
             if let Some(db_clone) = db {
                 let bili_clone = bili_state.clone();
+                let bailian_clone = bailian_state.clone();
                 let bili_dl_clone = bili_dl_state.clone();
                 tauri::async_runtime::spawn(async move {
-                    api::start_server(db_clone, bili_clone, bili_dl_clone, 3000).await;
+                    api::start_server(db_clone, bili_clone, bailian_clone, bili_dl_clone, 49733).await;
                 });
             }
 
@@ -872,7 +1318,7 @@ pub fn run() {
             )
             .title("B站 — 登录后可关闭此窗口")
             .inner_size(1200.0, 800.0)
-            .visible(false)   // 后台隐藏，不打扰用户
+            .visible(false)
             .build();
 
             match bili_win {
@@ -880,9 +1326,16 @@ pub fn run() {
                 Err(e) => log::warn!("[Bili] 后台 WebView 创建失败: {}", e),
             }
 
+            log::info!("[Bailian] WebView will be created on demand");
+
             // 全局右 Alt 热键（push-to-talk，无论哪个窗口聚焦都生效）
+
             #[cfg(windows)]
-            hotkey::install(app.handle().clone());
+            if std::env::var("SLS_DISABLE_HOTKEY").ok().as_deref() == Some("1") {
+                log::warn!("[Hotkey] disabled by SLS_DISABLE_HOTKEY=1");
+            } else {
+                hotkey::install(app.handle().clone());
+            }
 
             // 系统托盘
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -948,7 +1401,12 @@ pub fn run() {
             get_db_info,
             migrate_database,
             open_bili_login,
+            open_bailian_login,
+            open_bailian_model_detail,
+            bailian_get_account,
+            bailian_take_quota_progress,
             fetch_bili_history,
+            scan_bailian_free_quota,
             bili_get_nav,
             bili_download::enqueue_bili_download,
             bili_download::probe_bili_qualities,
@@ -972,8 +1430,10 @@ pub fn run() {
             set_active_model_api_key,
             delete_model_api_key,
             log_model_call,
+            get_model_call_log,
             query_call_log,
             aggregate_call_log,
+            list_model_free_quotas,
             read_file,
             write_file,
             save_audio_file,

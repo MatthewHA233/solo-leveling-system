@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════
 // Local API — Axum HTTP Server
-// 局域网访问: http://<ip>:3000
+// 局域网访问: http://<ip>:49733
 // ══════════════════════════════════════════════
 
 use axum::{
@@ -11,6 +11,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use uuid;
 use tokio::sync::{oneshot, Mutex};
@@ -41,10 +42,27 @@ impl BiliState {
 
 // ── API State ──
 
+pub struct BailianState {
+    pub pending_quota: Mutex<Option<oneshot::Sender<Result<Vec<crate::db::ModelFreeQuota>, String>>>>,
+    pub pending_account: Mutex<Option<oneshot::Sender<Result<serde_json::Value, String>>>>,
+    pub quota_progress: Mutex<VecDeque<serde_json::Value>>,
+}
+
+impl BailianState {
+    pub fn new() -> Self {
+        Self {
+            pending_quota: Mutex::new(None),
+            pending_account: Mutex::new(None),
+            quota_progress: Mutex::new(VecDeque::new()),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ApiState {
     pub db: Arc<Database>,
     pub bili: Arc<BiliState>,
+    pub bailian: Arc<BailianState>,
     pub bili_dl: Arc<BiliDownloadState>,
 }
 
@@ -81,6 +99,18 @@ struct LimitQuery {
 
 #[derive(Deserialize)]
 struct BiliResultPayload {
+    ok: Option<serde_json::Value>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BailianQuotaPayload {
+    ok: Option<Vec<crate::db::ModelFreeQuota>>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BailianAccountPayload {
     ok: Option<serde_json::Value>,
     error: Option<String>,
 }
@@ -378,6 +408,57 @@ async fn recv_bili_result(
 }
 
 // ── B站下载 playurl 回调 ──
+
+async fn recv_bailian_quota_result(
+    State(state): State<ApiState>,
+    Json(body): Json<BailianQuotaPayload>,
+) -> Json<ApiResponse<()>> {
+    let result = match body.ok {
+        Some(rows) => {
+            if let Err(e) = state.db.upsert_model_free_quotas(&rows).await {
+                log::warn!("[Bailian] quota cache upsert failed: {}", e);
+            }
+            Ok(rows)
+        }
+        None => Err(body.error.unwrap_or_else(|| "unknown error".to_string())),
+    };
+
+    let mut guard = state.bailian.pending_quota.lock().await;
+    if let Some(tx) = guard.take() {
+        let _ = tx.send(result);
+    }
+
+    Json(ApiResponse::ok(()))
+}
+
+async fn recv_bailian_account_result(
+    State(state): State<ApiState>,
+    Json(body): Json<BailianAccountPayload>,
+) -> Json<ApiResponse<()>> {
+    let result = match body.ok {
+        Some(data) => Ok(data),
+        None => Err(body.error.unwrap_or_else(|| "unknown error".to_string())),
+    };
+
+    let mut guard = state.bailian.pending_account.lock().await;
+    if let Some(tx) = guard.take() {
+        let _ = tx.send(result);
+    }
+
+    Json(ApiResponse::ok(()))
+}
+
+async fn recv_bailian_quota_progress(
+    State(state): State<ApiState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<ApiResponse<()>> {
+    let mut progress = state.bailian.quota_progress.lock().await;
+    if progress.len() >= 160 {
+        progress.pop_front();
+    }
+    progress.push_back(body);
+    Json(ApiResponse::ok(()))
+}
 
 #[derive(Deserialize)]
 struct PlayUrlResultPayload {
@@ -679,8 +760,13 @@ async fn close_presence_span(
     }
 }
 
-pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>, bili_dl: Arc<BiliDownloadState>) -> Router {
-    let state = ApiState { db, bili, bili_dl };
+pub fn create_router(
+    db: Arc<Database>,
+    bili: Arc<BiliState>,
+    bailian: Arc<BailianState>,
+    bili_dl: Arc<BiliDownloadState>,
+) -> Router {
+    let state = ApiState { db, bili, bailian, bili_dl };
 
     Router::new()
         .route("/api/health", get(health))
@@ -691,6 +777,9 @@ pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>, bili_dl: Arc<BiliD
         .route("/api/sessions/{id}/messages", get(get_chat_messages).post(append_chat_messages))
         .route("/api/sessions/{id}", patch(update_chat_session).delete(delete_chat_session))
         .route("/api/bilibili/result", post(recv_bili_result))
+        .route("/api/bailian/quota_result", post(recv_bailian_quota_result))
+        .route("/api/bailian/account_result", post(recv_bailian_account_result))
+        .route("/api/bailian/quota_progress", post(recv_bailian_quota_progress))
         .route("/api/bilibili/nav_result", post(recv_bili_nav_result))
         .route("/api/bilibili/playurl_result", post(recv_bili_playurl_result))
         .route("/api/bilibili/qualities_result", post(recv_bili_qualities_result))
@@ -717,8 +806,14 @@ pub fn create_router(db: Arc<Database>, bili: Arc<BiliState>, bili_dl: Arc<BiliD
         .with_state(state)
 }
 
-pub async fn start_server(db: Arc<Database>, bili: Arc<BiliState>, bili_dl: Arc<BiliDownloadState>, port: u16) {
-    let app = create_router(db, bili, bili_dl);
+pub async fn start_server(
+    db: Arc<Database>,
+    bili: Arc<BiliState>,
+    bailian: Arc<BailianState>,
+    bili_dl: Arc<BiliDownloadState>,
+    port: u16,
+) {
+    let app = create_router(db, bili, bailian, bili_dl);
     let addr = format!("0.0.0.0:{}", port);
 
     log::info!("[API] HTTP 服务器启动: http://{}", addr);

@@ -5,7 +5,9 @@
   "windows": [
     "main",
     "camera-preview",
-    "fairy-window"
+    "fairy-window",
+    "bili-login",
+    "bailian-login"
   ],
   "permissions": [
     "core:default",

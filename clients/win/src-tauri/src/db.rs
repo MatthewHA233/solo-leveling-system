@@ -527,6 +527,8 @@ impl Database {
                 completion_text_tokens INTEGER NOT NULL DEFAULT 0,
                 completion_audio_tokens INTEGER NOT NULL DEFAULT 0,
                 cost_cny REAL,
+                free_quota_tokens INTEGER NOT NULL DEFAULT 0,
+                free_quota_saved_cny REAL NOT NULL DEFAULT 0,
                 success INTEGER NOT NULL DEFAULT 1,
                 error_message TEXT,
                 metadata TEXT
@@ -534,10 +536,28 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_call_started ON model_call_log(started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_call_feature ON model_call_log(feature, started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_call_model ON model_call_log(model_id, started_at DESC);
+
+            CREATE TABLE IF NOT EXISTS model_free_quota (
+                model_id TEXT PRIMARY KEY,
+                has_free_quota INTEGER NOT NULL DEFAULT 0,
+                not_supported INTEGER NOT NULL DEFAULT 0,
+                used_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                remaining_tokens INTEGER NOT NULL DEFAULT 0,
+                used_percent TEXT,
+                expire_date TEXT,
+                raw_quota TEXT,
+                scanned_at TEXT NOT NULL,
+                error_message TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_model_free_quota_remaining
+                ON model_free_quota(remaining_tokens DESC, scanned_at DESC);
         "#).map_err(|e| format!("创建表失败: {}", e))?;
 
         // 渐进式迁移：旧库里 model_call_log 已存在时补 api_key_id
         let _ = conn.execute_batch("ALTER TABLE model_call_log ADD COLUMN api_key_id TEXT");
+        let _ = conn.execute_batch("ALTER TABLE model_call_log ADD COLUMN free_quota_tokens INTEGER NOT NULL DEFAULT 0");
+        let _ = conn.execute_batch("ALTER TABLE model_call_log ADD COLUMN free_quota_saved_cny REAL NOT NULL DEFAULT 0");
         let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_call_api_key ON model_call_log(api_key_id, started_at DESC)");
 
         // 首次启动写入百炼模型库与默认绑定种子（已存在则跳过，幂等）
@@ -1508,9 +1528,26 @@ pub struct ModelCallLog {
     pub completion_text_tokens: i64,
     pub completion_audio_tokens: i64,
     pub cost_cny: Option<f64>,
+    pub free_quota_tokens: i64,
+    pub free_quota_saved_cny: f64,
     pub success: bool,
     pub error_message: Option<String>,
     pub metadata: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModelFreeQuota {
+    pub model_id: String,
+    pub has_free_quota: bool,
+    pub not_supported: bool,
+    pub used_tokens: i64,
+    pub total_tokens: i64,
+    pub remaining_tokens: i64,
+    pub used_percent: Option<String>,
+    pub expire_date: Option<String>,
+    pub raw_quota: Option<String>,
+    pub scanned_at: String,
+    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1992,6 +2029,71 @@ impl Database {
         Ok(())
     }
 
+    pub async fn list_model_free_quotas(&self) -> Result<Vec<ModelFreeQuota>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT model_id, has_free_quota, not_supported, used_tokens, total_tokens,
+                    remaining_tokens, used_percent, expire_date, raw_quota, scanned_at, error_message
+             FROM model_free_quota
+             ORDER BY remaining_tokens DESC, model_id"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok(ModelFreeQuota {
+            model_id: r.get(0)?,
+            has_free_quota: r.get::<_, i64>(1)? != 0,
+            not_supported: r.get::<_, i64>(2)? != 0,
+            used_tokens: r.get(3)?,
+            total_tokens: r.get(4)?,
+            remaining_tokens: r.get(5)?,
+            used_percent: r.get(6)?,
+            expire_date: r.get(7)?,
+            raw_quota: r.get(8)?,
+            scanned_at: r.get(9)?,
+            error_message: r.get(10)?,
+        })).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub async fn upsert_model_free_quotas(&self, rows: &[ModelFreeQuota]) -> Result<(), String> {
+        use rusqlite::params;
+
+        let mut conn = self.conn.lock().await;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for q in rows {
+            tx.execute(
+                "INSERT INTO model_free_quota
+                 (model_id, has_free_quota, not_supported, used_tokens, total_tokens,
+                  remaining_tokens, used_percent, expire_date, raw_quota, scanned_at, error_message)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(model_id) DO UPDATE SET
+                   has_free_quota=excluded.has_free_quota,
+                   not_supported=excluded.not_supported,
+                   used_tokens=excluded.used_tokens,
+                   total_tokens=excluded.total_tokens,
+                   remaining_tokens=excluded.remaining_tokens,
+                   used_percent=excluded.used_percent,
+                   expire_date=excluded.expire_date,
+                   raw_quota=excluded.raw_quota,
+                   scanned_at=excluded.scanned_at,
+                   error_message=excluded.error_message",
+                params![
+                    &q.model_id,
+                    if q.has_free_quota { 1 } else { 0 },
+                    if q.not_supported { 1 } else { 0 },
+                    q.used_tokens,
+                    q.total_tokens,
+                    q.remaining_tokens,
+                    &q.used_percent,
+                    &q.expire_date,
+                    &q.raw_quota,
+                    &q.scanned_at,
+                    &q.error_message,
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     // ── model_call_log ──
 
     /// 按当前价目折算成本（0 token 各模态返回 0）。
@@ -2024,6 +2126,35 @@ impl Database {
         Some(total)
     }
 
+    fn billable_token_count(req: &LogModelCallRequest, tiers: &[ModelPricingTier]) -> i64 {
+        let prompt_total = req.prompt_text_tokens + req.prompt_image_tokens
+            + req.prompt_video_tokens + req.prompt_audio_tokens;
+        let tier = match tiers.iter().find(|t| {
+            prompt_total >= t.tier_min_tokens
+                && t.tier_max_tokens.map_or(true, |m| prompt_total < m)
+        }) {
+            Some(tier) => tier,
+            None => return 0,
+        };
+
+        let count = |tok: i64, p: Option<f64>| -> i64 {
+            if tok > 0 && p.unwrap_or(0.0) > 0.0 { tok } else { 0 }
+        };
+
+        let mut total = 0;
+        total += count(req.prompt_text_tokens, tier.price_input_text);
+        total += count(req.prompt_image_tokens, tier.price_input_image.or(tier.price_input_text));
+        total += count(req.prompt_video_tokens, tier.price_input_video.or(tier.price_input_text));
+        total += count(req.prompt_audio_tokens, tier.price_input_audio);
+
+        if req.completion_audio_tokens > 0 {
+            total += count(req.completion_audio_tokens, tier.price_output_audio);
+        } else {
+            total += count(req.completion_text_tokens, tier.price_output_text);
+        }
+        total
+    }
+
     pub async fn log_model_call(&self, req: LogModelCallRequest) -> Result<String, String> {
         use rusqlite::params;
 
@@ -2052,28 +2183,104 @@ impl Database {
             rows.filter_map(|r| r.ok()).collect()
         };
 
-        let cost = Self::compute_cost(&req, &tiers);
+        let gross_cost = Self::compute_cost(&req, &tiers);
+        let billable_tokens = if req.success {
+            Self::billable_token_count(&req, &tiers)
+        } else {
+            0
+        };
         let id = Uuid::new_v4().to_string();
 
         let conn = self.conn.lock().await;
+        let free_quota_tokens = if billable_tokens > 0 {
+            conn.query_row(
+                "SELECT remaining_tokens
+                 FROM model_free_quota
+                 WHERE model_id = ?
+                   AND has_free_quota = 1
+                   AND not_supported = 0
+                   AND total_tokens > 0
+                   AND error_message IS NULL",
+                params![&req.model_id],
+                |r| r.get::<_, i64>(0),
+            ).unwrap_or(0).clamp(0, billable_tokens)
+        } else {
+            0
+        };
+        let free_quota_saved_cny = match (gross_cost, billable_tokens) {
+            (Some(cost), tokens) if tokens > 0 && free_quota_tokens > 0 => {
+                cost * (free_quota_tokens as f64) / (tokens as f64)
+            }
+            _ => 0.0,
+        };
+        let cost = gross_cost.map(|cost| (cost - free_quota_saved_cny).max(0.0));
+
         conn.execute(
             "INSERT INTO model_call_log
              (id, api_key_id, feature, model_id, started_at, duration_ms,
               prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
               completion_text_tokens, completion_audio_tokens,
-              cost_cny, success, error_message, metadata)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              cost_cny, free_quota_tokens, free_quota_saved_cny, success, error_message, metadata)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 &id, &req.api_key_id, &req.feature, &req.model_id, &req.started_at, &req.duration_ms,
                 &req.prompt_text_tokens, &req.prompt_image_tokens, &req.prompt_video_tokens, &req.prompt_audio_tokens,
                 &req.completion_text_tokens, &req.completion_audio_tokens,
-                &cost, if req.success { 1 } else { 0 }, &req.error_message, &req.metadata,
+                &cost, &free_quota_tokens, &free_quota_saved_cny, if req.success { 1 } else { 0 }, &req.error_message, &req.metadata,
             ],
         ).map_err(|e| e.to_string())?;
+        if free_quota_tokens > 0 {
+            conn.execute(
+                "UPDATE model_free_quota
+                 SET used_tokens = MIN(total_tokens, used_tokens + ?),
+                     remaining_tokens = MAX(0, total_tokens - MIN(total_tokens, used_tokens + ?))
+                 WHERE model_id = ?
+                   AND has_free_quota = 1
+                   AND not_supported = 0
+                   AND total_tokens > 0
+                   AND error_message IS NULL",
+                params![free_quota_tokens, free_quota_tokens, &req.model_id],
+            ).map_err(|e| e.to_string())?;
+        }
         Ok(id)
     }
 
     /// 查询调用列表（按时间倒序）。time_from / time_to 为 ISO8601；feature/model_id 可选过滤。
+    pub async fn get_model_call_log(&self, id: &str) -> Result<Option<ModelCallLog>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT id, api_key_id, feature, model_id, started_at, duration_ms,
+                    prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
+                    completion_text_tokens, completion_audio_tokens,
+                    cost_cny, free_quota_tokens, free_quota_saved_cny, success, error_message, metadata
+             FROM model_call_log WHERE id = ? LIMIT 1"
+        ).map_err(|e| e.to_string())?;
+        match stmt.query_row(rusqlite::params![id], |r| Ok(ModelCallLog {
+            id: r.get(0)?,
+            api_key_id: r.get(1)?,
+            feature: r.get(2)?,
+            model_id: r.get(3)?,
+            started_at: r.get(4)?,
+            duration_ms: r.get(5)?,
+            prompt_text_tokens: r.get(6)?,
+            prompt_image_tokens: r.get(7)?,
+            prompt_video_tokens: r.get(8)?,
+            prompt_audio_tokens: r.get(9)?,
+            completion_text_tokens: r.get(10)?,
+            completion_audio_tokens: r.get(11)?,
+            cost_cny: r.get(12)?,
+            free_quota_tokens: r.get(13)?,
+            free_quota_saved_cny: r.get(14)?,
+            success: r.get::<_, i64>(15)? != 0,
+            error_message: r.get(16)?,
+            metadata: r.get(17)?,
+        })) {
+            Ok(row) => Ok(Some(row)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     pub async fn query_call_log(
         &self,
         time_from: Option<String>,
@@ -2088,7 +2295,7 @@ impl Database {
             "SELECT id, api_key_id, feature, model_id, started_at, duration_ms,
                     prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
                     completion_text_tokens, completion_audio_tokens,
-                    cost_cny, success, error_message, metadata
+                    cost_cny, free_quota_tokens, free_quota_saved_cny, success, error_message, metadata
              FROM model_call_log WHERE 1=1"
         );
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -2108,8 +2315,11 @@ impl Database {
             prompt_text_tokens: r.get(6)?, prompt_image_tokens: r.get(7)?,
             prompt_video_tokens: r.get(8)?, prompt_audio_tokens: r.get(9)?,
             completion_text_tokens: r.get(10)?, completion_audio_tokens: r.get(11)?,
-            cost_cny: r.get(12)?, success: r.get::<_, i64>(13)? != 0,
-            error_message: r.get(14)?, metadata: r.get(15)?,
+            cost_cny: r.get(12)?,
+            free_quota_tokens: r.get(13)?,
+            free_quota_saved_cny: r.get(14)?,
+            success: r.get::<_, i64>(15)? != 0,
+            error_message: r.get(16)?, metadata: r.get(17)?,
         })).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
