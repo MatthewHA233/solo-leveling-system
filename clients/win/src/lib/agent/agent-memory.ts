@@ -3,6 +3,8 @@
 // 会话消息管理 + LLM 消息构建
 // ══════════════════════════════════════════════
 
+import type { ModelCallLog } from '../local-api'
+
 const STORAGE_KEY = 'solo-agent-memory'
 const MAX_MESSAGES = 40
 
@@ -23,6 +25,7 @@ export interface SessionMessage {
   readonly timestamp: string    // ISO string
   readonly audioPath?: string | null   // 相对路径 "{sessionId}/{filename}.wav"
   readonly durationMs?: number | null  // 录音时长（毫秒）
+  readonly usage?: ModelCallLog | null // assistant 消息对应的模型调用审计快照
 }
 
 export interface LLMMessage {
@@ -235,9 +238,14 @@ interface ApiChatMessage {
   timestamp: string
   audio_path?: string | null
   duration_ms?: number | null
+  usage_json?: string | null
 }
 
 function fromApiMessage(m: ApiChatMessage): SessionMessage {
+  let usage: ModelCallLog | null = null
+  if (m.usage_json) {
+    try { usage = JSON.parse(m.usage_json) as ModelCallLog } catch { usage = null }
+  }
   return {
     role: m.role as SessionMessage['role'],
     content: m.content,
@@ -247,6 +255,7 @@ function fromApiMessage(m: ApiChatMessage): SessionMessage {
     timestamp: m.timestamp,
     audioPath: m.audio_path ?? null,
     durationMs: m.duration_ms ?? null,
+    usage,
   }
 }
 
@@ -283,6 +292,7 @@ export async function persistMessages(
       timestamp: m.timestamp,
       audio_path: m.audioPath ?? null,
       duration_ms: m.durationMs ?? null,
+      usage_json: m.usage ? JSON.stringify(m.usage) : null,
     })),
   }
   await fetch(`${API_BASE}/api/sessions/${sessionId}/messages`, {

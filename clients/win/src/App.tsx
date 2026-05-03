@@ -8,7 +8,7 @@ import { Boxes, ChevronLeft, ChevronRight, Settings } from 'lucide-react'
 import BiliIcon from './components/icons/BiliIcon'
 import { fetchActivities } from './lib/chronos-api'
 import { createActivity, deleteActivity, fetchManicTimeSpans, fetchBiliSpans, fetchGoals, parseGoalTags } from './lib/local-api'
-import type { MtSpan, BiliSpan } from './lib/local-api'
+import type { MtSpan, BiliSpan, ModelCallLog } from './lib/local-api'
 import type { ChronosActivity } from './types'
 import { theme, hud } from './theme'
 
@@ -103,6 +103,7 @@ export interface ChatMessage {
   readonly transcript?: string           // ASR 转写文本（语音消息专用）
   readonly debugSnapshots?: ApiRequestSnapshot[]  // 本轮发给 AI 的请求快照（普通模式）
   readonly omniDebugInfo?: OmniDebugInfo          // 本轮发给 Omni 的上下文快照
+  readonly usage?: ModelCallLog                   // 该 AI 回复对应的模型调用审计快照
 }
 
 // ── Session 持久化：格式转换 ──
@@ -128,6 +129,7 @@ function sessionMessagesToChatMessages(msgs: readonly SessionMessage[], audioDir
       ...(audioUrl ? { audioUrl, durationMs: m.durationMs ?? undefined } : {}),
       // transcript 就是 content（语音消息 content 存的是转写文本）
       ...(audioUrl && content ? { transcript: content } : {}),
+      ...(m.usage ? { usage: m.usage } : {}),
     })
   }
   return out
