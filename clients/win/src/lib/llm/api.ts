@@ -221,6 +221,7 @@ export function queryModel(
           stream: true,
           stream_options: { include_usage: true },
           max_tokens: maxTokens,
+          enable_thinking: false,  // Qwen3.x 默认开思考模式，主对话链路统一关闭以降低首 token 延迟与 token 成本
           ...(options.tools && options.tools.length > 0 && { tools: options.tools }),
         }),
         signal,

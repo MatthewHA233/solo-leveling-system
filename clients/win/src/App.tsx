@@ -530,7 +530,7 @@ export default function App() {
           if (configRef.current.aiMode === 'omni') {
             lastOmniUserInputRef.current = text   // 供 audio_done 持久化使用
           } else {
-            handleSend(text)
+            handleSend(text, true)
           }
         },
         onAudioLevel: () => {
@@ -559,6 +559,7 @@ export default function App() {
   const omniAiPcmChunksRef = useRef<Uint8Array[]>([])
   const omniAgentMsgIdRef = useRef<string | null>(null)   // 当前 AI 回复气泡的消息 ID
   const omniDebugInfoRef = useRef<OmniDebugInfo | null>(null)  // 本轮 Omni 上下文快照（随气泡写入）
+  const omniLastUsageRef = useRef<ModelCallLog | null>(null)   // 本轮 Omni 模型审计快照（随气泡持久化）
   const refreshSystemPromptRef = useRef<() => Promise<string>>(() => Promise.resolve(''))
 
   useEffect(() => {
@@ -688,7 +689,7 @@ export default function App() {
           }
     })
 
-    // Omni Realtime 一轮结束携带 usage：写入审计
+    // Omni Realtime 一轮结束携带 usage：写入审计 + 立即贴到当前 agent 气泡
     registerListen<{ model: string; usage: RealtimeUsage }>('omni://usage', ({ payload }) => {
       const startedMs = altDownTimeRef.current || Date.now()
       void logModelUsage({
@@ -699,6 +700,18 @@ export default function App() {
         usage: realtimeUsageToDashScope(payload.usage),
         success: true,
         metadata: { source: 'omni-realtime' },
+      }).then((call) => {
+        if (!call) return
+        omniLastUsageRef.current = call
+        // 优先贴到当前在写的气泡，否则兜底到最后一条 agent 气泡
+        const targetId = omniAgentMsgIdRef.current
+          ?? [...chatMessagesRef.current].reverse().find((m) => m.role === 'agent')?.id
+          ?? null
+        if (targetId) {
+          setChatMessages((prev) =>
+            prev.map((m) => m.id === targetId ? { ...m, usage: call } : m)
+          )
+        }
       })
     })
 
@@ -1140,7 +1153,9 @@ export default function App() {
       audioCtx: AudioContext
       nextStartTime: number
       connected: boolean
+      hasAudio: boolean
       pending: string[]
+      pcmChunks: Uint8Array[]    // 收集所有 chunk，结束后拼成 WAV 落盘 + 气泡音频回放
       finishResolve: (() => void) | null
       timeout: ReturnType<typeof setTimeout> | null
     }
@@ -1153,13 +1168,16 @@ export default function App() {
         audioCtx,
         nextStartTime: audioCtx.currentTime,
         connected: false,
+        hasAudio: false,
         pending: [],
+        pcmChunks: [],
         finishResolve: null,
         timeout: null,
       }
       state.client = createFishTTSTauri(
         { apiKey: config.fishApiKey, referenceId: config.fishReferenceId, model: config.fishModel },
         (pcm) => {
+          state.pcmChunks.push(pcm)
           const samples = pcm.length / 2
           const buf = audioCtx.createBuffer(1, samples, 24000)
           const ch = buf.getChannelData(0)
@@ -1187,12 +1205,13 @@ export default function App() {
     }
 
     // 句子缓冲：LLM 流式时按标点切句实时送 TTS
+    // 含逗号、分号、换行 → 长句中文用逗号断句也能边出边读，避免等到 LLM 结束才一次性 force-flush
     let sentBuf = ''
-    const SENT_RE = /[。！？!?.…]+/
+    const SENT_RE = /[。！？!?.…，,；;\n]+/
     const pushToTts = (chunk: string, force = false) => {
       if (!tts) return
       sentBuf += chunk
-      if (!force && (!SENT_RE.test(sentBuf) || sentBuf.length < 6)) return
+      if (!force && (!SENT_RE.test(sentBuf) || sentBuf.length < 4)) return
       const sentence = sentBuf.trim()
       sentBuf = ''
       if (!sentence) return
@@ -1203,7 +1222,7 @@ export default function App() {
       }
     }
 
-    const chatModel = await getFeatureModel('fairy_chat', config.openaiCardModel || 'qwen3.6-plus')
+    const chatModel = await getFeatureModel('fairy_chat', config.openaiCardModel || 'qwen3.6-flash')
     const dashscopeApiKey = getDashScopeApiKey(config) ?? ''
 
     try {
@@ -1218,6 +1237,12 @@ export default function App() {
           maxTokens: 8000,
           tools: TOOL_DEFINITIONS,
           onRequestSnapshot: (snap) => capturedSnapshots.push(snap),
+          onUsageLogged: (call) => {
+            capturedUsage = call
+            setChatMessages((prev) =>
+              prev.map((m) => m.id === agentMsgId ? { ...m, usage: call } : m)
+            )
+          },
         },
         maxIterations: 8,
         onEvent: (event) => {
@@ -1281,46 +1306,6 @@ export default function App() {
         return false
       })
       conversationRef.current = compactHistory.slice(-12) // 最多保留 6 轮对话
-
-      // ── 持久化本轮对话 ──
-      if (sessionIdRef.current) {
-        const sid = sessionIdRef.current
-        const cfg = configRef.current
-        // 从 newHistory 提取最终的 user + assistant 文本（去工具链）
-        const newPairs: SessionMessage[] = []
-        for (const m of newHistory) {
-          if (m.type === 'user' && !m.isMeta && m.toolUseResult === undefined) {
-            const content = typeof m.message.content === 'string'
-              ? m.message.content
-              : m.message.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
-            if (content.trim()) newPairs.push(makeSessionMessage('user', content.trim()))
-          } else if (isAssistantMessage(m) && m.message.content.every((b: any) => b.type === 'text')) {
-            const text = getMessageText(m)
-            if (text.trim()) newPairs.push(makeSessionMessage('assistant', text.trim()))
-          }
-        }
-        // 只追加真正新增的消息（去掉和 persistedBufferRef 已有内容重叠的部分）
-        const alreadyCount = persistedBufferRef.current.length
-        const deduplicated = newPairs.slice(alreadyCount)
-        if (deduplicated.length > 0) {
-          persistedBufferRef.current = [...persistedBufferRef.current, ...deduplicated]
-          persistMessages(sid, deduplicated).catch(() => {})
-        }
-
-        // AI 标题：消息数达到阈值且标题仍为默认时才触发（fire-and-forget）
-        if (
-          persistedBufferRef.current.length >= TITLE_TRIGGER_MIN_MESSAGES &&
-          (sessionTitleRef.current === '新会话' || sessionTitleRef.current === '')
-        ) {
-          generateSessionTitle(persistedBufferRef.current, cfg)
-            .then((title) => {
-              if (!title) return
-              sessionTitleRef.current = title
-              patchSession(sid, { title }).catch(() => {})
-            })
-            .catch(() => {})
-        }
-      }
 
       // 把本轮快照 patch 到对应 agent 气泡
       if (capturedSnapshots.length > 0) {
@@ -1396,6 +1381,26 @@ export default function App() {
                 }
               }, 200)
             })
+            // 所有 chunks 已收齐：拼 WAV → 贴气泡音频回放 + 落盘留 audioPath
+            if (tts.pcmChunks.length > 0) {
+              const wavBlob = pcm16ChunksToWavBlob(tts.pcmChunks, 24000)
+              const audioUrl = URL.createObjectURL(wavBlob)
+              const totalSamples = tts.pcmChunks.reduce((sum, c) => sum + c.length / 2, 0)
+              aiAudioDurationMs = Math.round((totalSamples / 24000) * 1000)
+              setChatMessages((prev) =>
+                prev.map((m) => m.id === agentMsgId ? { ...m, audioUrl, durationMs: aiAudioDurationMs } : m)
+              )
+              if (sessionIdRef.current) {
+                try {
+                  const wavBytes = new Uint8Array(await wavBlob.arrayBuffer())
+                  aiAudioPath = await invoke<string>('save_audio_file', {
+                    sessionId: sessionIdRef.current,
+                    wavBytes,
+                    timestamp: new Date().toISOString(),
+                  })
+                } catch { /* 落盘失败不阻塞 */ }
+              }
+            }
           } catch {
             // TTS 失败不影响主流程
           } finally {
@@ -1409,6 +1414,45 @@ export default function App() {
         }
       } else {
         emitFairy('idle')
+      }
+
+      // ── 持久化本轮对话（在 TTS 之后，最终 assistant 顺手带上 audioPath/durationMs）──
+      if (sessionIdRef.current) {
+        const sid = sessionIdRef.current
+        const cfg = configRef.current
+        if (aiAudioPath) {
+          for (let i = newPairs.length - 1; i >= 0; i--) {
+            if (newPairs[i].role === 'assistant') {
+              newPairs[i] = {
+                ...newPairs[i],
+                audioPath: aiAudioPath,
+                durationMs: aiAudioDurationMs ?? null,
+              }
+              break
+            }
+          }
+        }
+        // 只追加真正新增的消息（去掉和 persistedBufferRef 已有内容重叠的部分）
+        const alreadyCount = persistedBufferRef.current.length
+        const deduplicated = newPairs.slice(alreadyCount)
+        if (deduplicated.length > 0) {
+          persistedBufferRef.current = [...persistedBufferRef.current, ...deduplicated]
+          persistMessages(sid, deduplicated).catch(() => {})
+        }
+
+        // AI 标题：消息数达到阈值且标题仍为默认时才触发（fire-and-forget）
+        if (
+          persistedBufferRef.current.length >= TITLE_TRIGGER_MIN_MESSAGES &&
+          (sessionTitleRef.current === '新会话' || sessionTitleRef.current === '')
+        ) {
+          generateSessionTitle(persistedBufferRef.current, cfg)
+            .then((title) => {
+              if (!title) return
+              sessionTitleRef.current = title
+              patchSession(sid, { title }).catch(() => {})
+            })
+            .catch(() => {})
+        }
       }
     } catch (err) {
       setChatMessages((prev) => [...prev, {

@@ -36,17 +36,21 @@ export function createFishTTSTauri(
   let connected = false
   let unlistenAudio: (() => void) | null = null
   let unlistenFinish: (() => void) | null = null
+  // 每个 client 实例一份独立 event_id，Rust 端 emit 加后缀，避免新旧 WS 串扰
+  const eventId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `fish-${Date.now()}-${Math.random().toString(16).slice(2)}`
 
   const connect = async (): Promise<void> => {
-    // 监听音频事件
-    unlistenAudio = await listen<number[]>('fish-tts-audio', (event) => {
+    // 监听音频事件（带 event_id 后缀）
+    unlistenAudio = await listen<number[]>(`fish-tts-audio-${eventId}`, (event) => {
       console.log('[FishTTS-Tauri] 收到音频, 长度:', event.payload.length)
       const pcm = new Uint8Array(event.payload)
       onAudioChunk?.(pcm)
     })
 
     // 监听完成事件
-    unlistenFinish = await listen<void>('fish-tts-finish', () => {
+    unlistenFinish = await listen<void>(`fish-tts-finish-${eventId}`, () => {
       connected = false
       onFinish?.()
       cleanup()   // 自动清理监听器，防止下次调用叠音
@@ -59,6 +63,7 @@ export function createFishTTSTauri(
       model: config.model,
       sampleRate: config.sampleRate ?? 24000,
       proxyPort: config.proxyPort ?? 7890,
+      eventId,
     })
 
     connected = true

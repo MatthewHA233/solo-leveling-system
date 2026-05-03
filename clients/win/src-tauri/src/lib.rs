@@ -48,6 +48,7 @@ async fn fish_tts_connect(
     sample_rate: u32,
     proxy_port: u16,
     model: String,
+    event_id: String,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
@@ -57,6 +58,7 @@ async fn fish_tts_connect(
         sample_rate,
         proxy_port,
         model,
+        event_id,
     };
 
     let conn = FishTTSConnection::start(config, app_handle)?;

@@ -59,6 +59,7 @@ pub struct FishTTSConfig {
     pub sample_rate: u32,
     pub proxy_port: u16,
     pub model: String,  // s1 或 s2-pro
+    pub event_id: String,  // 每个连接一份唯一 ID；事件名 fish-tts-audio-{id} / fish-tts-finish-{id}，避免新旧实例串扰
 }
 
 // ── 连接状态 ──
@@ -109,7 +110,9 @@ async fn run_ws_loop(
     mut rx: Receiver<FrontendMessage>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    log::info!("[FishTTS] 开始连接, 代理端口: {}, 模型: {}", config.proxy_port, config.model);
+    let audio_event_name = format!("fish-tts-audio-{}", config.event_id);
+    let finish_event_name = format!("fish-tts-finish-{}", config.event_id);
+    log::info!("[FishTTS] 开始连接, 代理端口: {}, 模型: {}, event_id: {}", config.proxy_port, config.model, config.event_id);
 
     // 通过 HTTP 代理建立隧道
     let stream = connect_via_proxy(config.proxy_port).await?;
@@ -237,12 +240,12 @@ async fn run_ws_loop(
                                 "audio" | "audio_chunk" => {
                                     if let Some(audio) = audio_event.audio {
                                         log::info!("[FishTTS] 收到音频 {} 字节", audio.len());
-                                        let _ = app_handle.emit("fish-tts-audio", &audio);
+                                        let _ = app_handle.emit(&audio_event_name, &audio);
                                     }
                                 }
                                 "finish" => {
                                     log::info!("[FishTTS] 合成完成");
-                                    let _ = app_handle.emit("fish-tts-finish", ());
+                                    let _ = app_handle.emit(&finish_event_name, ());
                                     break;
                                 }
                                 _ => {
@@ -258,12 +261,12 @@ async fn run_ws_loop(
                     }
                     Ok(Message::Close(_)) => {
                         log::info!("[FishTTS] 收到 Close 消息，触发完成");
-                        let _ = app_handle.emit("fish-tts-finish", ());
+                        let _ = app_handle.emit(&finish_event_name, ());
                         break;
                     }
                     Err(e) => {
                         log::error!("[FishTTS] WS 错误: {}", e);
-                        let _ = app_handle.emit("fish-tts-finish", ());
+                        let _ = app_handle.emit(&finish_event_name, ());
                         break;
                     }
                     _ => {
@@ -274,7 +277,7 @@ async fn run_ws_loop(
 
             else => {
                         log::info!("[FishTTS] select! 结束，触发完成");
-                        let _ = app_handle.emit("fish-tts-finish", ());
+                        let _ = app_handle.emit(&finish_event_name, ());
                         break;
                     }
         }
