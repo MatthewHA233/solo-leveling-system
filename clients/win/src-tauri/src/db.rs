@@ -83,6 +83,7 @@ pub struct ChatMessage {
     pub timestamp: String,
     pub audio_path: Option<String>,   // 语音气泡的 WAV 文件路径（相对于音频根目录）
     pub duration_ms: Option<i64>,     // 录音时长（毫秒）
+    pub usage_json: Option<String>,   // 该 AI 回复绑定的 ModelCallLog 快照（JSON 序列化）
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +96,7 @@ pub struct CreateChatMessageRequest {
     pub timestamp: String,
     pub audio_path: Option<String>,
     pub duration_ms: Option<i64>,
+    pub usage_json: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -389,9 +391,10 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated ON chat_sessions(updated_at);
         "#).map_err(|e| format!("创建表失败: {}", e))?;
 
-        // 渐进式迁移：audio_path / duration_ms（旧数据库无此列时自动追加）
+        // 渐进式迁移：audio_path / duration_ms / usage_json（旧数据库无此列时自动追加）
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN audio_path TEXT");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER");
+        let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN usage_json TEXT");
 
         // 渐进式迁移：bili_video_assets 转录字段（旧数据库无此列时自动追加）
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN visual_transcript TEXT");
@@ -779,7 +782,7 @@ impl Database {
     pub async fn get_chat_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms FROM chat_messages WHERE session_id = ? ORDER BY timestamp"
+            "SELECT id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms, usage_json FROM chat_messages WHERE session_id = ? ORDER BY timestamp"
         ).map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([session_id], |row| {
@@ -794,6 +797,7 @@ impl Database {
                 timestamp: row.get(7)?,
                 audio_path: row.get(8)?,
                 duration_ms: row.get(9)?,
+                usage_json: row.get(10)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -1726,8 +1730,8 @@ fn seed_feature_bindings(conn: &rusqlite::Connection) -> Result<(), String> {
         .unwrap_or_else(|| "qwen3.5-omni-flash".to_string());
 
     let seeds: Vec<(&str, String)> = vec![
-        ("fairy_chat", "qwen3.6-plus".to_string()),
-        ("fairy_omni_chat", "qwen3.5-omni-plus-realtime".to_string()),
+        ("fairy_chat", "qwen3.6-flash".to_string()),
+        ("fairy_omni_chat", "qwen3.5-omni-flash-realtime".to_string()),
         ("session_title", "qwen3.5-flash".to_string()),
         ("bili_omni_transcribe", bili_omni_default),
         ("bili_visual_transcribe", bili_visual_default),
