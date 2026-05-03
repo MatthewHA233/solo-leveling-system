@@ -808,8 +808,8 @@ impl Database {
         for msg in req.messages {
             let id = Uuid::new_v4().to_string();
             conn.execute(
-                "INSERT INTO chat_messages (id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![&id, session_id, &msg.role, &msg.content, &msg.tool_calls, &msg.tool_call_id, &msg.name, &msg.timestamp, &msg.audio_path, &msg.duration_ms],
+                "INSERT INTO chat_messages (id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms, usage_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![&id, session_id, &msg.role, &msg.content, &msg.tool_calls, &msg.tool_call_id, &msg.name, &msg.timestamp, &msg.audio_path, &msg.duration_ms, &msg.usage_json],
             ).map_err(|e| e.to_string())?;
         }
 

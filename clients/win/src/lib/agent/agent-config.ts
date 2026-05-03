@@ -86,11 +86,11 @@ export const DEFAULT_CONFIG: AgentConfig = {
   openaiApiKey: import.meta.env.VITE_OPENAI_API_KEY ?? null,
   dashscopeApiKey: import.meta.env.VITE_OPENAI_API_KEY ?? null,
   openaiApiBase: import.meta.env.VITE_OPENAI_API_BASE ?? 'https://dashscope.aliyuncs.com/compatible-mode',
-  openaiCardModel: import.meta.env.VITE_OPENAI_CARD_MODEL ?? 'qwen3.6-plus',
+  openaiCardModel: import.meta.env.VITE_OPENAI_CARD_MODEL ?? 'qwen3.6-flash',
 
   omniApiKey: null,
   omniApiBase: import.meta.env.VITE_OPENAI_API_BASE ?? 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
-  omniModel: 'qwen3.5-omni-plus-realtime',
+  omniModel: 'qwen3.5-omni-flash-realtime',
 
   batchTargetDuration: 300,
   batchMaxGap: 120,

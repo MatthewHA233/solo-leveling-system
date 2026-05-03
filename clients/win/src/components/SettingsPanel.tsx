@@ -84,7 +84,7 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
       openaiCardModel: draft.openaiCardModel,
       omniApiKey: draft.omniApiKey || null,
       omniApiBase: draft.omniApiBase,
-      omniModel: draft.omniModel || 'qwen3.5-omni-plus-realtime',
+      omniModel: draft.omniModel || 'qwen3.5-omni-flash-realtime',
       omniVoice: draft.omniVoice,
       fishApiKey: draft.fishApiKey || null,
       fishReferenceId: draft.fishReferenceId,
