@@ -10,6 +10,7 @@
 import { Stream } from './stream'
 import { normalizeMessagesForAPI } from './normalize'
 import { logModelUsage, type DashScopeUsage } from '../model-audit'
+import type { ModelCallLog } from '../local-api'
 import type { Message, UserMessage, AssistantMessage, ContentBlock, ToolDefinition } from './types'
 
 // ── 流式事件类型 ──
@@ -47,6 +48,8 @@ export interface QueryOptions {
   feature?: string
   // 调试：每次实际发出 API 请求前调用，传入完整 payload 快照
   onRequestSnapshot?: (snapshot: ApiRequestSnapshot) => void
+  // 模型审计：本轮 logModelUsage 完成后回传 ModelCallLog（供调用方贴到 agent 气泡）
+  onUsageLogged?: (call: ModelCallLog) => void
   // 内部：当前 queryLoop 迭代编号（由 query-loop.ts 注入）
   _iteration?: number
 }
@@ -290,6 +293,8 @@ export function queryModel(
                       maxTokens,
                       toolCount: options.tools?.length ?? 0,
                     },
+                  }).then((call) => {
+                    if (call) options.onUsageLogged?.(call)
                   })
                 }
               }

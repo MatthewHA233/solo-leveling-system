@@ -771,7 +771,7 @@ export default function App() {
               ).trim()
               if (userInput) newPairs.push(makeSessionMessage('user', userInput))
 
-              // AI 音频落盘后再写 DB
+              // AI 音频落盘后再写 DB；usage 若稍晚到（最多等 1500ms）也能附上
               const persistAiMsg = async () => {
                 let aiAudioPath: string | undefined
                 if (wavBlob && sid) {
@@ -786,7 +786,17 @@ export default function App() {
                   } catch { /* 落盘失败不阻塞 */ }
                 }
                 if (aiText || aiAudioPath) {
-                  newPairs.push(makeSessionMessage('assistant', aiText, aiAudioPath))
+                  let usage = omniLastUsageRef.current
+                  if (!usage) {
+                    const deadline = Date.now() + 1500
+                    while (!usage && Date.now() < deadline) {
+                      await new Promise((r) => setTimeout(r, 80))
+                      usage = omniLastUsageRef.current
+                    }
+                  }
+                  const aiMsg = makeSessionMessage('assistant', aiText, aiAudioPath)
+                  newPairs.push(usage ? { ...aiMsg, usage } : aiMsg)
+                  omniLastUsageRef.current = null
                 }
               }
               persistAiMsg().then(() => {
@@ -1059,14 +1069,11 @@ export default function App() {
   }, [refreshSystemPrompt])
 
   // ── Send Message ──
-  const handleSend = useCallback(async (text: string) => {
+  const handleSend = useCallback(async (text: string, fromVoice = false) => {
     if (!text.trim()) return
 
     // 文字输入：添加用户气泡（语音输入的气泡在 onUserAudio 已添加，不重复）
-    const isVoiceInput = chatMessages.some(
-      (m) => m.role === 'user' && m.transcript === text,
-    )
-    if (!isVoiceInput) {
+    if (!fromVoice) {
       setChatMessages((prev) => [...prev, {
         id: crypto.randomUUID(), role: 'user' as const,
         content: text, timestamp: new Date().toISOString(),
@@ -1075,7 +1082,7 @@ export default function App() {
 
     setIsProcessing(true)
     // 文字输入也要立即显示思考动画
-    if (!isVoiceInput) emitFairy('thinking')
+    if (!fromVoice) emitFairy('thinking')
 
     // D2 + D4 — 构建 system prompt（两套协议共用，结果缓存在 systemPromptRef）
     const systemPrompt = await refreshSystemPrompt()
@@ -1125,6 +1132,7 @@ export default function App() {
     const agentMsgId = crypto.randomUUID()
     const userMsg = createUserMessage(text)
     const capturedSnapshots: ApiRequestSnapshot[] = []
+    let capturedUsage: ModelCallLog | null = null
 
     // ── TTS 流式管线（与 LLM 并行启动）──
     type TtsState = {
@@ -1160,9 +1168,12 @@ export default function App() {
           const src = audioCtx.createBufferSource()
           src.buffer = buf
           src.connect(audioCtx.destination)
+          // 第一段音频到来时把 nextStartTime 同步到当前播放时刻，避免播在过去
+          if (!state.hasAudio) state.nextStartTime = audioCtx.currentTime + 0.005
           const startAt = Math.max(state.nextStartTime, audioCtx.currentTime + 0.005)
           src.start(startAt)
           state.nextStartTime = startAt + buf.duration
+          state.hasAudio = true
         },
         () => { state.finishResolve?.() },
       )
@@ -1322,16 +1333,39 @@ export default function App() {
         )
       }
 
-      // ── TTS：LLM 完成后 flush 剩余句子，等待音频播完 ──
-      if (tts) {
-        const replyText = (() => {
-          for (let i = newHistory.length - 1; i >= 0; i--) {
-            const m = newHistory[i]
-            if (isAssistantMessage(m)) return getMessageText(m)
+      // ── 抽取本轮 user + 最终 assistant 文本，作为持久化 + TTS 的素材 ──
+      const newPairs: SessionMessage[] = []
+      for (const m of newHistory) {
+        if (m.type === 'user' && !m.isMeta && m.toolUseResult === undefined) {
+          const content = typeof m.message.content === 'string'
+            ? m.message.content
+            : m.message.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
+          if (content.trim()) newPairs.push(makeSessionMessage('user', content.trim()))
+        } else if (isAssistantMessage(m) && m.message.content.every((b: any) => b.type === 'text')) {
+          const text = getMessageText(m)
+          if (text.trim()) newPairs.push(makeSessionMessage('assistant', text.trim()))
+        }
+      }
+      if (capturedUsage) {
+        for (let i = newPairs.length - 1; i >= 0; i--) {
+          if (newPairs[i].role === 'assistant') {
+            newPairs[i] = { ...newPairs[i], usage: capturedUsage }
+            break
           }
-          return ''
-        })()
+        }
+      }
+      const replyText = (() => {
+        for (let i = newHistory.length - 1; i >= 0; i--) {
+          const m = newHistory[i]
+          if (isAssistantMessage(m)) return getMessageText(m)
+        }
+        return ''
+      })()
 
+      // ── TTS：LLM 完成后 flush，等待音频；同步收集 PCM chunks 拼 WAV 落盘 ──
+      let aiAudioPath: string | undefined
+      let aiAudioDurationMs: number | undefined
+      if (tts) {
         if (replyText.trim()) {
           emitFairy('speaking', replyText)
           try {
@@ -1352,6 +1386,8 @@ export default function App() {
               s.finishResolve = resolve  // fish-tts-finish 仍可提前触发
               s.timeout = setTimeout(resolve, 60_000)  // 60s 兜底
               const poll = setInterval(() => {
+                // 收到首段音频前不要退出（否则 nextStartTime 还是初始值，currentTime 早就过了它）
+                if (!s.hasAudio) return
                 // nextStartTime 是最后一帧排队结束的时刻
                 // currentTime > nextStartTime + 0.2s 表示所有音频已播完
                 if (s.audioCtx.currentTime >= s.nextStartTime + 0.2) {
