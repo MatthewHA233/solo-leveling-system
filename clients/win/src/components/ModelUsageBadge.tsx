@@ -3,6 +3,13 @@ import { theme, hud } from '../theme'
 import type { ModelCallLog } from '../lib/local-api'
 import Tooltip from './Tooltip'
 
+interface Props {
+  call: ModelCallLog | null
+  compact?: boolean
+  /** minimal=true 时只渲染纯 ¥xxx 文字（无图标/边框/背景），保留 hover 详情 */
+  minimal?: boolean
+}
+
 function formatCny(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return '¥0.00'
   if (n < 0.01 && n > 0) return `¥${n.toFixed(4)}`
@@ -23,11 +30,12 @@ function totalOutput(call: ModelCallLog): number {
   return call.completion_text_tokens + call.completion_audio_tokens
 }
 
-export default function ModelUsageBadge({ call, compact = false }: { call: ModelCallLog | null; compact?: boolean }) {
+export default function ModelUsageBadge({ call, compact = false, minimal = false }: Props) {
   if (!call) return null
   const saved = call.free_quota_saved_cny ?? 0
   const cost = call.cost_cny ?? 0
   const gross = cost + saved
+  const accent = saved > 0 ? theme.expGreen : cost > 0 ? theme.dangerRed : theme.expGreen
   const content = (
     <div style={{ display: 'grid', gap: 6, minWidth: 210 }}>
       <div style={{ color: theme.electricBlue, fontFamily: theme.fontMono, fontWeight: 800 }}>{call.model_id}</div>
@@ -41,6 +49,25 @@ export default function ModelUsageBadge({ call, compact = false }: { call: Model
     </div>
   )
 
+  if (minimal) {
+    return (
+      <Tooltip content={content}>
+        <span style={{
+          color: accent,
+          fontFamily: theme.fontMono,
+          fontSize: 11,
+          fontWeight: 700,
+          opacity: 0.85,
+          marginLeft: 6,
+          whiteSpace: 'nowrap',
+          cursor: 'help',
+        }}>
+          {formatCny(cost)}
+        </span>
+      </Tooltip>
+    )
+  }
+
   return (
     <Tooltip content={content}>
       <span style={{
@@ -49,9 +76,9 @@ export default function ModelUsageBadge({ call, compact = false }: { call: Model
         gap: 6,
         height: compact ? 24 : 28,
         padding: compact ? '0 8px' : '0 10px',
-        border: `1px solid ${saved > 0 ? theme.expGreen : theme.dangerRed}66`,
-        background: `${saved > 0 ? theme.expGreen : theme.dangerRed}12`,
-        color: saved > 0 ? theme.expGreen : theme.dangerRed,
+        border: `1px solid ${accent}66`,
+        background: `${accent}12`,
+        color: accent,
         clipPath: hud.chamfer8,
         WebkitClipPath: hud.chamfer8,
         fontFamily: theme.fontMono,

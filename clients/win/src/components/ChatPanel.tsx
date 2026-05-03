@@ -68,10 +68,9 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
   const [models, setModels] = useState<ModelDef[]>([])
   const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
   const [featureModels, setFeatureModels] = useState<Record<'fairy_chat' | 'fairy_omni_chat', string>>({
-    fairy_chat: 'qwen3.6-plus',
-    fairy_omni_chat: 'qwen3.5-omni-plus-realtime',
+    fairy_chat: 'qwen3.6-flash',
+    fairy_omni_chat: 'qwen3.5-omni-flash-realtime',
   })
-  const [lastUsage, setLastUsage] = useState<ModelCallLog | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [activeDebugSnaps, setActiveDebugSnaps] = useState<ApiRequestSnapshot[] | null>(null)
@@ -94,8 +93,8 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
         const [rows, quotaRows, chatModel, omniModel] = await Promise.all([
           invoke<ModelDef[]>('list_models'),
           listModelFreeQuotas(),
-          getFeatureModel('fairy_chat', 'qwen3.6-plus'),
-          getFeatureModel('fairy_omni_chat', 'qwen3.5-omni-plus-realtime'),
+          getFeatureModel('fairy_chat', 'qwen3.6-flash'),
+          getFeatureModel('fairy_omni_chat', 'qwen3.5-omni-flash-realtime'),
         ])
         if (cancelled) return
         setModels(rows)
@@ -121,7 +120,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
     const onUsage = (event: Event) => {
       const call = (event as CustomEvent<ModelCallLog>).detail
       if (call?.feature === 'fairy_chat' || call?.feature === 'fairy_omni_chat') {
-        setLastUsage(call)
+        // 调用后刷一下额度，让模型选择器的小环跟着更新
         void listModelFreeQuotas().then(setFreeQuotas).catch(() => {})
       }
     }
@@ -416,7 +415,6 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
                 />
               </div>
             </Tooltip>
-            <ModelUsageBadge call={lastUsage} compact />
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
             <Tooltip content={isOmniMode ? '当前：Omni 全模态，点击切换普通聊天' : '当前：普通聊天，点击切换 Omni 全模态'}>
               <button
@@ -843,6 +841,7 @@ function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDeb
           }} />
         )}
         {message.content}
+        {!isUser && message.usage && <ModelUsageBadge call={message.usage} minimal />}
         {!isUser && message.audioUrl && (
           <div style={{ marginTop: 6 }}>
             <AudioBubble audioUrl={message.audioUrl} />
@@ -856,13 +855,13 @@ function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDeb
           onClick={onDebug}
           style={{
             background: 'none', border: 'none', cursor: 'pointer',
-            color: 'rgba(255,255,255,0.15)', padding: 2,
+            color: 'rgba(255,255,255,0.45)', padding: 2,
             display: 'flex', alignItems: 'center',
             flexShrink: 0,
             transition: 'color 0.15s',
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.5)')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.15)')}
+          onMouseEnter={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.85)')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.45)')}
         >
           <Bug size={11} />
         </button>
@@ -875,13 +874,13 @@ function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDeb
           onClick={onOmniDebug}
           style={{
             background: 'none', border: 'none', cursor: 'pointer',
-            color: 'rgba(167,139,250,0.25)', padding: 2,
+            color: 'rgba(167,139,250,0.55)', padding: 2,
             display: 'flex', alignItems: 'center',
             flexShrink: 0,
             transition: 'color 0.15s',
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = 'rgba(167,139,250,0.7)')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(167,139,250,0.25)')}
+          onMouseEnter={(e) => (e.currentTarget.style.color = 'rgba(167,139,250,0.95)')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(167,139,250,0.55)')}
         >
           <Radio size={11} />
         </button>
