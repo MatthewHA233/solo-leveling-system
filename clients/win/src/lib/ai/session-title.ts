@@ -7,11 +7,64 @@
 // ══════════════════════════════════════════════
 
 import type { AgentConfig } from '../agent/agent-config'
-import type { SessionMessage } from '../agent/agent-memory'
-import { getFeatureModel } from '../model-audit'
-import { chat } from './ai-client'
+import { getDashScopeApiKey } from '../agent/agent-config'
+import type { LLMMessage, SessionMessage } from '../agent/agent-memory'
+import { getFeatureModel, logModelUsage, type DashScopeUsage } from '../model-audit'
 
 const MAX_INPUT_CHARS = 1000
+
+// 一次性非流式调用——只有标题生成这种短同步场景需要
+async function chatOnce(
+  config: AgentConfig,
+  messages: readonly LLMMessage[],
+  model: string,
+  feature: string,
+): Promise<string> {
+  const apiKey = config.aiProvider === 'gemini'
+    ? config.geminiApiKey
+    : getDashScopeApiKey(config)
+  if (!apiKey) throw new Error('API Key 未配置')
+
+  const baseUrl = config.aiProvider === 'gemini'
+    ? config.geminiApiBase
+    : config.openaiApiBase
+  const url = `${baseUrl}/v1/chat/completions`
+
+  const startedAt = new Date().toISOString()
+  const startedMs = Date.now()
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ model, messages }),
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`AI API 错误 ${response.status}: ${text.slice(0, 200)}`)
+  }
+
+  const result = await response.json() as {
+    choices: { message: { content: string } }[]
+    usage?: DashScopeUsage
+  }
+
+  if (config.aiProvider !== 'gemini' && result.usage) {
+    void logModelUsage({
+      feature,
+      modelId: model,
+      startedAt,
+      durationMs: Date.now() - startedMs,
+      usage: result.usage,
+      success: true,
+      metadata: { source: 'session-title' },
+    })
+  }
+
+  return result.choices[0]?.message?.content ?? ''
+}
 
 function flattenForTitle(messages: readonly SessionMessage[]): string {
   const parts: string[] = []
@@ -47,7 +100,7 @@ export async function generateSessionTitle(
 
   try {
     const titleModel = await getFeatureModel('session_title', 'qwen3.5-flash')
-    const reply = await chat(
+    const reply = await chatOnce(
       config,
       [
         { role: 'system', content: SYSTEM_PROMPT },
