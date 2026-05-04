@@ -1,7 +1,7 @@
 // ══════════════════════════════════════════════
 // useDataDays — 给前后日切换按钮判断"目标日是否有数据"
 // 围绕当前日 ±14 天预取一个窗口；命中缓存即同步返回
-// source = 'all'  → /api/activities/data-days   (chronos+bili+presence)
+// source = 'all'  → /api/activities/data-days   (chronos+bili)
 // source = 'bili' → /api/bilibili/day-counts    (watched > 0 的日期)
 // ══════════════════════════════════════════════
 

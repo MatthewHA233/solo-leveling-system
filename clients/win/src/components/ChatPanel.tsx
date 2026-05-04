@@ -53,8 +53,6 @@ interface Props {
   readonly onSend: (text: string) => void
   readonly aiMode?: 'regular' | 'omni'
   readonly onToggleAiMode?: () => void
-  readonly cameraReady?: boolean
-  readonly cameraPresent?: boolean
   readonly cameraWindowOpen?: boolean
   readonly onToggleCamera?: () => void
   readonly ttsEnabled?: boolean
@@ -63,7 +61,7 @@ interface Props {
   readonly sessionsOpen?: boolean
 }
 
-export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'omni', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
+export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'omni', onToggleAiMode, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
   const [input, setInput] = useState('')
   const [models, setModels] = useState<ModelDef[]>([])
   const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
@@ -278,10 +276,9 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
           {onToggleCamera && (
             <HudIconBtn
               onClick={onToggleCamera}
-              title={cameraWindowOpen ? '关闭预览' : cameraPresent ? '已检测人脸' : '打开预览'}
+              title={cameraWindowOpen ? '关闭摄像头预览' : '打开摄像头预览'}
               active={cameraWindowOpen}
               activeColor={theme.expGreen}
-              dim={!cameraReady}
             >
               <Camera size={11} />
             </HudIconBtn>
