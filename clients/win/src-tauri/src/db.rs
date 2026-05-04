@@ -433,9 +433,6 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN usage_json TEXT");
 
-        // 清理 presence detection 旧表（功能已移除）
-        let _ = conn.execute_batch("DROP TABLE IF EXISTS presence_spans");
-
         // 渐进式迁移：bili_video_assets 转录字段（旧数据库无此列时自动追加）
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN visual_transcript TEXT");
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN audio_transcript TEXT");
@@ -469,6 +466,14 @@ impl Database {
                 completed_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+
+            CREATE TABLE IF NOT EXISTS presence_spans (
+                id TEXT PRIMARY KEY,
+                start_time TEXT NOT NULL,
+                end_time TEXT,
+                state TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_presence_start ON presence_spans(start_time);
 
             -- B 站视频资产：下载记录 + 后续逐字稿/AI总结/笔记
             -- bvid 软引用 bili_history.bvid（不强制 FK，允许下载非历史中的视频）
@@ -1159,7 +1164,7 @@ impl Database {
     }
 
     /// 在 [from, to] 范围内，返回所有"有数据"的日期（用于昼夜表前后日按钮）
-    /// 数据 = chronos_activities OR bili_history 任意一项有记录
+    /// 数据 = chronos_activities OR bili_history OR presence_spans 任意一项有记录
     pub async fn get_data_days(
         &self, from: &str, to: &str,
     ) -> Result<Vec<String>, String> {
@@ -1173,6 +1178,10 @@ impl Database {
                 SELECT DISTINCT date(view_at, 'unixepoch', 'localtime') AS day
                 FROM bili_history
                 WHERE date(view_at, 'unixepoch', 'localtime') BETWEEN ?1 AND ?2
+                UNION
+                SELECT DISTINCT substr(start_time, 1, 10) AS day
+                FROM presence_spans
+                WHERE substr(start_time, 1, 10) BETWEEN ?1 AND ?2
             )
             ORDER BY day ASC
         "#;
@@ -1284,6 +1293,37 @@ impl Database {
     pub async fn delete_goal(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
         conn.execute("DELETE FROM goals WHERE id = ?", [id]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ── Presence Spans ──
+
+    pub async fn get_presence_spans_by_date(&self, date: &str) -> Result<Vec<PresenceSpan>, String> {
+        let conn = self.conn.lock().await;
+        let date_prefix = format!("{}%", date);
+        let mut stmt = conn.prepare(
+            "SELECT id, start_time, end_time, state FROM presence_spans WHERE start_time LIKE ? ORDER BY start_time"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([&date_prefix], |row| PresenceSpan::from_row(row))
+            .map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub async fn upsert_presence_span(&self, span: &PresenceSpan) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT OR REPLACE INTO presence_spans (id, start_time, end_time, state) VALUES (?, ?, ?, ?)",
+            params![span.id, span.start_time, span.end_time, span.state],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn close_presence_span(&self, id: &str, end_time: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE presence_spans SET end_time = ? WHERE id = ? AND end_time IS NULL",
+            params![end_time, id],
+        ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -1518,6 +1558,27 @@ impl Database {
             return Err(format!("未找到对应资产记录: {}", download_path));
         }
         Ok(())
+    }
+}
+
+// ── PresenceSpan ──
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct PresenceSpan {
+    pub id: String,
+    pub start_time: String,
+    pub end_time: Option<String>,
+    pub state: String,  // "present" | "absent"
+}
+
+impl PresenceSpan {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(PresenceSpan {
+            id:         row.get(0)?,
+            start_time: row.get(1)?,
+            end_time:   row.get(2)?,
+            state:      row.get(3)?,
+        })
     }
 }
 

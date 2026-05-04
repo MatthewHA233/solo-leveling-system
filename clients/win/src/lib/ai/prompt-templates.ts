@@ -293,6 +293,11 @@ export interface DynamicContextParams {
   activityTags?: ActivityTagRecord[]  // 最重要：说明在做什么
   appUsage?: AppUsageRecord[]
   biliHistory?: BiliRecord[]
+  // D5 — 摄像头存在感检测
+  presence?: {
+    state: 'present' | 'absent' | 'unknown'
+    durationSeconds: number
+  }
 }
 
 export function buildDynamicContext(params: DynamicContextParams = {}): string {
@@ -349,6 +354,18 @@ export function buildDynamicContext(params: DynamicContextParams = {}): string {
 
   if (d4Lines.length > 0) {
     sections.push(`# 近期活动（过去1小时）\n${d4Lines.join('\n\n')}`)
+  }
+
+  // D5 — 存在感（摄像头实时检测）
+  if (params.presence && params.presence.state !== 'unknown') {
+    const { state, durationSeconds } = params.presence
+    const dur = durationSeconds >= 60
+      ? `${Math.floor(durationSeconds / 60)}分${durationSeconds % 60}秒`
+      : `${durationSeconds}秒`
+    const line = state === 'present'
+      ? `主人正对着屏幕（已持续 ${dur}）`
+      : `主人已离开摄像头视野（已离开 ${dur}）`
+    sections.push(`# 主人状态\n${line}`)
   }
 
   return sections.join('\n\n')

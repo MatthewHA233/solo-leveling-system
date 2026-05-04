@@ -1129,22 +1129,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
   const iconCacheRef = useRef<Map<string, HTMLImageElement | null | 'loading'>>(new Map())
   // 指向最新 scheduleRedraw（用于图标加载后触发重绘）
   const redrawRef = useRef<(() => void) | null>(null)
-  // 视频播放期间冻结重绘，避免主线程被持续吃满（HudVideoPlayer 派发 chart:freeze/resume）
-  const frozenRef = useRef(false)
-  useEffect(() => {
-    const onFreeze = () => { frozenRef.current = true }
-    const onResume = () => {
-      frozenRef.current = false
-      // 恢复后立即补一次重绘，反映冻结期间累积的状态变化
-      redrawRef.current?.()
-    }
-    window.addEventListener('chart:freeze', onFreeze)
-    window.addEventListener('chart:resume', onResume)
-    return () => {
-      window.removeEventListener('chart:freeze', onFreeze)
-      window.removeEventListener('chart:resume', onResume)
-    }
-  }, [])
   // 拖拽框选
 
   const dpr = window.devicePixelRatio || 1
@@ -1271,7 +1255,6 @@ export default function DayNightChart({ activities, mtSpans = [], biliSpans = []
 
   // 绘制
   const draw = useCallback(() => {
-    if (frozenRef.current) return  // 视频播放期间不重绘，避免主线程持续被吃
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')

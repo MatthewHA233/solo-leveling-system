@@ -9,15 +9,9 @@
 // ══════════════════════════════════════════════
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import PrepOverlay from './PrepOverlay'
-
-// 走 axum 49733 的 /api/local-video，不用 Tauri asset.localhost
-// （asset.localhost 响应漏 Accept-Ranges 头，Chromium 不肯走流式播放）
-const VIDEO_API_BASE = 'http://localhost:49733'
-const buildVideoSrc = (path: string) =>
-  `${VIDEO_API_BASE}/api/local-video?path=${encodeURIComponent(path)}`
 
 // 父级若直接传 inline () => {...} 会让 useEffect 反复 fire，
 // 用 ref 把 onError 稳住，effect 只依赖 filePath
@@ -154,15 +148,12 @@ const HudVideoPlayer = forwardRef<HudVideoHandle, Props>(function HudVideoPlayer
       {resolvedPath && (
         <video
           ref={videoRef}
-          src={buildVideoSrc(resolvedPath)}
+          src={convertFileSrc(resolvedPath)}
           controls
           preload="metadata"
           onLoadedMetadata={handleLoadedMetadata}
           onTimeUpdate={(e) => onTimeUpdate?.(e.currentTarget.currentTime)}
           onError={handleError}
-          onPlay={() => window.dispatchEvent(new CustomEvent('chart:freeze'))}
-          onPause={() => window.dispatchEvent(new CustomEvent('chart:resume'))}
-          onEnded={() => window.dispatchEvent(new CustomEvent('chart:resume'))}
           style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
         />
       )}

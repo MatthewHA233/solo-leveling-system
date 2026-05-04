@@ -73,6 +73,7 @@ import type { FairyState } from './components/FairyHUD'
 import { HudFrame, HudCommandStrip, DataRibbon, NeonRule } from './components/hud'
 import { CloseConfirmModal } from './components/CloseConfirmModal'
 import Tooltip from './components/Tooltip'
+import { usePresenceDetection } from './hooks/usePresenceDetection'
 import { useDataDays, hasDataOrIsToday } from './hooks/useDataDays'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import soloLevelingLogo from './assets/SOLO LEVELING SYSTEM.png'
@@ -275,12 +276,24 @@ export default function App() {
   const [sessions, setSessions] = useState<readonly ChatSessionInfo[]>([])
   const [pickerOpen, setPickerOpen] = useState(false)
 
+  // ── Presence Detection ──
+  const { presence, videoRef } = usePresenceDetection(config.overlayEnabled)
+
   // 预热 mic 权限：防止首次长按 Alt 时弹出权限弹窗导致无反应
   useEffect(() => {
     navigator.mediaDevices.getUserMedia({ audio: true })
       .then(stream => stream.getTracks().forEach(t => t.stop()))
       .catch(() => {})
   }, [])
+
+  // 将人脸框数据实时发送到摄像头子窗口
+  useEffect(() => {
+    import('@tauri-apps/api/event').then(({ emitTo }) => {
+      emitTo('camera-preview', 'face-data', { faces: presence.faces }).catch(() => {
+        // 子窗口未开启时静默忽略
+      })
+    })
+  }, [presence.faces])
 
   // 摄像头子窗口开关
   const cameraWinRef = useRef<import('@tauri-apps/api/webviewWindow').WebviewWindow | null>(null)
@@ -1052,14 +1065,14 @@ export default function App() {
     const base = buildSystemPrompt(
       cfg.agentName, cfg.agentPersona, cfg.agentCallUser,
       cfg.mainQuest,
-      { goals, activityTags, appUsage, biliHistory },
+      { goals, activityTags, appUsage, biliHistory, presence },
     )
     const history = buildConversationSummary(
       chatMessagesRef.current.map((m) => ({ role: m.role, content: m.content || m.transcript || '' }))
     )
     systemPromptRef.current = history ? `${base}\n\n${history}` : base
     return systemPromptRef.current
-  }, [])
+  }, [presence])
   refreshSystemPromptRef.current = refreshSystemPrompt
 
   // ── System Prompt 预热 + 定时刷新（每分钟，供 Omni 模式热读）──
@@ -1516,6 +1529,13 @@ export default function App() {
     }}>
       {/* 全局 HUD 背景栅格（遮罩成椭圆渐隐） */}
       <div className="hud-grid-bg" style={{ zIndex: 0 }} />
+      {/* ── 隐藏摄像头（presence detection） ── */}
+      <video
+        ref={videoRef}
+        style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
+        muted
+        playsInline
+      />
 
       {/* ── Top Bar ── */}
       <div style={{
@@ -1772,6 +1792,8 @@ export default function App() {
                     onSend={handleSend}
                     aiMode={config.aiMode}
                     onToggleAiMode={() => handleConfigUpdate({ aiMode: config.aiMode === 'omni' ? 'regular' : 'omni' })}
+                    cameraReady={presence.ready}
+                    cameraPresent={presence.state === 'present'}
                     cameraWindowOpen={cameraWindowOpen}
                     onToggleCamera={toggleCameraWindow}
                     ttsEnabled={config.ttsEnabled}
