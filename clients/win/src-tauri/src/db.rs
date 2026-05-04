@@ -104,6 +104,43 @@ pub struct AppendChatMessagesRequest {
     pub messages: Vec<CreateChatMessageRequest>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct MessageSnippet {
+    pub role: String,
+    pub excerpt: String,    // 关键词上下文片段（前后约 N 个字符），原文中关键词不做高亮处理（前端做）
+    pub timestamp: String,  // 用于前端切会话后定位气泡
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionSearchHit {
+    pub session: ChatSession,
+    pub snippets: Vec<MessageSnippet>,
+}
+
+/// 在原文中找到关键词位置，返回关键词前后 ctx 字符的片段（截断时加 ...）
+/// 大小写不敏感匹配，但返回原文片段（保留原始大小写）
+fn build_excerpt(content: &str, query: &str, ctx: usize) -> String {
+    if query.is_empty() || content.is_empty() {
+        return content.chars().take(ctx * 2).collect();
+    }
+    let lower_content = content.to_lowercase();
+    let lower_query = query.to_lowercase();
+    let byte_idx = match lower_content.find(&lower_query) {
+        Some(i) => i,
+        None => return content.chars().take(ctx * 2).collect(),
+    };
+    // 转字节索引为字符索引（按字符数计算上下文窗口，避免切到 UTF-8 中段）
+    let char_idx_of_match = content[..byte_idx].chars().count();
+    let total_chars: Vec<char> = content.chars().collect();
+    let start = char_idx_of_match.saturating_sub(ctx);
+    let end = (char_idx_of_match + query.chars().count() + ctx).min(total_chars.len());
+    let mut excerpt = String::new();
+    if start > 0 { excerpt.push_str("..."); }
+    excerpt.extend(total_chars[start..end].iter());
+    if end < total_chars.len() { excerpt.push_str("..."); }
+    excerpt
+}
+
 #[derive(Debug, Deserialize)]
 pub struct UpdateChatSessionRequest {
     pub title: Option<String>,
@@ -778,6 +815,71 @@ impl Database {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    /// 全文搜索会话：按 title / summary / 任意一条 chat_messages.content LIKE 匹配
+    /// 每个匹配会话附带最多 3 条命中片段（用于前端高亮显示 + 跳转锚点）
+    pub async fn search_chat_sessions(&self, query: &str, limit: i64) -> Result<Vec<SessionSearchHit>, String> {
+        let conn = self.conn.lock().await;
+        // 转义 LIKE 元字符（%, _, \）以避免误匹配
+        let escaped = query.replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_");
+        let pattern = format!("%{}%", escaped);
+
+        // 先取匹配的 sessions（按更新时间倒序）
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.title, s.summary, s.created_at, s.updated_at
+             FROM chat_sessions s
+             WHERE s.title LIKE ?1 ESCAPE '\\'
+                OR s.summary LIKE ?1 ESCAPE '\\'
+                OR EXISTS (
+                    SELECT 1 FROM chat_messages m
+                    WHERE m.session_id = s.id AND m.content LIKE ?1 ESCAPE '\\'
+                )
+             ORDER BY s.updated_at DESC
+             LIMIT ?2"
+        ).map_err(|e| e.to_string())?;
+
+        let sessions: Vec<ChatSession> = stmt.query_map(params![&pattern, limit], |row| {
+            Ok(ChatSession {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                summary: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        }).map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // 每个 session 取所有命中 message 片段（防御性上限 200，正常会话很难触达）
+        let mut snippet_stmt = conn.prepare(
+            "SELECT role, content, timestamp
+             FROM chat_messages
+             WHERE session_id = ?1 AND content LIKE ?2 ESCAPE '\\'
+             ORDER BY timestamp DESC
+             LIMIT 200"
+        ).map_err(|e| e.to_string())?;
+
+        let mut out = Vec::with_capacity(sessions.len());
+        for s in sessions {
+            let snippets: Vec<MessageSnippet> = snippet_stmt
+                .query_map(params![&s.id, &pattern], |row| {
+                    let role: String = row.get(0)?;
+                    let content: Option<String> = row.get(1)?;
+                    let timestamp: String = row.get(2)?;
+                    Ok(MessageSnippet {
+                        role,
+                        excerpt: build_excerpt(content.as_deref().unwrap_or(""), query, 60),
+                        timestamp,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            out.push(SessionSearchHit { session: s, snippets });
+        }
+
+        Ok(out)
+    }
+
     /// 获取会话的所有消息
     pub async fn get_chat_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, String> {
         let conn = self.conn.lock().await;
@@ -844,6 +946,50 @@ impl Database {
         }
 
         Ok(())
+    }
+
+    /// 清理所有"空白会话"——没有任何 chat_messages 关联的 chat_session。
+    /// `except_id` 用于排除当前正在使用的会话，避免误删。返回被删的 session id 列表。
+    pub async fn delete_empty_chat_sessions(&self, except_id: Option<&str>) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().await;
+
+        // 先查出待删 ids（用于回传给前端做 UI 同步）
+        let (sql_select, ids): (&str, Vec<String>) = match except_id {
+            Some(eid) => {
+                let mut stmt = conn.prepare(
+                    "SELECT s.id FROM chat_sessions s
+                     LEFT JOIN chat_messages m ON m.session_id = s.id
+                     WHERE m.id IS NULL AND s.id != ?"
+                ).map_err(|e| e.to_string())?;
+                let rows = stmt.query_map(params![eid], |r| r.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?;
+                ("with_except", rows.filter_map(|r| r.ok()).collect())
+            }
+            None => {
+                let mut stmt = conn.prepare(
+                    "SELECT s.id FROM chat_sessions s
+                     LEFT JOIN chat_messages m ON m.session_id = s.id
+                     WHERE m.id IS NULL"
+                ).map_err(|e| e.to_string())?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?;
+                ("no_except", rows.filter_map(|r| r.ok()).collect())
+            }
+        };
+        let _ = sql_select;
+
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 批量删（chat_messages CASCADE 由 FK 处理；空会话本来也没消息）
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let del_sql = format!("DELETE FROM chat_sessions WHERE id IN ({})", placeholders);
+        conn.execute(&del_sql, rusqlite::params_from_iter(ids.iter()))
+            .map_err(|e| e.to_string())?;
+
+        log::info!("[Database] 清理空白会话 {} 条", ids.len());
+        Ok(ids)
     }
 
     /// 删除会话（含其所有消息）

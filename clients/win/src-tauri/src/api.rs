@@ -98,6 +98,12 @@ struct LimitQuery {
 }
 
 #[derive(Deserialize)]
+struct SessionSearchQuery {
+    q: String,
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
 struct BiliResultPayload {
     ok: Option<serde_json::Value>,
     error: Option<String>,
@@ -282,6 +288,22 @@ async fn list_chat_sessions(
     }
 }
 
+/// GET /api/sessions/search?q=xxx&limit=N
+async fn search_chat_sessions(
+    State(state): State<ApiState>,
+    Query(query): Query<SessionSearchQuery>,
+) -> Json<ApiResponse<Vec<crate::db::SessionSearchHit>>> {
+    let q = query.q.trim();
+    if q.is_empty() {
+        return Json(ApiResponse::ok(Vec::new()));
+    }
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    match state.db.search_chat_sessions(q, limit).await {
+        Ok(hits) => Json(ApiResponse::ok(hits)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
 /// POST /api/sessions
 async fn create_chat_session(
     State(state): State<ApiState>,
@@ -334,6 +356,24 @@ async fn delete_chat_session(
 ) -> Json<ApiResponse<()>> {
     match state.db.delete_chat_session(&id).await {
         Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct CleanupQuery {
+    except: Option<String>,
+}
+
+/// POST /api/sessions/cleanup_empty?except=ID
+/// 删除所有没有任何 chat_messages 的会话；except 参数排除当前正在使用的会话 id。
+/// 返回被删的 session id 列表，前端用于本地状态同步。
+async fn cleanup_empty_chat_sessions(
+    State(state): State<ApiState>,
+    Query(q): Query<CleanupQuery>,
+) -> Json<ApiResponse<Vec<String>>> {
+    match state.db.delete_empty_chat_sessions(q.except.as_deref()).await {
+        Ok(ids) => Json(ApiResponse::ok(ids)),
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -774,6 +814,8 @@ pub fn create_router(
         .route("/api/activities/data-days", get(get_data_days))
         .route("/api/activities/{id}", delete(delete_activity))
         .route("/api/sessions", get(list_chat_sessions).post(create_chat_session))
+        .route("/api/sessions/search", get(search_chat_sessions))
+        .route("/api/sessions/cleanup_empty", post(cleanup_empty_chat_sessions))
         .route("/api/sessions/{id}/messages", get(get_chat_messages).post(append_chat_messages))
         .route("/api/sessions/{id}", patch(update_chat_session).delete(delete_chat_session))
         .route("/api/bilibili/result", post(recv_bili_result))

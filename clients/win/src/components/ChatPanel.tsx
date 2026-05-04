@@ -216,6 +216,16 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
           0%,100% { opacity: 0.4; }
           50%      { opacity: 0.2; }
         }
+        /* 历史会话搜索命中片段跳转后的高亮闪烁（外层 div data-msg-ts） */
+        @keyframes msgJumpFlash {
+          0%,100% { box-shadow: 0 0 0 0 ${theme.warningOrange}00; }
+          25%     { box-shadow: 0 0 0 3px ${theme.warningOrange}66, 0 0 18px ${theme.warningOrange}88; }
+          75%     { box-shadow: 0 0 0 3px ${theme.warningOrange}33, 0 0 12px ${theme.warningOrange}44; }
+        }
+        .msg-jump-flash {
+          animation: msgJumpFlash 1.6s ease-in-out;
+          border-radius: 4px;
+        }
       `}</style>
 
       {/* ── Header ── */}
@@ -778,7 +788,7 @@ function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDeb
   // 语音消息 → 音频气泡 + ASR 转写文字（气泡下方）
   if (isUser && message.audioUrl) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, animation: 'fadeSlideIn 0.2s ease' }}>
+      <div data-msg-ts={message.timestamp} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, animation: 'fadeSlideIn 0.2s ease' }}>
         <AudioBubble audioUrl={message.audioUrl} durationMs={message.durationMs} />
         {message.transcript && (
           <div style={{
@@ -799,7 +809,7 @@ function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDeb
   }
 
   return (
-    <div style={{
+    <div data-msg-ts={message.timestamp} style={{
       display: 'flex',
       justifyContent: isUser ? 'flex-end' : 'flex-start',
       alignItems: 'flex-end',

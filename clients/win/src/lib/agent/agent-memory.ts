@@ -272,6 +272,30 @@ export async function getRecentChatSessions(limit = 1): Promise<ChatSessionInfo[
   return json.success ? json.data : []
 }
 
+export interface MessageSnippet {
+  readonly role: string
+  readonly excerpt: string    // 关键词上下文片段（前后约 60 字符）
+  readonly timestamp: string  // 用于切会话后定位气泡
+}
+
+export interface SessionSearchHit {
+  readonly session: ChatSessionInfo
+  readonly snippets: readonly MessageSnippet[]
+}
+
+/**
+ * 全文搜索会话（title / summary / 任意一条 messages.content LIKE）
+ * 每个匹配会话附带最多 3 条 message 命中片段
+ */
+export async function searchChatSessions(query: string, limit = 50): Promise<SessionSearchHit[]> {
+  const q = query.trim()
+  if (!q) return []
+  const url = `${API_BASE}/api/sessions/search?q=${encodeURIComponent(q)}&limit=${limit}`
+  const res = await fetch(url)
+  const json = await res.json() as { success: boolean; data: SessionSearchHit[] }
+  return json.success ? json.data : []
+}
+
 export async function fetchSessionMessages(sessionId: string): Promise<SessionMessage[]> {
   const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/messages`)
   const json = await res.json() as { success: boolean; data: ApiChatMessage[] }
@@ -315,6 +339,16 @@ export async function patchSession(
 
 export async function deleteChatSession(sessionId: string): Promise<void> {
   await fetch(`${API_BASE}/api/sessions/${sessionId}`, { method: 'DELETE' })
+}
+
+/** 清理所有没有任何消息的空白会话（exceptId 排除当前会话）。返回被删 id 列表 */
+export async function cleanupEmptyChatSessions(exceptId: string | null): Promise<string[]> {
+  const url = exceptId
+    ? `${API_BASE}/api/sessions/cleanup_empty?except=${encodeURIComponent(exceptId)}`
+    : `${API_BASE}/api/sessions/cleanup_empty`
+  const res = await fetch(url, { method: 'POST' })
+  const json = await res.json() as { success: boolean; data: string[] }
+  return json.success ? json.data : []
 }
 
 /** 应用启动时调用：恢复最近会话（4h内）或创建新会话 */

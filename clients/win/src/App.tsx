@@ -29,6 +29,7 @@ import type { ApiRequestSnapshot } from './lib/llm/api'
 import {
   initChatSession, persistMessages, patchSession,
   fetchSessionMessages, getRecentChatSessions, createChatSession, deleteChatSession,
+  cleanupEmptyChatSessions,
 } from './lib/agent/agent-memory'
 import type { ChatSessionInfo, SessionMessage } from './lib/agent/agent-memory'
 import { generateSessionTitle } from './lib/ai/session-title'
@@ -1466,8 +1467,23 @@ export default function App() {
   }, [activities, config, chatMessages])
 
   // ── 切换 / 新建会话 ──
-  const switchSession = useCallback(async (sessionId: string) => {
-    if (sessionId === sessionIdRef.current) return
+  const switchSession = useCallback(async (sessionId: string, jumpToTimestamp?: string) => {
+    const performJump = () => {
+      if (!jumpToTimestamp) return
+      // 等 React commit + layout 完成（两个 rAF），再定位 + scroll + 闪
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const el = document.querySelector<HTMLElement>(`[data-msg-ts="${CSS.escape(jumpToTimestamp)}"]`)
+        if (!el) return
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('msg-jump-flash')
+        window.setTimeout(() => el.classList.remove('msg-jump-flash'), 1800)
+      }))
+    }
+
+    if (sessionId === sessionIdRef.current) {
+      performJump()
+      return
+    }
     try {
       const msgs = await fetchSessionMessages(sessionId)
       sessionIdRef.current = sessionId
@@ -1476,6 +1492,7 @@ export default function App() {
       sessionTitleRef.current = info?.title || '新会话'
       conversationRef.current = sessionMessagesToLLMHistory(msgs).slice(-12)
       setChatMessages(sessionMessagesToChatMessages(msgs, audioDirRef.current))
+      performJump()
     } catch {
       // 加载失败静默忽略
     }
@@ -1786,7 +1803,10 @@ export default function App() {
                       if (pickerOpen) {
                         setPickerOpen(false)
                       } else {
-                        getRecentChatSessions(50)
+                        // 顺手清理之前留下的空白会话（无任何消息），不动当前会话
+                        cleanupEmptyChatSessions(sessionIdRef.current)
+                          .catch(() => [])
+                          .then(() => getRecentChatSessions(50))
                           .then((s) => setSessions(s))
                           .catch(() => {})
                         setPickerOpen(true)
@@ -1834,7 +1854,7 @@ export default function App() {
           sessions={sessions}
           currentSessionId={sessionIdRef.current}
           dockRight={340}
-          onSelect={(id) => { switchSession(id) }}
+          onSelect={(id, ts) => { switchSession(id, ts) }}
           onNewSession={() => { newSession() }}
           onDelete={async (id) => {
             try { await deleteChatSession(id) } catch {}
