@@ -51,15 +51,25 @@ function filterByTime<T extends { start_at: string; end_at: string }>(
   })
 }
 
-/** 按关键词过滤（大小写不敏感子串匹配） */
+/** 按关键词过滤（大小写不敏感子串匹配，支持单个字符串或字符串数组取并集） */
 function filterByKeyword<T>(
   spans: T[],
   keyword: unknown,
   getFields: (s: T) => string[],
 ): T[] {
-  if (!keyword || typeof keyword !== 'string') return spans
-  const kw = keyword.toLowerCase()
-  return spans.filter(s => getFields(s).some(f => f.toLowerCase().includes(kw)))
+  const kws: string[] = []
+  if (typeof keyword === 'string' && keyword.trim()) {
+    kws.push(keyword.toLowerCase())
+  } else if (Array.isArray(keyword)) {
+    for (const k of keyword) {
+      if (typeof k === 'string' && k.trim()) kws.push(k.toLowerCase())
+    }
+  }
+  if (kws.length === 0) return spans
+  return spans.filter(s => {
+    const fields = getFields(s).map(f => f.toLowerCase())
+    return kws.some(kw => fields.some(f => f.includes(kw)))
+  })
 }
 
 /**
@@ -126,12 +136,20 @@ const getAppUsage: Tool = {
       description:
         '查询 ManicTime 应用使用记录（哪个 app、哪个窗口标题、什么时间段）。' +
         '支持按日期、精确时间范围（含跨天）、关键词过滤。' +
-        '适用于："今天下午用了什么软件""这周有没有打开 VSCode""昨晚在干嘛"等查询。',
+        '适用于："今天下午用了什么软件""这周有没有打开 VSCode""昨晚在干嘛"等查询。' +
+        ' keyword 可传字符串数组一次过滤多个候选词（取并集），优先用数组而不是多次调用本工具。' +
+        '返回"无匹配的应用使用记录"即代表该时段内确实没有相关使用，请直接如实告知主人，不要换词重试或猜测——主人只是没用过。',
       parameters: {
         type: 'object',
         properties: {
           ...TIME_RANGE_PARAMS,
-          keyword: { type: 'string', description: '按应用名或窗口标题过滤（大小写不敏感子串）' },
+          keyword: {
+            description: '按应用名或窗口标题过滤（大小写不敏感子串）。可以是字符串或字符串数组（数组取并集，一次查多个候选）',
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+          },
         },
         required: [],
       },
@@ -164,12 +182,20 @@ const getActivityTags: Tool = {
       description:
         '查询 ManicTime 活动标签（如"工作""学习""娱乐"等手动打的分类标签）。' +
         '支持按日期、精确时间范围（含跨天）、关键词过滤。' +
-        '适用于："今天学习了多久""这周工作时间怎么分布"等查询。',
+        '适用于："今天学习了多久""这周工作时间怎么分布"等查询。' +
+        ' keyword 可传字符串数组一次过滤多个候选词（取并集），优先用数组而不是多次调用本工具。' +
+        '返回"无匹配的活动标签记录"即代表该时段内确实没有相关标签，请直接如实告知主人，不要换词重试。',
       parameters: {
         type: 'object',
         properties: {
           ...TIME_RANGE_PARAMS,
-          keyword: { type: 'string', description: '按标签名过滤（大小写不敏感子串）' },
+          keyword: {
+            description: '按标签名过滤（大小写不敏感子串）。可以是字符串或字符串数组（数组取并集，一次查多个候选）',
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+          },
         },
         required: [],
       },
@@ -202,12 +228,20 @@ const getBiliHistory: Tool = {
       description:
         '查询主人 B 站观看历史（视频标题、URL、观看时间）。' +
         '支持按日期、精确时间范围（含跨天）、关键词过滤。' +
-        '适用于："今晚看了什么视频""这周看过什么游戏视频""昨晚的B站记录"等查询。',
+        '适用于："今晚看了什么视频""这周看过什么游戏视频""昨晚的B站记录"等查询。' +
+        ' keyword 可传字符串数组一次过滤多个候选词（取并集），优先用数组而不是多次调用本工具。' +
+        '返回"无匹配的 B 站观看记录"即代表该时段内确实没有相关视频，请直接如实告知主人，不要换词重试。',
       parameters: {
         type: 'object',
         properties: {
           ...TIME_RANGE_PARAMS,
-          keyword: { type: 'string', description: '按视频标题过滤（大小写不敏感子串）' },
+          keyword: {
+            description: '按视频标题过滤（大小写不敏感子串）。可以是字符串或字符串数组（数组取并集，一次查多个候选）',
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+          },
         },
         required: [],
       },
