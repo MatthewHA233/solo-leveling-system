@@ -378,6 +378,110 @@ async fn cleanup_empty_chat_sessions(
     }
 }
 
+#[derive(Deserialize)]
+struct LocalFileQuery {
+    path: String,
+}
+
+/// GET /api/local-video?path=<absolute-path>
+/// 本地视频流端点（绕过 Tauri asset.localhost — 它响应里漏 Accept-Ranges 头，Chromium 不肯走流式）
+/// 完整支持 Range：返回 206 + Content-Range + Accept-Ranges: bytes
+async fn serve_local_video(
+    Query(q): Query<LocalFileQuery>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    use axum::body::Body;
+    use axum::http::header;
+    use tokio::fs::File;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+    use tokio_util::io::ReaderStream;
+
+    let path = std::path::PathBuf::from(&q.path);
+
+    // 安全：拒绝目录跳转 + 仅允许常见视频/音频后缀
+    let ok_ext = path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .map(|e| matches!(e.as_str(), "mp4" | "m4v" | "mov" | "webm" | "mkv" | "wav" | "mp3" | "m4a" | "aac"))
+        .unwrap_or(false);
+    if !ok_ext {
+        return (StatusCode::BAD_REQUEST, "unsupported extension").into_response();
+    }
+
+    let mut file = match File::open(&path).await {
+        Ok(f) => f,
+        Err(_) => return (StatusCode::NOT_FOUND, "file not found").into_response(),
+    };
+    let total = match file.metadata().await {
+        Ok(m) => m.len(),
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "metadata failed").into_response(),
+    };
+
+    let content_type = path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .map(|e| match e.as_str() {
+            "mp4" | "m4v" => "video/mp4",
+            "mov"         => "video/quicktime",
+            "webm"        => "video/webm",
+            "mkv"         => "video/x-matroska",
+            "wav"         => "audio/wav",
+            "mp3"         => "audio/mpeg",
+            "m4a" | "aac" => "audio/mp4",
+            _ => "application/octet-stream",
+        })
+        .unwrap_or("application/octet-stream");
+
+    // 解析 Range: bytes=START-END （END 可省）
+    let range_str = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    let (start, end, status) = match range_str.and_then(|s| parse_byte_range(s, total)) {
+        Some((s, e)) => (s, e, StatusCode::PARTIAL_CONTENT),
+        None => (0, total.saturating_sub(1), StatusCode::OK),
+    };
+
+    if start >= total {
+        return (StatusCode::RANGE_NOT_SATISFIABLE, "out of range").into_response();
+    }
+    if let Err(_) = file.seek(SeekFrom::Start(start)).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "seek failed").into_response();
+    }
+    let length = end - start + 1;
+    let limited = file.take(length);
+    let body = Body::from_stream(ReaderStream::new(limited));
+
+    let mut resp = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, length.to_string())
+        .header(header::CACHE_CONTROL, "no-cache");
+
+    if status == StatusCode::PARTIAL_CONTENT {
+        resp = resp.header(
+            header::CONTENT_RANGE,
+            format!("bytes {}-{}/{}", start, end, total),
+        );
+    }
+
+    resp.body(body).unwrap_or_else(|_| {
+        (StatusCode::INTERNAL_SERVER_ERROR, "build body failed").into_response()
+    })
+}
+
+/// 解析 "bytes=START-END" / "bytes=START-" 形式；返回闭区间 (start, end)。
+/// 不支持 multi-range（少见，<video> 不会发）
+fn parse_byte_range(s: &str, total: u64) -> Option<(u64, u64)> {
+    let s = s.strip_prefix("bytes=")?;
+    let (lo, hi) = s.split_once('-')?;
+    let start: u64 = lo.trim().parse().ok()?;
+    let end: u64 = if hi.trim().is_empty() {
+        total.saturating_sub(1)
+    } else {
+        hi.trim().parse().ok()?
+    };
+    if end >= total { Some((start, total - 1)) } else { Some((start, end)) }
+}
+
 /// 从 Bilibili API JSON 响应中提取可 upsert 的条目
 fn extract_bili_items(data: &serde_json::Value) -> Vec<UpsertBiliItem> {
     let list = data
@@ -816,6 +920,7 @@ pub fn create_router(
         .route("/api/sessions", get(list_chat_sessions).post(create_chat_session))
         .route("/api/sessions/search", get(search_chat_sessions))
         .route("/api/sessions/cleanup_empty", post(cleanup_empty_chat_sessions))
+        .route("/api/local-video", get(serve_local_video))
         .route("/api/sessions/{id}/messages", get(get_chat_messages).post(append_chat_messages))
         .route("/api/sessions/{id}", patch(update_chat_session).delete(delete_chat_session))
         .route("/api/bilibili/result", post(recv_bili_result))
@@ -867,6 +972,27 @@ pub async fn start_server(
             return;
         }
     };
+
+    // 关键：禁用 socket 句柄继承
+    // Windows 上 std::process::Command::spawn 默认会让所有 handle 被子进程继承。
+    // 主进程退出时，子进程（webview2 + 我们 spawn 的 cmd helper）会继续持有
+    // listener socket 的句柄 → OS 不释放端口 → 新进程 bind 永远失败 → 数据全空。
+    // 在 listener 创建后立即 SetHandleInformation HANDLE_FLAG_INHERIT=0 修这个问题。
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        use windows_sys::Win32::Foundation::{HANDLE, SetHandleInformation, HANDLE_FLAG_INHERIT};
+        let raw_socket = listener.as_raw_socket();
+        unsafe {
+            // SOCKET 是 usize/HANDLE 别名，可直接当 HANDLE 用
+            if SetHandleInformation(raw_socket as HANDLE, HANDLE_FLAG_INHERIT, 0) == 0 {
+                let err = std::io::Error::last_os_error();
+                log::warn!("[API] SetHandleInformation 失败: {} (重启可能仍 hang)", err);
+            } else {
+                log::info!("[API] socket 句柄已禁用继承（防止 webview 子进程持有）");
+            }
+        }
+    }
 
     if let Err(e) = axum::serve(listener, app).await {
         log::error!("[API] 服务器错误: {}", e);

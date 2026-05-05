@@ -4,11 +4,12 @@
 // ══════════════════════════════════════════════
 
 import { useState, useCallback, useEffect } from 'react'
-import { X, ChevronRight, Mic, Lock, Database, Tv2, Bot, Eye, EyeOff, Copy, Check } from 'lucide-react'
+import { X, ChevronRight, Mic, Lock, Database, Tv2, Bot, Eye, EyeOff, Copy, Check, Cpu } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { theme } from '../theme'
 import type { AgentConfig } from '../lib/agent/agent-config'
+import type { GpuPrefStatus } from '../lib/local-api'
 import { MagneticButton } from './NeonUI'
 import Tooltip from './Tooltip'
 
@@ -66,9 +67,27 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
   const [dbInfo, setDbInfo] = useState<DbInfo | null>(null)
   const [migrating, setMigrating] = useState(false)
 
+  // ── 图形偏好状态 ──
+  const [gpuPref, setGpuPref] = useState<GpuPrefStatus | null>(null)
+  const [gpuToggling, setGpuToggling] = useState(false)
+
   useEffect(() => {
     invoke<DbInfo>('get_db_info').then(setDbInfo).catch(console.error)
+    invoke<GpuPrefStatus>('get_gpu_pref_status').then(setGpuPref).catch(() => {})
   }, [])
+
+  const toggleDiscreteGpu = useCallback(async (enable: boolean) => {
+    setGpuToggling(true)
+    try {
+      const next = await invoke<GpuPrefStatus>('set_gpu_pref_high_performance', { enable })
+      setGpuPref(next)
+      onUpdate({ useDiscreteGpu: enable })
+    } catch (e) {
+      console.error('[GpuPref] toggle failed:', e)
+    } finally {
+      setGpuToggling(false)
+    }
+  }, [onUpdate])
 
   const update = useCallback((field: string, value: string) => {
     setDraft((prev) => ({ ...prev, [field]: value }))
@@ -276,6 +295,62 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
           </div>
         </Section>
 
+        {/* ── 图形性能 ── */}
+        <Section title="图形性能" icon={Cpu}>
+          <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 8, lineHeight: 1.55 }}>
+            笔记本独显高性能模式：写入 Windows 图形偏好（HKCU 注册表），让本应用与 WebView2 子进程默认使用独立显卡。
+            <span style={{ color: theme.warningOrange }}> 修改后需要完全重启应用才能生效。</span>
+          </div>
+
+          <label style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            padding: '10px 12px',
+            background: 'rgba(255,255,255,0.03)',
+            border: `1px solid ${theme.glassBorder}`,
+            borderRadius: 4, marginBottom: 10,
+            cursor: gpuToggling ? 'wait' : 'pointer',
+            opacity: gpuToggling ? 0.6 : 1,
+          }}>
+            <input
+              type="checkbox"
+              checked={config.useDiscreteGpu}
+              disabled={gpuToggling}
+              onChange={(e) => toggleDiscreteGpu(e.target.checked)}
+              style={{ accentColor: theme.electricBlue, width: 14, height: 14 }}
+            />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, color: theme.textPrimary }}>使用独立显卡（更丝滑）</div>
+              <div style={{ fontSize: 10, color: theme.textMuted, marginTop: 2 }}>
+                台式机或仅有集显时无效；笔记本默认走集显，开启后流畅但更耗电。
+              </div>
+            </div>
+          </label>
+
+          {gpuPref && (
+            <div style={{
+              fontSize: 11, fontFamily: "'Exo 2', sans-serif",
+              background: 'rgba(255,255,255,0.025)',
+              border: `1px solid ${theme.glassBorder}`,
+              borderRadius: 4, padding: '8px 12px',
+              display: 'grid', gap: 6,
+            }}>
+              <GpuPrefRow
+                label="solo-agent.exe"
+                path={gpuPref.self_exe_path}
+                set={gpuPref.self_exe_pref_set}
+              />
+              <GpuPrefRow
+                label={gpuPref.edge_version
+                  ? `msedgewebview2.exe (v${gpuPref.edge_version})`
+                  : 'msedgewebview2.exe'}
+                path={gpuPref.webview2_path ?? '— 未检测到 WebView2 Runtime —'}
+                set={gpuPref.webview2_pref_set}
+                missing={!gpuPref.webview2_path}
+              />
+            </div>
+          )}
+        </Section>
+
         {/* ── 数据库 ── */}
         <Section title="数据库" icon={Database}>
           <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 8 }}>
@@ -316,6 +391,41 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
             {migrating ? '迁移中...' : '更改存储位置'}
           </MagneticButton>
         </Section>
+      </div>
+    </div>
+  )
+}
+
+// ── 图形偏好状态行 ──
+function GpuPrefRow({ label, path, set, missing = false }: {
+  label: string
+  path: string
+  set: boolean
+  missing?: boolean
+}) {
+  const statusColor = missing
+    ? theme.warningOrange
+    : set ? theme.expGreen : theme.textMuted
+  const statusText = missing ? '未找到' : set ? '已配置' : '未配置'
+  return (
+    <div style={{ display: 'grid', gap: 2 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <span style={{ color: theme.textSecondary, fontSize: 11 }}>{label}</span>
+        <span style={{
+          color: statusColor, fontSize: 10, fontWeight: 700, letterSpacing: 0.5,
+          padding: '1px 6px',
+          border: `1px solid ${statusColor}66`,
+          borderRadius: 2,
+        }}>
+          {statusText}
+        </span>
+      </div>
+      <div style={{
+        color: missing ? theme.textMuted : theme.textPrimary,
+        fontSize: 10, wordBreak: 'break-all',
+        opacity: missing ? 0.6 : 1,
+      }}>
+        {path}
       </div>
     </div>
   )

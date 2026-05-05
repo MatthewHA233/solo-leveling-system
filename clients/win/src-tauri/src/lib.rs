@@ -13,6 +13,7 @@ mod qwen_omni;
 mod qwen_video;
 mod bili_download;
 mod ffmpeg;
+mod gpu_pref;
 #[cfg(windows)]
 mod hotkey;
 
@@ -1146,6 +1147,33 @@ fn cursor_pos_phys() -> Option<(i32, i32)> {
     if unsafe { GetCursorPos(&mut pt) } != 0 { Some((pt.x, pt.y)) } else { None }
 }
 
+/// 读取当前 Windows 图形偏好状态（HKCU UserGpuPreferences 注册表）
+#[tauri::command]
+async fn get_gpu_pref_status() -> gpu_pref::GpuPrefStatus {
+    gpu_pref::read_status()
+}
+
+/// 写入 / 清除 solo-agent.exe + msedgewebview2.exe 的"高性能"图形偏好
+#[tauri::command]
+async fn set_gpu_pref_high_performance(enable: bool) -> Result<gpu_pref::GpuPrefStatus, String> {
+    gpu_pref::apply(enable)
+}
+
+/// 重启应用（图形偏好首次配置后让用户立刻享受新 GPU）
+///
+/// axum listener socket 在 bind 后已通过 SetHandleInformation 禁用句柄继承
+/// （见 api.rs::start_server），主进程 process::exit 后 OS 会立即释放端口。
+/// 所以这里只要 spawn 一份新进程再退出即可，不需要 helper 脚本。
+#[tauri::command]
+fn restart_app(_app: tauri::AppHandle) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("读取 exe 路径失败: {}", e))?;
+    log::info!("[Restart] spawning new instance: {}", exe.display());
+    std::process::Command::new(&exe)
+        .spawn()
+        .map_err(|e| format!("spawn 新进程失败: {}", e))?;
+    std::process::exit(0);
+}
+
 /// JS 创建完 fairy-window 后调用此命令，启动 Rust 侧光标监控
 /// （JS 创建保证 Tauri IPC bridge 正常注入，Rust 监控保证点击穿透精准）
 #[tauri::command]
@@ -1441,6 +1469,9 @@ pub fn run() {
             save_audio_file,
             get_audio_dir,
             setup_fairy,
+            get_gpu_pref_status,
+            set_gpu_pref_high_performance,
+            restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

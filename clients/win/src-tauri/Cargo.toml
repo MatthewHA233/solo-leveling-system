@@ -38,16 +38,18 @@ rusqlite = { version = "0.33", features = ["bundled"] }
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
+tokio-util = { version = "0.7", features = ["io"] }   # ReaderStream，给视频流端点用
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "multipart"] }
 
-# Windows 全局热键钩子
+# Windows 全局热键钩子 + 注册表读写（图形偏好）
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
+winreg = "0.55"

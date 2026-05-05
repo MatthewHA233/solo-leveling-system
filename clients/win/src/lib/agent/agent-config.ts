@@ -69,6 +69,14 @@ export interface AgentConfig {
   readonly biliDownloadPath: string
   /** 下载画质偏好；'auto' = 取账号能拿到的最高清晰度 */
   readonly biliDownloadQuality: 'auto' | '4k' | '1080p_plus' | '1080p' | '720p' | '480p'
+
+  // ── 图形性能 ──
+  /**
+   * 笔记本独显高性能模式：写入 HKCU UserGpuPreferences 让 solo-agent.exe
+   * 与 msedgewebview2.exe 走独显（默认 Windows 给电源敏感的应用分配集显，
+   * 导致 WebView2 软合成卡顿）。修改后下次启动应用生效。
+   */
+  readonly useDiscreteGpu: boolean
 }
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -136,6 +144,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
   biliAutoCreate: true,
   biliDownloadPath: 'E:\\BiliDownloads',
   biliDownloadQuality: 'auto',
+
+  useDiscreteGpu: true,
 }
 
 // ── Load / Save ──

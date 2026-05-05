@@ -9,9 +9,15 @@
 // ══════════════════════════════════════════════
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import PrepOverlay from './PrepOverlay'
+
+// 走 axum 49733 的 /api/local-video，不用 Tauri asset.localhost
+// （asset.localhost 响应漏 Accept-Ranges 头，Chromium 不肯走流式播放，会卡死在初始 buffered 末端）
+const VIDEO_API_BASE = 'http://localhost:49733'
+const buildVideoSrc = (path: string) =>
+  `${VIDEO_API_BASE}/api/local-video?path=${encodeURIComponent(path)}`
 
 // 父级若直接传 inline () => {...} 会让 useEffect 反复 fire，
 // 用 ref 把 onError 稳住，effect 只依赖 filePath
@@ -138,6 +144,10 @@ const HudVideoPlayer = forwardRef<HudVideoHandle, Props>(function HudVideoPlayer
     onErrorRef.current?.(msg)
   }
 
+  // 检测当前进程是否处于"已配高性能但还在集显"——由 App.tsx 启动时写 sessionStorage
+  const gpuPendingRestart = typeof window !== 'undefined'
+    && window.sessionStorage.getItem('solo:gpuPendingRestart') === '1'
+
   return (
     <div style={{
       width: '100%', aspectRatio: '16 / 9',
@@ -148,7 +158,7 @@ const HudVideoPlayer = forwardRef<HudVideoHandle, Props>(function HudVideoPlayer
       {resolvedPath && (
         <video
           ref={videoRef}
-          src={convertFileSrc(resolvedPath)}
+          src={buildVideoSrc(resolvedPath)}
           controls
           preload="metadata"
           onLoadedMetadata={handleLoadedMetadata}
@@ -160,6 +170,35 @@ const HudVideoPlayer = forwardRef<HudVideoHandle, Props>(function HudVideoPlayer
 
       {(stage === 'preparing' || stage === 'idle') && (
         <PrepOverlay phase={phase} encoder={encoder} />
+      )}
+
+      {gpuPendingRestart && stage === 'ready' && (
+        <div style={{
+          position: 'absolute', top: 8, left: 8, right: 8,
+          padding: '6px 10px',
+          background: 'rgba(255,170,30,0.88)',
+          color: '#1a0d00',
+          fontSize: 11, fontFamily: 'monospace', fontWeight: 700,
+          letterSpacing: 0.3, lineHeight: 1.5,
+          boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+          display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <span style={{ flex: 1 }}>当前还在集显模式，重启应用后会自动切换到独显，视频会更流畅</span>
+          <button
+            onClick={() => { invoke('restart_app').catch(() => {}) }}
+            style={{
+              padding: '3px 10px',
+              background: 'rgba(26,13,0,0.9)',
+              color: 'rgba(255,200,80,0.95)',
+              border: '1px solid rgba(26,13,0,0.6)',
+              fontSize: 10, fontFamily: 'monospace', fontWeight: 800,
+              letterSpacing: 0.5, cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            立即重启
+          </button>
+        </div>
       )}
 
       {stage === 'failed' && errMsg && (

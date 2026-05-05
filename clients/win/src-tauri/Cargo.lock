@@ -4159,11 +4159,13 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-tungstenite",
+ "tokio-util",
  "tower",
  "tower-http",
  "url",
  "uuid",
  "windows-sys 0.59.0",
+ "winreg",
 ]
 
 [[package]]

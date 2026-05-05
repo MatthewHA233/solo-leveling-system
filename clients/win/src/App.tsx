@@ -286,6 +286,56 @@ export default function App() {
       .catch(() => {})
   }, [])
 
+  // 启动时同步 Windows 图形偏好（HKCU UserGpuPreferences）+ 探测当前 GPU
+  // 首次配置：5 秒小 toast 提示「已启用独显高性能，下次启动生效」
+  // 当前会话已是独显但开关关掉的 / 当前会话不是独显但开关开了的：标记 pending-restart
+  // 让 HudVideoPlayer 等"重活"组件看到时再单独提示用户重启
+  const [gpuToastVisible, setGpuToastVisible] = useState(false)
+  useEffect(() => {
+    const detectCurrentGpuIsDiscrete = (): boolean => {
+      try {
+        const c = document.createElement('canvas')
+        const gl = c.getContext('webgl') as WebGLRenderingContext | null
+        const ext = gl?.getExtension('WEBGL_debug_renderer_info')
+        if (!gl || !ext) return false
+        const renderer = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL))
+        // NVIDIA / AMD / Radeon → 独显；Intel → 集显
+        return /NVIDIA|AMD|Radeon|GeForce/i.test(renderer)
+      } catch {
+        return false
+      }
+    }
+
+    ;(async () => {
+      try {
+        const before = await invoke<{
+          self_exe_pref_set: boolean
+          webview2_path: string | null
+          webview2_pref_set: boolean
+        }>('get_gpu_pref_status')
+        const wasFullyConfigured = before.self_exe_pref_set
+          && (before.webview2_path === null || before.webview2_pref_set)
+        await invoke('set_gpu_pref_high_performance', { enable: config.useDiscreteGpu })
+
+        // 标记当前会话是否处于"等重启"状态：开关开但还没切到独显
+        const onDiscrete = detectCurrentGpuIsDiscrete()
+        if (config.useDiscreteGpu && !onDiscrete) {
+          window.sessionStorage.setItem('solo:gpuPendingRestart', '1')
+        } else {
+          window.sessionStorage.removeItem('solo:gpuPendingRestart')
+        }
+
+        if (config.useDiscreteGpu && !wasFullyConfigured) {
+          setGpuToastVisible(true)  // 常驻显示，等用户主动选择"立即重启"或"稍后"
+        }
+      } catch {
+        // 非 Windows / 注册表权限错误时静默
+      }
+    })()
+    // 仅启动时跑一次；后续改 toggle 由 SettingsPanel 自己直接调命令
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // 将人脸框数据实时发送到摄像头子窗口
   useEffect(() => {
     import('@tauri-apps/api/event').then(({ emitTo }) => {
@@ -1914,6 +1964,62 @@ export default function App() {
         onUpdate={handleConfigUpdate}
         onClose={() => setShowModels(false)}
       />
+
+      {/* 首次启用独显高性能 → 右上角橙色 toast，常驻直到用户选择"立即重启"或"稍后" */}
+      {gpuToastVisible && (
+        <div
+          style={{
+            position: 'fixed',
+            right: 18, top: 18,
+            zIndex: 99999,
+            padding: '12px 14px',
+            background: 'rgba(38,22,4,0.96)',
+            border: `1px solid ${theme.warningOrange}AA`,
+            color: theme.textPrimary,
+            fontFamily: theme.fontBody,
+            fontSize: 12, lineHeight: 1.5,
+            boxShadow: `0 0 0 1px ${theme.warningOrange}33, 0 6px 24px rgba(0,0,0,0.55), 0 0 18px ${theme.warningOrange}44`,
+            maxWidth: 340,
+            animation: 'gpuToastIn 0.25s ease',
+          }}
+        >
+          <div style={{ color: theme.warningOrange, fontWeight: 800, marginBottom: 4, letterSpacing: 0.5 }}>
+            已启用独显高性能
+          </div>
+          <div style={{ color: theme.textSecondary, marginBottom: 10 }}>
+            重启应用后会自动切换到独立显卡；可在 设置 → 图形性能 中关闭。
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+            <button
+              onClick={() => setGpuToastVisible(false)}
+              style={{
+                padding: '4px 12px',
+                background: 'transparent',
+                border: `1px solid ${theme.glassBorder}`,
+                color: theme.textSecondary, cursor: 'pointer',
+                fontSize: 11, fontFamily: theme.fontBody,
+              }}
+            >
+              下次再说
+            </button>
+            <button
+              onClick={() => { invoke('restart_app').catch(() => {}) }}
+              style={{
+                padding: '4px 12px',
+                background: `${theme.warningOrange}22`,
+                border: `1px solid ${theme.warningOrange}AA`,
+                color: theme.warningOrange, cursor: 'pointer',
+                fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+                fontFamily: theme.fontBody,
+                textShadow: `0 0 6px ${theme.warningOrange}88`,
+              }}
+            >
+              立即重启
+            </button>
+          </div>
+        </div>
+      )}
+      <style>{`@keyframes gpuToastIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }`}</style>
     </div>
   )
 }
