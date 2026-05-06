@@ -1,16 +1,71 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 /* 背景由各窗口的根容器负责，不在 body 全局设置（避免 fairy 透明窗口出现矩形底色）*/
 
-/* ── Custom Scrollbar ── */
-::-webkit-scrollbar { width: 3px; height: 3px; }
+/* ── Custom Scrollbar (HUD 光束) ── */
+::-webkit-scrollbar { width: 7px; height: 7px; }
 ::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+
+/* 通用 thumb：HUD 白色光束，中线最亮，两侧透明渐淡；无圆角 */
 ::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(0,229,255,0.45), rgba(112,0,255,0.45));
-  border-radius: 2px;
-  box-shadow: 0 0 4px rgba(0,229,255,0.35);
+  border-radius: 0;
+  box-shadow:
+    0 0 4px rgba(200, 240, 255, 0.55),
+    0 0 10px rgba(150, 220, 255, 0.28);
 }
+/* 垂直滚动条：横向渐变（沿 thumb 宽度方向画一条纵向光束） */
+::-webkit-scrollbar-thumb:vertical {
+  background: linear-gradient(
+    90deg,
+    rgba(200, 240, 255, 0)    0%,
+    rgba(200, 240, 255, 0.55) 22%,
+    rgba(255, 255, 255, 0.95) 50%,
+    rgba(200, 240, 255, 0.55) 78%,
+    rgba(200, 240, 255, 0)    100%
+  );
+}
+/* 水平滚动条：纵向渐变（沿 thumb 高度方向画一条横向光束） */
+::-webkit-scrollbar-thumb:horizontal {
+  background: linear-gradient(
+    180deg,
+    rgba(200, 240, 255, 0)    0%,
+    rgba(200, 240, 255, 0.55) 22%,
+    rgba(255, 255, 255, 0.95) 50%,
+    rgba(200, 240, 255, 0.55) 78%,
+    rgba(200, 240, 255, 0)    100%
+  );
+}
+/* hover：光束更锐利、发光更强 */
 ::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgba(0,229,255,0.8), rgba(112,0,255,0.8));
+  box-shadow:
+    0 0 8px rgba(220, 250, 255, 0.95),
+    0 0 18px rgba(180, 240, 255, 0.5);
+}
+::-webkit-scrollbar-thumb:vertical:hover {
+  background: linear-gradient(
+    90deg,
+    rgba(220, 250, 255, 0)   0%,
+    rgba(220, 250, 255, 0.8) 22%,
+    rgba(255, 255, 255, 1)   50%,
+    rgba(220, 250, 255, 0.8) 78%,
+    rgba(220, 250, 255, 0)   100%
+  );
+}
+::-webkit-scrollbar-thumb:horizontal:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(220, 250, 255, 0)   0%,
+    rgba(220, 250, 255, 0.8) 22%,
+    rgba(255, 255, 255, 1)   50%,
+    rgba(220, 250, 255, 0.8) 78%,
+    rgba(220, 250, 255, 0)   100%
+  );
+}
+/* Firefox 兜底（不支持 ::-webkit-scrollbar） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(220, 250, 255, 0.7) transparent;
 }
 
 /* ── Time input calendar icon ── */

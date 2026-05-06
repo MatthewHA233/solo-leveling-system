@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSPrope
 import { createPortal } from 'react-dom'
 import { invoke } from '@tauri-apps/api/core'
 import {
+  AlertCircle,
+  AudioLines,
   BarChart3,
   Boxes,
   Check,
@@ -12,12 +14,15 @@ import {
   Database,
   Eye,
   EyeOff,
+  Image as ImageIcon,
   KeyRound,
   Link2,
   LogIn,
   Plus,
   RefreshCw,
   Save,
+  Type as TypeIcon,
+  Video,
   X,
 } from 'lucide-react'
 import { theme, hud } from '../theme'
@@ -86,12 +91,6 @@ interface FeatureSpec {
   readonly hint: string
   readonly requiredModalities?: readonly string[]
   readonly allowedCategories?: readonly ModelCategory[]
-}
-
-const CATEGORY_LABEL: Record<ModelCategory, string> = {
-  text: '文本',
-  omni: 'Omni 全模态',
-  realtime: 'Realtime',
 }
 
 const FEATURE_SPECS: readonly FeatureSpec[] = [
@@ -526,13 +525,14 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
       void refreshBailianAccount()
       const failed = rows.filter((row) => row.error_message).length
       setQuotaProgress({ stage: 'finish', total: rows.length, scanned: rows.length, ok: rows.length - failed, failed })
-      setQuotaLogs((prev) => [{
+      const finishLog: BailianQuotaLog = {
         id: `finish-local-${Date.now()}`,
         stage: 'finish',
         modelId: '',
         message: `扫描完成：OK ${rows.length - failed} / ERR ${failed}`,
         color: failed ? theme.warningOrange : theme.expGreen,
-      }, ...prev].slice(0, 24))
+      }
+      setQuotaLogs((prev) => [finishLog, ...prev].slice(0, 24))
       setSaved(`Free quota scanned: ${rows.length}`)
       setTimeout(() => setSaved(null), 1800)
     } catch (e) {
@@ -545,13 +545,14 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
         startBailianLoginPolling()
       }
       setQuotaProgress((prev) => ({ ...(prev ?? { total: models.length, scanned: 0, ok: 0, failed: 0 }), stage: 'fatal', error: message }))
-      setQuotaLogs((prev) => [{
+      const fatalLog: BailianQuotaLog = {
         id: `scan-error-${Date.now()}`,
         stage: 'fatal',
         modelId: '',
         message,
         color: theme.dangerRed,
-      }, ...prev].slice(0, 18))
+      }
+      setQuotaLogs((prev) => [fatalLog, ...prev].slice(0, 18))
       setQuotaModalOpen(true)
     } finally {
       window.clearInterval(progressTimer)
@@ -704,10 +705,88 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
         @keyframes model-dialog-in { from { opacity: 0 } to { opacity: 1 } }
         @keyframes model-dialog-pop { from { opacity: 0; transform: translate(-50%, -50%) scale(0.98); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
         @keyframes model-dialog-spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }
-        .model-dialog-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
-        .model-dialog-scroll::-webkit-scrollbar-thumb { background: rgba(0,229,255,0.22); border-radius: 0; }
-        .model-dialog-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); }
+        .model-dialog-icon-btn {
+          background: rgba(0,229,255,0.05);
+          border: 1px solid ${theme.hudFrameSoft};
+          color: ${theme.textSecondary};
+          width: 24px; height: 24px;
+          box-sizing: border-box;
+          display: inline-flex; align-items: center; justify-content: center;
+          cursor: pointer;
+          clip-path: ${hud.chamfer8};
+          -webkit-clip-path: ${hud.chamfer8};
+          transition: all 0.15s ease;
+        }
+        .model-dialog-icon-btn:hover:not(:disabled) { color: ${theme.electricBlue}; border-color: ${theme.electricBlue}; box-shadow: 0 0 8px ${theme.electricBlue}55; }
+        .model-dialog-icon-btn:disabled { opacity: 0.32; cursor: not-allowed; filter: grayscale(0.7); }
         .model-input::placeholder { color: ${theme.textMuted}; }
+
+        /* ── HUD 卡片体系 ── */
+        .hud-card {
+          position: relative;
+          background:
+            linear-gradient(180deg, rgba(4,12,26,0.82) 0%, rgba(2,8,20,0.74) 100%);
+          border: 1px solid rgba(0,229,255,0.18);
+          padding: 12px 14px 12px 16px;
+          clip-path: ${hud.chamfer8};
+          -webkit-clip-path: ${hud.chamfer8};
+          transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+          overflow: hidden;
+        }
+        .hud-card::after {
+          /* 微弱扫描线纹理（不抢戏） */
+          content: '';
+          position: absolute; inset: 0;
+          background-image: repeating-linear-gradient(
+            0deg, transparent 0 2px, rgba(0,229,255,0.025) 2px 3px
+          );
+          pointer-events: none;
+          opacity: 0.55;
+        }
+        .hud-card:hover {
+          border-color: rgba(0,229,255,0.45);
+          box-shadow: 0 0 14px rgba(0,229,255,0.22), 0 0 28px rgba(0,229,255,0.08);
+          background: linear-gradient(180deg, rgba(6,16,32,0.86) 0%, rgba(2,10,22,0.78) 100%);
+        }
+        .hud-card-stripe {
+          position: absolute;
+          left: 0; top: 8px; bottom: 8px;
+          width: 2px;
+          background: var(--accent, ${theme.electricBlue});
+          box-shadow: 0 0 6px var(--accent, ${theme.electricBlue}), 0 0 12px var(--accent, ${theme.electricBlue});
+          opacity: 0.6;
+          transition: opacity 0.15s ease;
+          z-index: 1;
+        }
+        .hud-card:hover .hud-card-stripe { opacity: 1; }
+        .hud-card > * { position: relative; z-index: 2; }
+
+        /* 卡片内"价格层"分组：去掉边框，用左侧色条 + 半透明深底 */
+        .hud-tier {
+          position: relative;
+          padding: 8px 10px 8px 12px;
+          background: rgba(0,4,12,0.4);
+          border-left: 2px solid rgba(0,229,255,0.4);
+          border-top: 1px solid rgba(255,255,255,0.04);
+        }
+
+        /* 价格小标签：彩色图标 + 数值，无边框 */
+        .hud-pricetag {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 2px 0;
+          font-family: ${theme.fontMono};
+          cursor: default;
+        }
+
+        /* 数值发光（用于卡片大数字） */
+        .hud-num {
+          font-family: ${theme.fontMono};
+          font-weight: 800;
+          letter-spacing: 0.02em;
+          text-shadow: 0 0 8px var(--accent-soft, rgba(0,229,255,0.35));
+        }
       `}</style>
 
       <div
@@ -748,9 +827,9 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
             <span style={titleStyle}>模型调用与审计</span>
           </div>
 
-          <Tooltip content="关闭">
-            <button type="button" onClick={onClose} style={closeBtnStyle}>
-              <X size={16} />
+          <Tooltip content="关闭 (Esc)">
+            <button type="button" className="model-dialog-icon-btn" onClick={onClose}>
+              <X size={13} />
             </button>
           </Tooltip>
         </header>
@@ -802,7 +881,16 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
           document.body
         )}
 
-        <main className="model-dialog-scroll" style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+        <main
+          className="model-dialog-scroll"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflow: tab === 'usage' ? 'hidden' : 'auto',
+            padding: 16,
+            boxSizing: 'border-box',
+          }}
+        >
           {tab === 'usage' && (
             <UsageTab
               activeKeyLabel={activeApiKey?.label ?? null}
@@ -1148,8 +1236,8 @@ function UsageTab({
   ]
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(320px, 0.8fr)', gap: 14, minHeight: 0 }}>
-      <section style={panelStyle}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(320px, 0.8fr)', gap: 14, height: '100%', minHeight: 0 }}>
+      <section style={{ ...panelStyle, minHeight: 0, overflow: 'hidden' }}>
         <div style={panelHeaderStyle}>
           <div>
             <div style={sectionTitleStyle}>调用用量</div>
@@ -1206,7 +1294,7 @@ function UsageTab({
         <StackedBarChart calls={calls} viewMode={viewMode} anchorDate={anchorDate} />
       </section>
 
-      <section style={panelStyle}>
+      <section style={{ ...panelStyle, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={panelHeaderStyle}>
           <div>
             <div style={sectionTitleStyle}>调用明细</div>
@@ -1231,7 +1319,7 @@ function UsageTab({
           />
         </div>
 
-        <div className="model-dialog-scroll" style={{ maxHeight: 600, overflow: 'auto', paddingRight: 2 }}>
+        <div className="model-dialog-scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', paddingRight: 2 }}>
           {calls.length === 0 ? (
             <Empty text={allModels.length === 0 ? '模型库还没有初始化' : '暂无调用记录'} />
           ) : (
@@ -1970,6 +2058,12 @@ function LibraryTab({
   )
 }
 
+function modelCategoryAccent(cat: ModelCategory): string {
+  if (cat === 'omni') return theme.flameTeal
+  if (cat === 'realtime') return theme.warningOrange
+  return theme.electricBlue
+}
+
 function ModelCard({
   model,
   quota,
@@ -1985,57 +2079,75 @@ function ModelCard({
 }) {
   const modalities = parseList(model.modalities)
   const displayName = model.display_name?.trim() || model.id
+  const accent = modelCategoryAccent(model.category)
 
   return (
-    <div style={modelCardStyle}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 8 }}>
+    <div className="hud-card" style={{ '--accent': accent, '--accent-soft': `${accent}55`, padding: '14px 14px 12px 18px' } as CSSProperties}>
+      <span className="hud-card-stripe" />
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 10 }}>
         <img
           src={MODEL_ICON_URL}
           alt=""
-          width={28}
-          height={28}
-          style={{ flexShrink: 0, filter: 'drop-shadow(0 0 4px rgba(0,229,255,0.4))' }}
+          width={32}
+          height={32}
+          style={{ flexShrink: 0, filter: `drop-shadow(0 0 6px ${accent}99)` }}
         />
         <div style={{ minWidth: 0, flex: 1 }}>
-          <button
-            type="button"
-            onClick={onOpenBailianDetail}
-            title="打开百炼模型详情"
-            style={{
-              appearance: 'none',
-              background: 'transparent',
-              border: 'none',
-              color: theme.textPrimary,
-              cursor: 'pointer',
-              display: 'block',
-              fontFamily: 'inherit',
-              fontSize: 13,
-              fontWeight: 800,
-              lineHeight: 1.3,
-              margin: 0,
-              padding: 0,
-              textAlign: 'left',
-              whiteSpace: 'normal',
-              wordBreak: 'break-all',
-            }}
-          >
-            {displayName}
-          </button>
-          <div style={{ color: theme.textMuted, fontFamily: theme.fontMono, fontSize: 10, marginTop: 2, wordBreak: 'break-all' }}>
+          <Tooltip content="打开百炼模型详情">
+            <button
+              type="button"
+              onClick={onOpenBailianDetail}
+              style={{
+                appearance: 'none',
+                background: 'transparent',
+                border: 'none',
+                color: theme.textPrimary,
+                cursor: 'pointer',
+                display: 'block',
+                fontFamily: 'inherit',
+                fontSize: 13,
+                fontWeight: 800,
+                lineHeight: 1.3,
+                margin: 0,
+                padding: 0,
+                textAlign: 'left',
+                whiteSpace: 'normal',
+                wordBreak: 'break-all',
+                textShadow: `0 0 6px ${accent}33`,
+              }}
+            >
+              {displayName}
+            </button>
+          </Tooltip>
+          <div style={{ color: theme.textPrimary, opacity: 0.7, fontFamily: theme.fontMono, fontSize: 10, marginTop: 3, wordBreak: 'break-all', letterSpacing: 0.2 }}>
             {model.id}
           </div>
         </div>
       </div>
 
       {modalities.length > 0 && (
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
-          {modalities.map((m) => <span key={m} style={pillStyle}>{m}</span>)}
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
+          {modalities.map((m) => (
+            <span key={m} style={{
+              border: `1px solid ${accent}55`,
+              color: accent,
+              background: `${accent}18`,
+              padding: '2px 7px',
+              fontSize: 10,
+              fontFamily: theme.fontMono,
+              fontWeight: 600,
+              letterSpacing: 0.4,
+              textShadow: `0 0 4px ${accent}55`,
+              clipPath: 'polygon(3px 0, 100% 0, calc(100% - 3px) 100%, 0 100%)',
+              WebkitClipPath: 'polygon(3px 0, 100% 0, calc(100% - 3px) 100%, 0 100%)',
+            }}>{m}</span>
+          ))}
         </div>
       )}
 
-      <div style={{ marginBottom: 8, fontSize: 11 }}>
-        <span style={mutedStyle}>上下文：</span>
-        <span style={{ color: theme.textSecondary, fontFamily: theme.fontMono }}>
+      <div style={{ marginBottom: 8, fontSize: 11, color: theme.textPrimary }}>
+        <span style={cardLabelStyle}>上下文：</span>
+        <span style={{ color: theme.textPrimary, fontFamily: theme.fontMono, fontWeight: 600 }}>
           {model.context_window ? formatTokens(model.context_window) : '-'}
         </span>
       </div>
@@ -2043,9 +2155,9 @@ function ModelCard({
       {quota && (
         <div style={{ marginBottom: 8, fontSize: 11, display: 'grid', gap: 4 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <span style={mutedStyle}>免费额度</span>
+            <span style={cardLabelStyle}>免费额度</span>
             <span style={{
-              color: quota.error_message ? theme.dangerRed : quota.remaining_tokens > 0 ? theme.expGreen : theme.textMuted,
+              color: quota.error_message ? theme.dangerRed : quota.remaining_tokens > 0 ? theme.expGreen : theme.textSecondary,
               fontFamily: theme.fontMono,
               fontWeight: 800,
             }}>
@@ -2065,13 +2177,13 @@ function ModelCard({
               }} />
             </div>
           )}
-          <div style={{ color: theme.textMuted, fontFamily: theme.fontMono, fontSize: 10 }}>
+          <div style={{ color: theme.textPrimary, opacity: 0.7, fontFamily: theme.fontMono, fontSize: 10 }}>
             {quota.expire_date ? `expires ${quota.expire_date}` : new Date(quota.scanned_at).toLocaleString('zh-CN')}
           </div>
         </div>
       )}
 
-      <div style={{ display: 'grid', gap: 6, marginBottom: 6 }}>
+      <div style={{ display: 'grid', gap: 6, marginBottom: 8 }}>
         {model.pricing.map((tier, idx) => {
           const inputs: { label: string; value: number | null }[] = [
             { label: '文本', value: tier.price_input_text },
@@ -2084,13 +2196,22 @@ function ModelCard({
             { label: '音频', value: tier.price_output_audio },
           ].filter((p) => p.value != null)
           return (
-            <div key={idx} style={cardTierStyle}>
-              <div style={{ color: theme.textSecondary, fontFamily: theme.fontMono, fontSize: 10, marginBottom: 6, letterSpacing: 0.5 }}>
+            <div key={idx} className="hud-tier" style={{ borderLeftColor: `${accent}66` }}>
+              <div style={{
+                color: theme.textPrimary,
+                opacity: 0.85,
+                fontFamily: theme.fontDisplay,
+                fontSize: 10,
+                fontWeight: 700,
+                marginBottom: 6,
+                letterSpacing: '0.14em',
+                textTransform: 'uppercase',
+              }}>
                 {tierLabel(tier)}
               </div>
               {inputs.length > 0 && (
                 <div style={priceGroupStyle}>
-                  <span style={priceGroupLabelStyle(theme.electricBlue)}>输入</span>
+                  <span style={priceGroupLabelStyle(theme.electricBlue)}>IN</span>
                   <div style={priceListStyle}>
                     {inputs.map((p) => <PriceTag key={p.label} label={p.label} value={p.value} color={theme.electricBlue} />)}
                   </div>
@@ -2098,7 +2219,7 @@ function ModelCard({
               )}
               {outputs.length > 0 && (
                 <div style={priceGroupStyle}>
-                  <span style={priceGroupLabelStyle(theme.warningOrange)}>输出</span>
+                  <span style={priceGroupLabelStyle(theme.warningOrange)}>OUT</span>
                   <div style={priceListStyle}>
                     {outputs.map((p) => <PriceTag key={p.label} label={p.label} value={p.value} color={theme.warningOrange} />)}
                   </div>
@@ -2108,7 +2229,7 @@ function ModelCard({
           )
         })}
       </div>
-      <div style={{ ...mutedStyle, fontFamily: theme.fontMono, fontSize: 9, marginBottom: 10, letterSpacing: 0.3 }}>
+      <div style={{ color: theme.textPrimary, opacity: 0.78, fontFamily: theme.fontMono, fontSize: 10, marginBottom: 10, letterSpacing: 0.3 }}>
         单位：元 / 百万 token
       </div>
 
@@ -2124,22 +2245,32 @@ function ModelCard({
   )
 }
 
+function modalityIcon(label: string, color: string): React.ReactNode {
+  const props = {
+    size: 12,
+    color,
+    strokeWidth: 2.2,
+    style: { filter: `drop-shadow(0 0 3px ${color}88)`, flexShrink: 0 },
+  } as const
+  switch (label) {
+    case '文本': return <TypeIcon {...props} />
+    case '图片': return <ImageIcon {...props} />
+    case '视频': return <Video {...props} />
+    case '音频': return <AudioLines {...props} />
+    default:     return null
+  }
+}
+
 function PriceTag({ label, value, color }: { label: string; value: number | null; color: string }) {
   return (
-    <div style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: 4,
-      padding: '2px 6px',
-      background: `${color}10`,
-      border: `1px solid ${color}55`,
-      fontSize: 10,
-    }}>
-      <span style={{ color: `${color}cc` }}>{label}</span>
-      <span style={{ color, fontFamily: theme.fontMono, fontWeight: 700 }}>
-        ¥{value}
+    <Tooltip content={label}>
+      <span className="hud-pricetag" style={{ ['--tone' as never]: color }}>
+        {modalityIcon(label, color)}
+        <span style={{ color: theme.textPrimary, fontWeight: 700, textShadow: `0 0 4px ${color}66`, fontSize: 11 }}>
+          ¥{value}
+        </span>
       </span>
-    </div>
+    </Tooltip>
   )
 }
 
@@ -2298,7 +2429,7 @@ function ModelEditor({
           </div>
           <div style={{ display: 'grid', gap: 10 }}>
             {draft.pricing.map((tier, index) => (
-              <div key={index} style={cardTierStyle}>
+              <div key={index} style={{ border: `1px solid ${theme.hudFrameSoft}`, background: 'rgba(0,0,0,0.18)', padding: 6 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, marginBottom: 8, alignItems: 'end' }}>
                   <EditorField label="区间起始">
                     <input
@@ -2698,37 +2829,102 @@ const CallRow = React.memo(function CallRow({ call, apiKeyLabel, pricing }: { ca
   const outputParts = bd.outputs.map((p) => ({ label: p.label, value: p.tokens, cost: p.cost }))
   const saved = call.free_quota_saved_cny ?? 0
   const freeTokens = call.free_quota_tokens ?? 0
+  const cost = call.cost_cny ?? 0
+  const accent = !call.success ? theme.dangerRed : saved > 0 ? theme.expGreen : theme.electricBlue
+  const featureLabel = FEATURE_LABEL.get(call.feature) ?? call.feature
+
   return (
-    <div style={callRowStyle}>
-      {/* 标题行：功能名 + 错误标记（仅失败时）+ 成本右对齐 */}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-        <span style={{ color: theme.electricBlue, fontWeight: 700, fontSize: 13 }}>{FEATURE_LABEL.get(call.feature) ?? call.feature}</span>
-        {!call.success && <span style={{ color: theme.dangerRed, fontWeight: 700, fontSize: 11 }}>ERR</span>}
-        {saved > 0 && <span style={{ color: theme.expGreen, fontWeight: 800, fontSize: 10 }}>FREE</span>}
+    <div className="hud-card" style={{ '--accent': accent, '--accent-soft': `${accent}55`, marginBottom: 8, padding: '12px 14px 12px 18px' } as CSSProperties}>
+      <span className="hud-card-stripe" />
+
+      {/* 标题行：功能名 + 状态徽章 + 成本 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ color: theme.textPrimary, fontFamily: theme.fontDisplay, fontWeight: 700, fontSize: 12, letterSpacing: '0.08em', textShadow: `0 0 6px ${accent}55` }}>
+          {featureLabel}
+        </span>
+        {!call.success && <StatusBadge color={theme.dangerRed} label="ERR" />}
+        {saved > 0 && <StatusBadge color={theme.expGreen} label="FREE" />}
         <span style={{ flex: 1 }} />
-        <span style={{ color: (call.cost_cny ?? 0) > 0 ? theme.dangerRed : theme.expGreen, fontFamily: theme.fontMono, fontWeight: 700, fontSize: 13 }}>{formatCny(call.cost_cny)}</span>
+        <span className="hud-num" style={{
+          color: cost > 0 ? theme.dangerRed : theme.expGreen,
+          fontSize: 14,
+          ['--accent-soft' as never]: cost > 0 ? `${theme.dangerRed}66` : `${theme.expGreen}66`,
+        }}>
+          {formatCny(call.cost_cny)}
+        </span>
       </div>
-      {/* 模型 ID + 时间戳同行 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginTop: 5 }}>
-        <span style={{ color: theme.textPrimary, fontFamily: theme.fontMono, fontSize: 12, fontWeight: 700 }}>{call.model_id}</span>
-        <span style={{ color: theme.textPrimary, fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{new Date(call.started_at).toLocaleString('zh-CN')}</span>
+
+      {/* 模型 ID + 时间戳 */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginTop: 6 }}>
+        <span style={{ color: theme.textPrimary, fontFamily: theme.fontMono, fontSize: 11, fontWeight: 700, letterSpacing: 0.2 }}>
+          {call.model_id}
+        </span>
+        <span style={{ color: theme.textPrimary, opacity: 0.72, fontFamily: theme.fontMono, fontSize: 10, flexShrink: 0 }}>
+          {new Date(call.started_at).toLocaleString('zh-CN')}
+        </span>
       </div>
-      <div style={{ color: theme.textMuted, fontSize: 10, marginTop: 2 }}>
-        API Key：{apiKeyLabel ?? (call.api_key_id ? call.api_key_id.slice(0, 8) : '未归属')}
+
+      {/* API Key */}
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: theme.textPrimary, opacity: 0.7, fontSize: 10, fontFamily: theme.fontMono, marginTop: 3 }}>
+        <KeyRound size={10} style={{ flexShrink: 0 }} />
+        <span>{apiKeyLabel ?? (call.api_key_id ? call.api_key_id.slice(0, 8) : '未归属')}</span>
       </div>
+
+      {/* 免费额度抵扣 */}
       {saved > 0 && (
-        <div style={{ color: theme.expGreen, fontSize: 10, marginTop: 3, fontFamily: theme.fontMono }}>
-          免费额度抵扣 {formatTokens(freeTokens)}，节省 {formatCny(saved)}
+        <div style={{ color: theme.expGreen, fontSize: 10, marginTop: 4, fontFamily: theme.fontMono, textShadow: `0 0 4px ${theme.expGreen}55` }}>
+          免费额度抵扣 {formatTokens(freeTokens)} · 节省 {formatCny(saved)}
         </div>
       )}
+
+      {/* 输入/输出明细 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, marginTop: 8 }}>
         <MiniMetric label="输入" value={formatTokens(prompt)} sub={inputParts} accent={theme.electricBlue} />
         <MiniMetric label="输出" value={formatTokens(completion)} sub={outputParts} accent={theme.warningOrange} />
       </div>
-      {call.error_message && <div style={{ color: theme.dangerRed, fontSize: 11, marginTop: 6 }}>{call.error_message}</div>}
+
+      {/* 错误提示条 */}
+      {call.error_message && (
+        <div style={{
+          display: 'flex', alignItems: 'flex-start', gap: 6,
+          marginTop: 8,
+          padding: '6px 8px',
+          background: `${theme.dangerRed}14`,
+          borderLeft: `2px solid ${theme.dangerRed}`,
+          color: theme.dangerRed,
+          fontSize: 11,
+          fontFamily: theme.fontMono,
+          lineHeight: 1.4,
+        }}>
+          <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+          <span style={{ wordBreak: 'break-all' }}>{call.error_message}</span>
+        </div>
+      )}
     </div>
   )
 })
+
+function StatusBadge({ color, label }: { color: string; label: string }) {
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      padding: '1px 6px',
+      fontFamily: theme.fontDisplay,
+      fontSize: 9,
+      fontWeight: 800,
+      letterSpacing: '0.12em',
+      color,
+      background: `${color}1A`,
+      border: `1px solid ${color}66`,
+      textShadow: `0 0 4px ${color}88`,
+      clipPath: 'polygon(2px 0, 100% 0, calc(100% - 2px) 100%, 0 100%)',
+      WebkitClipPath: 'polygon(2px 0, 100% 0, calc(100% - 2px) 100%, 0 100%)',
+    }}>
+      {label}
+    </span>
+  )
+}
 
 function PriceBox({ label, value, onChange }: { label: string; value: number | null; onChange: (v: string) => void }) {
   return (
@@ -2745,11 +2941,13 @@ function PriceBox({ label, value, onChange }: { label: string; value: number | n
 }
 
 function Metric({ label, value, accent, note }: { label: string; value: string; accent?: string; note?: string }) {
+  const stripeColor = accent ?? theme.electricBlue
   return (
-    <div style={metricStyle}>
-      <div style={mutedStyle}>{label}</div>
-      <div style={{ color: accent ?? theme.electricBlue, fontFamily: theme.fontMono, fontSize: 18, fontWeight: 800 }}>{value}</div>
-      {note && <div style={{ color: theme.expGreen, fontFamily: theme.fontMono, fontSize: 10, marginTop: 4 }}>{note}</div>}
+    <div className="hud-card" style={{ '--accent': stripeColor, '--accent-soft': `${stripeColor}5C` } as CSSProperties}>
+      <span className="hud-card-stripe" />
+      <div style={metricLabelStyle}>{label}</div>
+      <div className="hud-num" style={{ color: stripeColor, fontSize: 20, marginTop: 4 }}>{value}</div>
+      {note && <div style={{ color: theme.expGreen, fontFamily: theme.fontMono, fontSize: 10, marginTop: 6, letterSpacing: 0.3 }}>{note}</div>}
     </div>
   )
 }
@@ -2765,22 +2963,24 @@ function MetricBreakdown({
   const visible = parts.filter((p) => p.value > 0)
   const totalCost = parts.reduce((s, p) => s + (p.cost ?? 0), 0)
   const hasCost = parts.some((p) => p.cost != null)
+  const stripeColor = accent ?? theme.electricBlue
   return (
-    <div style={metricStyle}>
-      <div style={mutedStyle}>{label}</div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <span style={{ color: accent ?? theme.electricBlue, fontFamily: theme.fontMono, fontSize: 18, fontWeight: 800 }}>
+    <div className="hud-card" style={{ '--accent': stripeColor, '--accent-soft': `${stripeColor}5C` } as CSSProperties}>
+      <span className="hud-card-stripe" />
+      <div style={metricLabelStyle}>{label}</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 4 }}>
+        <span className="hud-num" style={{ color: stripeColor, fontSize: 20 }}>
           {formatTokens(total)}
         </span>
         {hasCost && totalCost > 0 && (
-          <span style={{ fontFamily: theme.fontMono, fontSize: 12, fontWeight: 700, color: theme.dangerRed }}>{formatCny(totalCost)}</span>
+          <span className="hud-num" style={{ color: theme.dangerRed, fontSize: 12, ['--accent-soft' as never]: `${theme.dangerRed}55` }}>{formatCny(totalCost)}</span>
         )}
       </div>
       {visible.length > 0 && (
-        <div style={{ display: 'grid', gap: 2, marginTop: 6 }}>
+        <div style={{ display: 'grid', gap: 3, marginTop: 8, paddingTop: 6, borderTop: `1px solid ${theme.hudFrameSoft}` }}>
           {visible.map((p) => (
-            <div key={p.label} style={{ display: 'flex', alignItems: 'baseline', gap: 4, fontSize: 10 }}>
-              <span style={{ color: theme.textSecondary, flexShrink: 0 }}>{p.label}</span>
+            <div key={p.label} style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 10 }}>
+              <span style={{ color: theme.textSecondary, flexShrink: 0, letterSpacing: 0.3 }}>{p.label}</span>
               <span style={{ fontFamily: theme.fontMono, color: theme.textPrimary, flex: 1, textAlign: 'right' }}>{formatTokens(p.value)}</span>
               {p.cost != null && (
                 <span style={{ fontFamily: theme.fontMono, fontSize: 9, color: p.cost > 0 ? theme.dangerRed : theme.textMuted, flexShrink: 0, minWidth: 42, textAlign: 'right' }}>
@@ -2803,25 +3003,53 @@ function MiniMetric({
   sub?: { label: string; value: number; cost?: number }[]
   accent?: string
 }) {
+  const accentColor = accent ?? theme.electricBlue
+  const visible = (sub ?? []).filter((p) => p.value > 0 || (p.cost ?? 0) > 0)
   const totalCost = sub?.reduce((s, p) => s + (p.cost ?? 0), 0) ?? 0
   const hasCost = sub?.some((p) => p.cost != null) ?? false
   return (
-    <div style={{ border: `1px solid ${theme.hudFrameSoft}`, padding: 5, background: 'rgba(255,255,255,0.025)' }}>
-      <div style={{ color: theme.textMuted, fontSize: 9 }}>{label}</div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <span style={{ color: accent ?? theme.textPrimary, fontFamily: theme.fontMono, fontSize: 11, fontWeight: 700 }}>{value}</span>
+    <div className="hud-tier" style={{ borderLeftColor: accentColor, padding: '6px 8px 6px 10px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 6 }}>
+        <span style={{
+          color: theme.textPrimary, opacity: 0.82,
+          fontFamily: theme.fontDisplay, fontSize: 9, fontWeight: 700,
+          letterSpacing: '0.14em', textTransform: 'uppercase',
+        }}>
+          {label}
+        </span>
         {hasCost && totalCost > 0 && (
-          <span style={{ fontFamily: theme.fontMono, fontSize: 10, fontWeight: 700, color: theme.dangerRed }}>{formatCny(totalCost)}</span>
+          <span style={{ fontFamily: theme.fontMono, fontSize: 10, fontWeight: 700, color: theme.dangerRed, textShadow: `0 0 4px ${theme.dangerRed}55` }}>
+            {formatCny(totalCost)}
+          </span>
         )}
       </div>
-      {sub && sub.length > 0 && (
-        <div style={{ display: 'grid', gap: 2, marginTop: 3 }}>
-          {sub.map((p) => (
-            <div key={p.label} style={{ display: 'flex', alignItems: 'baseline', gap: 4, fontSize: 9 }}>
-              <span style={{ color: theme.textSecondary, flexShrink: 0 }}>{p.label}</span>
-              <span style={{ fontFamily: theme.fontMono, color: theme.textPrimary, flex: 1, textAlign: 'right' }}>{formatTokens(p.value)}</span>
+      <div style={{
+        color: accentColor,
+        fontFamily: theme.fontMono, fontSize: 13, fontWeight: 800,
+        textShadow: `0 0 6px ${accentColor}55`,
+        marginTop: 1,
+      }}>
+        {value}
+      </div>
+      {visible.length > 0 && (
+        <div style={{ display: 'grid', gap: 2, marginTop: 4 }}>
+          {visible.map((p) => (
+            <div key={p.label} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10 }}>
+              <Tooltip content={p.label}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}>
+                  {modalityIcon(p.label, accentColor)}
+                </span>
+              </Tooltip>
+              <span style={{ fontFamily: theme.fontMono, color: theme.textPrimary, flex: 1, textAlign: 'right' }}>
+                {formatTokens(p.value)}
+              </span>
               {p.cost != null && (
-                <span style={{ fontFamily: theme.fontMono, color: p.cost > 0 ? theme.dangerRed : theme.textMuted, flexShrink: 0, minWidth: 38, textAlign: 'right' }}>
+                <span style={{
+                  fontFamily: theme.fontMono, fontSize: 9,
+                  color: p.cost > 0 ? theme.dangerRed : theme.textPrimary,
+                  opacity: p.cost > 0 ? 1 : 0.55,
+                  flexShrink: 0, minWidth: 40, textAlign: 'right',
+                }}>
                   {p.cost > 0 ? formatCny(p.cost) : '不计费'}
                 </span>
               )}
@@ -2893,7 +3121,10 @@ function TabButton({ active, icon, label, onClick }: { active: boolean; icon: Re
         border: `1px solid ${active ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
         background: active ? `${theme.electricBlue}12` : 'rgba(255,255,255,0.025)',
         color: active ? theme.electricBlue : theme.textSecondary,
-        padding: '7px 11px',
+        padding: '3px 10px',
+        height: 24,
+        boxSizing: 'border-box',
+        lineHeight: 1,
         cursor: 'pointer',
         fontFamily: theme.fontMono,
         fontSize: 12,
@@ -2914,7 +3145,7 @@ const headerStyle: CSSProperties = {
   alignItems: 'center',
   justifyContent: 'space-between',
   gap: 12,
-  padding: '10px 16px',
+  padding: '7px 16px',
   flexShrink: 0,
   borderBottom: `1px solid ${theme.hudFrameSoft}`,
   background: 'linear-gradient(180deg, rgba(0,229,255,0.05) 0%, transparent 100%)',
@@ -2933,7 +3164,7 @@ const tabBarStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: 8,
-  padding: '10px 16px',
+  padding: '4px 16px',
   borderBottom: `1px solid ${theme.hudFrameSoft}`,
 }
 
@@ -2961,8 +3192,19 @@ const sectionTitleStyle: CSSProperties = {
 }
 
 const mutedStyle: CSSProperties = {
-  color: theme.textMuted,
+  color: theme.textPrimary,
+  opacity: 0.72,
   fontSize: 11,
+}
+
+const cardLabelStyle: CSSProperties = {
+  color: theme.textPrimary,
+  opacity: 0.78,
+  fontSize: 11,
+  fontFamily: theme.fontBody,
+  fontWeight: 600,
+  marginRight: 4,
+  letterSpacing: 0.2,
 }
 
 
@@ -2976,15 +3218,6 @@ const inputStyle: CSSProperties = {
   fontFamily: theme.fontMono,
   fontSize: 12,
   borderRadius: 2,
-}
-
-const closeBtnStyle: CSSProperties = {
-  border: 'none',
-  background: 'transparent',
-  color: theme.textSecondary,
-  cursor: 'pointer',
-  padding: 6,
-  display: 'inline-flex',
 }
 
 function smallBtnStyle(color: string): CSSProperties {
@@ -3038,32 +3271,21 @@ function statusStyle(color: string): CSSProperties {
   }
 }
 
-const metricStyle: CSSProperties = {
-  border: `1px solid ${theme.hudFrameSoft}`,
-  padding: '10px 12px',
-  background: 'rgba(255,255,255,0.025)',
-}
-
-const modelCardStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  border: `1px solid ${theme.hudFrameSoft}`,
-  background: 'rgba(255,255,255,0.025)',
-  padding: 12,
-  clipPath: 'polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px))',
-}
-
-const cardTierStyle: CSSProperties = {
-  border: `1px solid ${theme.hudFrameSoft}`,
-  background: 'rgba(0,0,0,0.18)',
-  padding: 6,
+const metricLabelStyle: CSSProperties = {
+  color: theme.textPrimary,
+  opacity: 0.82,
+  fontSize: 10,
+  fontFamily: theme.fontDisplay,
+  fontWeight: 700,
+  letterSpacing: '0.16em',
+  textTransform: 'uppercase',
 }
 
 const priceGroupStyle: CSSProperties = {
   display: 'flex',
-  alignItems: 'center',
-  gap: 6,
-  marginBottom: 4,
+  alignItems: 'flex-start',
+  gap: 8,
+  marginBottom: 2,
 }
 
 function priceGroupLabelStyle(color: string): CSSProperties {
@@ -3072,16 +3294,19 @@ function priceGroupLabelStyle(color: string): CSSProperties {
     fontFamily: theme.fontDisplay,
     fontSize: 9,
     fontWeight: 800,
-    letterSpacing: '0.08em',
+    letterSpacing: '0.12em',
     color,
-    width: 28,
+    width: 26,
+    marginTop: 2,
+    textShadow: `0 0 4px ${color}55`,
   }
 }
 
 const priceListStyle: CSSProperties = {
   display: 'flex',
   flexWrap: 'wrap',
-  gap: 4,
+  columnGap: 12,
+  rowGap: 2,
   flex: 1,
   minWidth: 0,
 }
@@ -3089,24 +3314,17 @@ const priceListStyle: CSSProperties = {
 function cardBtnStyle(color: string): CSSProperties {
   return {
     padding: '5px 12px',
-    background: 'transparent',
-    border: `1px solid ${color}66`,
+    background: `${color}0C`,
+    border: `1px solid ${color}55`,
     color,
     fontFamily: theme.fontMono,
     fontSize: 11,
     letterSpacing: 0.5,
     cursor: 'pointer',
-    transition: 'all 0.15s',
+    clipPath: hud.chamfer8,
+    WebkitClipPath: hud.chamfer8,
+    transition: 'all 0.15s ease',
   }
-}
-
-const pillStyle: CSSProperties = {
-  border: `1px solid ${theme.electricBlue}35`,
-  color: theme.electricBlue,
-  background: `${theme.electricBlue}0C`,
-  padding: '2px 5px',
-  fontSize: 9,
-  fontFamily: theme.fontMono,
 }
 
 const bindingRowStyle: CSSProperties = {
@@ -3117,13 +3335,6 @@ const bindingRowStyle: CSSProperties = {
   border: `1px solid ${theme.hudFrameSoft}`,
   background: 'rgba(255,255,255,0.025)',
   padding: 12,
-}
-
-const callRowStyle: CSSProperties = {
-  border: `1px solid ${theme.hudFrameSoft}`,
-  background: 'rgba(255,255,255,0.025)',
-  padding: 10,
-  marginBottom: 8,
 }
 
 const apiKeyPopoverStyle: CSSProperties = {

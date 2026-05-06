@@ -570,7 +570,8 @@ export default function BiliHistoryDialog({
           background: rgba(0,229,255,0.05);
           border: 1px solid ${theme.hudFrameSoft};
           color: ${theme.textSecondary};
-          width: 26px; height: 26px;
+          width: 24px; height: 24px;
+          box-sizing: border-box;
           display: inline-flex; align-items: center; justify-content: center;
           cursor: pointer;
           clip-path: ${hud.chamfer8};
@@ -580,8 +581,8 @@ export default function BiliHistoryDialog({
         .bhd-icon-btn:hover:not(:disabled) { color: ${theme.electricBlue}; border-color: ${theme.electricBlue}; box-shadow: 0 0 8px ${theme.electricBlue}55; }
         .bhd-icon-btn:disabled { opacity: 0.32; cursor: not-allowed; filter: grayscale(0.7); }
         .bhd-date-trigger {
-          display: inline-flex; align-items: center; gap: 8px;
-          padding: 5px 12px;
+          display: inline-flex; align-items: center; gap: 6px;
+          padding: 3px 10px;
           background: rgba(0,229,255,0.08);
           border: 1px solid ${theme.electricBlue}66;
           color: ${theme.electricBlue};
@@ -591,6 +592,8 @@ export default function BiliHistoryDialog({
           font-family: ${theme.fontMono};
           font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
           text-shadow: 0 0 6px ${theme.electricBlue}AA;
+          height: 24px;
+          box-sizing: border-box;
         }
         .bhd-date-trigger:hover { background: rgba(0,229,255,0.16); }
         .bhd-card {
@@ -655,7 +658,7 @@ export default function BiliHistoryDialog({
         <div style={{
           position: 'relative',
           display: 'flex', alignItems: 'center', gap: 10,
-          padding: '10px 16px',
+          padding: '7px 16px',
           borderBottom: `1px solid ${theme.hudFrameSoft}`,
           flexShrink: 0,
           background: 'linear-gradient(180deg, rgba(0,229,255,0.05) 0%, transparent 100%)',
@@ -812,7 +815,7 @@ export default function BiliHistoryDialog({
         <div style={{
           position: 'relative',
           display: 'flex', alignItems: 'center', gap: 8,
-          padding: '6px 16px',
+          padding: '4px 16px',
           borderBottom: `1px solid ${theme.hudFrameSoft}`,
           flexShrink: 0,
         }}>
@@ -823,7 +826,7 @@ export default function BiliHistoryDialog({
               display: 'flex', alignItems: 'center', gap: 5,
               background: !biliUname ? `${theme.electricBlue}18` : 'rgba(255,255,255,0.04)',
               border: `1px solid ${loginError ? theme.dangerRed : !biliUname ? theme.electricBlue : theme.glassBorder}`,
-              borderRadius: 3, padding: '4px 10px',
+              borderRadius: 3, padding: '3px 10px', height: 24, boxSizing: 'border-box',
               color: loginError ? theme.dangerRed : !biliUname ? theme.electricBlue : theme.textSecondary,
               cursor: 'pointer', fontSize: 11, fontFamily: theme.fontBody,
               opacity: isOpening ? 0.6 : 1,
