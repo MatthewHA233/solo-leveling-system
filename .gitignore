@@ -46,3 +46,9 @@ clients/win/test-asr.mjs
 
 # 人升 Wiki 转换产物（由 convert_wiki.py 生成）
 docs/98借鉴对象/参考软件设计——人升/人升官方文档/
+
+# Codex 临时工作目录
+.codex-pets/
+
+# 本地构建/调试产物
+artifacts/
