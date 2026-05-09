@@ -4,16 +4,19 @@
 // ══════════════════════════════════════════════
 
 import { useState, useCallback, useEffect } from 'react'
-import { X, ChevronRight, Mic, Lock, Database, Tv2, Bot, Eye, EyeOff, Copy, Check, Cpu } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { X, ChevronRight, ChevronUp, ChevronDown, Mic, Lock, Database, Bot, Eye, EyeOff, Copy, Check, Cpu, Camera, FolderOpen, RefreshCw, Trash2, Settings as SettingsIcon, Ban, Activity } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { theme } from '../theme'
+import { theme, hud } from '../theme'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import type { GpuPrefStatus } from '../lib/local-api'
 import { MagneticButton } from './NeonUI'
 import Tooltip from './Tooltip'
+import HudSelect from './HudSelect'
 
 interface Props {
+  readonly open: boolean
   readonly config: AgentConfig
   readonly onUpdate: (updates: Partial<AgentConfig>) => void
   readonly onClose: () => void
@@ -24,13 +27,44 @@ interface DbInfo {
   size: number
 }
 
+interface ScreenshotSettings {
+  enabled: boolean
+  intervalSeconds: number
+  captureTarget: 'active_window' | 'all_screens' | string
+  format: 'jpg' | 'png' | 'webp' | string
+  quality: number
+  resolutionPercent: number
+  saveDir: string
+  retentionMode: 'days' | 'size' | string
+  maxSizeMb: number
+  retentionDays: number
+}
+
+interface ScreenshotStorageInfo {
+  path: string
+  sizeBytes: number
+  fileCount: number
+}
+
+interface WindowBlacklistEntry {
+  app: string
+  title: string | null
+  createdAt: string
+}
+
+interface TrackingSettings {
+  afkAfterMinutes: number
+  idleAfterSeconds: number
+  minActivitySeconds: number
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`
 }
 
-export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
+export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose }: Props) {
   // ── Local draft state (不实时写入，点确认才生效) ──
   const [draft, setDraft] = useState({
     aiMode: config.aiMode,
@@ -71,9 +105,64 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
   const [gpuPref, setGpuPref] = useState<GpuPrefStatus | null>(null)
   const [gpuToggling, setGpuToggling] = useState(false)
 
+  // ── 屏幕截图状态 ──
+  const [screenshotDraft, setScreenshotDraft] = useState<ScreenshotSettings | null>(null)
+  const [screenshotInfo, setScreenshotInfo] = useState<ScreenshotStorageInfo | null>(null)
+  const [screenshotSaving, setScreenshotSaving] = useState(false)
+  const [screenshotSaved, setScreenshotSaved] = useState(false)
+
+  // ── 窗口忽略黑名单 ──
+  const [windowBlacklist, setWindowBlacklist] = useState<WindowBlacklistEntry[]>([])
+
+  // ── 追踪设置 ──
+  const [trackingDraft, setTrackingDraft] = useState<TrackingSettings | null>(null)
+  const [trackingSaving, setTrackingSaving] = useState(false)
+  const [trackingSaved, setTrackingSaved] = useState(false)
+
+  // ── 左侧栏当前选中分组 ──
+  const [activeSection, setActiveSection] = useState<string>('persona')
+
   useEffect(() => {
+    if (!isOpen) return
     invoke<DbInfo>('get_db_info').then(setDbInfo).catch(console.error)
     invoke<GpuPrefStatus>('get_gpu_pref_status').then(setGpuPref).catch(() => {})
+    invoke<ScreenshotSettings>('get_screenshot_settings').then(setScreenshotDraft).catch(console.error)
+    invoke<ScreenshotStorageInfo>('get_screenshot_storage_info').then(setScreenshotInfo).catch(console.error)
+    invoke<WindowBlacklistEntry[]>('get_window_blacklist').then(setWindowBlacklist).catch(console.error)
+    invoke<TrackingSettings>('get_tracking_settings').then(setTrackingDraft).catch(console.error)
+  }, [isOpen])
+
+  const updateTrackingDraft = useCallback((field: keyof TrackingSettings, value: number) => {
+    setTrackingDraft((prev) => prev ? { ...prev, [field]: value } : prev)
+    setTrackingSaved(false)
+  }, [])
+
+  const saveTrackingSettings = useCallback(async () => {
+    if (!trackingDraft) return
+    setTrackingSaving(true)
+    try {
+      const next = await invoke<TrackingSettings>('update_tracking_settings', { settings: trackingDraft })
+      setTrackingDraft(next)
+      setTrackingSaved(true)
+      setTimeout(() => setTrackingSaved(false), 1600)
+    } catch (e) {
+      console.error('[Tracking] save failed:', e)
+      alert(`保存追踪设置失败: ${e}`)
+    } finally {
+      setTrackingSaving(false)
+    }
+  }, [trackingDraft])
+
+  const removeBlacklistEntry = useCallback(async (entry: WindowBlacklistEntry) => {
+    try {
+      const next = await invoke<WindowBlacklistEntry[]>('remove_window_blacklist', {
+        app: entry.app,
+        title: entry.title,
+      })
+      setWindowBlacklist(next)
+    } catch (e) {
+      alert(`移除失败: ${e}`)
+    }
   }, [])
 
   const toggleDiscreteGpu = useCallback(async (enable: boolean) => {
@@ -88,6 +177,59 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
       setGpuToggling(false)
     }
   }, [onUpdate])
+
+  const refreshScreenshotInfo = useCallback(async () => {
+    try {
+      const info = await invoke<ScreenshotStorageInfo>('get_screenshot_storage_info')
+      setScreenshotInfo(info)
+    } catch (e) {
+      console.error('[Screenshot] refresh failed:', e)
+    }
+  }, [])
+
+  const updateScreenshotDraft = useCallback((field: keyof ScreenshotSettings, value: string | number | boolean) => {
+    setScreenshotDraft((prev) => prev ? { ...prev, [field]: value } : prev)
+    setScreenshotSaved(false)
+  }, [])
+
+  const saveScreenshotSettings = useCallback(async () => {
+    if (!screenshotDraft) return
+    setScreenshotSaving(true)
+    try {
+      const next = await invoke<ScreenshotSettings>('update_screenshot_settings', { settings: screenshotDraft })
+      setScreenshotDraft(next)
+      const info = await invoke<ScreenshotStorageInfo>('get_screenshot_storage_info')
+      setScreenshotInfo(info)
+      setScreenshotSaved(true)
+      setTimeout(() => setScreenshotSaved(false), 1600)
+    } catch (e) {
+      console.error('[Screenshot] save failed:', e)
+      alert(`保存截图设置失败: ${e}`)
+    } finally {
+      setScreenshotSaving(false)
+    }
+  }, [screenshotDraft])
+
+  const openScreenshotFolder = useCallback(async () => {
+    try {
+      await invoke('open_screenshot_folder')
+      await refreshScreenshotInfo()
+    } catch (e) {
+      console.error('[Screenshot] open folder failed:', e)
+      alert(`打开截图目录失败: ${e}`)
+    }
+  }, [refreshScreenshotInfo])
+
+  const clearScreenshotData = useCallback(async () => {
+    if (!window.confirm('清空截图目录中的数据？')) return
+    try {
+      const info = await invoke<ScreenshotStorageInfo>('clear_screenshot_data')
+      setScreenshotInfo(info)
+    } catch (e) {
+      console.error('[Screenshot] clear failed:', e)
+      alert(`清空截图失败: ${e}`)
+    }
+  }, [])
 
   const update = useCallback((field: string, value: string) => {
     setDraft((prev) => ({ ...prev, [field]: value }))
@@ -148,36 +290,133 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
     }
   }, [])
 
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column',
-      height: '100%', background: theme.background,
-      overflow: 'hidden',
-    }}>
+  useEffect(() => {
+    if (!isOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isOpen, onClose])
+
+  if (!isOpen) return null
+
+  return createPortal(
+    <>
+      <style>{`
+        @keyframes settings-dialog-in { from { opacity: 0 } to { opacity: 1 } }
+        @keyframes settings-dialog-pop { from { opacity: 0; transform: translate(-50%, -50%) scale(0.98); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+        .settings-dialog-icon-btn {
+          background: rgba(0,229,255,0.05);
+          border: 1px solid ${theme.hudFrameSoft};
+          color: ${theme.textSecondary};
+          width: 24px; height: 24px;
+          box-sizing: border-box;
+          display: inline-flex; align-items: center; justify-content: center;
+          cursor: pointer;
+          clip-path: ${hud.chamfer8};
+          -webkit-clip-path: ${hud.chamfer8};
+          transition: all 0.15s ease;
+        }
+        .settings-dialog-icon-btn:hover:not(:disabled) {
+          color: ${theme.electricBlue};
+          border-color: ${theme.electricBlue};
+          box-shadow: 0 0 8px ${theme.electricBlue}55;
+        }
+        .settings-dialog-scroll::-webkit-scrollbar { width: 8px; }
+        .settings-dialog-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); }
+        .settings-dialog-scroll::-webkit-scrollbar-thumb {
+          background: rgba(0,229,255,0.24);
+          border: 1px solid rgba(0,229,255,0.18);
+        }
+      `}</style>
+
+      <div
+        onClick={onClose}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 900,
+          background: 'rgba(2, 6, 16, 0.84)',
+          animation: 'settings-dialog-in 0.16s ease-out',
+        }}
+      />
+
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'fixed',
+          left: '50%',
+          top: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: 'min(960px, 94vw)',
+          height: 'min(760px, 88vh)',
+          zIndex: 901,
+          display: 'flex',
+          flexDirection: 'column',
+          background: theme.hudFill,
+          border: `1px solid ${theme.hudFrame}`,
+          clipPath: hud.chamfer12,
+          WebkitClipPath: hud.chamfer12,
+          boxShadow: `0 24px 80px rgba(0,0,0,0.8), 0 0 60px ${theme.hudHalo}, inset 0 1px 0 rgba(255,255,255,0.04)`,
+          overflow: 'hidden',
+          animation: 'settings-dialog-pop 0.18s ease-out',
+        }}
+      >
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '10px 16px',
-        borderBottom: `1px solid ${theme.divider}`,
+        padding: '7px 16px',
+        borderBottom: `1px solid ${theme.hudFrameSoft}`,
+        background: 'linear-gradient(180deg, rgba(0,229,255,0.05) 0%, transparent 100%)',
+        flexShrink: 0,
       }}>
-        <span style={{
-          fontSize: 11, fontWeight: 'bold',
-          color: theme.electricBlue, letterSpacing: 1,
-        }}>
-          设置
-        </span>
-        <button onClick={onClose} style={{
-          background: 'transparent', border: 'none',
-          color: theme.textSecondary, cursor: 'pointer',
-          display: 'flex', padding: '2px',
-        }}>
-          <X size={14} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+          <SettingsIcon size={16} color={theme.electricBlue} style={{ filter: `drop-shadow(0 0 6px ${theme.electricBlue}AA)` }} />
+          <span style={{
+            fontFamily: theme.fontDisplay,
+            fontSize: 13,
+            fontWeight: 700,
+            color: theme.electricBlue,
+            letterSpacing: 1.6,
+            textShadow: `0 0 8px ${theme.electricBlue}88`,
+          }}>
+            设置
+          </span>
+        </div>
+        <Tooltip content="关闭 (Esc)">
+          <button type="button" className="settings-dialog-icon-btn" onClick={onClose}>
+            <X size={13} />
+          </button>
+        </Tooltip>
       </div>
 
-      {/* Scrollable content */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
-        {/* ── AI 人设 ── */}
+      {/* 左侧栏 + 右侧内容 */}
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        {/* 左侧栏 */}
+        <div style={{
+          width: 156,
+          flexShrink: 0,
+          borderRight: `1px solid ${theme.hudFrameSoft}`,
+          background: 'rgba(0,12,28,0.45)',
+          padding: '10px 6px',
+          overflowY: 'auto',
+          display: 'flex', flexDirection: 'column', gap: 2,
+        }}>
+          {SECTION_LIST.map((s) => (
+            <SectionNavBtn
+              key={s.id}
+              label={s.label}
+              icon={s.icon}
+              active={activeSection === s.id}
+              onClick={() => setActiveSection(s.id)}
+            />
+          ))}
+        </div>
+
+        {/* Scrollable content */}
+        <div className="settings-dialog-scroll" style={{ flex: 1, overflowY: 'auto', padding: '14px 18px', minWidth: 0 }}>
+        {activeSection === 'persona' && (
         <Section title="AI 人设" icon={Bot}>
           <Field label="称呼用户为"
             value={draft.agentCallUser}
@@ -219,8 +458,9 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
             </MagneticButton>
           </div>
         </Section>
+        )}
 
-        {/* ── 语音 ── */}
+        {activeSection === 'voice' && (
         <Section title="语音" icon={Mic}>
           <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 10 }}>
             右 Alt 长按 &gt; 600ms 开始说话
@@ -264,8 +504,9 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
             </MagneticButton>
           </div>
         </Section>
+        )}
 
-        {/* ── 隐私 ── */}
+        {activeSection === 'privacy' && (
         <Section title="隐私" icon={Lock}>
           <label style={labelStyle}>排除关键词（每行一个）</label>
           <textarea
@@ -284,47 +525,307 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
             </MagneticButton>
           </div>
         </Section>
+        )}
 
-        {/* ── B站 ── */}
-        <Section title="B站历史" icon={Tv2}>
-          <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 6, lineHeight: 1.6 }}>
-            B站相关设置（自动建档 / 下载路径 / 画质 / 轮询间隔）已迁移至历史记录面板。
-          </div>
-          <div style={{ fontSize: 11, color: theme.textMuted }}>
-            点击顶栏 B站图标 → 面板右上角齿轮按钮。
+        {activeSection === 'tracking' && trackingDraft && (
+        <Section title="追踪" icon={Activity}>
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div>
+              <label style={labelStyle}>未使用计算机 → 标记为离开（分钟）</label>
+              <NumberStepper
+                min={1}
+                max={500}
+                value={trackingDraft.afkAfterMinutes}
+                onChange={(v) => updateTrackingDraft('afkAfterMinutes', v)}
+              />
+              <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+                超过这个时间没有键鼠输入 → 状态轨道画"离开"
+              </div>
+            </div>
+
+            <div>
+              <label style={labelStyle}>无操作 → 进入空闲（秒）</label>
+              <NumberStepper
+                min={5}
+                max={Math.max(5, trackingDraft.afkAfterMinutes * 60)}
+                value={trackingDraft.idleAfterSeconds}
+                onChange={(v) => updateTrackingDraft('idleAfterSeconds', v)}
+              />
+              <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+                短暂离开（喝水/接电话）也算"空闲"，状态轨道用半宽渲染
+              </div>
+            </div>
+
+            <div>
+              <label style={labelStyle}>最短活动持续时间（秒）</label>
+              <NumberStepper
+                min={1}
+                max={300}
+                value={trackingDraft.minActivitySeconds}
+                onChange={(v) => updateTrackingDraft('minActivitySeconds', v)}
+              />
+              <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+                合并间隔小于此值的同状态片段（避免毛刺）
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <MagneticButton
+                onClick={saveTrackingSettings}
+                color={theme.expGreen}
+                disabled={trackingSaving}
+              >
+                {trackingSaved ? '已保存 ✓' : trackingSaving ? '保存中...' : '保存'}
+              </MagneticButton>
+            </div>
           </div>
         </Section>
+        )}
 
-        {/* ── 图形性能 ── */}
+        {activeSection === 'screenshot' && (
+        <Section title="屏幕截图" icon={Camera}>
+          {screenshotDraft && (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <HudCheckbox
+                checked={screenshotDraft.enabled}
+                onChange={(checked) => updateScreenshotDraft('enabled', checked)}
+                label="启用屏幕截图"
+              />
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
+                <div>
+                  <label style={labelStyle}>抓取间隔（秒）</label>
+                  <NumberStepper
+                    min={5}
+                    max={3600}
+                    value={screenshotDraft.intervalSeconds}
+                    onChange={(v) => updateScreenshotDraft('intervalSeconds', v)}
+                  />
+                </div>
+                <div>
+                  <label style={labelStyle}>抓取范围</label>
+                  <HudSelect
+                    value={screenshotDraft.captureTarget}
+                    options={[
+                      { value: 'active_window', label: '活动窗口' },
+                      { value: 'all_screens', label: '所有屏幕' },
+                    ]}
+                    onChange={(v) => updateScreenshotDraft('captureTarget', v)}
+                  />
+                </div>
+                <div>
+                  <label style={labelStyle}>格式</label>
+                  <HudSelect
+                    value={screenshotDraft.format}
+                    options={[
+                      { value: 'jpg', label: 'JPG' },
+                      { value: 'png', label: 'PNG' },
+                      { value: 'webp', label: 'WebP' },
+                    ]}
+                    onChange={(v) => updateScreenshotDraft('format', v)}
+                  />
+                </div>
+                <div>
+                  <label style={labelStyle}>质量（%）</label>
+                  <NumberStepper
+                    min={1}
+                    max={100}
+                    value={screenshotDraft.quality}
+                    onChange={(v) => updateScreenshotDraft('quality', v)}
+                  />
+                </div>
+                <div>
+                  <label style={labelStyle}>分辨率（%）</label>
+                  <NumberStepper
+                    min={10}
+                    max={100}
+                    value={screenshotDraft.resolutionPercent}
+                    onChange={(v) => updateScreenshotDraft('resolutionPercent', v)}
+                  />
+                </div>
+                <div>
+                  <label style={labelStyle}>存储限制</label>
+                  <HudSelect
+                    value={screenshotDraft.retentionMode}
+                    options={[
+                      { value: 'days', label: '最大追踪天数' },
+                      { value: 'size', label: '最大占用 MB' },
+                    ]}
+                    onChange={(v) => updateScreenshotDraft('retentionMode', v)}
+                  />
+                </div>
+                {screenshotDraft.retentionMode === 'size' ? (
+                  <div>
+                    <label style={labelStyle}>最大占用（MB）</label>
+                    <NumberStepper
+                      min={10}
+                      value={screenshotDraft.maxSizeMb}
+                      step={100}
+                      onChange={(v) => updateScreenshotDraft('maxSizeMb', v)}
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <label style={labelStyle}>最大追踪天数</label>
+                    <NumberStepper
+                      min={1}
+                      value={screenshotDraft.retentionDays}
+                      onChange={(v) => updateScreenshotDraft('retentionDays', v)}
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label style={labelStyle}>保存到</label>
+                <input
+                  value={screenshotDraft.saveDir}
+                  onChange={(e) => updateScreenshotDraft('saveDir', e.target.value)}
+                  style={inputStyle}
+                />
+              </div>
+
+              <div style={{
+                background: 'rgba(255,255,255,0.03)',
+                border: `1px solid ${theme.glassBorder}`,
+                borderRadius: 4,
+                padding: '8px 12px',
+                display: 'grid',
+                gap: 4,
+              }}>
+                <div style={{ fontSize: 12, color: theme.textSecondary }}>磁盘占用</div>
+                <div style={{ fontSize: 13, color: theme.electricBlue }}>
+                  {screenshotInfo ? `${formatBytes(screenshotInfo.sizeBytes)} · ${screenshotInfo.fileCount} 个文件` : '读取中...'}
+                </div>
+                <div style={{
+                  fontSize: 11, color: theme.textPrimary,
+                  fontFamily: "'Exo 2', sans-serif",
+                  wordBreak: 'break-all',
+                }}>
+                  {screenshotInfo?.path ?? screenshotDraft.saveDir}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <MagneticButton
+                  onClick={saveScreenshotSettings}
+                  color={theme.expGreen}
+                  disabled={screenshotSaving}
+                >
+                  {screenshotSaved ? '已保存 ✓' : screenshotSaving ? '保存中...' : '保存'}
+                </MagneticButton>
+                <IconBtn title="刷新占用" onClick={refreshScreenshotInfo}>
+                  <RefreshCw size={13} />
+                </IconBtn>
+                <IconBtn title="打开文件夹" onClick={openScreenshotFolder}>
+                  <FolderOpen size={13} />
+                </IconBtn>
+                <IconBtn title="清空数据" onClick={clearScreenshotData}>
+                  <Trash2 size={13} />
+                </IconBtn>
+              </div>
+            </div>
+          )}
+        </Section>
+        )}
+
+        {activeSection === 'ignore' && (
+        <Section title="忽略窗口" icon={Ban}>
+          <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 8, lineHeight: 1.55 }}>
+            被忽略的窗口聚焦时，<span style={{ color: theme.textPrimary }}>不记录活动 + 不截图</span>，由前一个活动窗口继续顶替。
+            <br />
+            通过昼夜表里活动详情面板的 <EyeOff size={11} style={{ verticalAlign: 'middle', margin: '0 2px' }} /> 按钮添加。
+          </div>
+          {windowBlacklist.length === 0 ? (
+            <div style={{
+              fontSize: 11, color: theme.textMuted, textAlign: 'center',
+              padding: '14px 0', opacity: 0.7,
+            }}>
+              ─ 暂无忽略项 ─
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {windowBlacklist.map((entry, idx) => (
+                <div
+                  key={`${entry.app}|${entry.title ?? ''}|${idx}`}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '6px 8px',
+                    background: 'rgba(255,80,80,0.04)',
+                    border: `1px solid rgba(255,80,80,0.22)`,
+                    borderRadius: 3,
+                    minWidth: 0,
+                  }}
+                >
+                  <Ban size={12} color="#ff8a8a" style={{ flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      fontSize: 12, fontWeight: 600, color: theme.textPrimary,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>
+                      {entry.app}
+                    </div>
+                    {entry.title ? (
+                      <div style={{
+                        fontSize: 10.5, color: theme.textSecondary,
+                        fontFamily: theme.fontMono,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        marginTop: 1,
+                      }}>
+                        {entry.title}
+                      </div>
+                    ) : (
+                      <div style={{
+                        fontSize: 10, color: theme.textMuted, fontStyle: 'italic',
+                        marginTop: 1,
+                      }}>
+                        整个应用
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeBlacklistEntry(entry)}
+                    style={{
+                      flexShrink: 0,
+                      width: 22, height: 22,
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      background: 'transparent',
+                      border: `1px solid ${theme.glassBorder}`,
+                      color: theme.textSecondary,
+                      cursor: 'pointer',
+                      borderRadius: 2,
+                    }}
+                    title="移除"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+        )}
+
+        {activeSection === 'gpu' && (
         <Section title="图形性能" icon={Cpu}>
           <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 8, lineHeight: 1.55 }}>
             笔记本独显高性能模式：写入 Windows 图形偏好（HKCU 注册表），让本应用与 WebView2 子进程默认使用独立显卡。
             <span style={{ color: theme.warningOrange }}> 修改后需要完全重启应用才能生效。</span>
           </div>
 
-          <label style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            padding: '10px 12px',
-            background: 'rgba(255,255,255,0.03)',
-            border: `1px solid ${theme.glassBorder}`,
-            borderRadius: 4, marginBottom: 10,
-            cursor: gpuToggling ? 'wait' : 'pointer',
-            opacity: gpuToggling ? 0.6 : 1,
-          }}>
-            <input
-              type="checkbox"
+          <div style={{ marginBottom: 10 }}>
+            <HudCheckbox
               checked={config.useDiscreteGpu}
               disabled={gpuToggling}
-              onChange={(e) => toggleDiscreteGpu(e.target.checked)}
-              style={{ accentColor: theme.electricBlue, width: 14, height: 14 }}
-            />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, color: theme.textPrimary }}>使用独立显卡（更丝滑）</div>
+              onChange={toggleDiscreteGpu}
+              label="使用独立显卡（更丝滑）"
+            >
               <div style={{ fontSize: 10, color: theme.textMuted, marginTop: 2 }}>
                 台式机或仅有集显时无效；笔记本默认走集显，开启后流畅但更耗电。
               </div>
-            </div>
-          </label>
+            </HudCheckbox>
+          </div>
 
           {gpuPref && (
             <div style={{
@@ -335,7 +836,7 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
               display: 'grid', gap: 6,
             }}>
               <GpuPrefRow
-                label="solo-agent.exe"
+                label="SOLO LEVELING SYSTEM"
                 path={gpuPref.self_exe_path}
                 set={gpuPref.self_exe_pref_set}
               />
@@ -350,8 +851,9 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
             </div>
           )}
         </Section>
+        )}
 
-        {/* ── 数据库 ── */}
+        {activeSection === 'database' && (
         <Section title="数据库" icon={Database}>
           <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 8 }}>
             本地 SQLite 存储，支持自定义位置
@@ -391,8 +893,237 @@ export default function SettingsPanel({ config, onUpdate, onClose }: Props) {
             {migrating ? '迁移中...' : '更改存储位置'}
           </MagneticButton>
         </Section>
+        )}
+        </div>
+      </div>
+      </div>
+    </>,
+    document.body,
+  )
+}
+
+// ── 设置左侧栏分组 ──
+
+const SECTION_LIST: { id: string; label: string; icon: React.ElementType }[] = [
+  { id: 'persona',    label: 'AI 人设',  icon: Bot },
+  { id: 'voice',      label: '语音',     icon: Mic },
+  { id: 'privacy',    label: '隐私',     icon: Lock },
+  { id: 'tracking',   label: '追踪',     icon: Activity },
+  { id: 'screenshot', label: '屏幕截图', icon: Camera },
+  { id: 'ignore',     label: '忽略窗口', icon: Ban },
+  { id: 'gpu',        label: '图形性能', icon: Cpu },
+  { id: 'database',   label: '数据库',   icon: Database },
+]
+
+function SectionNavBtn({
+  label, icon: Icon, active, onClick,
+}: {
+  label: string
+  icon: React.ElementType
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: '7px 10px',
+        background: active ? `${theme.electricBlue}1A` : 'transparent',
+        border: `1px solid ${active ? `${theme.electricBlue}66` : 'transparent'}`,
+        borderLeft: `3px solid ${active ? theme.electricBlue : 'transparent'}`,
+        color: active ? theme.electricBlue : theme.textSecondary,
+        fontFamily: theme.fontBody,
+        fontSize: 12.5,
+        fontWeight: active ? 700 : 500,
+        letterSpacing: 0.4,
+        cursor: 'pointer',
+        textAlign: 'left',
+        textShadow: active ? `0 0 6px ${theme.electricBlue}88` : undefined,
+        transition: 'background 0.12s, color 0.12s, border-color 0.12s',
+      }}
+    >
+      <Icon size={13} style={{ flexShrink: 0 }} />
+      <span>{label}</span>
+    </button>
+  )
+}
+
+function HudCheckbox({
+  checked, onChange, label, children, disabled,
+}: {
+  checked: boolean
+  onChange: (checked: boolean) => void
+  label: string
+  children?: React.ReactNode
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => !disabled && onChange(!checked)}
+      style={{
+        width: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '10px 12px',
+        background: checked ? 'rgba(0,229,255,0.07)' : 'rgba(255,255,255,0.03)',
+        border: `1px solid ${checked ? 'rgba(0,229,255,0.42)' : theme.glassBorder}`,
+        borderRadius: 4,
+        color: theme.textPrimary,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        textAlign: 'left',
+        transition: 'border-color 0.15s ease, background 0.15s ease',
+      }}
+    >
+      <span style={{
+        width: 16,
+        height: 16,
+        borderRadius: 3,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        background: checked ? theme.electricBlue : 'rgba(255,255,255,0.035)',
+        border: `1px solid ${checked ? theme.electricBlue : 'rgba(0,229,255,0.24)'}`,
+        boxShadow: checked ? `0 0 10px ${theme.electricBlue}55` : undefined,
+      }}>
+        {checked ? <Check size={12} color="#071216" strokeWidth={3} /> : null}
+      </span>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ display: 'block', fontSize: 13, color: theme.textPrimary }}>{label}</span>
+        {children}
+      </span>
+    </button>
+  )
+}
+
+function NumberStepper({
+  value, onChange, min = 0, max, step = 1, disabled,
+}: {
+  value: number
+  onChange: (value: number) => void
+  min?: number
+  max?: number
+  step?: number
+  disabled?: boolean
+}) {
+  const [draft, setDraft] = useState(String(value))
+
+  useEffect(() => {
+    setDraft(String(value))
+  }, [value])
+
+  const clamp = useCallback((n: number) => {
+    const upper = max ?? Number.POSITIVE_INFINITY
+    return Math.min(upper, Math.max(min, n))
+  }, [max, min])
+
+  const commit = useCallback(() => {
+    const parsed = Number(draft)
+    const next = Number.isFinite(parsed) ? clamp(Math.round(parsed)) : clamp(value)
+    setDraft(String(next))
+    onChange(next)
+  }, [clamp, draft, onChange, value])
+
+  const bump = useCallback((direction: 1 | -1) => {
+    const parsed = Number(draft)
+    const base = Number.isFinite(parsed) ? parsed : value
+    const next = clamp(base + direction * step)
+    setDraft(String(next))
+    onChange(next)
+  }, [clamp, draft, onChange, step, value])
+
+  const handleRawChange = useCallback((raw: string) => {
+    if (!/^\d*$/.test(raw)) return
+    setDraft(raw)
+    if (raw === '') return
+    const parsed = Number(raw)
+    if (Number.isFinite(parsed)) {
+      onChange(parsed)
+    }
+  }, [onChange])
+
+  return (
+    <div style={{ position: 'relative', width: '100%' }}>
+      <input
+        type="text"
+        inputMode="numeric"
+        value={draft}
+        disabled={disabled}
+        onChange={(e) => handleRawChange(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowUp') {
+            e.preventDefault()
+            bump(1)
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault()
+            bump(-1)
+          } else if (e.key === 'Enter') {
+            e.currentTarget.blur()
+          }
+        }}
+        style={{
+          ...inputStyle,
+          paddingRight: 30,
+          opacity: disabled ? 0.4 : 1,
+        }}
+      />
+      <div style={{
+        position: 'absolute',
+        right: 3,
+        top: 3,
+        bottom: 3,
+        width: 22,
+        display: 'grid',
+        gridTemplateRows: '1fr 1fr',
+        gap: 2,
+      }}>
+        <StepperButton disabled={disabled} onClick={() => bump(1)} icon="up" />
+        <StepperButton disabled={disabled} onClick={() => bump(-1)} icon="down" />
       </div>
     </div>
+  )
+}
+
+function StepperButton({
+  disabled, onClick, icon,
+}: {
+  disabled?: boolean
+  onClick: () => void
+  icon: 'up' | 'down'
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onClick}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minWidth: 0,
+        width: 22,
+        height: '100%',
+        padding: 0,
+        border: 'none',
+        borderRadius: 2,
+        background: 'rgba(0,229,255,0.09)',
+        color: theme.textSecondary,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.35 : 1,
+      }}
+    >
+      {icon === 'up' ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+    </button>
   )
 }
 
