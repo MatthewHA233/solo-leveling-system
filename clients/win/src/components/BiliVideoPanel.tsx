@@ -307,25 +307,27 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
         {span.title}
       </div>
 
-      {/* UP主 */}
-      {span.author_name && (
-        <div style={{
-          fontSize: 11,
-          color: theme.textSecondary,
-          marginBottom: 8,
-        }}>
-          UP: {span.author_name}
-        </div>
-      )}
-
-      {/* 时间信息 */}
+      {/* UP主 + 观看时间（右对齐） */}
       <div style={{
-        display: 'flex', gap: 12, fontSize: 11,
-        fontFamily: theme.fontMono,
+        display: 'flex', alignItems: 'center', gap: 8,
+        marginBottom: 8,
+        fontSize: 11,
         color: theme.textSecondary,
-        marginBottom: 6,
       }}>
-        <span>{fmt(span.start_at)} — {fmt(span.end_at)}</span>
+        {span.author_name && (
+          <span style={{
+            flex: 1, minWidth: 0,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            UP: {span.author_name}
+          </span>
+        )}
+        <span style={{
+          flexShrink: 0, marginLeft: 'auto',
+          letterSpacing: 0.3,
+        }}>
+          在 <span style={{ fontFamily: theme.fontMono, color: theme.textPrimary }}>{fmt(span.end_at)}</span> 观看
+        </span>
       </div>
 
       {/* 时长 / 进度 */}

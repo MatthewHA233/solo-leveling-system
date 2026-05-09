@@ -166,11 +166,11 @@ function layoutMasonry(spans: BiliSpan[], dayStr: string, cols: number): { place
   let cursorY = CARD_TOP_PAD
   let prevHour = -1
 
-  // 按小时分组
+  // 按小时分组（用 end_at = 真实记录时间，避免被推测的 start_at 误伤）
   const buckets: BiliSpan[][] = []
   for (const s of sorted) {
-    const h = Math.floor(dtToMinute(s.start_at, dayStr) / 60)
-    if (buckets.length === 0 || h !== Math.floor(dtToMinute(buckets[buckets.length - 1][0].start_at, dayStr) / 60)) {
+    const h = Math.floor(dtToMinute(s.end_at, dayStr) / 60)
+    if (buckets.length === 0 || h !== Math.floor(dtToMinute(buckets[buckets.length - 1][0].end_at, dayStr) / 60)) {
       buckets.push([s])
     } else {
       buckets[buckets.length - 1].push(s)
@@ -178,7 +178,7 @@ function layoutMasonry(spans: BiliSpan[], dayStr: string, cols: number): { place
   }
 
   for (const bucket of buckets) {
-    const hour = Math.floor(dtToMinute(bucket[0].start_at, dayStr) / 60)
+    const hour = Math.floor(dtToMinute(bucket[0].end_at, dayStr) / 60)
     if (prevHour !== -1) cursorY += HOUR_GAP_EXTRA
     prevHour = hour
 
@@ -191,7 +191,7 @@ function layoutMasonry(spans: BiliSpan[], dayStr: string, cols: number): { place
       for (let i = rowStart; i < rowEnd; i++) {
         const span = bucket[i]
         const col = i - rowStart
-        const startMin = dtToMinute(span.start_at, dayStr)
+        const startMin = dtToMinute(span.end_at, dayStr)
         const nodeY = top + (CARD_H * (col + 1)) / (cardsInRow + 1)
         placed.push({ span, col, top, nodeY, cardsInRow, startMin })
       }
@@ -1318,7 +1318,7 @@ function TimeLabels({
         const downloaded = p.span.downloaded
         const transcribed = p.span.transcribed
         const accent = transcribed ? theme.shadowPurple : (downloaded ? theme.expGreen : theme.electricBlue)
-        const { prefix, time } = fmtTimeLabel(p.span.start_at, dayStr)
+        const { prefix, time } = fmtTimeLabel(p.span.end_at, dayStr)
         return (
           <div
             key={`tl-${p.span.bvid}`}

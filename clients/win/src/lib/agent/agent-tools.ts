@@ -134,7 +134,7 @@ const getAppUsage: Tool = {
     function: {
       name: 'GetAppUsage',
       description:
-        '查询 ManicTime 应用使用记录（哪个 app、哪个窗口标题、什么时间段）。' +
+        '查询本机自动记录的应用使用记录（哪个 app、哪个窗口标题、什么时间段）。' +
         '支持按日期、精确时间范围（含跨天）、关键词过滤。' +
         '适用于："今天下午用了什么软件""这周有没有打开 VSCode""昨晚在干嘛"等查询。' +
         ' keyword 可传字符串数组一次过滤多个候选词（取并集），优先用数组而不是多次调用本工具。' +
@@ -180,7 +180,7 @@ const getActivityTags: Tool = {
     function: {
       name: 'GetActivityTags',
       description:
-        '查询 ManicTime 活动标签（如"工作""学习""娱乐"等手动打的分类标签）。' +
+        '查询本机活动标签（如"工作""学习""娱乐"等手动或 AI 生成的分类标签）。' +
         '支持按日期、精确时间范围（含跨天）、关键词过滤。' +
         '适用于："今天学习了多久""这周工作时间怎么分布"等查询。' +
         ' keyword 可传字符串数组一次过滤多个候选词（取并集），优先用数组而不是多次调用本工具。' +
@@ -214,6 +214,48 @@ const getActivityTags: Tool = {
     if (tags.length === 0) return '无匹配的活动标签记录'
     return tags
       .map(s => `${s.start_at.slice(0, 16)} - ${s.end_at.slice(11, 16)}  [${s.title}]${s.group_name ? ` / ${s.group_name}` : ''}`)
+      .join('\n')
+  },
+}
+
+// ── GetComputerStatus ──
+
+const getComputerStatus: Tool = {
+  definition: {
+    type: 'function',
+    function: {
+      name: 'GetComputerStatus',
+      description:
+        '查询本机自动记录的电脑状态记录（active/idle/afk，对应正在操作、短暂空闲、离开键鼠）。' +
+        '支持按日期、精确时间范围（含跨天）过滤。' +
+        '适用于："昨晚什么时候离开电脑""今天下午有多久没操作""刚才是不是空闲了"等查询。',
+      parameters: {
+        type: 'object',
+        properties: {
+          ...TIME_RANGE_PARAMS,
+          status: {
+            description: '可选状态过滤：active、idle、afk',
+            type: 'string',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  async execute(args) {
+    const dates = resolveDatesToFetch(args)
+    const fromDT = typeof args.start_datetime === 'string' ? args.start_datetime : null
+    const toDT   = typeof args.end_datetime   === 'string' ? args.end_datetime   : null
+    const status = typeof args.status === 'string' ? args.status.toLowerCase() : null
+
+    const all = await fetchManicTimeSpansRange(dates)
+    let statuses = all.filter(s => s.track === 'status')
+    statuses = filterByTime(statuses, fromDT, toDT)
+    if (status) statuses = statuses.filter(s => (s.group_name ?? s.title).toLowerCase() === status)
+
+    if (statuses.length === 0) return '无匹配的电脑状态记录'
+    return statuses
+      .map(s => `${s.start_at.slice(0, 16)} - ${s.end_at.slice(11, 16)}  ${s.title}`)
       .join('\n')
   },
 }
@@ -355,6 +397,7 @@ const editFile: Tool = {
 const ALL_TOOLS: readonly Tool[] = [
   getAppUsage,
   getActivityTags,
+  getComputerStatus,
   getBiliHistory,
   readFile,
   writeFile,

@@ -227,8 +227,9 @@ ${agentPersona}
 # 工具使用
 - 当回答需要实际数据支撑时，主动调用工具获取，不要凭记忆或猜测回答。
 - 可用工具：
-  - GetAppUsage：查询应用程序使用记录（ManicTime）
-  - GetActivityTags：查询活动标签记录（ManicTime）
+  - GetAppUsage：查询本机自动记录的应用程序使用记录
+  - GetActivityTags：查询本机活动标签记录
+  - GetComputerStatus：查询本机 active/idle/afk 状态记录
   - GetBiliHistory：查询 B 站观看历史
   - Read：读取本地文件
   - Write：写入本地文件
@@ -265,7 +266,7 @@ export interface ActivityTagRecord {
   startTime: string   // 'HH:mm'
   endTime: string     // 'HH:mm'
   tag: string         // 标签名，如"工作""学习"
-  subTag?: string     // 子标签（ManicTime group_name）
+  subTag?: string     // 子标签（感知记录 group_name）
 }
 
 export interface AppUsageRecord {

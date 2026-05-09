@@ -1,15 +1,22 @@
 // ══════════════════════════════════════════════
 // AppHoverPanel — 程序轨道悬浮/固定时右侧栏面板（HUD 风格）
-// 显示：程序图标 + 程序名 + 时段 + ManicTime 截图
+// 显示：程序图标 + 程序名 + 时段 + 感知截图
 // ══════════════════════════════════════════════
 
 import { useState, useEffect } from 'react'
+import { EyeOff, Check } from 'lucide-react'
+import { invoke } from '@tauri-apps/api/core'
 import type { MtSpan } from '../lib/local-api'
 import { theme } from '../theme'
+import ConfirmDialog from './ConfirmDialog'
 
 interface Props {
   span: MtSpan
   date: Date
+  /** 鼠标当前所在的整分钟（截图按分钟切换）；为 null 时回落到 span.start_at */
+  focusMinute?: number | null
+  /** 该时刻处于"离开"（afk）— 在标题栏显示红色徽章 */
+  isAfk?: boolean
 }
 
 const clip4 = `polygon(
@@ -62,10 +69,28 @@ function brightenForDark(hex: string, minLum = 185): string {
   return `#${nr.toString(16).padStart(2, '0')}${ng.toString(16).padStart(2, '0')}${nb.toString(16).padStart(2, '0')}`
 }
 
-export default function AppHoverPanel({ span, date }: Props) {
+export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }: Props) {
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null)
   const [imgError, setImgError] = useState(false)
   const [iconUrl, setIconUrl] = useState<string | null>(null)
+  const [ignored, setIgnored] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  // span 切换时重置忽视状态
+  useEffect(() => { setIgnored(false); setConfirmOpen(false) }, [span.id])
+
+  const titleArg: string | null = span.title && span.title !== span.group_name ? span.title : null
+
+  const performIgnore = async () => {
+    if (!span.group_name) return
+    setConfirmOpen(false)
+    try {
+      await invoke('add_window_blacklist', { app: span.group_name, title: titleArg })
+      setIgnored(true)
+    } catch (e) {
+      alert(`添加忽略失败: ${e}`)
+    }
+  }
 
   const color = brightenForDark(span.color ?? '#4488ff', 185)
   const mins = durationMin(span)
@@ -74,6 +99,16 @@ export default function AppHoverPanel({ span, date }: Props) {
     : `${Math.floor(mins / 60)}小时${mins % 60 ? `${mins % 60}分钟` : ''}`
   const displayName = span.group_name ?? span.title
   const hasWindowTitle = !!(span.group_name && span.title !== span.group_name)
+
+  // 当前截图对应的时间点（focusMinute 优先；否则用 span 起始）
+  const shotTimeStr = (() => {
+    if (focusMinute != null) {
+      const h = Math.floor(focusMinute / 60)
+      const m = focusMinute % 60
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+    }
+    return fmt(span.start_at)
+  })()
 
   // 加载应用图标
   useEffect(() => {
@@ -91,7 +126,14 @@ export default function AppHoverPanel({ span, date }: Props) {
     setImgError(false)
 
     const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-    const timeStr = span.start_at.split(' ')[1] ?? '00:00:00'
+    let timeStr: string
+    if (focusMinute != null) {
+      const h = Math.floor(focusMinute / 60)
+      const m = focusMinute % 60
+      timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:30`  // 落在该分钟中点，附近搜索更稳
+    } else {
+      timeStr = span.start_at.split(' ')[1] ?? '00:00:00'
+    }
     const url = `http://localhost:49733/api/manictime/screenshot?date=${dateStr}&time=${encodeURIComponent(timeStr)}`
 
     let objectUrl: string | null = null
@@ -101,7 +143,7 @@ export default function AppHoverPanel({ span, date }: Props) {
       .catch(() => setImgError(true))
 
     return () => { if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [span.id, date])
+  }, [span.id, date, focusMinute])
 
   return (
     <div style={{
@@ -155,6 +197,30 @@ export default function AppHoverPanel({ span, date }: Props) {
           {displayName}
         </span>
 
+        {/* 离开 chip（当前光标处于 afk） */}
+        {isAfk && (
+          <span style={{
+            flexShrink: 0,
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            fontSize: 11, fontWeight: 700,
+            fontFamily: theme.fontMono,
+            letterSpacing: 0.8,
+            color: '#ff4d4d',
+            padding: '2px 8px',
+            background: 'rgba(255,77,77,0.12)',
+            border: '1px solid rgba(255,77,77,0.55)',
+            clipPath: clip3, WebkitClipPath: clip3,
+            textShadow: '0 0 5px rgba(255,77,77,0.7)',
+          }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: '#ff4d4d',
+              boxShadow: '0 0 6px #ff4d4d',
+            }} />
+            离开
+          </span>
+        )}
+
         {/* 时长 chip */}
         <span style={{
           flexShrink: 0,
@@ -175,7 +241,7 @@ export default function AppHoverPanel({ span, date }: Props) {
       {/* 时间段（mono 细节行） */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 6,
-        marginBottom: hasWindowTitle ? 4 : 10,
+        marginBottom: 4,
         padding: '0 2px',
       }}>
         <span style={{
@@ -194,32 +260,71 @@ export default function AppHoverPanel({ span, date }: Props) {
         </span>
       </div>
 
-      {/* 窗口标题（仅在有差异时显示） */}
-      {hasWindowTitle && (
-        <div style={{
-          marginBottom: 10,
-          padding: '6px 9px',
-          background: 'rgba(0,12,28,0.4)',
-          border: `1px solid ${theme.hudFrameSoft}`,
-          clipPath: clip3, WebkitClipPath: clip3,
-          fontSize: 11,
-          fontFamily: theme.fontMono,
-          color: theme.textSecondary,
-          letterSpacing: 0.2,
-          lineHeight: 1.4,
-          wordBreak: 'break-all',
-          opacity: 0.95,
+      {/* 窗口标题 + 截图时间点（无窗口标题时仅显示时间） */}
+      <div style={{
+        marginBottom: 10,
+        padding: '8px 10px',
+        background: `linear-gradient(180deg, ${hexToRgba(color, 0.08)} 0%, rgba(0,12,28,0.55) 100%)`,
+        border: `1px solid ${hexToRgba(color, 0.32)}`,
+        clipPath: clip3, WebkitClipPath: clip3,
+        display: 'flex', alignItems: 'flex-start', gap: 8,
+        lineHeight: 1.45,
+        wordBreak: 'break-all',
+      }}>
+        <span style={{
+          fontSize: 10, fontFamily: theme.fontBody, fontWeight: 700,
+          color: hexToRgba(color, 0.85), letterSpacing: 1.4,
+          flexShrink: 0,
+          paddingTop: 2,
+          textShadow: `0 0 4px ${hexToRgba(color, 0.55)}`,
         }}>
-          <span style={{
-            fontSize: 11, fontFamily: theme.fontBody, fontWeight: 700,
-            color: theme.textSecondary, letterSpacing: 1,
-            marginRight: 6,
-          }}>
-            窗口
-          </span>
-          {span.title.length > 80 ? span.title.slice(0, 80) + '…' : span.title}
-        </div>
-      )}
+          {hasWindowTitle ? '窗口' : '截图'}
+        </span>
+        <span style={{
+          flex: 1,
+          fontSize: 13,
+          fontFamily: theme.fontBody,
+          fontWeight: 600,
+          color: theme.textPrimary,
+          letterSpacing: 0.2,
+        }}>
+          {hasWindowTitle
+            ? (span.title.length > 80 ? span.title.slice(0, 80) + '…' : span.title)
+            : '当前帧'}
+        </span>
+        <span style={{
+          flexShrink: 0,
+          fontSize: 11, fontFamily: theme.fontMono, fontWeight: 700,
+          letterSpacing: 0.6,
+          color,
+          padding: '1px 7px',
+          background: hexToRgba(color, 0.12),
+          border: `1px solid ${hexToRgba(color, 0.45)}`,
+          clipPath: clip3, WebkitClipPath: clip3,
+          textShadow: `0 0 4px ${hexToRgba(color, 0.6)}`,
+        }}>
+          {shotTimeStr}
+        </span>
+        <button
+          type="button"
+          onClick={() => setConfirmOpen(true)}
+          disabled={ignored || !span.group_name}
+          title={ignored ? '已加入忽略' : '以后忽视这个窗口（不记录、不截图）'}
+          style={{
+            flexShrink: 0,
+            width: 22, height: 22,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            background: ignored ? hexToRgba(theme.expGreen, 0.16) : 'rgba(255,80,80,0.08)',
+            border: `1px solid ${ignored ? hexToRgba(theme.expGreen, 0.55) : 'rgba(255,80,80,0.4)'}`,
+            color: ignored ? theme.expGreen : '#ff8a8a',
+            cursor: ignored || !span.group_name ? 'default' : 'pointer',
+            clipPath: clip3, WebkitClipPath: clip3,
+            opacity: !span.group_name ? 0.4 : 1,
+          }}
+        >
+          {ignored ? <Check size={12} /> : <EyeOff size={12} />}
+        </button>
+      </div>
 
       {/* 截图（HUD frame：斜切 + 彩色边框 + 角 L 标）*/}
       {screenshotUrl && (
@@ -236,6 +341,37 @@ export default function AppHoverPanel({ span, date }: Props) {
           ─ 暂无截图 ─
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title="IGNORE WINDOW"
+        titleColor="#ff8a8a"
+        question={titleArg
+          ? `确定要忽略窗口 "${titleArg}"？`
+          : `确定要忽略整个应用 "${span.group_name}"？`}
+        details={[
+          <span key="d1">
+            <strong style={{ color: theme.textPrimary }}>它在前台时不再被记录</strong>
+            ：感知层把"前一个活动窗口"继续顶替写入，这段时间会算到上一段记录里。
+          </span>,
+          <span key="d2">
+            <strong style={{ color: theme.textPrimary }}>不再为该窗口截图</strong>
+            ：截图轮询碰到该窗口时直接跳过，磁盘上不会留下截图。
+          </span>,
+          <span key="d3">
+            适合用来排除：临时弹出的状态栏、密码管理器、系统工具栏、隐私会话等高频但无价值的活动。
+          </span>,
+          <span key="d4" style={{ color: theme.textMuted }}>
+            随时可以在「设置 → 忽略窗口」里移除。
+          </span>,
+        ]}
+        confirmLabel="加入忽略"
+        cancelLabel="取消"
+        confirmColor="#ff8a8a"
+        danger
+        onConfirm={performIgnore}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </div>
   )
 }
