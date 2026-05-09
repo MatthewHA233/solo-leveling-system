@@ -18,9 +18,11 @@ use tokio::sync::{oneshot, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::db::{
-    AppendChatMessagesRequest, ChatMessage, ChatSession,
-    ChronosActivity, CreateActivityRequest, Database, UpdateChatSessionRequest,
-    BiliHistoryRow, UpsertBiliItem, MergeActivitiesRequest, BiliSpan, BiliDayCount, Goal, PresenceSpan,
+    AppendChatMessagesRequest, ChatMessage, ChatSession, Database, UpdateChatSessionRequest,
+    BiliHistoryRow, UpsertBiliItem, BiliSpan, BiliDayCount, Goal, PresenceSpan,
+    ActivityCategory, ActivityTag, ActivityBlock, ActivityPalette,
+    AddCategoryRequest, AddTagRequest, PaintBlocksRequest, EraseBlocksRequest,
+    UpdateCategoryRequest, RenamePathRequest,
 };
 use crate::bili_download::{BiliDownloadState, PlayUrlMeta, QualityProbe, deliver_playurl_result, deliver_probe_result};
 
@@ -165,6 +167,23 @@ async fn health() -> Json<ApiResponse<&'static str>> {
 async fn get_manictime_screenshot(
     Query(query): Query<ScreenshotQuery>,
 ) -> Response {
+    let own_path = tokio::task::spawn_blocking({
+        let date = query.date.clone();
+        let time = query.time.clone();
+        move || crate::perception::find_screenshot_near(&date, &time)
+    }).await.ok().flatten();
+
+    if let Some(p) = own_path {
+        return match tokio::fs::read(&p).await {
+            Err(_) => (StatusCode::NOT_FOUND, "file unreadable").into_response(),
+            Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, image_mime_for_path(&p))], bytes).into_response(),
+        };
+    }
+
+    if std::env::var("SLS_ALLOW_MANICTIME_FALLBACK").ok().as_deref() != Some("1") {
+        return (StatusCode::NOT_FOUND, "no screenshot").into_response();
+    }
+
     let path = tokio::task::spawn_blocking(move || {
         crate::manictime::find_screenshot_near(&query.date, &query.time)
     }).await.ok().flatten();
@@ -175,14 +194,24 @@ async fn get_manictime_screenshot(
             match tokio::fs::read(&p).await {
                 Err(_) => (StatusCode::NOT_FOUND, "file unreadable").into_response(),
                 Ok(bytes) => {
-                    let mime = p.extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| if e.eq_ignore_ascii_case("png") { "image/png" } else { "image/jpeg" })
-                        .unwrap_or("image/jpeg");
-                    ([(axum::http::header::CONTENT_TYPE, mime)], bytes).into_response()
+                    ([(axum::http::header::CONTENT_TYPE, image_mime_for_path(&p))], bytes).into_response()
                 }
             }
         }
+    }
+}
+
+fn image_mime_for_path(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("bmp") => "image/bmp",
+        _ => "image/jpeg",
     }
 }
 
@@ -194,16 +223,21 @@ struct ScreenshotQuery {
 
 /// GET /api/manictime/app-icon?name=<group_name>
 async fn get_manictime_app_icon(
+    State(state): State<ApiState>,
     Query(query): Query<AppIconQuery>,
 ) -> Response {
     let name = query.name.clone();
-    let bytes = tokio::task::spawn_blocking(move || {
-        crate::manictime::get_app_icon_png(&name)
-    }).await.ok().flatten();
+    if let Some(bytes) = state.db.get_perception_app_icon_png(&name).await.ok().flatten() {
+        return ([(axum::http::header::CONTENT_TYPE, "image/bmp")], bytes).into_response();
+    }
 
-    match bytes {
-        None => (StatusCode::NOT_FOUND, "no icon").into_response(),
-        Some(b) => ([(axum::http::header::CONTENT_TYPE, "image/png")], b).into_response(),
+    if std::env::var("SLS_ALLOW_MANICTIME_FALLBACK").ok().as_deref() == Some("1") {
+        match crate::manictime::get_app_icon_png(&name) {
+            None => (StatusCode::NOT_FOUND, "no icon").into_response(),
+            Some(b) => ([(axum::http::header::CONTENT_TYPE, "image/png")], b).into_response(),
+        }
+    } else {
+        (StatusCode::NOT_FOUND, "no icon").into_response()
     }
 }
 
@@ -214,36 +248,38 @@ struct AppIconQuery {
 
 /// GET /api/manictime/spans?date=2026-04-04
 async fn get_manictime_spans(
-    Query(query): Query<DateQuery>,
-) -> Json<ApiResponse<Vec<crate::manictime::MtSpan>>> {
-    match tokio::task::spawn_blocking(move || {
-        crate::manictime::query_spans_for_date(&query.date)
-    }).await {
-        Ok(Ok(spans)) => Json(ApiResponse::ok(spans)),
-        Ok(Err(e))    => Json(ApiResponse::error(&e)),
-        Err(e)        => Json(ApiResponse::error(&e.to_string())),
-    }
-}
-
-/// GET /api/activities?date=2024-01-15
-async fn get_activities(
     State(state): State<ApiState>,
     Query(query): Query<DateQuery>,
-) -> Json<ApiResponse<Vec<ChronosActivity>>> {
-    match state.db.get_activities_by_date(&query.date).await {
-        Ok(activities) => Json(ApiResponse::ok(activities)),
+) -> Json<ApiResponse<Vec<crate::manictime::MtSpan>>> {
+    match state.db.get_perception_spans_for_date(&query.date).await {
+        Ok(spans) if !spans.is_empty() => Json(ApiResponse::ok(spans)),
+        Ok(_) if std::env::var("SLS_ALLOW_MANICTIME_FALLBACK").ok().as_deref() == Some("1") => {
+            match tokio::task::spawn_blocking(move || {
+                crate::manictime::query_spans_for_date(&query.date)
+            }).await {
+                Ok(Ok(spans)) => Json(ApiResponse::ok(spans)),
+                Ok(Err(e))    => Json(ApiResponse::error(&e)),
+                Err(e)        => Json(ApiResponse::error(&e.to_string())),
+            }
+        }
+        Ok(spans) => Json(ApiResponse::ok(spans)),
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
 
-#[derive(Serialize)]
-struct CreateActivityResult {
-    id: String,
-    event_ids: Vec<String>,
+/// GET /api/perception/spans?date=2026-04-04
+async fn get_perception_spans(
+    State(state): State<ApiState>,
+    Query(query): Query<DateQuery>,
+) -> Json<ApiResponse<Vec<crate::manictime::MtSpan>>> {
+    match state.db.get_perception_spans_for_date(&query.date).await {
+        Ok(spans) => Json(ApiResponse::ok(spans)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
 }
 
 /// GET /api/activities/data-days?from=2026-04-01&to=2026-04-30
-/// 返回区间内"有数据"的日期列表（聚合 chronos / bili / presence 三表）
+/// 返回区间内"有数据"的日期列表（聚合 activity_blocks / bili / presence / perception）
 async fn get_data_days(
     State(state): State<ApiState>,
     Query(query): Query<BiliDayCountQuery>,
@@ -254,24 +290,115 @@ async fn get_data_days(
     }
 }
 
-/// POST /api/activities
-async fn create_activity(
+// ── 活动记录：标签库 + 5min 块 ──
+
+/// GET /api/activities/palette — 整库 categories + tags
+async fn get_activity_palette(
     State(state): State<ApiState>,
-    Json(body): Json<CreateActivityRequest>,
-) -> Json<ApiResponse<CreateActivityResult>> {
-    match state.db.create_activity(body).await {
-        Ok((id, event_ids)) => Json(ApiResponse::ok(CreateActivityResult { id, event_ids })),
+) -> Json<ApiResponse<ActivityPalette>> {
+    match state.db.get_activity_palette().await {
+        Ok(palette) => Json(ApiResponse::ok(palette)),
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
 
-/// DELETE /api/activities/:id
-async fn delete_activity(
+/// POST /api/activities/categories
+async fn add_activity_category(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    Json(body): Json<AddCategoryRequest>,
+) -> Json<ApiResponse<ActivityCategory>> {
+    match state.db.add_activity_category(body).await {
+        Ok(c) => Json(ApiResponse::ok(c)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// DELETE /api/activities/categories/{id}
+async fn delete_activity_category(
+    State(state): State<ApiState>,
+    Path(id): Path<i64>,
 ) -> Json<ApiResponse<()>> {
-    match state.db.delete_activity(&id).await {
+    match state.db.delete_activity_category(id).await {
         Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// PATCH /api/activities/categories/{id} — 改名 / 改颜色，级联更新 tag 路径
+async fn update_activity_category(
+    State(state): State<ApiState>,
+    Path(id): Path<i64>,
+    Json(mut body): Json<UpdateCategoryRequest>,
+) -> Json<ApiResponse<()>> {
+    body.id = id;
+    match state.db.update_activity_category(body).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/activities/tags/rename — 重命名标签路径中的某段（叶子或中间）
+async fn rename_activity_path(
+    State(state): State<ApiState>,
+    Json(body): Json<RenamePathRequest>,
+) -> Json<ApiResponse<()>> {
+    match state.db.rename_activity_path(body).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/activities/tags
+async fn add_activity_tag(
+    State(state): State<ApiState>,
+    Json(body): Json<AddTagRequest>,
+) -> Json<ApiResponse<ActivityTag>> {
+    match state.db.add_activity_tag(body).await {
+        Ok(t) => Json(ApiResponse::ok(t)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// DELETE /api/activities/tags/{id}
+async fn delete_activity_tag(
+    State(state): State<ApiState>,
+    Path(id): Path<i64>,
+) -> Json<ApiResponse<()>> {
+    match state.db.delete_activity_tag(id).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// GET /api/activities/blocks?date=2026-04-04
+async fn get_activity_blocks(
+    State(state): State<ApiState>,
+    Query(query): Query<DateQuery>,
+) -> Json<ApiResponse<Vec<ActivityBlock>>> {
+    match state.db.get_activity_blocks_by_date(&query.date).await {
+        Ok(blocks) => Json(ApiResponse::ok(blocks)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/activities/blocks/paint
+async fn paint_activity_blocks(
+    State(state): State<ApiState>,
+    Json(body): Json<PaintBlocksRequest>,
+) -> Json<ApiResponse<i64>> {
+    match state.db.paint_activity_blocks(body).await {
+        Ok(n) => Json(ApiResponse::ok(n)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/activities/blocks/erase
+async fn erase_activity_blocks(
+    State(state): State<ApiState>,
+    Json(body): Json<EraseBlocksRequest>,
+) -> Json<ApiResponse<i64>> {
+    match state.db.erase_activity_blocks(body).await {
+        Ok(n) => Json(ApiResponse::ok(n)),
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -702,17 +829,6 @@ async fn link_bili_to_event(
     }
 }
 
-/// POST /api/activities/merge — 合并活动（移动事件，不删重建）
-async fn merge_activities(
-    State(state): State<ApiState>,
-    Json(body): Json<MergeActivitiesRequest>,
-) -> Json<ApiResponse<()>> {
-    match state.db.merge_activities(body).await {
-        Ok(()) => Json(ApiResponse::ok(())),
-        Err(e) => Json(ApiResponse::error(&e)),
-    }
-}
-
 // ── Bilibili 封面图片代理 ──
 
 #[derive(Deserialize)]
@@ -914,9 +1030,16 @@ pub fn create_router(
 
     Router::new()
         .route("/api/health", get(health))
-        .route("/api/activities", get(get_activities).post(create_activity))
         .route("/api/activities/data-days", get(get_data_days))
-        .route("/api/activities/{id}", delete(delete_activity))
+        .route("/api/activities/palette", get(get_activity_palette))
+        .route("/api/activities/categories", post(add_activity_category))
+        .route("/api/activities/categories/{id}", delete(delete_activity_category).patch(update_activity_category))
+        .route("/api/activities/tags", post(add_activity_tag))
+        .route("/api/activities/tags/{id}", delete(delete_activity_tag))
+        .route("/api/activities/tags/rename", post(rename_activity_path))
+        .route("/api/activities/blocks", get(get_activity_blocks))
+        .route("/api/activities/blocks/paint", post(paint_activity_blocks))
+        .route("/api/activities/blocks/erase", post(erase_activity_blocks))
         .route("/api/sessions", get(list_chat_sessions).post(create_chat_session))
         .route("/api/sessions/search", get(search_chat_sessions))
         .route("/api/sessions/cleanup_empty", post(cleanup_empty_chat_sessions))
@@ -934,9 +1057,9 @@ pub fn create_router(
         .route("/api/bilibili/history/search", get(search_bili_history))
         .route("/api/bilibili/day-counts", get(get_bili_day_counts))
         .route("/api/bilibili/history/link", axum::routing::put(link_bili_to_event))
-        .route("/api/activities/merge", post(merge_activities))
         .route("/api/bilibili/cover", get(proxy_bili_cover))
         .route("/api/bilibili/spans/day", get(get_bili_spans_day))
+        .route("/api/perception/spans", get(get_perception_spans))
         .route("/api/manictime/spans", get(get_manictime_spans))
         .route("/api/manictime/screenshot", get(get_manictime_screenshot))
         .route("/api/manictime/app-icon", get(get_manictime_app_icon))

@@ -9,55 +9,98 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use chrono::Utc;
+use chrono::{Duration, NaiveDateTime, Utc};
 
 // ── 数据类型 ──
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ChronosActivity {
-    pub id: String,
+// ── 活动记录（自定义标签 + 5min 块）──
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ActivityCategory {
+    pub id: i64,
+    pub name: String,
+    pub color: String,
+    pub sort_order: i32,
+    pub created_at: String,
+    pub last_used_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ActivityTag {
+    pub id: i64,
+    pub category_id: i64,
+    pub full_path: String,   // "工作,毕业论文,DPO章节"（含一级 category 名）
+    pub leaf_name: String,   // "DPO章节"
+    pub depth: i32,          // 1..4（含 category 层）
+    pub created_at: String,
+    pub last_used_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ActivityBlock {
+    pub date: String,        // 'YYYY-MM-DD'
+    pub minute: i32,         // 0/5/10/.../1435
+    pub tag_id: i64,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ActivityPalette {
+    pub categories: Vec<ActivityCategory>,
+    pub tags: Vec<ActivityTag>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddCategoryRequest {
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddTagRequest {
+    pub category_id: i64,
+    pub full_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateCategoryRequest {
+    pub id: i64,
+    pub name: Option<String>,
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RenamePathRequest {
+    pub category_id: i64,
+    /// 完整旧路径（含分类首段），如 "工作,毕业论文" 表示重命名 "毕业论文" 这一段
+    pub full_old_path: String,
+    /// 新的末段名（不含逗号）
+    pub new_segment: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PaintBlocksRequest {
     pub date: String,
-    pub title: String,
-    pub category: String,
-    pub start_minute: i32,
-    pub end_minute: i32,
-    pub goal_alignment: Option<String>,
-    pub events: Vec<ChronosEvent>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ChronosEvent {
-    pub id: String,
-    pub activity_id: String,
-    pub minute: i32,
-    pub label: String,
-    pub title: String,
+    pub minutes: Vec<i32>,
+    pub tag_id: i64,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct CreateActivityRequest {
+pub struct EraseBlocksRequest {
     pub date: String,
-    pub title: String,
-    pub category: String,
-    pub start_minute: i32,
-    pub end_minute: i32,
-    pub goal_alignment: Option<String>,
-    pub events: Vec<CreateEventRequest>,
+    pub minutes: Vec<i32>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreateEventRequest {
-    pub minute: i32,
-    pub label: String,
-    pub title: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct MergeActivitiesRequest {
-    pub survivor_id: String,
-    pub absorbed_ids: Vec<String>,
-    pub new_start: i32,
-    pub new_end: i32,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PerceptionHeartbeat {
+    pub bucket_id: String,
+    pub bucket_kind: String,
+    pub event_type: String,
+    pub source: String,
+    pub observed_at: String,
+    pub data: serde_json::Value,
+    pub pulsetime_seconds: i64,
 }
 
 // ── Chat Session Types ──
@@ -336,38 +379,51 @@ impl Database {
     fn run_migrations(&self) -> Result<(), String> {
         let conn = self.conn.blocking_lock();
 
-        // Migration 1: chronos_steps → chronos_events
-        let steps_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='chronos_steps'",
+        // Migration: 弃用旧 chronos 表（活动记录改为新的 activity_categories/tags/blocks）
+        let _ = conn.execute_batch(r#"
+            DROP TABLE IF EXISTS chronos_events;
+            DROP TABLE IF EXISTS chronos_activities;
+            DROP TABLE IF EXISTS chronos_steps;
+        "#);
+
+        // Migration: 旧 bili_history 表的 event_id 列引用 chronos_events，
+        // FK ON 时报 "no such table" → 重建该表去掉 FK
+        let bili_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='bili_history'",
             [], |row| row.get::<_, i64>(0),
         ).unwrap_or(0) > 0;
-        if steps_exists {
-            conn.execute_batch("ALTER TABLE chronos_steps RENAME TO chronos_events;")
-                .map_err(|e| format!("迁移 chronos_steps: {}", e))?;
-            log::info!("[Database] 迁移: chronos_steps → chronos_events");
-        }
-
-        // Migration 2: bili_history 添加 event_id 列
-        let event_id_exists = {
-            let mut stmt = conn.prepare("PRAGMA table_info(bili_history)")
-                .map_err(|e| e.to_string())?;
-            let cols: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(1))
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
-            cols.iter().any(|col| col == "event_id")
-        };
-        if !event_id_exists {
-            // bili_history 表存在才需要加列
-            let bili_exists: bool = conn.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='bili_history'",
-                [], |row| row.get::<_, i64>(0),
-            ).unwrap_or(0) > 0;
-            if bili_exists {
-                conn.execute_batch(
-                    "ALTER TABLE bili_history ADD COLUMN event_id TEXT REFERENCES chronos_events(id) ON DELETE SET NULL;"
-                ).map_err(|e| format!("迁移 event_id: {}", e))?;
-                log::info!("[Database] 迁移: bili_history.event_id 列已添加");
+        if bili_exists {
+            let create_sql: Option<String> = conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='bili_history'",
+                [], |row| row.get(0),
+            ).ok();
+            let needs_fix = create_sql
+                .as_deref()
+                .map(|s| s.contains("chronos_events"))
+                .unwrap_or(false);
+            if needs_fix {
+                conn.execute_batch(r#"
+                    PRAGMA foreign_keys = OFF;
+                    CREATE TABLE bili_history_new (
+                        bvid TEXT PRIMARY KEY,
+                        oid INTEGER NOT NULL DEFAULT 0,
+                        title TEXT NOT NULL DEFAULT '',
+                        author_name TEXT NOT NULL DEFAULT '',
+                        cover TEXT NOT NULL DEFAULT '',
+                        duration INTEGER NOT NULL DEFAULT 0,
+                        progress INTEGER NOT NULL DEFAULT 0,
+                        view_at INTEGER NOT NULL DEFAULT 0,
+                        event_id TEXT
+                    );
+                    INSERT INTO bili_history_new (bvid, oid, title, author_name, cover, duration, progress, view_at, event_id)
+                        SELECT bvid, oid, title, author_name, cover, duration, progress, view_at, event_id
+                        FROM bili_history;
+                    DROP TABLE bili_history;
+                    ALTER TABLE bili_history_new RENAME TO bili_history;
+                    CREATE INDEX IF NOT EXISTS idx_bili_view_at ON bili_history(view_at DESC);
+                    PRAGMA foreign_keys = ON;
+                "#).map_err(|e| format!("迁移 bili_history 去 FK 失败: {}", e))?;
+                log::info!("[Database] 迁移: bili_history 去掉 chronos_events 的 FK");
             }
         }
 
@@ -378,30 +434,40 @@ impl Database {
     fn init_tables(&self) -> Result<(), String> {
         let conn = self.conn.blocking_lock();
         conn.execute_batch(r#"
-            -- 活动表
-            CREATE TABLE IF NOT EXISTS chronos_activities (
-                id TEXT PRIMARY KEY,
+            -- 活动记录：分类（一级，用户可加，颜色定义在这）
+            CREATE TABLE IF NOT EXISTS activity_categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                color TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                last_used_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+
+            -- 活动记录：完整路径标签（只有叶子节点有 id；中间层从 path 切片得出）
+            -- full_path 形如 "工作,毕业论文,DPO章节"，首段必须等于 categories.name
+            CREATE TABLE IF NOT EXISTS activity_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category_id INTEGER NOT NULL REFERENCES activity_categories(id) ON DELETE CASCADE,
+                full_path TEXT NOT NULL,
+                leaf_name TEXT NOT NULL,
+                depth INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                last_used_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                UNIQUE (category_id, full_path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_activity_tags_category ON activity_tags(category_id);
+
+            -- 活动记录：5min 时间块（稀疏存储，未填的不存）
+            CREATE TABLE IF NOT EXISTS activity_blocks (
                 date TEXT NOT NULL,
-                title TEXT NOT NULL,
-                category TEXT NOT NULL,
-                start_minute INTEGER NOT NULL,
-                end_minute INTEGER NOT NULL,
-                goal_alignment TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            );
-
-            -- 事件表（活动的子集）
-            CREATE TABLE IF NOT EXISTS chronos_events (
-                id TEXT PRIMARY KEY,
-                activity_id TEXT NOT NULL REFERENCES chronos_activities(id) ON DELETE CASCADE,
                 minute INTEGER NOT NULL,
-                label TEXT NOT NULL,
-                title TEXT NOT NULL
+                tag_id INTEGER NOT NULL REFERENCES activity_tags(id) ON DELETE CASCADE,
+                note TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                PRIMARY KEY (date, minute)
             );
-
-            -- 索引
-            CREATE INDEX IF NOT EXISTS idx_activities_date ON chronos_activities(date);
-            CREATE INDEX IF NOT EXISTS idx_events_activity ON chronos_events(activity_id);
+            CREATE INDEX IF NOT EXISTS idx_activity_blocks_tag ON activity_blocks(tag_id);
 
             -- 对话会话表
             CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -452,7 +518,7 @@ impl Database {
                 duration INTEGER NOT NULL DEFAULT 0,
                 progress INTEGER NOT NULL DEFAULT 0,
                 view_at INTEGER NOT NULL DEFAULT 0,
-                event_id TEXT REFERENCES chronos_events(id) ON DELETE SET NULL
+                event_id TEXT  -- 旧版字段，保留兼容；新模型用 activity_blocks 关联
             );
             CREATE INDEX IF NOT EXISTS idx_bili_view_at ON bili_history(view_at DESC);
 
@@ -474,6 +540,44 @@ impl Database {
                 state TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_presence_start ON presence_spans(start_time);
+
+            -- 自研感知层：ActivityWatch 风格 bucket + heartbeat event
+            CREATE TABLE IF NOT EXISTS perception_buckets (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                hostname TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS perception_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bucket_id TEXT NOT NULL REFERENCES perception_buckets(id) ON DELETE CASCADE,
+                start_at TEXT NOT NULL,
+                end_at TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                data_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_perception_bucket_time
+                ON perception_events(bucket_id, start_at, end_at);
+            CREATE INDEX IF NOT EXISTS idx_perception_time
+                ON perception_events(start_at, end_at);
+            CREATE INDEX IF NOT EXISTS idx_perception_hash
+                ON perception_events(bucket_id, data_hash, end_at);
+
+            CREATE TABLE IF NOT EXISTS app_catalog (
+                app_key TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                exe_path TEXT,
+                color TEXT NOT NULL,
+                icon_png BLOB,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL
+            );
 
             -- B 站视频资产：下载记录 + 后续逐字稿/AI总结/笔记
             -- bvid 软引用 bili_history.bvid（不强制 FK，允许下载非历史中的视频）
@@ -608,174 +712,345 @@ impl Database {
         Ok(())
     }
 
-    // ── Chronos Activities ──
+    // ── Activity Records (Categories / Tags / Blocks) ──
 
-    /// 查询某天的所有活动
-    pub async fn get_activities_by_date(&self, date: &str) -> Result<Vec<ChronosActivity>, String> {
-        let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(r#"
-            SELECT id, date, title, category, start_minute, end_minute, goal_alignment
-            FROM chronos_activities
-            WHERE date = ?
-            ORDER BY start_minute
-        "#).map_err(|e| e.to_string())?;
-
-        let rows = stmt.query_map([date], |row| {
-            Ok(ChronosActivity {
-                id: row.get(0)?,
-                date: row.get(1)?,
-                title: row.get(2)?,
-                category: row.get(3)?,
-                start_minute: row.get(4)?,
-                end_minute: row.get(5)?,
-                goal_alignment: row.get(6)?,
-                events: vec![],
-            })
-        }).map_err(|e| e.to_string())?;
-
-        let mut activities: Vec<ChronosActivity> = rows.filter_map(|r| r.ok()).collect();
-
-        // 加载每个活动的事件
-        for activity in &mut activities {
-            activity.events = Self::get_events_by_activity_inner(&conn, &activity.id)?;
-        }
-
-        Ok(activities)
-    }
-
-    /// 创建活动，返回 (activity_id, event_ids)
-    pub async fn create_activity(&self, req: CreateActivityRequest) -> Result<(String, Vec<String>), String> {
-        let id = Uuid::new_v4().to_string();
+    /// 查询整个标签库（categories + tags），用于右栏渲染
+    pub async fn get_activity_palette(&self) -> Result<ActivityPalette, String> {
         let conn = self.conn.lock().await;
 
-        conn.execute(r#"
-            INSERT INTO chronos_activities (id, date, title, category, start_minute, end_minute, goal_alignment)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        "#, params![
-            &id,
-            &req.date,
-            &req.title,
-            &req.category,
-            req.start_minute,
-            req.end_minute,
-            &req.goal_alignment,
-        ]).map_err(|e| e.to_string())?;
-
-        // 插入事件
-        let mut event_ids = Vec::new();
-        for event in req.events {
-            let eid = Self::create_event_inner(&conn, &id, event)?;
-            event_ids.push(eid);
-        }
-
-        log::info!("[Database] 创建活动: {}", id);
-        Ok((id, event_ids))
-    }
-
-    /// 删除活动
-    pub async fn delete_activity(&self, id: &str) -> Result<(), String> {
-        let conn = self.conn.lock().await;
-        conn.execute(
-            "DELETE FROM chronos_activities WHERE id = ?",
-            [id],
+        let mut cat_stmt = conn.prepare(
+            "SELECT id, name, color, sort_order, created_at, last_used_at
+             FROM activity_categories
+             ORDER BY sort_order ASC, last_used_at DESC"
         ).map_err(|e| e.to_string())?;
+        let categories: Vec<ActivityCategory> = cat_stmt.query_map([], |row| {
+            Ok(ActivityCategory {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                sort_order: row.get(3)?,
+                created_at: row.get(4)?,
+                last_used_at: row.get(5)?,
+            })
+        }).map_err(|e| e.to_string())?
+          .filter_map(|r| r.ok())
+          .collect();
 
-        log::info!("[Database] 删除活动: {}", id);
+        let mut tag_stmt = conn.prepare(
+            "SELECT id, category_id, full_path, leaf_name, depth, created_at, last_used_at
+             FROM activity_tags
+             ORDER BY full_path ASC"
+        ).map_err(|e| e.to_string())?;
+        let tags: Vec<ActivityTag> = tag_stmt.query_map([], |row| {
+            Ok(ActivityTag {
+                id: row.get(0)?,
+                category_id: row.get(1)?,
+                full_path: row.get(2)?,
+                leaf_name: row.get(3)?,
+                depth: row.get(4)?,
+                created_at: row.get(5)?,
+                last_used_at: row.get(6)?,
+            })
+        }).map_err(|e| e.to_string())?
+          .filter_map(|r| r.ok())
+          .collect();
+
+        Ok(ActivityPalette { categories, tags })
+    }
+
+    pub async fn add_activity_category(&self, req: AddCategoryRequest) -> Result<ActivityCategory, String> {
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err("分类名不能为空".into());
+        }
+        if name.contains(',') {
+            return Err("分类名不能包含逗号".into());
+        }
+        let conn = self.conn.lock().await;
+        let now = local_now_string();
+        conn.execute(
+            "INSERT INTO activity_categories (name, color, sort_order, created_at, last_used_at)
+             VALUES (?, ?, COALESCE((SELECT MAX(sort_order)+1 FROM activity_categories), 0), ?, ?)",
+            params![&name, &req.color, &now, &now],
+        ).map_err(|e| format!("添加分类失败: {}", e))?;
+        let id = conn.last_insert_rowid();
+        Ok(ActivityCategory {
+            id,
+            name,
+            color: req.color,
+            sort_order: 0,
+            created_at: now.clone(),
+            last_used_at: now,
+        })
+    }
+
+    pub async fn delete_activity_category(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute("DELETE FROM activity_categories WHERE id = ?", params![id])
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    // ── Chronos Events ──
-
-    fn get_events_by_activity_inner(conn: &Connection, activity_id: &str) -> Result<Vec<ChronosEvent>, String> {
-        let mut stmt = conn.prepare(r#"
-            SELECT id, activity_id, minute, label, title
-            FROM chronos_events
-            WHERE activity_id = ?
-            ORDER BY minute
-        "#).map_err(|e| e.to_string())?;
-
-        let rows = stmt.query_map([activity_id], |row| {
-            Ok(ChronosEvent {
-                id: row.get(0)?,
-                activity_id: row.get(1)?,
-                minute: row.get(2)?,
-                label: row.get(3)?,
-                title: row.get(4)?,
-            })
-        }).map_err(|e| e.to_string())?;
-
-        Ok(rows.filter_map(|r| r.ok()).collect())
-    }
-
-    /// 创建事件，返回 event_id
-    fn create_event_inner(conn: &Connection, activity_id: &str, req: CreateEventRequest) -> Result<String, String> {
-        let id = Uuid::new_v4().to_string();
-
-        conn.execute(r#"
-            INSERT INTO chronos_events (id, activity_id, minute, label, title)
-            VALUES (?, ?, ?, ?, ?)
-        "#, params![
-            &id,
-            activity_id,
-            req.minute,
-            &req.label,
-            &req.title,
-        ]).map_err(|e| e.to_string())?;
-
-        Ok(id)
-    }
-
-    /// 合并多个活动到 survivor（移动事件，不删除，bvid 链接保留）
-    pub async fn merge_activities(&self, req: MergeActivitiesRequest) -> Result<(), String> {
-        if req.absorbed_ids.is_empty() { return Ok(()); }
+    /// 更新分类名 / 颜色（任一为 None 则跳过）。改名时会级联更新所有 tag 的 full_path 首段。
+    pub async fn update_activity_category(&self, req: UpdateCategoryRequest) -> Result<(), String> {
         let conn = self.conn.lock().await;
+        let old_name: String = conn.query_row(
+            "SELECT name FROM activity_categories WHERE id = ?",
+            params![req.id],
+            |row| row.get(0),
+        ).map_err(|_| "分类不存在".to_string())?;
 
-        // 将被吸收活动的所有事件移到 survivor
-        let placeholders = req.absorbed_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let move_sql = format!(
-            "UPDATE chronos_events SET activity_id = ? WHERE activity_id IN ({})",
-            placeholders
-        );
-        let mut move_params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(req.survivor_id.clone())];
-        for id in &req.absorbed_ids {
-            move_params.push(Box::new(id.clone()));
-        }
-        conn.execute(&move_sql, rusqlite::params_from_iter(
-            std::iter::once(&req.survivor_id as &dyn rusqlite::ToSql)
-                .chain(req.absorbed_ids.iter().map(|id| id as &dyn rusqlite::ToSql))
-        )).map_err(|e| e.to_string())?;
-
-        // 更新 survivor 的时间范围
-        conn.execute(
-            "UPDATE chronos_activities SET start_minute = ?, end_minute = ? WHERE id = ?",
-            params![req.new_start, req.new_end, &req.survivor_id],
-        ).map_err(|e| e.to_string())?;
-
-        // 删除被吸收的活动（事件已移走，CASCADE 不触发）
-        let del_sql = format!(
-            "DELETE FROM chronos_activities WHERE id IN ({})",
-            placeholders
-        );
-        conn.execute(&del_sql, rusqlite::params_from_iter(req.absorbed_ids.iter()))
-            .map_err(|e| e.to_string())?;
-
-        // 重新按 minute 排序编号事件 label
-        let mut stmt = conn.prepare(
-            "SELECT id FROM chronos_events WHERE activity_id = ? ORDER BY minute"
-        ).map_err(|e| e.to_string())?;
-        let event_ids: Vec<String> = stmt.query_map([&req.survivor_id], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-        for (i, eid) in event_ids.iter().enumerate() {
+        if let Some(color) = req.color.as_deref() {
             conn.execute(
-                "UPDATE chronos_events SET label = ? WHERE id = ?",
-                params![format!("{}", i + 1), eid],
+                "UPDATE activity_categories SET color = ? WHERE id = ?",
+                params![color, req.id],
             ).map_err(|e| e.to_string())?;
         }
 
-        log::info!("[Database] 合并活动: {} ← {:?}", req.survivor_id, req.absorbed_ids);
+        if let Some(new_name) = req.name.as_deref() {
+            let new_name = new_name.trim();
+            if new_name.is_empty() {
+                return Err("分类名不能为空".into());
+            }
+            if new_name.contains(',') {
+                return Err("分类名不能包含逗号".into());
+            }
+            if new_name == old_name {
+                return Ok(());
+            }
+            conn.execute(
+                "UPDATE activity_categories SET name = ? WHERE id = ?",
+                params![new_name, req.id],
+            ).map_err(|e| format!("更新分类名失败: {}", e))?;
+
+            // 级联更新 tag.full_path 与 leaf_name
+            let old_prefix = old_name.clone();
+            let old_prefix_with_comma = format!("{},", old_prefix);
+            let new_prefix = new_name.to_string();
+            let new_prefix_with_comma = format!("{},", new_prefix);
+
+            // 1) 顶层叶子（full_path 恰等于旧 category 名）
+            conn.execute(
+                "UPDATE activity_tags
+                 SET full_path = ?, leaf_name = ?
+                 WHERE category_id = ? AND full_path = ?",
+                params![&new_prefix, &new_prefix, req.id, &old_prefix],
+            ).map_err(|e| e.to_string())?;
+
+            // 2) 子层标签
+            conn.execute(
+                "UPDATE activity_tags
+                 SET full_path = ? || SUBSTR(full_path, ?)
+                 WHERE category_id = ? AND full_path LIKE ? || '%'",
+                params![
+                    &new_prefix_with_comma,
+                    (old_prefix_with_comma.chars().count() as i64) + 1,
+                    req.id,
+                    &old_prefix_with_comma,
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+
         Ok(())
+    }
+
+    pub async fn add_activity_tag(&self, req: AddTagRequest) -> Result<ActivityTag, String> {
+        let path = req.full_path.trim().to_string();
+        if path.is_empty() {
+            return Err("标签路径不能为空".into());
+        }
+        let segments: Vec<&str> = path.split(',').map(|s| s.trim()).collect();
+        if segments.iter().any(|s| s.is_empty()) {
+            return Err("标签路径段不能为空".into());
+        }
+        if segments.len() > 4 {
+            return Err("标签路径最多 4 层（含分类）".into());
+        }
+        let leaf = segments.last().unwrap_or(&"").to_string();
+        let depth = segments.len() as i32;
+        let conn = self.conn.lock().await;
+
+        // 校验首段必须等于 category 名
+        let cat_name: String = conn.query_row(
+            "SELECT name FROM activity_categories WHERE id = ?",
+            params![req.category_id],
+            |row| row.get(0),
+        ).map_err(|_| "分类不存在".to_string())?;
+        if segments.first().map(|s| s.to_string()).as_deref() != Some(cat_name.as_str()) {
+            return Err(format!("路径首段必须等于分类名 \"{}\"", cat_name));
+        }
+
+        let normalized = segments.join(",");
+        let now = local_now_string();
+        conn.execute(
+            "INSERT INTO activity_tags (category_id, full_path, leaf_name, depth, created_at, last_used_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![req.category_id, &normalized, &leaf, depth, &now, &now],
+        ).map_err(|e| format!("添加标签失败: {}", e))?;
+        let id = conn.last_insert_rowid();
+        Ok(ActivityTag {
+            id,
+            category_id: req.category_id,
+            full_path: normalized,
+            leaf_name: leaf,
+            depth,
+            created_at: now.clone(),
+            last_used_at: now,
+        })
+    }
+
+    pub async fn delete_activity_tag(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute("DELETE FROM activity_tags WHERE id = ?", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 重命名标签路径中的某一段（叶子或中间节点）：
+    /// full_old_path = "工作,毕业论文"，new_segment = "毕业论文-2024"
+    /// → 把所有以 "工作,毕业论文" 开头的 tag 的对应段都换掉
+    pub async fn rename_activity_path(&self, req: RenamePathRequest) -> Result<(), String> {
+        let new_seg = req.new_segment.trim();
+        if new_seg.is_empty() {
+            return Err("段名不能为空".into());
+        }
+        if new_seg.contains(',') {
+            return Err("段名不能包含逗号".into());
+        }
+        let segments: Vec<&str> = req.full_old_path.split(',').map(|s| s.trim()).collect();
+        if segments.iter().any(|s| s.is_empty()) {
+            return Err("路径段不能为空".into());
+        }
+
+        let conn = self.conn.lock().await;
+
+        // 校验分类存在
+        let cat_name: String = conn.query_row(
+            "SELECT name FROM activity_categories WHERE id = ?",
+            params![req.category_id],
+            |row| row.get(0),
+        ).map_err(|_| "分类不存在".to_string())?;
+        if segments.first().map(|s| *s) != Some(cat_name.as_str()) {
+            return Err("路径首段必须等于分类名".into());
+        }
+
+        // 构造新前缀（替换最后一段）
+        let mut new_segments: Vec<String> = segments.iter().map(|s| s.to_string()).collect();
+        let depth = new_segments.len();
+        new_segments[depth - 1] = new_seg.to_string();
+        let new_prefix = new_segments.join(",");
+        if new_prefix == req.full_old_path {
+            return Ok(());
+        }
+
+        let old_prefix = req.full_old_path.clone();
+        let old_prefix_with_comma = format!("{},", old_prefix);
+        let new_prefix_with_comma = format!("{},", new_prefix);
+
+        // 1) 该段恰为叶子：full_path 完全等于 old_prefix
+        conn.execute(
+            "UPDATE activity_tags
+             SET full_path = ?, leaf_name = ?
+             WHERE category_id = ? AND full_path = ?",
+            params![&new_prefix, new_seg, req.category_id, &old_prefix],
+        ).map_err(|e| e.to_string())?;
+
+        // 2) 该段为中间节点：full_path 以 old_prefix+',' 开头
+        conn.execute(
+            "UPDATE activity_tags
+             SET full_path = ? || SUBSTR(full_path, ?)
+             WHERE category_id = ? AND full_path LIKE ? || '%'",
+            params![
+                &new_prefix_with_comma,
+                (old_prefix_with_comma.chars().count() as i64) + 1,
+                req.category_id,
+                &old_prefix_with_comma,
+            ],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    pub async fn paint_activity_blocks(&self, req: PaintBlocksRequest) -> Result<i64, String> {
+        if req.minutes.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().await;
+        let now = local_now_string();
+
+        // 校验 tag 存在 + 拿 category_id 用于刷新 last_used_at
+        let category_id: i64 = conn.query_row(
+            "SELECT category_id FROM activity_tags WHERE id = ?",
+            params![req.tag_id],
+            |row| row.get(0),
+        ).map_err(|_| "标签不存在".to_string())?;
+
+        let mut affected = 0i64;
+        for minute in &req.minutes {
+            if *minute < 0 || *minute >= 1440 || minute % 5 != 0 {
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO activity_blocks (date, minute, tag_id, created_at)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(date, minute) DO UPDATE SET
+                     tag_id = excluded.tag_id,
+                     created_at = excluded.created_at",
+                params![&req.date, minute, req.tag_id, &now],
+            ).map_err(|e| e.to_string())?;
+            affected += 1;
+        }
+
+        conn.execute(
+            "UPDATE activity_tags SET last_used_at = ? WHERE id = ?",
+            params![&now, req.tag_id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE activity_categories SET last_used_at = ? WHERE id = ?",
+            params![&now, category_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(affected)
+    }
+
+    pub async fn erase_activity_blocks(&self, req: EraseBlocksRequest) -> Result<i64, String> {
+        if req.minutes.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().await;
+        let placeholders = req.minutes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "DELETE FROM activity_blocks WHERE date = ? AND minute IN ({})",
+            placeholders
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(req.date.clone())];
+        for m in &req.minutes {
+            params_vec.push(Box::new(*m));
+        }
+        let affected = conn.execute(
+            &sql,
+            rusqlite::params_from_iter(params_vec.iter().map(|b| b.as_ref())),
+        ).map_err(|e| e.to_string())?;
+        Ok(affected as i64)
+    }
+
+    pub async fn get_activity_blocks_by_date(&self, date: &str) -> Result<Vec<ActivityBlock>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT date, minute, tag_id, note, created_at
+             FROM activity_blocks
+             WHERE date = ?
+             ORDER BY minute ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![date], |row| {
+            Ok(ActivityBlock {
+                date: row.get(0)?,
+                minute: row.get(1)?,
+                tag_id: row.get(2)?,
+                note: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     // ── Chat Sessions ──
@@ -1112,16 +1387,25 @@ impl Database {
     /// 跨天的 span（如 23:30 → 次日 00:30）只要与该天有交集就会返回
     pub async fn get_bili_spans_for_date(&self, date: &str) -> Result<Vec<BiliSpan>, String> {
         let conn = self.conn.lock().await;
+        // 弃用 progress/duration 反推：每条固定占 2 分钟（120s），
+        // 起点若叠到上一条的 view_at（结束时刻），就贴合上一条的结束。
+        // SQLite 3.25+ 支持窗口函数 LAG。
         let sql = r#"
-            WITH spans AS (
+            WITH ordered AS (
                 SELECT
                     bvid, oid, title, author_name, cover, duration, progress, view_at, event_id,
-                    view_at - CASE
-                        WHEN progress > 0  THEN MIN(progress, 3600)  -- 真实部分观看（秒）
-                        WHEN progress = -1 THEN MIN(duration, 3600)  -- B站"已看完"哨兵 → 按 duration
-                        ELSE 60                                       -- progress=0：点开未播
-                    END AS start_unix
+                    view_at - 120 AS naive_start,
+                    LAG(view_at) OVER (ORDER BY view_at ASC) AS prev_end
                 FROM bili_history
+            ),
+            spans AS (
+                SELECT
+                    bvid, oid, title, author_name, cover, duration, progress, view_at, event_id,
+                    CASE
+                        WHEN prev_end IS NOT NULL AND naive_start < prev_end THEN prev_end
+                        ELSE naive_start
+                    END AS start_unix
+                FROM ordered
             )
             SELECT
                 s.bvid, s.oid, s.title, s.author_name, s.cover, s.duration, s.progress,
@@ -1164,7 +1448,7 @@ impl Database {
     }
 
     /// 在 [from, to] 范围内，返回所有"有数据"的日期（用于昼夜表前后日按钮）
-    /// 数据 = chronos_activities OR bili_history OR presence_spans 任意一项有记录
+    /// 数据 = activity_blocks OR bili_history OR presence_spans OR perception_events 任意一项有记录
     pub async fn get_data_days(
         &self, from: &str, to: &str,
     ) -> Result<Vec<String>, String> {
@@ -1172,7 +1456,7 @@ impl Database {
         let sql = r#"
             SELECT day FROM (
                 SELECT DISTINCT date AS day
-                FROM chronos_activities
+                FROM activity_blocks
                 WHERE date BETWEEN ?1 AND ?2
                 UNION
                 SELECT DISTINCT date(view_at, 'unixepoch', 'localtime') AS day
@@ -1182,6 +1466,10 @@ impl Database {
                 SELECT DISTINCT substr(start_time, 1, 10) AS day
                 FROM presence_spans
                 WHERE substr(start_time, 1, 10) BETWEEN ?1 AND ?2
+                UNION
+                SELECT DISTINCT substr(start_at, 1, 10) AS day
+                FROM perception_events
+                WHERE substr(start_at, 1, 10) BETWEEN ?1 AND ?2
             )
             ORDER BY day ASC
         "#;
@@ -1323,6 +1611,253 @@ impl Database {
         conn.execute(
             "UPDATE presence_spans SET end_time = ? WHERE id = ? AND end_time IS NULL",
             params![end_time, id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ── Perception Events ──
+
+    pub async fn record_perception_heartbeat(&self, heartbeat: PerceptionHeartbeat) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        let data_json = serde_json::to_string(&heartbeat.data)
+            .map_err(|e| format!("序列化感知事件失败: {}", e))?;
+        let data_hash = stable_hash_hex(&data_json);
+        let now = &heartbeat.observed_at;
+
+        conn.execute(
+            r#"INSERT INTO perception_buckets
+               (id, kind, event_type, source, hostname, created_at, updated_at)
+               VALUES (?, ?, ?, ?, '', ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   kind=excluded.kind,
+                   event_type=excluded.event_type,
+                   source=excluded.source,
+                   updated_at=excluded.updated_at"#,
+            params![
+                &heartbeat.bucket_id,
+                &heartbeat.bucket_kind,
+                &heartbeat.event_type,
+                &heartbeat.source,
+                now,
+                now,
+            ],
+        ).map_err(|e| e.to_string())?;
+
+        if heartbeat.bucket_kind == "window" {
+            if let Some(app) = heartbeat.data.get("app").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                let exe_path = heartbeat.data.get("exe_path").and_then(|v| v.as_str());
+                let color = color_for_app(app);
+                conn.execute(
+                    r#"INSERT INTO app_catalog
+                       (app_key, display_name, exe_path, color, first_seen, last_seen)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(app_key) DO UPDATE SET
+                           display_name=excluded.display_name,
+                           exe_path=COALESCE(excluded.exe_path, app_catalog.exe_path),
+                           color=app_catalog.color,
+                           last_seen=excluded.last_seen"#,
+                    params![app, app, exe_path, &color, now, now],
+                ).map_err(|e| e.to_string())?;
+            }
+        }
+
+        let last = conn.query_row(
+            r#"SELECT id, end_at, data_json, data_hash
+               FROM perception_events
+               WHERE bucket_id = ?
+               ORDER BY end_at DESC, id DESC
+               LIMIT 1"#,
+            params![&heartbeat.bucket_id],
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            )),
+        ).ok();
+
+        if let Some((id, last_end, last_json, last_hash)) = last {
+            let same_data = last_hash == data_hash && last_json == data_json;
+            if same_data && within_pulsetime(&last_end, now, heartbeat.pulsetime_seconds) {
+                conn.execute(
+                    "UPDATE perception_events SET end_at = ?, updated_at = datetime('now') WHERE id = ?",
+                    params![now, id],
+                ).map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+        }
+
+        conn.execute(
+            r#"INSERT INTO perception_events
+               (bucket_id, start_at, end_at, data_json, data_hash)
+               VALUES (?, ?, ?, ?, ?)"#,
+            params![&heartbeat.bucket_id, now, now, data_json, data_hash],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn get_perception_spans_for_date(&self, date: &str) -> Result<Vec<crate::manictime::MtSpan>, String> {
+        let day_start = format!("{} 00:00:00", date);
+        let day_end = format!("{} 00:00:00", next_day_str(date)?);
+        let conn = self.conn.lock().await;
+
+        // 一次性把 app → 主色 拉成内存 map（来自 app_catalog，已被图标主色覆盖）
+        let app_colors: std::collections::HashMap<String, String> = {
+            let mut stmt = conn.prepare("SELECT app_key, color FROM app_catalog")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }).map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        let mut stmt = conn.prepare(
+            r#"SELECT e.id, b.kind, e.start_at, e.end_at, e.data_json
+               FROM perception_events e
+               JOIN perception_buckets b ON b.id = e.bucket_id
+               WHERE e.start_at < ?1
+                 AND e.end_at >= ?2
+               ORDER BY e.start_at ASC, e.id ASC"#,
+        ).map_err(|e| e.to_string())?;
+
+        let rows = stmt.query_map(params![&day_end, &day_start], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        }).map_err(|e| e.to_string())?;
+
+        let mut spans = Vec::new();
+        for row in rows.filter_map(|r| r.ok()) {
+            let (id, kind, start_at, end_at, data_json) = row;
+            let data: serde_json::Value = serde_json::from_str(&data_json).unwrap_or(serde_json::Value::Null);
+            let clipped_start = clip_dt(&start_at, &day_start, &day_end);
+            let clipped_end = ensure_visible_end(&clip_dt(&end_at, &day_start, &day_end), &clipped_start);
+
+            match kind.as_str() {
+                "window" => {
+                    let app = data.get("app").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                    let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    // 优先用 app_catalog 里写入的主色（=图标主色），找不到才退回 hash
+                    let color = app_colors.get(&app).cloned().unwrap_or_else(|| color_for_app(&app));
+                    spans.push(crate::manictime::MtSpan {
+                        id,
+                        track: "apps".to_string(),
+                        start_at: clipped_start,
+                        end_at: clipped_end,
+                        title: if title.is_empty() { app.clone() } else { title },
+                        group_name: Some(app.clone()),
+                        color: Some(color),
+                    });
+                }
+                "status" => {
+                    let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                    spans.push(crate::manictime::MtSpan {
+                        id,
+                        track: "status".to_string(),
+                        start_at: clipped_start,
+                        end_at: clipped_end,
+                        title: status.clone(),
+                        group_name: Some(status.clone()),
+                        color: Some(color_for_status(&status)),
+                    });
+                }
+                "tag" => {
+                    let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let group = data.get("group_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let color = data.get("color").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    spans.push(crate::manictime::MtSpan {
+                        id,
+                        track: "tags".to_string(),
+                        start_at: clipped_start,
+                        end_at: clipped_end,
+                        title,
+                        group_name: group,
+                        color,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        spans.sort_by(|a, b| a.start_at.cmp(&b.start_at).then_with(|| a.track.cmp(&b.track)));
+        Ok(spans)
+    }
+
+    pub async fn get_perception_app_icon_png(&self, app_name: &str) -> Result<Option<Vec<u8>>, String> {
+        let conn = self.conn.lock().await;
+        match conn.query_row(
+            "SELECT icon_png FROM app_catalog WHERE app_key = ? LIMIT 1",
+            params![app_name],
+            |row| row.get::<_, Option<Vec<u8>>>(0),
+        ) {
+            Ok(bytes) => Ok(bytes),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// 仅取 app_key 列表（用于 icon_cache 启动时回填）
+    pub async fn list_app_keys_with_icon(&self) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT app_key FROM app_catalog WHERE icon_png IS NOT NULL"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 拉出 app_catalog 里所有有图标的条目（启动时刷主色用）
+    pub async fn list_app_catalog_icons(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT app_key, icon_png FROM app_catalog WHERE icon_png IS NOT NULL"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        }).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 仅更新某个 app 的颜色字段
+    pub async fn set_app_catalog_color(&self, app_name: &str, color: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE app_catalog SET color = ? WHERE app_key = ?",
+            params![color, app_name],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn update_perception_app_icon(
+        &self,
+        app_name: &str,
+        exe_path: Option<&str>,
+        icon_bmp: &[u8],
+        dominant_color: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        // 优先用图标主色；提取失败时回退到稳定 hash 调色板
+        let color = dominant_color
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| color_for_app(app_name));
+        // 拿到图标 = 第一次"权威定色"，覆盖之前心跳写入的临时 hash 色
+        conn.execute(
+            r#"INSERT INTO app_catalog
+               (app_key, display_name, exe_path, color, icon_png, first_seen, last_seen)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(app_key) DO UPDATE SET
+                   display_name=excluded.display_name,
+                   exe_path=COALESCE(excluded.exe_path, app_catalog.exe_path),
+                   color=excluded.color,
+                   icon_png=excluded.icon_png,
+                   last_seen=excluded.last_seen"#,
+            params![app_name, app_name, exe_path, &color, icon_bmp, &now, &now],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -1470,6 +2005,84 @@ impl Database {
             .map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
+}
+
+fn local_now_string() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn stable_hash_hex(input: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in input.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", hash)
+}
+
+fn within_pulsetime(last_end: &str, observed_at: &str, pulsetime_seconds: i64) -> bool {
+    let Some(last) = parse_local_dt(last_end) else { return false };
+    let Some(now) = parse_local_dt(observed_at) else { return false };
+    if now < last {
+        return false;
+    }
+    now.signed_duration_since(last).num_seconds() <= pulsetime_seconds
+}
+
+fn parse_local_dt(value: &str) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok()
+}
+
+fn format_local_dt(value: NaiveDateTime) -> String {
+    value.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn next_day_str(date: &str) -> Result<String, String> {
+    let d = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|e| format!("日期格式错误: {}", e))?;
+    Ok((d + Duration::days(1)).format("%Y-%m-%d").to_string())
+}
+
+fn clip_dt(value: &str, min_value: &str, max_value: &str) -> String {
+    if value < min_value {
+        min_value.to_string()
+    } else if value > max_value {
+        max_value.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn ensure_visible_end(end_at: &str, start_at: &str) -> String {
+    if end_at > start_at {
+        return end_at.to_string();
+    }
+
+    parse_local_dt(start_at)
+        .map(|dt| format_local_dt(dt + Duration::seconds(1)))
+        .unwrap_or_else(|| end_at.to_string())
+}
+
+fn color_for_status(status: &str) -> String {
+    match status {
+        "active" => "#20D6A3".to_string(),
+        "idle" => "#F0B429".to_string(),
+        "afk" => "#7D879C".to_string(),
+        "locked" => "#D64545".to_string(),
+        _ => "#8B9DC3".to_string(),
+    }
+}
+
+fn color_for_app(app: &str) -> String {
+    const PALETTE: [&str; 24] = [
+        "#22C55E", "#38BDF8", "#F97316", "#E879F9", "#FACC15", "#14B8A6",
+        "#FB7185", "#A78BFA", "#84CC16", "#60A5FA", "#F472B6", "#2DD4BF",
+        "#C084FC", "#F59E0B", "#10B981", "#06B6D4", "#EF4444", "#8B5CF6",
+        "#D946EF", "#65A30D", "#0EA5E9", "#F43F5E", "#A3E635", "#FBBF24",
+    ];
+    let hash = stable_hash_hex(&app.to_lowercase());
+    let idx = u64::from_str_radix(&hash[..8], 16).unwrap_or(0) as usize % PALETTE.len();
+    PALETTE[idx].to_string()
 }
 
 impl BiliVideoAsset {

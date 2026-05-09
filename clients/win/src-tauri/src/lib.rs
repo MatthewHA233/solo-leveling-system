@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// Solo Agent — Tauri 后端入口
+// SOLO LEVELING SYSTEM — Tauri 后端入口
 // ══════════════════════════════════════════════
 
 use tauri::Emitter;
@@ -8,6 +8,8 @@ mod db;
 mod api;
 mod fish_tts;
 mod manictime;
+#[cfg(windows)]
+mod perception;
 mod qwen_asr;
 mod qwen_omni;
 mod qwen_video;
@@ -741,6 +743,68 @@ struct DbInfo {
     size: u64,
 }
 
+#[cfg(windows)]
+#[tauri::command]
+fn get_screenshot_settings() -> perception::ScreenshotSettings {
+    perception::load_screenshot_settings()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn update_screenshot_settings(
+    settings: perception::ScreenshotSettings,
+) -> Result<perception::ScreenshotSettings, String> {
+    perception::save_screenshot_settings(settings)
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn get_screenshot_storage_info() -> Result<perception::ScreenshotStorageInfo, String> {
+    perception::screenshot_storage_info()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn open_screenshot_folder() -> Result<(), String> {
+    perception::open_screenshot_folder()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn clear_screenshot_data() -> Result<perception::ScreenshotStorageInfo, String> {
+    perception::clear_screenshot_data()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn get_window_blacklist() -> Vec<perception::WindowBlacklistEntry> {
+    perception::load_window_blacklist()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn add_window_blacklist(app: String, title: Option<String>) -> Result<Vec<perception::WindowBlacklistEntry>, String> {
+    perception::add_window_blacklist(app, title)
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn remove_window_blacklist(app: String, title: Option<String>) -> Result<Vec<perception::WindowBlacklistEntry>, String> {
+    perception::remove_window_blacklist(app, title)
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn get_tracking_settings() -> perception::TrackingSettings {
+    perception::load_tracking_settings()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn update_tracking_settings(settings: perception::TrackingSettings) -> Result<perception::TrackingSettings, String> {
+    perception::save_tracking_settings(settings)
+}
+
 #[tauri::command]
 async fn open_url_in_browser(url: String) -> Result<(), String> {
     std::process::Command::new("cmd")
@@ -1153,7 +1217,7 @@ async fn get_gpu_pref_status() -> gpu_pref::GpuPrefStatus {
     gpu_pref::read_status()
 }
 
-/// 写入 / 清除 solo-agent.exe + msedgewebview2.exe 的"高性能"图形偏好
+/// 写入 / 清除本应用 exe + msedgewebview2.exe 的"高性能"图形偏好
 #[tauri::command]
 async fn set_gpu_pref_high_performance(enable: bool) -> Result<gpu_pref::GpuPrefStatus, String> {
     gpu_pref::apply(enable)
@@ -1222,7 +1286,7 @@ async fn setup_fairy(app: tauri::AppHandle) -> Result<(), String> {
 
 // ── 音频文件持久化 ──
 
-/// 返回音频根目录（{data_local}/solo-agent/audio/）
+/// 返回音频根目录（{data_local}/应用数据目录/audio/）
 fn audio_root() -> std::path::PathBuf {
     Database::default_data_dir().join("audio")
 }
@@ -1321,13 +1385,37 @@ pub fn run() {
         .manage(bili_dl_state.clone())
         .setup(move |app| {
             // 启动 HTTP 服务器（在 Tauri runtime 内）
-            if let Some(db_clone) = db {
+            if let Some(db_clone) = db.clone() {
                 let bili_clone = bili_state.clone();
                 let bailian_clone = bailian_state.clone();
                 let bili_dl_clone = bili_dl_state.clone();
+                let db_for_api = db_clone.clone();
                 tauri::async_runtime::spawn(async move {
-                    api::start_server(db_clone, bili_clone, bailian_clone, bili_dl_clone, 49733).await;
+                    api::start_server(db_for_api, bili_clone, bailian_clone, bili_dl_clone, 49733).await;
                 });
+
+                #[cfg(windows)]
+                {
+                    let db_for_window = db_clone.clone();
+                    tauri::async_runtime::spawn(async move {
+                        perception::run_window_watcher(db_for_window).await;
+                    });
+
+                    let db_for_status = db_clone.clone();
+                    tauri::async_runtime::spawn(async move {
+                        perception::run_status_watcher(db_for_status).await;
+                    });
+
+                    tauri::async_runtime::spawn(async move {
+                        perception::run_screenshot_watcher().await;
+                    });
+
+                    // 启动时一次性刷新所有 app 主色（用最新的算法重新算一遍）
+                    let db_for_color = db_clone;
+                    tauri::async_runtime::spawn(async move {
+                        perception::refresh_app_colors_from_icons(db_for_color).await;
+                    });
+                }
             }
 
             if cfg!(debug_assertions) {
@@ -1404,7 +1492,7 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            log::info!("[App] Solo Agent 启动完成");
+            log::info!("[App] SOLO LEVELING SYSTEM 启动完成");
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1430,6 +1518,16 @@ pub fn run() {
             omni_tool_result,
             get_db_info,
             migrate_database,
+            get_screenshot_settings,
+            update_screenshot_settings,
+            get_screenshot_storage_info,
+            open_screenshot_folder,
+            clear_screenshot_data,
+            get_window_blacklist,
+            add_window_blacklist,
+            remove_window_blacklist,
+            get_tracking_settings,
+            update_tracking_settings,
             open_bili_login,
             open_bailian_login,
             open_bailian_model_detail,
