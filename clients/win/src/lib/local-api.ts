@@ -3,7 +3,12 @@
 // 替代 Supabase
 // ══════════════════════════════════════════════
 
-import type { ChronosActivity, ChronosEvent } from '../types'
+import type {
+  ActivityBlock,
+  ActivityCategory,
+  ActivityPalette,
+  ActivityTag,
+} from '../types'
 
 const API_BASE = 'http://localhost:49733'
 
@@ -13,129 +18,185 @@ interface ApiResponse<T> {
   error?: string
 }
 
-// Rust API 返回 snake_case
-interface RawEvent {
-  id: string
-  minute: number
-  label: string
-  title: string
-}
-
-interface RawActivity {
-  id: string
-  date: string
-  title: string
-  category: string
-  start_minute: number
-  end_minute: number
-  goal_alignment?: string | null
-  events: RawEvent[]
-}
-
-function mapActivity(r: RawActivity): ChronosActivity {
-  return {
-    id: r.id,
-    title: r.title,
-    category: r.category,
-    startMinute: r.start_minute,
-    endMinute: r.end_minute,
-    goalAlignment: r.goal_alignment ?? undefined,
-    events: (r.events ?? []).map((e): ChronosEvent => ({
-      id: e.id,
-      minute: e.minute,
-      label: e.label,
-      title: e.title,
-    })),
-  }
-}
-
 function toLocalDateStr(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
-/** 查询某天的所有活动（含事件） */
-export async function fetchActivities(date: Date): Promise<ChronosActivity[]> {
-  const dateStr = toLocalDateStr(date)
+// ── 活动记录：标签库 + 5min 块 ──
 
-  const res = await fetch(`${API_BASE}/api/activities?date=${dateStr}`)
-  const json: ApiResponse<RawActivity[]> = await res.json()
-
-  if (!json.success || !json.data) {
-    throw new Error(json.error || '获取活动失败')
-  }
-
-  return json.data.map(mapActivity)
+interface RawCategory {
+  id: number
+  name: string
+  color: string
+  sort_order: number
+  created_at: string
+  last_used_at: string
 }
 
-/** 插入一条活动（含事件），返回 { activityId, eventIds } */
-export async function createActivity(
-  date: Date,
-  activity: Omit<ChronosActivity, 'id'>,
-): Promise<{ activityId: string; eventIds: string[] }> {
-  const dateStr = toLocalDateStr(date)
+interface RawTag {
+  id: number
+  category_id: number
+  full_path: string
+  leaf_name: string
+  depth: number
+  created_at: string
+  last_used_at: string
+}
 
-  const res = await fetch(`${API_BASE}/api/activities`, {
+interface RawBlock {
+  date: string
+  minute: number
+  tag_id: number
+  note: string | null
+  created_at: string
+}
+
+function mapCategory(r: RawCategory): ActivityCategory {
+  return {
+    id: r.id,
+    name: r.name,
+    color: r.color,
+    sortOrder: r.sort_order,
+    createdAt: r.created_at,
+    lastUsedAt: r.last_used_at,
+  }
+}
+
+function mapTag(r: RawTag): ActivityTag {
+  return {
+    id: r.id,
+    categoryId: r.category_id,
+    fullPath: r.full_path,
+    leafName: r.leaf_name,
+    depth: r.depth,
+    createdAt: r.created_at,
+    lastUsedAt: r.last_used_at,
+  }
+}
+
+function mapBlock(r: RawBlock): ActivityBlock {
+  return {
+    date: r.date,
+    minute: r.minute,
+    tagId: r.tag_id,
+    note: r.note,
+    createdAt: r.created_at,
+  }
+}
+
+export async function fetchActivityPalette(): Promise<ActivityPalette> {
+  const res = await fetch(`${API_BASE}/api/activities/palette`)
+  const json: ApiResponse<{ categories: RawCategory[]; tags: RawTag[] }> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '获取标签库失败')
+  return {
+    categories: json.data.categories.map(mapCategory),
+    tags: json.data.tags.map(mapTag),
+  }
+}
+
+export async function addActivityCategory(name: string, color: string): Promise<ActivityCategory> {
+  const res = await fetch(`${API_BASE}/api/activities/categories`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      date: dateStr,
-      title: activity.title,
-      category: activity.category,
-      start_minute: activity.startMinute,
-      end_minute: activity.endMinute,
-      goal_alignment: activity.goalAlignment ?? null,
-      events: activity.events.map((e) => ({
-        minute: e.minute,
-        label: e.label,
-        title: e.title,
-      })),
-    }),
+    body: JSON.stringify({ name, color }),
   })
-
-  const json: ApiResponse<{ id: string; event_ids: string[] }> = await res.json()
-
-  if (!json.success || !json.data) {
-    throw new Error(json.error || '创建活动失败')
-  }
-
-  return { activityId: json.data.id, eventIds: json.data.event_ids }
+  const json: ApiResponse<RawCategory> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '添加分类失败')
+  return mapCategory(json.data)
 }
 
-/** 删除一条活动（级联删除事件） */
-export async function deleteActivity(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/activities/${id}`, {
-    method: 'DELETE',
-  })
-
+export async function deleteActivityCategory(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/activities/categories/${id}`, { method: 'DELETE' })
   const json: ApiResponse<void> = await res.json()
-
-  if (!json.success) {
-    throw new Error(json.error || '删除活动失败')
-  }
+  if (!json.success) throw new Error(json.error || '删除分类失败')
 }
 
-/** 合并活动（事件 ID 不变，bvid 链接天然保留） */
-export async function mergeActivities(
-  survivorId: string,
-  absorbedIds: string[],
-  newStart: number,
-  newEnd: number,
+export async function updateActivityCategory(
+  id: number,
+  patch: { name?: string; color?: string },
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/activities/merge`, {
+  const res = await fetch(`${API_BASE}/api/activities/categories/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, name: patch.name ?? null, color: patch.color ?? null }),
+  })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '更新分类失败')
+}
+
+/**
+ * 重命名标签路径中的任意一段（叶子或中间节点）
+ * fullOldPath: 完整旧路径（含分类首段），如 "工作,毕业论文"
+ * newSegment: 末段的新名字
+ */
+export async function renameActivityPath(
+  categoryId: number,
+  fullOldPath: string,
+  newSegment: string,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/activities/tags/rename`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      survivor_id: survivorId,
-      absorbed_ids: absorbedIds,
-      new_start: newStart,
-      new_end: newEnd,
+      category_id: categoryId,
+      full_old_path: fullOldPath,
+      new_segment: newSegment,
     }),
   })
   const json: ApiResponse<void> = await res.json()
-  if (!json.success) throw new Error(json.error || '合并失败')
+  if (!json.success) throw new Error(json.error || '重命名失败')
 }
 
-// ── ManicTime API ──
+export async function addActivityTag(categoryId: number, fullPath: string): Promise<ActivityTag> {
+  const res = await fetch(`${API_BASE}/api/activities/tags`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category_id: categoryId, full_path: fullPath }),
+  })
+  const json: ApiResponse<RawTag> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '添加标签失败')
+  return mapTag(json.data)
+}
+
+export async function deleteActivityTag(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/activities/tags/${id}`, { method: 'DELETE' })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '删除标签失败')
+}
+
+export async function fetchActivityBlocks(date: Date): Promise<ActivityBlock[]> {
+  const dateStr = toLocalDateStr(date)
+  const res = await fetch(`${API_BASE}/api/activities/blocks?date=${dateStr}`)
+  const json: ApiResponse<RawBlock[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '获取活动块失败')
+  return json.data.map(mapBlock)
+}
+
+export async function paintActivityBlocks(date: Date, minutes: number[], tagId: number): Promise<number> {
+  const dateStr = toLocalDateStr(date)
+  const res = await fetch(`${API_BASE}/api/activities/blocks/paint`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: dateStr, minutes, tag_id: tagId }),
+  })
+  const json: ApiResponse<number> = await res.json()
+  if (!json.success) throw new Error(json.error || '涂块失败')
+  return json.data ?? 0
+}
+
+export async function eraseActivityBlocks(date: Date, minutes: number[]): Promise<number> {
+  const dateStr = toLocalDateStr(date)
+  const res = await fetch(`${API_BASE}/api/activities/blocks/erase`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: dateStr, minutes }),
+  })
+  const json: ApiResponse<number> = await res.json()
+  if (!json.success) throw new Error(json.error || '擦块失败')
+  return json.data ?? 0
+}
+
+// ── Perception Timeline API（保留 MtSpan 名称兼容旧绘图层） ──
 
 export interface MtSpan {
   id: number
@@ -147,12 +208,12 @@ export interface MtSpan {
   color: string | null  // "#F9BA00"
 }
 
-/** 查询某天的 ManicTime spans（apps + tags） */
+/** 查询某天的本机感知 spans（apps + tags/status） */
 export async function fetchManicTimeSpans(date: Date): Promise<MtSpan[]> {
   const dateStr = toLocalDateStr(date)
   const res = await fetch(`${API_BASE}/api/manictime/spans?date=${dateStr}`)
   const json: ApiResponse<MtSpan[]> = await res.json()
-  if (!json.success || !json.data) throw new Error(json.error || '获取 ManicTime 数据失败')
+  if (!json.success || !json.data) throw new Error(json.error || '获取感知数据失败')
   return json.data
 }
 

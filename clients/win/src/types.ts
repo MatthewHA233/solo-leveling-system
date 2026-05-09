@@ -1,28 +1,33 @@
-export interface ChronosEvent {
-  id: string
-  minute: number   // 0-1439
-  label: string    // "1", "2", ...
-  title: string
+// ── 活动记录：自定义标签 + 5min 块 ──
+
+export interface ActivityCategory {
+  id: number
+  name: string
+  color: string
+  sortOrder: number
+  createdAt: string
+  lastUsedAt: string
 }
 
-export interface ChronosActivity {
-  id: string
-  title: string
-  category: string
-  startMinute: number  // 0-1439
-  endMinute: number    // 0-1440
-  goalAlignment?: string
-  events: ChronosEvent[]
+export interface ActivityTag {
+  id: number
+  categoryId: number
+  fullPath: string    // "工作,毕业论文,DPO章节"
+  leafName: string
+  depth: number       // 1..4
+  createdAt: string
+  lastUsedAt: string
 }
 
-export interface BatchThumbnail {
-  batchId: string
-  startMinute: number
-  endMinute: number
-  imageUrl?: string
+export interface ActivityBlock {
+  date: string        // 'YYYY-MM-DD'
+  minute: number      // 0/5/10/.../1435
+  tagId: number
+  note: string | null
+  createdAt: string
 }
 
-export interface TraceLayout {
-  activity: ChronosActivity
-  trackIndex: number  // 0, 1, 2
+export interface ActivityPalette {
+  categories: ActivityCategory[]
+  tags: ActivityTag[]
 }

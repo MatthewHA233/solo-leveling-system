@@ -6,10 +6,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Boxes, ChevronLeft, ChevronRight, Settings } from 'lucide-react'
 import BiliIcon from './components/icons/BiliIcon'
-import { fetchActivities } from './lib/chronos-api'
-import { createActivity, deleteActivity, fetchManicTimeSpans, fetchBiliSpans, fetchGoals, parseGoalTags } from './lib/local-api'
+import {
+  fetchManicTimeSpans, fetchBiliSpans, fetchGoals, parseGoalTags,
+  fetchActivityPalette, fetchActivityBlocks, paintActivityBlocks, eraseActivityBlocks,
+} from './lib/local-api'
 import type { MtSpan, BiliSpan, ModelCallLog } from './lib/local-api'
-import type { ChronosActivity } from './types'
+import type { ActivityBlock, ActivityPalette, ActivityTag } from './types'
 import { theme, hud } from './theme'
 
 // Agent
@@ -67,8 +69,8 @@ import BiliVideoPanel from './components/BiliVideoPanel'
 import BiliHistoryDialog from './components/BiliHistoryDialog'
 import ModelDialog from './components/ModelDialog'
 import { useBiliHistory } from './lib/bilibili/useHistory'
-import { dbBiliItemToActivity } from './lib/bilibili/api'
-import { linkBiliToEvent, mergeActivities } from './lib/local-api'
+import ActivityTagPalette from './components/ActivityTagPalette'
+import ActivityToast from './components/ActivityToast'
 import type { FairyState } from './components/FairyHUD'
 import { HudFrame, HudCommandStrip, DataRibbon, NeonRule } from './components/hud'
 import { CloseConfirmModal } from './components/CloseConfirmModal'
@@ -171,62 +173,26 @@ function makeSessionMessage(
 
 const TITLE_TRIGGER_MIN_MESSAGES = 4       // 累计到此数后，首次生成 AI 标题
 
-// 区间合并「看B站视频」活动
-// 使用 mergeActivities API：移动事件而非删重建，event_id 不变，bvid 链接天然保留
-async function mergeOverlappingBili(date: Date) {
-  const all = await fetchActivities(date)
-  const bili = all.filter((a) => a.title === '看B站视频').sort((a, b) => a.startMinute - b.startMinute)
-  if (bili.length <= 1) return
-
-  // 找出所有需要合并的 group（overlapping）
-  type Group = { survivorId: string; absorbedIds: string[]; newStart: number; newEnd: number }
-  const mergeGroups: Group[] = []
-  let cur = bili[0]
-  let absorbed: ChronosActivity[] = []
-
-  for (let i = 1; i < bili.length; i++) {
-    const next = bili[i]
-    if (next.startMinute <= cur.endMinute + 1) {
-      absorbed.push(next)
-      cur = { ...cur, endMinute: Math.max(cur.endMinute, next.endMinute) }
-    } else {
-      if (absorbed.length > 0) {
-        mergeGroups.push({
-          survivorId: cur.id,
-          absorbedIds: absorbed.map((a) => a.id),
-          newStart: cur.startMinute,
-          newEnd: cur.endMinute,
-        })
-      }
-      cur = next
-      absorbed = []
-    }
-  }
-  if (absorbed.length > 0) {
-    mergeGroups.push({
-      survivorId: cur.id,
-      absorbedIds: absorbed.map((a) => a.id),
-      newStart: cur.startMinute,
-      newEnd: cur.endMinute,
-    })
-  }
-
-  for (const g of mergeGroups) {
-    await mergeActivities(g.survivorId, g.absorbedIds, g.newStart, g.newEnd).catch(() => {})
-  }
-}
-
 export default function App() {
   // ── Data ──
   const [selectedDate, setSelectedDate] = useState(new Date())
   const [datePickerOpen, setDatePickerOpen] = useState(false)
   const dateAnchorRef = useRef<HTMLButtonElement | null>(null)
-  const [activities, setActivities] = useState<ChronosActivity[]>([])
+  const [activityPalette, setActivityPalette] = useState<ActivityPalette>({ categories: [], tags: [] })
+  const [activityBlocks, setActivityBlocks] = useState<ActivityBlock[]>([])
+  const [editMode, setEditMode] = useState(false)
+  const [selectedTagId, setSelectedTagId] = useState<number | null>(null)
+  const [paintToast, setPaintToast] = useState<{ id: number; startMin: number; endMin: number; path: string; color: string; mode: 'paint' | 'erase' } | null>(null)
+  // 撤回 / 恢复 — 栈深 5
+  const [undoStack, setUndoStack] = useState<readonly ActivityBlock[][]>([])
+  const [redoStack, setRedoStack] = useState<readonly ActivityBlock[][]>([])
   const [mtSpans, setMtSpans] = useState<MtSpan[]>([])
   const [biliSpans, setBiliSpans] = useState<BiliSpan[]>([])
   // 悬浮预览（hover 触发）
   const [hoveredTagSpan, setHoveredTagSpan] = useState<MtSpan | null>(null)
   const [hoveredAppSpan, setHoveredAppSpan] = useState<MtSpan | null>(null)
+  // 鼠标当前所在的整分钟（每张截图对应一分钟），用于右栏面板按光标精度切图
+  const [hoveredAppMinute, setHoveredAppMinute] = useState<number | null>(null)
   const [hoveredBiliSpan, setHoveredBiliSpan] = useState<BiliSpan | null>(null)
   // 管线轨道模式
   const [trackMode, setTrackMode] = useState<'apps' | 'bili'>('apps')
@@ -246,7 +212,6 @@ export default function App() {
   const [config, setConfig] = useState<AgentConfig>(loadConfig)
 
   const {
-    newItems: biliNewItems,
     isLoading: biliLoading, error: biliError,
     lastUpdated: biliLastUpdated, countdown: biliCountdown,
     intervalSeconds: biliIntervalSec, isPaused: biliPaused,
@@ -256,7 +221,7 @@ export default function App() {
     scanLastPage: biliScanLastPage,
     pause: pauseBili, resume: resumeBili,
     refresh: refreshBili,
-    fullScan: biliFullScan, clearNew: clearBiliNew,
+    fullScan: biliFullScan,
     setIntervalSeconds: setBiliInterval,
   } = useBiliHistory({ intervalSeconds: config.biliIntervalSeconds })
 
@@ -492,11 +457,219 @@ export default function App() {
 
   useEffect(() => {
     setDbStatus('loading')
-    fetchActivities(selectedDate)
-      .then((data) => { setActivities(data); setDbStatus('live') })
-      .catch((err) => { console.error('获取活动失败:', err); setActivities([]); setDbStatus('error') })
+    fetchActivityBlocks(selectedDate)
+      .then((data) => { setActivityBlocks(data); setDbStatus('live') })
+      .catch((err) => { console.error('获取活动块失败:', err); setActivityBlocks([]); setDbStatus('error') })
     refreshMtSpans()
   }, [selectedDate])
+
+  // 启动时拉一次标签库
+  useEffect(() => {
+    fetchActivityPalette().then(setActivityPalette).catch(() => {})
+  }, [])
+
+  // Ctrl+E 切换编辑模式
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E')) {
+        e.preventDefault()
+        setEditMode((m) => !m)
+      } else if (e.key === 'Escape' && editMode) {
+        setEditMode(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [editMode])
+
+  // 退出编辑模式时清画笔；进入编辑模式时解锁右栏详情（让标签库正常占据右栏）
+  useEffect(() => {
+    if (editMode) {
+      setPinnedPos(null)
+    } else {
+      setSelectedTagId(null)
+    }
+  }, [editMode])
+
+  const refreshActivityBlocks = useCallback(() => {
+    fetchActivityBlocks(selectedDate).then(setActivityBlocks).catch(() => {})
+  }, [selectedDate])
+
+  const refreshActivityPalette = useCallback(() => {
+    fetchActivityPalette().then(setActivityPalette).catch(() => {})
+  }, [])
+
+  // 切换日期 / 进出编辑模式 → 清空撤回栈（栈是当日操作的快照，跨日无意义）
+  useEffect(() => {
+    setUndoStack([])
+    setRedoStack([])
+  }, [selectedDate, editMode])
+
+  /** 计算从 from 状态变到 to 状态需要的 paint/erase 操作 */
+  const computeBlocksDelta = useCallback((from: ActivityBlock[], to: ActivityBlock[]) => {
+    const fromMap = new Map(from.map((b) => [b.minute, b.tagId]))
+    const toMap = new Map(to.map((b) => [b.minute, b.tagId]))
+    const paintByTag = new Map<number, number[]>()
+    const eraseMinutes: number[] = []
+    for (const [m, fromTag] of fromMap) {
+      const toTag = toMap.get(m)
+      if (toTag === undefined) {
+        eraseMinutes.push(m)
+      } else if (toTag !== fromTag) {
+        if (!paintByTag.has(toTag)) paintByTag.set(toTag, [])
+        paintByTag.get(toTag)!.push(m)
+      }
+    }
+    for (const [m, toTag] of toMap) {
+      if (!fromMap.has(m)) {
+        if (!paintByTag.has(toTag)) paintByTag.set(toTag, [])
+        paintByTag.get(toTag)!.push(m)
+      }
+    }
+    return { paintByTag, eraseMinutes }
+  }, [])
+
+  const applyBlocksDelta = useCallback(async (
+    fromBlocks: ActivityBlock[],
+    toBlocks: ActivityBlock[],
+  ) => {
+    const { paintByTag, eraseMinutes } = computeBlocksDelta(fromBlocks, toBlocks)
+    const tasks: Promise<unknown>[] = []
+    if (eraseMinutes.length > 0) tasks.push(eraseActivityBlocks(selectedDate, eraseMinutes))
+    for (const [tagId, mins] of paintByTag) {
+      if (mins.length > 0) tasks.push(paintActivityBlocks(selectedDate, mins, tagId))
+    }
+    await Promise.all(tasks)
+  }, [selectedDate, computeBlocksDelta])
+
+  const handleUndo = useCallback(() => {
+    setUndoStack((undoPrev) => {
+      if (undoPrev.length === 0) return undoPrev
+      const popped = undoPrev[undoPrev.length - 1]
+      const current = activityBlocks
+      setRedoStack((redoPrev) => [...redoPrev.slice(-4), current])
+      setActivityBlocks(popped)
+      applyBlocksDelta(current, popped)
+        .then(() => refreshActivityPalette())
+        .catch((e) => {
+          console.error('[Undo] 后端失败:', e)
+          refreshActivityBlocks()
+        })
+      return undoPrev.slice(0, -1)
+    })
+  }, [activityBlocks, applyBlocksDelta, refreshActivityBlocks, refreshActivityPalette])
+
+  const handleRedo = useCallback(() => {
+    setRedoStack((redoPrev) => {
+      if (redoPrev.length === 0) return redoPrev
+      const popped = redoPrev[redoPrev.length - 1]
+      const current = activityBlocks
+      setUndoStack((undoPrev) => [...undoPrev.slice(-4), current])
+      setActivityBlocks(popped)
+      applyBlocksDelta(current, popped)
+        .then(() => refreshActivityPalette())
+        .catch((e) => {
+          console.error('[Redo] 后端失败:', e)
+          refreshActivityBlocks()
+        })
+      return redoPrev.slice(0, -1)
+    })
+  }, [activityBlocks, applyBlocksDelta, refreshActivityBlocks, refreshActivityPalette])
+
+  // 编辑模式下监听 Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z
+  useEffect(() => {
+    if (!editMode) return
+    const onKey = (e: KeyboardEvent) => {
+      const ctrl = e.ctrlKey || e.metaKey
+      if (!ctrl) return
+      const key = e.key.toLowerCase()
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        handleUndo()
+      } else if (key === 'y' || (key === 'z' && e.shiftKey)) {
+        e.preventDefault()
+        handleRedo()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [editMode, handleUndo, handleRedo])
+
+  /**
+   * 一次拖拽提交：paint + erase 两组同时下发。
+   * 乐观更新 — 立即改本地 state，后端调用失败再回滚。
+   */
+  const handleApplyDrag = useCallback((spec: {
+    paintMinutes: number[]
+    paintTagId: number | null
+    eraseMinutes: number[]
+    rangeStartMin: number
+    rangeEndMin: number
+  }) => {
+    if (spec.paintMinutes.length === 0 && spec.eraseMinutes.length === 0) return
+
+    const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`
+    const nowIso = new Date().toISOString()
+
+    // 1) 乐观更新本地块；同时把"操作前快照"推入 undo 栈（保留最近 5 步），并清空 redo 栈
+    const snapshot = activityBlocks
+    setUndoStack((prev) => [...prev.slice(-4), snapshot])
+    setRedoStack([])
+    setActivityBlocks((prev) => {
+      const eraseSet = new Set(spec.eraseMinutes)
+      const paintSet = new Set(spec.paintMinutes)
+      const filtered = prev.filter((b) => !eraseSet.has(b.minute) && !paintSet.has(b.minute))
+      const added = spec.paintTagId != null
+        ? spec.paintMinutes.map((m) => ({
+            date: dateStr,
+            minute: m,
+            tagId: spec.paintTagId!,
+            note: null,
+            createdAt: nowIso,
+          }))
+        : []
+      return [...filtered, ...added].sort((a, b) => a.minute - b.minute)
+    })
+
+    // 2) 准备 toast：以 paint 为主，否则展示 erase
+    let toastPath = '已清除'
+    let toastColor = theme.textMuted
+    let toastMode: 'paint' | 'erase' = 'erase'
+    if (spec.paintTagId != null && spec.paintMinutes.length > 0) {
+      const tag = activityPalette.tags.find((t) => t.id === spec.paintTagId)
+      const cat = tag ? activityPalette.categories.find((c) => c.id === tag.categoryId) : null
+      toastPath = tag?.fullPath ?? ''
+      toastColor = cat?.color ?? theme.electricBlue
+      toastMode = 'paint'
+    }
+    setPaintToast({
+      id: Date.now(),
+      startMin: spec.rangeStartMin,
+      endMin: spec.rangeEndMin,
+      path: toastPath,
+      color: toastColor,
+      mode: toastMode,
+    })
+
+    // 3) 后端调用 — 失败回滚 + 重新拉取
+    const tasks: Promise<unknown>[] = []
+    if (spec.paintMinutes.length > 0 && spec.paintTagId != null) {
+      tasks.push(paintActivityBlocks(selectedDate, spec.paintMinutes, spec.paintTagId))
+    }
+    if (spec.eraseMinutes.length > 0) {
+      tasks.push(eraseActivityBlocks(selectedDate, spec.eraseMinutes))
+    }
+    Promise.all(tasks)
+      .then(() => {
+        // 后端写入成功 — 异步刷新 palette 让 last_used_at 排序最新
+        if (spec.paintTagId != null) refreshActivityPalette()
+      })
+      .catch((e) => {
+        console.error('[ApplyDrag] 后端失败，回滚:', e)
+        setActivityBlocks(snapshot)
+        refreshActivityBlocks()
+      })
+  }, [selectedDate, activityBlocks, activityPalette, refreshActivityBlocks, refreshActivityPalette])
 
   // 今天的数据实时轮询（15 秒）
   useEffect(() => {
@@ -599,7 +772,7 @@ export default function App() {
     )
     voiceServiceRef.current = svc
     return svc
-  }, [activities, emitFairy])
+  }, [emitFairy])
 
   // ── Omni 全模态模式：监听 AI 回复事件 ──
   const omniAudioCtxRef = useRef<AudioContext | null>(null)
@@ -1031,54 +1204,6 @@ export default function App() {
       return next
     })
   }, [])
-
-  const refreshActivities = useCallback(() => {
-    fetchActivities(selectedDate)
-      .then(setActivities)
-      .catch(() => {})
-  }, [selectedDate])
-
-  // ── Bilibili 新视频自动写入昼夜表 ──
-  useEffect(() => {
-    if (!config.biliAutoCreate || biliNewItems.length === 0) return
-
-    const toLocalDateStr = (d: Date) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-
-    const sync = async () => {
-      const affectedDates = new Map<string, Date>()
-
-      for (const item of biliNewItems) {
-        try {
-          const { bvid, date, activity } = dbBiliItemToActivity(item)
-          const { eventIds } = await createActivity(date, activity)
-          affectedDates.set(toLocalDateStr(date), date)
-          if (eventIds[0]) await linkBiliToEvent([bvid], eventIds[0]).catch(() => {})
-        } catch (err) {
-          console.error('[Bili] 活动写入失败:', err)
-        }
-      }
-      for (const date of affectedDates.values()) {
-        try {
-          await mergeOverlappingBili(date)
-        } catch (err) {
-          console.error('[Bili] 合并失败:', err)
-        }
-      }
-      if (affectedDates.has(toLocalDateStr(selectedDate))) {
-        refreshActivities()
-      }
-      clearBiliNew()
-    }
-    sync()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [biliNewItems])
-
-  const handleDeleteMinuteRange = useCallback(async (startMin: number, endMin: number) => {
-    const toDelete = activities.filter((a) => a.startMinute < endMin && a.endMinute > startMin)
-    await Promise.all(toDelete.map((a) => deleteActivity(a.id)))
-    refreshActivities()
-  }, [activities, refreshActivities])
 
   // ── System Prompt Builder（两套协议共用） ──
   const refreshSystemPrompt = useCallback(async () => {
@@ -1514,7 +1639,7 @@ export default function App() {
     }
 
     setIsProcessing(false)
-  }, [activities, config, chatMessages])
+  }, [config, chatMessages])
 
   // ── 切换 / 新建会话 ──
   const switchSession = useCallback(async (sessionId: string, jumpToTimestamp?: string) => {
@@ -1781,19 +1906,27 @@ export default function App() {
         {/* Chart */}
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <DayNightChart
-            activities={activities}
+            activityBlocks={activityBlocks}
+            activityPalette={activityPalette}
+            editMode={editMode}
+            selectedTagId={selectedTagId}
+            onEditModeToggle={() => setEditMode((m) => !m)}
+            canUndo={undoStack.length > 0}
+            canRedo={redoStack.length > 0}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+            onApplyDrag={handleApplyDrag}
             mtSpans={mtSpans}
             biliSpans={biliSpans}
             selectedDate={selectedDate}
             onSpanClick={() => {}}
             onSpanHover={setHoveredTagSpan}
-            onAppSpanHover={setHoveredAppSpan}
+            onAppSpanHover={(span, minute) => { setHoveredAppSpan(span); setHoveredAppMinute(minute ?? null) }}
             onBiliSpanHover={setHoveredBiliSpan}
             trackMode={trackMode}
             onTrackModeChange={setTrackMode}
             pinnedPos={pinnedPos}
             onPinPos={setPinnedPos}
-            onDeleteMinuteRange={handleDeleteMinuteRange}
           />
         </div>
 
@@ -1806,14 +1939,82 @@ export default function App() {
           boxShadow: `inset 1px 0 0 ${theme.electricBlue}18, inset 0 0 40px rgba(0,229,255,0.03)`,
           position: 'relative',
         }}>
-          {/* 右侧栏内容：Settings / Bili 优先；否则面板覆盖 Chat */}
-          {showSettings ? (
-            <SettingsPanel
-              config={config}
-              onUpdate={handleConfigUpdate}
-              onClose={() => setShowSettings(false)}
-            />
-          ) : (() => {
+          {/* 右侧栏内容：编辑模式 → 标签库（+ 当前轨道详情）；非编辑模式 → 聊天 / 详情 */}
+          {editMode ? (() => {
+            const pm = pinnedPos?.minute ?? null
+            const dtToMin = (dt: string) => { const [h,m] = (dt.split(' ')[1]??'').split(':').map(Number); return h*60+m }
+            const pinnedAppSpan = pm != null && trackMode === 'apps'
+              ? mtSpans.find((s) => s.track === 'apps' && pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
+              : null
+            const pinnedBili = pm != null && trackMode === 'bili'
+              ? biliSpans.find((s) => pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
+              : null
+            const appSpan = trackMode === 'apps' ? (pinnedAppSpan ?? hoveredAppSpan) : null
+            const biliSpan = trackMode === 'bili' ? (pinnedBili ?? hoveredBiliSpan) : null
+            const appFocusMinute = trackMode === 'apps'
+              ? (pm != null ? Math.floor(pm) : hoveredAppMinute)
+              : null
+            // 当前光标分钟是否处于 afk
+            const probeMin = pm ?? hoveredAppMinute
+            const isAfk = probeMin != null && mtSpans.some((s) => {
+              if (s.track !== 'status') return false
+              const status = (s.group_name ?? s.title ?? '').toLowerCase()
+              if (status !== 'afk') return false
+              return probeMin >= dtToMin(s.start_at) && probeMin < dtToMin(s.end_at)
+            })
+            const detail = trackMode === 'bili' ? biliSpan : appSpan
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+                {/* 上半：标签库 */}
+                <div style={{
+                  flex: detail ? '1 1 42%' : '1 1 100%',
+                  minHeight: 0,
+                  overflow: 'hidden',
+                  position: 'relative',
+                }}>
+                  <ActivityTagPalette
+                    palette={activityPalette}
+                    selectedTagId={selectedTagId}
+                    onSelectTag={setSelectedTagId}
+                    onPaletteChange={refreshActivityPalette}
+                  />
+                </div>
+                {/* 下半：当前光标处轨道详情（apps → 应用截图 / bili → 视频面板） */}
+                {detail && (
+                  <div style={{
+                    flex: '1 1 58%',
+                    minHeight: 0,
+                    position: 'relative',
+                    padding: '4px 4px',
+                    fontFamily: theme.fontBody,
+                    background: 'rgba(2,6,14,0.45)',
+                  }}>
+                    <HudFrame
+                      color={theme.warningOrange}
+                      accent={theme.expGreen}
+                      topLabel="EDIT · REF"
+                      showNotchTop
+                      showNotchBottom={false}
+                      notchWidth={64}
+                      notchDepth={7}
+                      cornerSize={14}
+                      intensity="soft"
+                    />
+                    <div style={{
+                      height: '100%', overflow: 'auto',
+                      padding: '8px 4px',
+                    }}>
+                      {trackMode === 'bili' && biliSpan ? (
+                        <BiliVideoPanel span={biliSpan} />
+                      ) : appSpan ? (
+                        <AppHoverPanel span={appSpan} date={selectedDate} focusMinute={appFocusMinute} isAfk={isAfk} />
+                      ) : null}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })() : (() => {
             // 固定时用 pinnedPos.minute 查对应 span，否则用 hover span
             const pm = pinnedPos?.minute ?? null
             const dtToMin = (dt: string) => { const [h,m] = (dt.split(' ')[1]??'').split(':').map(Number); return h*60+m }
@@ -1830,6 +2031,17 @@ export default function App() {
             const tagSpan = pinnedTagSpan ?? hoveredTagSpan
             const appSpan = trackMode === 'apps' ? (pinnedAppSpan ?? hoveredAppSpan) : null
             const biliSpan = trackMode === 'bili' ? (pinnedBili ?? hoveredBiliSpan) : null
+            // 优先用固定时刻；否则用 hover 整分钟；最后兜底 span 起始
+            const appFocusMinute = trackMode === 'apps'
+              ? (pm != null ? Math.floor(pm) : hoveredAppMinute)
+              : null
+            const probeMin = pm ?? hoveredAppMinute
+            const isAfk = probeMin != null && mtSpans.some((s) => {
+              if (s.track !== 'status') return false
+              const status = (s.group_name ?? s.title ?? '').toLowerCase()
+              if (status !== 'afk') return false
+              return probeMin >= dtToMin(s.start_at) && probeMin < dtToMin(s.end_at)
+            })
 
             const hasDetail = !!(tagSpan || appSpan || biliSpan)
             return (
@@ -1886,7 +2098,7 @@ export default function App() {
                       padding: '8px 4px',
                     }}>
                       {tagSpan && <SpanDetailPanel span={tagSpan} />}
-                      {appSpan && <AppHoverPanel span={appSpan} date={selectedDate} />}
+                      {appSpan && <AppHoverPanel span={appSpan} date={selectedDate} focusMinute={appFocusMinute} isAfk={isAfk} />}
                       {biliSpan && <BiliVideoPanel span={biliSpan} />}
                       <div style={{ flex: 1 }} />
                     </div>
@@ -1964,6 +2176,16 @@ export default function App() {
         onUpdate={handleConfigUpdate}
         onClose={() => setShowModels(false)}
       />
+
+      <SettingsPanel
+        open={showSettings}
+        config={config}
+        onUpdate={handleConfigUpdate}
+        onClose={() => setShowSettings(false)}
+      />
+
+      {/* 活动记录涂块 toast（10s 自动消失） */}
+      <ActivityToast toast={paintToast} onDismiss={() => setPaintToast(null)} />
 
       {/* 首次启用独显高性能 → 右上角橙色 toast，常驻直到用户选择"立即重启"或"稍后" */}
       {gpuToastVisible && (
