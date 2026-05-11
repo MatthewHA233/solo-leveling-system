@@ -175,16 +175,6 @@ input:-webkit-autofill:focus {
   box-shadow: 0 0 14px rgba(0,229,255,0.55), inset 0 0 10px rgba(0,229,255,0.25);
 }
 
-/* ── 昼夜表数据源切换按钮 hover ── */
-.daynight-track-btn[data-active="0"]:hover {
-  color: currentColor !important;
-  background: rgba(0,229,255,0.06) !important;
-  filter: brightness(1.4);
-}
-.daynight-track-btn[data-active="1"]:hover {
-  filter: brightness(1.15);
-}
-
 /* ── Session Picker 开灯动画（clip-path 横向揭示 + 边缘亮闪） ── */
 @keyframes pickerPowerOn {
   0%   { clip-path: inset(0 0 0 100%); opacity: 0.3; }

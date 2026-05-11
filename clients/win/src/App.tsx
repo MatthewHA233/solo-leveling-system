@@ -11,7 +11,7 @@ import {
   fetchActivityPalette, fetchActivityBlocks, paintActivityBlocks, eraseActivityBlocks,
 } from './lib/local-api'
 import type { MtSpan, BiliSpan, ModelCallLog } from './lib/local-api'
-import type { ActivityBlock, ActivityPalette, ActivityTag } from './types'
+import type { ActivityBlock, ActivityPalette } from './types'
 import { theme, hud } from './theme'
 
 // Agent
@@ -62,7 +62,7 @@ import DayNightChart from './components/DayNightChart'
 import ChatPanel from './components/ChatPanel'
 import SessionPicker from './components/SessionPicker'
 import SettingsPanel from './components/SettingsPanel'
-import DatePickerPopover from './components/DatePickerPopover'
+import DatePickerPopover, { invalidateActivityRangeCache } from './components/DatePickerPopover'
 import SpanDetailPanel from './components/SpanDetailPanel'
 import AppHoverPanel from './components/AppHoverPanel'
 import BiliVideoPanel from './components/BiliVideoPanel'
@@ -72,7 +72,7 @@ import { useBiliHistory } from './lib/bilibili/useHistory'
 import ActivityTagPalette from './components/ActivityTagPalette'
 import ActivityToast from './components/ActivityToast'
 import type { FairyState } from './components/FairyHUD'
-import { HudFrame, HudCommandStrip, DataRibbon, NeonRule } from './components/hud'
+import { HudFrame, NeonRule } from './components/hud'
 import { CloseConfirmModal } from './components/CloseConfirmModal'
 import Tooltip from './components/Tooltip'
 import { usePresenceDetection } from './hooks/usePresenceDetection'
@@ -172,6 +172,77 @@ function makeSessionMessage(
 }
 
 const TITLE_TRIGGER_MIN_MESSAGES = 4       // 累计到此数后，首次生成 AI 标题
+
+const ACTIVITY_BLOCK_MINUTES = 5
+
+function clampMinute(minute: number): number {
+  return Math.max(0, Math.min(1440, minute))
+}
+
+function hhmmFromMinute(minute: number): string {
+  const m = clampMinute(minute)
+  const h = Math.floor(m / 60)
+  const mm = m % 60
+  return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
+}
+
+function dayStartMs(date: Date): number {
+  const d = new Date(date)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+function activityBlocksToContextRecords(
+  blocks: readonly ActivityBlock[],
+  palette: ActivityPalette,
+  sinceMs: number,
+  day: Date,
+): ActivityTagRecord[] {
+  const tagById = new Map(palette.tags.map((tag) => [tag.id, tag]))
+  const categoryById = new Map(palette.categories.map((category) => [category.id, category]))
+  const baseMs = dayStartMs(day)
+  const nowMs = Date.now()
+
+  const sorted = blocks
+    .filter((block) => {
+      const startMs = baseMs + block.minute * 60_000
+      const endMs = startMs + ACTIVITY_BLOCK_MINUTES * 60_000
+      return endMs >= sinceMs && startMs <= nowMs
+    })
+    .sort((a, b) => a.minute - b.minute)
+
+  const groups: Array<{ tagId: number; start: number; end: number }> = []
+  for (const block of sorted) {
+    const end = Math.min(1440, block.minute + ACTIVITY_BLOCK_MINUTES)
+    const last = groups[groups.length - 1]
+    if (last && last.tagId === block.tagId && last.end === block.minute) {
+      last.end = end
+    } else {
+      groups.push({ tagId: block.tagId, start: block.minute, end })
+    }
+  }
+
+  return groups.map((group) => {
+    const tag = tagById.get(group.tagId)
+    const category = tag ? categoryById.get(tag.categoryId) : undefined
+    const parts = tag?.fullPath.split(',').map((part) => part.trim()).filter(Boolean) ?? []
+    const firstPart = parts[0]
+    const tagLabel = category?.name ?? firstPart ?? tag?.leafName ?? `tag#${group.tagId}`
+    const restParts = parts.length > 1 ? parts.slice(1) : []
+    const subTag = restParts.length > 0
+      ? restParts.join(' / ')
+      : tag?.leafName && tag.leafName !== tagLabel
+        ? tag.leafName
+        : undefined
+
+    return {
+      startTime: hhmmFromMinute(group.start),
+      endTime: hhmmFromMinute(group.end),
+      tag: tagLabel,
+      subTag,
+    }
+  })
+}
 
 export default function App() {
   // ── Data ──
@@ -540,6 +611,7 @@ export default function App() {
       if (mins.length > 0) tasks.push(paintActivityBlocks(selectedDate, mins, tagId))
     }
     await Promise.all(tasks)
+    invalidateActivityRangeCache(selectedDate)
   }, [selectedDate, computeBlocksDelta])
 
   const handleUndo = useCallback(() => {
@@ -662,6 +734,7 @@ export default function App() {
     Promise.all(tasks)
       .then(() => {
         // 后端写入成功 — 异步刷新 palette 让 last_used_at 排序最新
+        invalidateActivityRangeCache(selectedDate)
         if (spec.paintTagId != null) refreshActivityPalette()
       })
       .catch((e) => {
@@ -1212,20 +1285,22 @@ export default function App() {
     const today = new Date()
     const toHHmm = (s: string) => s.slice(11, 16)
 
-    const [goalsRes, mtSpans, biliSpans] = await Promise.allSettled([
+    const [goalsRes, mtSpans, activityBlocksRes, activityPaletteRes, biliSpans] = await Promise.allSettled([
       fetchGoals('active'),
       fetchManicTimeSpans(today),
+      fetchActivityBlocks(today),
+      fetchActivityPalette(),
       fetchBiliSpans(today),
-    ])
+    ] as const)
 
     const goals: GoalRecord[] = goalsRes.status === 'fulfilled'
       ? goalsRes.value.map((g) => ({ title: g.title, tags: parseGoalTags(g) }))
       : []
     const mtData = mtSpans.status === 'fulfilled' ? mtSpans.value : []
 
-    const activityTags: ActivityTagRecord[] = mtData
-      .filter((s) => s.track === 'tags' && new Date(s.end_at).getTime() >= oneHourAgo)
-      .map((s) => ({ startTime: toHHmm(s.start_at), endTime: toHHmm(s.end_at), tag: s.title, subTag: s.group_name ?? undefined }))
+    const todayBlocks = activityBlocksRes.status === 'fulfilled' ? activityBlocksRes.value : []
+    const currentPalette = activityPaletteRes.status === 'fulfilled' ? activityPaletteRes.value : activityPalette
+    const activityTags = activityBlocksToContextRecords(todayBlocks, currentPalette, oneHourAgo, today)
 
     const appUsage: AppUsageRecord[] = mtData
       .filter((s) => s.track === 'apps' && new Date(s.end_at).getTime() >= oneHourAgo)
@@ -1247,7 +1322,7 @@ export default function App() {
     )
     systemPromptRef.current = history ? `${base}\n\n${history}` : base
     return systemPromptRef.current
-  }, [presence])
+  }, [presence, activityPalette])
   refreshSystemPromptRef.current = refreshSystemPrompt
 
   // ── System Prompt 预热 + 定时刷新（每分钟，供 Omni 模式热读）──
@@ -1712,193 +1787,250 @@ export default function App() {
         playsInline
       />
 
-      {/* ── Top Bar ── */}
+      {/* ── Top Bar ── 紧凑版（参考图风格：左字标 / 中日期+状态 / 右图标+版本） */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '0 40px', height: 60, flexShrink: 0,
-        background: `linear-gradient(180deg, rgba(4,10,26,0.85) 0%, rgba(2,6,18,0.75) 100%)`,
-        boxShadow: `0 2px 22px rgba(0,229,255,0.10)`,
+        display: 'flex', alignItems: 'center', gap: 14,
+        padding: '0 24px', height: 52, flexShrink: 0,
+        background: `linear-gradient(180deg, rgba(4,10,26,0.85) 0%, rgba(2,6,18,0.55) 100%)`,
+        boxShadow: `inset 0 -1px 0 ${theme.hudFrameSoft}`,
         position: 'relative',
         overflow: 'visible',
         zIndex: 2,
       }}>
-        {/* 顶栏专用 HUD 装饰（斜切端头 + 中央凸起桥 + 底部握手凹陷） */}
-        <HudCommandStrip
-          color={theme.electricBlue}
-          accent={theme.warningOrange}
-          centerLabel="SOLO LEVELING SYSTEM · CORE"
-          leftBadge="SLS-01"
-          rightBadge="v0.1"
-        />
-
-        {/* Logo */}
-        <img
-          src={soloLevelingLogo}
-          alt="SOLO LEVELING SYSTEM"
-          draggable={false}
-          onContextMenu={(e) => {
-            e.preventDefault()
-            navigator.clipboard.writeText('SOLO LEVELING SYSTEM').catch(() => {})
-          }}
-          style={{
-            height: 40,
-            objectFit: 'contain',
-            userSelect: 'none',
-            WebkitUserSelect: 'none',
-            filter: `
-              drop-shadow(0 0 8px ${theme.electricBlue}AA)
-              drop-shadow(0 0 16px ${theme.shadowPurple}55)
-            `,
-            cursor: 'default',
-          }}
-        />
-
-        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 4px' }} />
-
-        {/* 日期导航区 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <Tooltip content={prevHasData ? '前一天' : '前一天无数据'}>
-          <button
-            onClick={prevDay}
-            disabled={!prevHasData}
-            style={{
-              ...navBtn,
-              opacity: prevHasData ? 1 : 0.3,
-              cursor: prevHasData ? 'pointer' : 'not-allowed',
+        {/* ── 左：Logo 图标 + 字标 + SLS-01 ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <img
+            src={soloLevelingLogo}
+            alt="SOLO LEVELING SYSTEM"
+            draggable={false}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              navigator.clipboard.writeText('SOLO LEVELING SYSTEM').catch(() => {})
             }}
-          >
-            <ChevronLeft size={12} />
-          </button>
-          </Tooltip>
-          <Tooltip content="选择日期">
-          <button
-            ref={dateAnchorRef}
-            onClick={() => setDatePickerOpen((v) => !v)}
             style={{
-              background: datePickerOpen ? `${theme.electricBlue}10` : 'transparent',
-              border: `1px solid ${datePickerOpen ? `${theme.electricBlue}55` : 'transparent'}`,
-              borderRadius: 4,
-              padding: '2px 6px',
-              cursor: 'pointer',
-              transition: 'all 0.15s ease',
+              height: 28, width: 28, objectFit: 'contain',
+              userSelect: 'none', WebkitUserSelect: 'none',
+              filter: `drop-shadow(0 0 6px ${theme.electricBlue}88) drop-shadow(0 0 12px ${theme.shadowPurple}55)`,
+              cursor: 'default',
             }}
-            onMouseEnter={(e) => { if (!datePickerOpen) e.currentTarget.style.background = theme.glassHover }}
-            onMouseLeave={(e) => { if (!datePickerOpen) e.currentTarget.style.background = 'transparent' }}
-          >
-            <DataRibbon
-              label="DATE"
-              value={selectedDate.toLocaleDateString('zh-CN', {
-                month: '2-digit', day: '2-digit', weekday: 'short',
-              })}
-              style={{ minWidth: 88, alignItems: 'center', textAlign: 'center' }}
-            />
-          </button>
-          </Tooltip>
-          <Tooltip content={nextHasData ? '后一天' : '后一天无数据'}>
-          <button
-            onClick={nextDay}
-            disabled={!nextHasData}
-            style={{
-              ...navBtn,
-              opacity: nextHasData ? 1 : 0.3,
-              cursor: nextHasData ? 'pointer' : 'not-allowed',
-            }}
-          >
-            <ChevronRight size={12} />
-          </button>
-          </Tooltip>
+          />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 1, lineHeight: 1 }}>
+            <span style={{
+              fontFamily: theme.fontDisplay,
+              fontSize: 14, fontWeight: 700,
+              letterSpacing: 2.2, color: theme.textPrimary,
+              textShadow: `0 0 8px ${theme.electricBlue}AA`,
+              whiteSpace: 'nowrap',
+            }}>
+              SOLO LEVELING SYSTEM
+            </span>
+            <span style={{
+              fontFamily: theme.fontMono,
+              fontSize: 8.5, fontWeight: 700,
+              letterSpacing: 2.4, color: theme.electricBlue,
+              opacity: 0.6,
+            }}>
+              SLS-01
+            </span>
+          </div>
+        </div>
+
+        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 6px' }} />
+
+        {/* ── 日期段：label + ◀ DATE ▶ + 今天 ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{
+            fontFamily: theme.fontMono, fontSize: 9, fontWeight: 700,
+            letterSpacing: 2, color: theme.textSecondary, opacity: 0.7,
+          }}>日期</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+            <Tooltip content={prevHasData ? '前一天' : '前一天无数据'}>
+              <button
+                onClick={prevDay}
+                disabled={!prevHasData}
+                style={{
+                  ...navBtn,
+                  opacity: prevHasData ? 1 : 0.3,
+                  cursor: prevHasData ? 'pointer' : 'not-allowed',
+                  padding: '4px 5px',
+                }}
+              >
+                <ChevronLeft size={11} />
+              </button>
+            </Tooltip>
+            <Tooltip content="选择日期">
+              <button
+                ref={dateAnchorRef}
+                onClick={() => setDatePickerOpen((v) => !v)}
+                style={{
+                  background: datePickerOpen ? `${theme.electricBlue}12` : 'transparent',
+                  border: `1px solid ${datePickerOpen ? `${theme.electricBlue}55` : 'transparent'}`,
+                  borderRadius: 3,
+                  padding: '2px 8px',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                  fontFamily: theme.fontMono,
+                  fontSize: 13,
+                  fontWeight: 700,
+                  letterSpacing: 1.3,
+                  color: theme.textPrimary,
+                  textShadow: `0 0 6px ${theme.electricBlue}66`,
+                }}
+                onMouseEnter={(e) => { if (!datePickerOpen) e.currentTarget.style.background = theme.glassHover }}
+                onMouseLeave={(e) => { if (!datePickerOpen) e.currentTarget.style.background = 'transparent' }}
+              >
+                {selectedDate.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', weekday: 'short' })}
+              </button>
+            </Tooltip>
+            <Tooltip content={nextHasData ? '后一天' : '后一天无数据'}>
+              <button
+                onClick={nextDay}
+                disabled={!nextHasData}
+                style={{
+                  ...navBtn,
+                  opacity: nextHasData ? 1 : 0.3,
+                  cursor: nextHasData ? 'pointer' : 'not-allowed',
+                  padding: '4px 5px',
+                }}
+              >
+                <ChevronRight size={11} />
+              </button>
+            </Tooltip>
+          </div>
           <button onClick={goToday} style={{
             ...navBtn,
             color: theme.electricBlue,
-            padding: '5px 11px',
+            padding: '4px 10px',
             border: `1px solid ${theme.electricBlue}55`,
             background: `${theme.electricBlue}0E`,
             textShadow: `0 0 6px ${theme.electricBlue}AA`,
-            letterSpacing: 1.8,
+            letterSpacing: 1.6,
+            fontSize: 10.5,
           }}>
-            NOW
+            今天
           </button>
         </div>
 
-        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 4px' }} />
+        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 6px' }} />
 
-        {/* DB 状态读数 */}
-        <DataRibbon
-          label="DB"
-          color={dbStatus === 'live' ? theme.expGreen : dbStatus === 'error' ? theme.dangerRed : theme.textSecondary}
-          flicker={dbStatus === 'loading'}
-          value={
-            <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <span style={{
-                width: 5, height: 5, borderRadius: '50%',
-                background: dbStatus === 'live' ? theme.expGreen : dbStatus === 'error' ? theme.dangerRed : theme.textSecondary,
-                boxShadow: dbStatus === 'live' ? `0 0 6px ${theme.expGreen}` : undefined,
-              }} />
+        {/* ── 系统状态：ONLINE 灯 + 心跳波形 + Core 标签 ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{
+            fontFamily: theme.fontMono, fontSize: 9, fontWeight: 700,
+            letterSpacing: 2, color: theme.textSecondary, opacity: 0.7,
+          }}>系统状态:</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: dbStatus === 'live' ? theme.expGreen : dbStatus === 'error' ? theme.dangerRed : theme.textSecondary,
+              boxShadow: dbStatus === 'live' ? `0 0 8px ${theme.expGreen}` : undefined,
+              animation: dbStatus === 'live' ? 'glowPulse 2s ease-in-out infinite' : undefined,
+            }} />
+            <span style={{
+              fontFamily: theme.fontMono, fontSize: 11, fontWeight: 700,
+              letterSpacing: 1.5,
+              color: dbStatus === 'live' ? theme.expGreen : dbStatus === 'error' ? theme.dangerRed : theme.textSecondary,
+              textShadow: dbStatus === 'live' ? `0 0 6px ${theme.expGreen}AA` : undefined,
+            }}>
               {dbStatus === 'live' ? 'ONLINE' : dbStatus === 'error' ? 'ERROR' : 'SYNC'}
             </span>
-          }
-        />
-
-        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 4px' }} />
+          </span>
+          {/* 心跳波形 */}
+          <svg width={64} height={18} viewBox="0 0 64 18" style={{ overflow: 'visible' }}>
+            <defs>
+              <linearGradient id="hb-grad" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor={theme.electricBlue} stopOpacity="0" />
+                <stop offset="20%" stopColor={theme.electricBlue} stopOpacity="0.9" />
+                <stop offset="80%" stopColor={theme.electricBlue} stopOpacity="0.9" />
+                <stop offset="100%" stopColor={theme.electricBlue} stopOpacity="0" />
+              </linearGradient>
+            </defs>
+            <polyline
+              points="0,9 10,9 14,9 18,4 22,14 26,2 30,16 34,9 40,9 50,9 54,9 58,5 62,9 64,9"
+              fill="none"
+              stroke="url(#hb-grad)"
+              strokeWidth={1.3}
+              strokeLinejoin="miter"
+              strokeLinecap="butt"
+              style={{ filter: `drop-shadow(0 0 3px ${theme.electricBlue}AA)` }}
+            />
+          </svg>
+          <span style={{
+            fontFamily: theme.fontBody, fontSize: 11, fontWeight: 500,
+            color: theme.textSecondary, opacity: 0.85,
+            letterSpacing: 0.5,
+            whiteSpace: 'nowrap',
+          }}>
+            Solo Leveling System · Core
+          </span>
+        </div>
 
         <div style={{ flex: 1 }} />
 
-        {/* B站历史 */}
+        {/* ── 右：图标按钮 + v0.1 ── */}
         <Tooltip content="B站历史记录">
-        <button
-          onClick={() => {
-            setShowBili(!showBili)
-            if (!showBili) { setShowSettings(false); setShowModels(false) }
-          }}
-          style={{
-            ...navBtn,
-            color: showBili ? theme.electricBlue : theme.textSecondary,
-            border: `1px solid ${showBili ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
-            background: showBili ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
-            textShadow: showBili ? `0 0 6px ${theme.electricBlue}AA` : undefined,
-          }}
-        >
-          <BiliIcon size={14} />
-        </button>
+          <button
+            onClick={() => {
+              setShowBili(!showBili)
+              if (!showBili) { setShowSettings(false); setShowModels(false) }
+            }}
+            style={{
+              ...navBtn,
+              color: showBili ? theme.electricBlue : theme.textSecondary,
+              border: `1px solid ${showBili ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
+              background: showBili ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
+              textShadow: showBili ? `0 0 6px ${theme.electricBlue}AA` : undefined,
+            }}
+          >
+            <BiliIcon size={13} />
+          </button>
         </Tooltip>
 
-        {/* Models */}
         <Tooltip content="模型">
-        <button
-          onClick={() => {
-            setShowModels(!showModels)
-            if (!showModels) { setShowSettings(false); setShowBili(false) }
-          }}
-          style={{
-            ...navBtn,
-            color: showModels ? theme.electricBlue : theme.textSecondary,
-            border: `1px solid ${showModels ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
-            background: showModels ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
-            textShadow: showModels ? `0 0 6px ${theme.electricBlue}AA` : undefined,
-          }}
-        >
-          <Boxes size={13} />
-        </button>
+          <button
+            onClick={() => {
+              setShowModels(!showModels)
+              if (!showModels) { setShowSettings(false); setShowBili(false) }
+            }}
+            style={{
+              ...navBtn,
+              color: showModels ? theme.electricBlue : theme.textSecondary,
+              border: `1px solid ${showModels ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
+              background: showModels ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
+              textShadow: showModels ? `0 0 6px ${theme.electricBlue}AA` : undefined,
+            }}
+          >
+            <Boxes size={12} />
+          </button>
         </Tooltip>
 
-        {/* Settings */}
         <Tooltip content="设置">
-        <button
-          onClick={() => {
-            setShowSettings(!showSettings)
-            if (!showSettings) { setShowBili(false); setShowModels(false) }
-          }}
-          style={{
-            ...navBtn,
-            color: showSettings ? theme.electricBlue : theme.textSecondary,
-            border: `1px solid ${showSettings ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
-            background: showSettings ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
-            textShadow: showSettings ? `0 0 6px ${theme.electricBlue}AA` : undefined,
-          }}
-        >
-          <Settings size={12} />
-        </button>
+          <button
+            onClick={() => {
+              setShowSettings(!showSettings)
+              if (!showSettings) { setShowBili(false); setShowModels(false) }
+            }}
+            style={{
+              ...navBtn,
+              color: showSettings ? theme.electricBlue : theme.textSecondary,
+              border: `1px solid ${showSettings ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
+              background: showSettings ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
+              textShadow: showSettings ? `0 0 6px ${theme.electricBlue}AA` : undefined,
+            }}
+          >
+            <Settings size={11} />
+          </button>
         </Tooltip>
+
+        {/* v0.1 版本徽章 */}
+        <span style={{
+          fontFamily: theme.fontMono, fontSize: 9.5, fontWeight: 700,
+          letterSpacing: 1.6,
+          color: theme.textSecondary, opacity: 0.55,
+          marginLeft: 4,
+        }}>
+          v0.1
+        </span>
       </div>
 
       {/* ── Main: Chart + Right Panel ── */}

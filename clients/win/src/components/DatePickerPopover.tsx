@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { theme, hud } from '../theme'
-import { fetchManicTimeSpans, fetchBiliDayCounts } from '../lib/local-api'
+import { fetchActivityBlocks, fetchBiliDayCounts } from '../lib/local-api'
 import type { BiliDayCount } from '../lib/local-api'
 import Tooltip from './Tooltip'
 
@@ -40,37 +40,45 @@ function dayKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-// 解析 "YYYY-MM-DD HH:MM:SS" → 当日相对分钟（裁剪到 [0, 1440]）
-function dtToDayMinute(s: string, dayStr: string): number | null {
-  if (!s.startsWith(dayStr)) return null
-  const t = s.slice(11)
-  const [h = '0', m = '0'] = t.split(':')
-  return Number(h) * 60 + Number(m)
-}
-
 // 一段标签时间区间（当日相对分钟，已裁剪到 [0,1440]）
 type TagRange = readonly [number, number]
 
 // 模块级缓存：跨打开/关闭日历保留已抓数据
 const tagRangesCache = new Map<string, TagRange[]>()
 const inflight = new Map<string, Promise<TagRange[]>>()
+
+export function invalidateActivityRangeCache(date?: Date) {
+  if (date) {
+    const key = dayKey(date)
+    tagRangesCache.delete(key)
+    inflight.delete(key)
+    return
+  }
+  tagRangesCache.clear()
+  inflight.clear()
+}
+
 async function getTagRangesForDay(d: Date): Promise<TagRange[]> {
   const key = dayKey(d)
   if (tagRangesCache.has(key)) return tagRangesCache.get(key)!
   if (inflight.has(key)) return inflight.get(key)!
   const p = (async () => {
     try {
-      const spans = await fetchManicTimeSpans(d)
+      const blocks = await fetchActivityBlocks(d)
       const out: TagRange[] = []
-      for (const s of spans) {
-        if (s.track !== 'tags') continue
-        const a = dtToDayMinute(s.start_at, key)
-        const b = dtToDayMinute(s.end_at, key)
-        if (a == null || b == null) continue
-        const lo = Math.max(0, a)
-        const hi = Math.min(1440, b)
-        if (hi > lo) out.push([lo, hi])
+      const minutes = [...new Set(blocks.map((b) => b.minute))]
+        .filter((m) => m >= 0 && m < 1440)
+        .sort((a, b) => a - b)
+      let start: number | null = null
+      let prev: number | null = null
+      for (const minute of minutes) {
+        if (start === null || prev === null || minute !== prev + 5) {
+          if (start !== null && prev !== null) out.push([start, Math.min(1440, prev + 5)])
+          start = minute
+        }
+        prev = minute
       }
+      if (start !== null && prev !== null) out.push([start, Math.min(1440, prev + 5)])
       tagRangesCache.set(key, out)
       return out
     } catch {

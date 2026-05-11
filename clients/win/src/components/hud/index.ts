@@ -1,4 +1,7 @@
 export { HudFrame } from './HudFrame'
 export { HudCommandStrip } from './HudCommandStrip'
+export { HudOuterFrame } from './HudOuterFrame'
+export { HudFrameSkeleton } from './HudFrameSkeleton'
+export { HudTabButton } from './HudTabButton'
 export { DataRibbon } from './DataRibbon'
 export { NeonRule } from './NeonRule'

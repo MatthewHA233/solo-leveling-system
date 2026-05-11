@@ -3,8 +3,9 @@
 // ══════════════════════════════════════════════
 
 import { invoke } from '@tauri-apps/api/core'
-import { fetchManicTimeSpans, fetchBiliSpans } from '../local-api'
+import { fetchManicTimeSpans, fetchBiliSpans, fetchActivityBlocks, fetchActivityPalette } from '../local-api'
 import type { MtSpan, BiliSpan } from '../local-api'
+import type { ActivityPalette } from '../../types'
 import type { ToolDefinition } from '../llm/types'
 
 // ── 内部 Tool 接口 ──
@@ -111,6 +112,75 @@ async function fetchManicTimeSpansRange(dates: Date[]): Promise<MtSpan[]> {
   return results.flat().sort((a, b) => a.start_at.localeCompare(b.start_at))
 }
 
+// Activity blocks exposed as span-like records for the existing filters.
+interface ActivityTagSpan {
+  start_at: string
+  end_at: string
+  title: string
+  group_name: string | null
+}
+
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function minuteToHHmm(minute: number): string {
+  const m = Math.max(0, Math.min(1440, minute))
+  const h = Math.floor(m / 60)
+  const mm = m % 60
+  return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
+}
+
+function activityLabelParts(tagId: number, palette: ActivityPalette): { title: string; groupName: string | null } {
+  const tag = palette.tags.find((item) => item.id === tagId)
+  const category = tag ? palette.categories.find((item) => item.id === tag.categoryId) : undefined
+  const parts = tag?.fullPath.split(',').map((part) => part.trim()).filter(Boolean) ?? []
+  const title = category?.name ?? parts[0] ?? tag?.leafName ?? `tag#${tagId}`
+  const rest = parts.length > 1 ? parts.slice(1) : []
+  const groupName = rest.length > 0
+    ? rest.join(' / ')
+    : tag?.leafName && tag.leafName !== title
+      ? tag.leafName
+      : null
+  return { title, groupName }
+}
+
+async function fetchActivityTagSpansRange(dates: Date[]): Promise<ActivityTagSpan[]> {
+  const palette = await fetchActivityPalette()
+  const blocksByDate = await Promise.all(dates.map(d => fetchActivityBlocks(d).catch(() => [])))
+  const out: ActivityTagSpan[] = []
+
+  dates.forEach((date, index) => {
+    const day = localDateKey(date)
+    const blocks = blocksByDate[index]
+      .filter((block) => block.minute >= 0 && block.minute < 1440)
+      .sort((a, b) => a.minute - b.minute)
+    const groups: Array<{ tagId: number; start: number; end: number }> = []
+
+    for (const block of blocks) {
+      const end = Math.min(1440, block.minute + 5)
+      const last = groups[groups.length - 1]
+      if (last && last.tagId === block.tagId && last.end === block.minute) {
+        last.end = end
+      } else {
+        groups.push({ tagId: block.tagId, start: block.minute, end })
+      }
+    }
+
+    for (const group of groups) {
+      const labels = activityLabelParts(group.tagId, palette)
+      out.push({
+        start_at: `${day} ${minuteToHHmm(group.start)}:00`,
+        end_at: `${day} ${minuteToHHmm(group.end)}:00`,
+        title: labels.title,
+        group_name: labels.groupName,
+      })
+    }
+  })
+
+  return out.sort((a, b) => a.start_at.localeCompare(b.start_at))
+}
+
 /** 查询指定日期列表的所有 BiliSpans，合并排序 */
 async function fetchBiliSpansRange(dates: Date[]): Promise<BiliSpan[]> {
   const results = await Promise.all(dates.map(d => fetchBiliSpans(d).catch(() => [])))
@@ -206,8 +276,7 @@ const getActivityTags: Tool = {
     const fromDT = typeof args.start_datetime === 'string' ? args.start_datetime : null
     const toDT   = typeof args.end_datetime   === 'string' ? args.end_datetime   : null
 
-    const all = await fetchManicTimeSpansRange(dates)
-    let tags = all.filter(s => s.track === 'tags')
+    let tags = await fetchActivityTagSpansRange(dates)
     tags = filterByTime(tags, fromDT, toDT)
     tags = filterByKeyword(tags, args.keyword, s => [s.title, s.group_name ?? ''])
 
