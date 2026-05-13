@@ -7,8 +7,6 @@ use tauri::Emitter;
 mod db;
 mod api;
 mod fish_tts;
-mod manictime;
-#[cfg(windows)]
 mod perception;
 mod qwen_asr;
 mod qwen_omni;
@@ -743,13 +741,11 @@ struct DbInfo {
     size: u64,
 }
 
-#[cfg(windows)]
 #[tauri::command]
 fn get_screenshot_settings() -> perception::ScreenshotSettings {
     perception::load_screenshot_settings()
 }
 
-#[cfg(windows)]
 #[tauri::command]
 fn update_screenshot_settings(
     settings: perception::ScreenshotSettings,
@@ -757,49 +753,41 @@ fn update_screenshot_settings(
     perception::save_screenshot_settings(settings)
 }
 
-#[cfg(windows)]
 #[tauri::command]
 fn get_screenshot_storage_info() -> Result<perception::ScreenshotStorageInfo, String> {
     perception::screenshot_storage_info()
 }
 
-#[cfg(windows)]
 #[tauri::command]
 fn open_screenshot_folder() -> Result<(), String> {
     perception::open_screenshot_folder()
 }
 
-#[cfg(windows)]
 #[tauri::command]
 fn clear_screenshot_data() -> Result<perception::ScreenshotStorageInfo, String> {
     perception::clear_screenshot_data()
 }
 
-#[cfg(windows)]
 #[tauri::command]
 fn get_window_blacklist() -> Vec<perception::WindowBlacklistEntry> {
     perception::load_window_blacklist()
 }
 
-#[cfg(windows)]
 #[tauri::command]
 fn add_window_blacklist(app: String, title: Option<String>) -> Result<Vec<perception::WindowBlacklistEntry>, String> {
     perception::add_window_blacklist(app, title)
 }
 
-#[cfg(windows)]
 #[tauri::command]
 fn remove_window_blacklist(app: String, title: Option<String>) -> Result<Vec<perception::WindowBlacklistEntry>, String> {
     perception::remove_window_blacklist(app, title)
 }
 
-#[cfg(windows)]
 #[tauri::command]
 fn get_tracking_settings() -> perception::TrackingSettings {
     perception::load_tracking_settings()
 }
 
-#[cfg(windows)]
 #[tauri::command]
 fn update_tracking_settings(settings: perception::TrackingSettings) -> Result<perception::TrackingSettings, String> {
     perception::save_tracking_settings(settings)
@@ -807,10 +795,24 @@ fn update_tracking_settings(settings: perception::TrackingSettings) -> Result<pe
 
 #[tauri::command]
 async fn open_url_in_browser(url: String) -> Result<(), String> {
+    #[cfg(windows)]
     std::process::Command::new("cmd")
         .args(["/c", "start", "", &url])
         .spawn()
         .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -1246,6 +1248,8 @@ async fn setup_fairy(app: tauri::AppHandle) -> Result<(), String> {
         .ok_or_else(|| "fairy-window not found".to_string())?;
 
     log::info!("[Fairy] setup_fairy 已调用，启动光标监控");
+    #[cfg(not(windows))]
+    let _ = &win;
 
     #[cfg(windows)]
     {

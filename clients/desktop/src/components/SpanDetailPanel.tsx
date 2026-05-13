@@ -1,12 +1,12 @@
 // ══════════════════════════════════════════════
-// SpanDetailPanel — ManicTime 标签段详情面板（HUD 风格）
+// SpanDetailPanel — 感知标签段详情面板（HUD 风格）
 // ══════════════════════════════════════════════
 
-import type { MtSpan } from '../lib/local-api'
+import type { PerceptionSpan } from '../lib/local-api'
 import { theme } from '../theme'
 
 interface Props {
-  span: MtSpan
+  span: PerceptionSpan
 }
 
 const clip4 = `polygon(

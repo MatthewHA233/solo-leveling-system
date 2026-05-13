@@ -3,8 +3,8 @@
 // ══════════════════════════════════════════════
 
 import { invoke } from '@tauri-apps/api/core'
-import { fetchManicTimeSpans, fetchBiliSpans, fetchActivityBlocks, fetchActivityPalette } from '../local-api'
-import type { MtSpan, BiliSpan } from '../local-api'
+import { fetchPerceptionSpans, fetchBiliSpans, fetchActivityBlocks, fetchActivityPalette } from '../local-api'
+import type { PerceptionSpan, BiliSpan } from '../local-api'
 import type { ActivityPalette } from '../../types'
 import type { ToolDefinition } from '../llm/types'
 
@@ -106,9 +106,9 @@ function resolveDatesToFetch(args: Record<string, unknown>): Date[] {
   return dates
 }
 
-/** 查询指定日期列表的所有 ManicTime spans，合并排序 */
-async function fetchManicTimeSpansRange(dates: Date[]): Promise<MtSpan[]> {
-  const results = await Promise.all(dates.map(d => fetchManicTimeSpans(d).catch(() => [])))
+/** 查询指定日期列表的所有 感知 spans，合并排序 */
+async function fetchPerceptionSpansRange(dates: Date[]): Promise<PerceptionSpan[]> {
+  const results = await Promise.all(dates.map(d => fetchPerceptionSpans(d).catch(() => [])))
   return results.flat().sort((a, b) => a.start_at.localeCompare(b.start_at))
 }
 
@@ -230,7 +230,7 @@ const getAppUsage: Tool = {
     const fromDT = typeof args.start_datetime === 'string' ? args.start_datetime : null
     const toDT   = typeof args.end_datetime   === 'string' ? args.end_datetime   : null
 
-    const all = await fetchManicTimeSpansRange(dates)
+    const all = await fetchPerceptionSpansRange(dates)
     let apps = all.filter(s => s.track === 'apps')
     apps = filterByTime(apps, fromDT, toDT)
     apps = filterByKeyword(apps, args.keyword, s => [s.title, s.group_name ?? ''])
@@ -317,7 +317,7 @@ const getComputerStatus: Tool = {
     const toDT   = typeof args.end_datetime   === 'string' ? args.end_datetime   : null
     const status = typeof args.status === 'string' ? args.status.toLowerCase() : null
 
-    const all = await fetchManicTimeSpansRange(dates)
+    const all = await fetchPerceptionSpansRange(dates)
     let statuses = all.filter(s => s.track === 'status')
     statuses = filterByTime(statuses, fromDT, toDT)
     if (status) statuses = statuses.filter(s => (s.group_name ?? s.title).toLowerCase() === status)

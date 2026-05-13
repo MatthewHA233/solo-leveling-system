@@ -11,6 +11,27 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use chrono::{Duration, NaiveDateTime, Utc};
 
+#[cfg(windows)]
+const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets_windows";
+#[cfg(windows)]
+const PERCEPTION_EVENTS_TABLE: &str = "perception_events_windows";
+#[cfg(windows)]
+const APP_CATALOG_TABLE: &str = "app_catalog_windows";
+
+#[cfg(target_os = "macos")]
+const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets_macos";
+#[cfg(target_os = "macos")]
+const PERCEPTION_EVENTS_TABLE: &str = "perception_events_macos";
+#[cfg(target_os = "macos")]
+const APP_CATALOG_TABLE: &str = "app_catalog_macos";
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets";
+#[cfg(all(not(windows), not(target_os = "macos")))]
+const PERCEPTION_EVENTS_TABLE: &str = "perception_events";
+#[cfg(all(not(windows), not(target_os = "macos")))]
+const APP_CATALOG_TABLE: &str = "app_catalog";
+
 // ── 数据类型 ──
 
 // ── 活动记录（自定义标签 + 5min 块）──
@@ -92,6 +113,7 @@ pub struct EraseBlocksRequest {
     pub minutes: Vec<i32>,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PerceptionHeartbeat {
     pub bucket_id: String,
@@ -101,6 +123,17 @@ pub struct PerceptionHeartbeat {
     pub observed_at: String,
     pub data: serde_json::Value,
     pub pulsetime_seconds: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct PerceptionSpan {
+    pub id: i64,
+    pub track: String,
+    pub start_at: String,
+    pub end_at: String,
+    pub title: String,
+    pub group_name: Option<String>,
+    pub color: Option<String>,
 }
 
 // ── Chat Session Types ──
@@ -541,7 +574,7 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_presence_start ON presence_spans(start_time);
 
-            -- 自研感知层：ActivityWatch 风格 bucket + heartbeat event
+            -- 自研感知层旧表：只保留给历史 Windows 数据迁移，不再写入
             CREATE TABLE IF NOT EXISTS perception_buckets (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
@@ -570,6 +603,78 @@ impl Database {
                 ON perception_events(bucket_id, data_hash, end_at);
 
             CREATE TABLE IF NOT EXISTS app_catalog (
+                app_key TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                exe_path TEXT,
+                color TEXT NOT NULL,
+                icon_png BLOB,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL
+            );
+
+            -- 自研感知层平台表：macOS / Windows 分开，避免 app/status/tag 等事件串库
+            CREATE TABLE IF NOT EXISTS perception_buckets_windows (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                hostname TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS perception_events_windows (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bucket_id TEXT NOT NULL REFERENCES perception_buckets_windows(id) ON DELETE CASCADE,
+                start_at TEXT NOT NULL,
+                end_at TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                data_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_perception_windows_bucket_time
+                ON perception_events_windows(bucket_id, start_at, end_at);
+            CREATE INDEX IF NOT EXISTS idx_perception_windows_time
+                ON perception_events_windows(start_at, end_at);
+            CREATE INDEX IF NOT EXISTS idx_perception_windows_hash
+                ON perception_events_windows(bucket_id, data_hash, end_at);
+
+            CREATE TABLE IF NOT EXISTS perception_buckets_macos (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                hostname TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS perception_events_macos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bucket_id TEXT NOT NULL REFERENCES perception_buckets_macos(id) ON DELETE CASCADE,
+                start_at TEXT NOT NULL,
+                end_at TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                data_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_perception_macos_bucket_time
+                ON perception_events_macos(bucket_id, start_at, end_at);
+            CREATE INDEX IF NOT EXISTS idx_perception_macos_time
+                ON perception_events_macos(start_at, end_at);
+            CREATE INDEX IF NOT EXISTS idx_perception_macos_hash
+                ON perception_events_macos(bucket_id, data_hash, end_at);
+
+            CREATE TABLE IF NOT EXISTS app_catalog_windows (
+                app_key TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                exe_path TEXT,
+                color TEXT NOT NULL,
+                icon_png BLOB,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS app_catalog_macos (
                 app_key TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
                 exe_path TEXT,
@@ -703,6 +808,7 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE model_call_log ADD COLUMN free_quota_tokens INTEGER NOT NULL DEFAULT 0");
         let _ = conn.execute_batch("ALTER TABLE model_call_log ADD COLUMN free_quota_saved_cny REAL NOT NULL DEFAULT 0");
         let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_call_api_key ON model_call_log(api_key_id, started_at DESC)");
+        migrate_legacy_perception_tables(&conn)?;
 
         // 首次启动写入百炼模型库与默认绑定种子（已存在则跳过，幂等）
         seed_model_registry(&conn)?;
@@ -1448,12 +1554,12 @@ impl Database {
     }
 
     /// 在 [from, to] 范围内，返回所有"有数据"的日期（用于昼夜表前后日按钮）
-    /// 数据 = activity_blocks OR bili_history OR presence_spans OR perception_events 任意一项有记录
+    /// 数据 = activity_blocks OR bili_history OR presence_spans OR 当前平台 perception_events 任意一项有记录
     pub async fn get_data_days(
         &self, from: &str, to: &str,
     ) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().await;
-        let sql = r#"
+        let sql = format!(r#"
             SELECT day FROM (
                 SELECT DISTINCT date AS day
                 FROM activity_blocks
@@ -1468,12 +1574,12 @@ impl Database {
                 WHERE substr(start_time, 1, 10) BETWEEN ?1 AND ?2
                 UNION
                 SELECT DISTINCT substr(start_at, 1, 10) AS day
-                FROM perception_events
+                FROM {events_table}
                 WHERE substr(start_at, 1, 10) BETWEEN ?1 AND ?2
             )
             ORDER BY day ASC
-        "#;
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        "#, events_table = PERCEPTION_EVENTS_TABLE);
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(params![from, to], |row| row.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1617,6 +1723,7 @@ impl Database {
 
     // ── Perception Events ──
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub async fn record_perception_heartbeat(&self, heartbeat: PerceptionHeartbeat) -> Result<(), String> {
         let conn = self.conn.lock().await;
         let data_json = serde_json::to_string(&heartbeat.data)
@@ -1624,8 +1731,7 @@ impl Database {
         let data_hash = stable_hash_hex(&data_json);
         let now = &heartbeat.observed_at;
 
-        conn.execute(
-            r#"INSERT INTO perception_buckets
+        let upsert_bucket_sql = format!(r#"INSERT INTO {buckets_table}
                (id, kind, event_type, source, hostname, created_at, updated_at)
                VALUES (?, ?, ?, ?, '', ?, ?)
                ON CONFLICT(id) DO UPDATE SET
@@ -1633,6 +1739,10 @@ impl Database {
                    event_type=excluded.event_type,
                    source=excluded.source,
                    updated_at=excluded.updated_at"#,
+            buckets_table = PERCEPTION_BUCKETS_TABLE,
+        );
+        conn.execute(
+            &upsert_bucket_sql,
             params![
                 &heartbeat.bucket_id,
                 &heartbeat.bucket_kind,
@@ -1647,26 +1757,32 @@ impl Database {
             if let Some(app) = heartbeat.data.get("app").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
                 let exe_path = heartbeat.data.get("exe_path").and_then(|v| v.as_str());
                 let color = color_for_app(app);
-                conn.execute(
-                    r#"INSERT INTO app_catalog
+                let upsert_app_sql = format!(r#"INSERT INTO {app_table}
                        (app_key, display_name, exe_path, color, first_seen, last_seen)
                        VALUES (?, ?, ?, ?, ?, ?)
                        ON CONFLICT(app_key) DO UPDATE SET
                            display_name=excluded.display_name,
-                           exe_path=COALESCE(excluded.exe_path, app_catalog.exe_path),
-                           color=app_catalog.color,
+                           exe_path=COALESCE(excluded.exe_path, {app_table}.exe_path),
+                           color={app_table}.color,
                            last_seen=excluded.last_seen"#,
+                    app_table = APP_CATALOG_TABLE,
+                );
+                conn.execute(
+                    &upsert_app_sql,
                     params![app, app, exe_path, &color, now, now],
                 ).map_err(|e| e.to_string())?;
             }
         }
 
-        let last = conn.query_row(
-            r#"SELECT id, end_at, data_json, data_hash
-               FROM perception_events
+        let select_last_sql = format!(r#"SELECT id, end_at, data_json, data_hash
+               FROM {events_table}
                WHERE bucket_id = ?
                ORDER BY end_at DESC, id DESC
                LIMIT 1"#,
+            events_table = PERCEPTION_EVENTS_TABLE,
+        );
+        let last = conn.query_row(
+            &select_last_sql,
             params![&heartbeat.bucket_id],
             |row| Ok((
                 row.get::<_, i64>(0)?,
@@ -1679,31 +1795,42 @@ impl Database {
         if let Some((id, last_end, last_json, last_hash)) = last {
             let same_data = last_hash == data_hash && last_json == data_json;
             if same_data && within_pulsetime(&last_end, now, heartbeat.pulsetime_seconds) {
+                let update_event_sql = format!(
+                    "UPDATE {events_table} SET end_at = ?, updated_at = datetime('now') WHERE id = ?",
+                    events_table = PERCEPTION_EVENTS_TABLE,
+                );
                 conn.execute(
-                    "UPDATE perception_events SET end_at = ?, updated_at = datetime('now') WHERE id = ?",
+                    &update_event_sql,
                     params![now, id],
                 ).map_err(|e| e.to_string())?;
                 return Ok(());
             }
         }
 
-        conn.execute(
-            r#"INSERT INTO perception_events
+        let insert_event_sql = format!(r#"INSERT INTO {events_table}
                (bucket_id, start_at, end_at, data_json, data_hash)
                VALUES (?, ?, ?, ?, ?)"#,
+            events_table = PERCEPTION_EVENTS_TABLE,
+        );
+        conn.execute(
+            &insert_event_sql,
             params![&heartbeat.bucket_id, now, now, data_json, data_hash],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    pub async fn get_perception_spans_for_date(&self, date: &str) -> Result<Vec<crate::manictime::MtSpan>, String> {
+    pub async fn get_perception_spans_for_date(&self, date: &str) -> Result<Vec<PerceptionSpan>, String> {
         let day_start = format!("{} 00:00:00", date);
         let day_end = format!("{} 00:00:00", next_day_str(date)?);
         let conn = self.conn.lock().await;
 
-        // 一次性把 app → 主色 拉成内存 map（来自 app_catalog，已被图标主色覆盖）
+        // 一次性把 app → 主色 拉成内存 map（来自当前平台 app_catalog，已被图标主色覆盖）
         let app_colors: std::collections::HashMap<String, String> = {
-            let mut stmt = conn.prepare("SELECT app_key, color FROM app_catalog")
+            let app_colors_sql = format!(
+                "SELECT app_key, color FROM {app_table}",
+                app_table = APP_CATALOG_TABLE,
+            );
+            let mut stmt = conn.prepare(&app_colors_sql)
                 .map_err(|e| e.to_string())?;
             let rows = stmt.query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1711,14 +1838,16 @@ impl Database {
             rows.filter_map(|r| r.ok()).collect()
         };
 
-        let mut stmt = conn.prepare(
-            r#"SELECT e.id, b.kind, e.start_at, e.end_at, e.data_json
-               FROM perception_events e
-               JOIN perception_buckets b ON b.id = e.bucket_id
+        let spans_sql = format!(r#"SELECT e.id, b.kind, e.start_at, e.end_at, e.data_json
+               FROM {events_table} e
+               JOIN {buckets_table} b ON b.id = e.bucket_id
                WHERE e.start_at < ?1
                  AND e.end_at >= ?2
                ORDER BY e.start_at ASC, e.id ASC"#,
-        ).map_err(|e| e.to_string())?;
+            events_table = PERCEPTION_EVENTS_TABLE,
+            buckets_table = PERCEPTION_BUCKETS_TABLE,
+        );
+        let mut stmt = conn.prepare(&spans_sql).map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map(params![&day_end, &day_start], |row| {
             Ok((
@@ -1741,9 +1870,9 @@ impl Database {
                 "window" => {
                     let app = data.get("app").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
                     let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    // 优先用 app_catalog 里写入的主色（=图标主色），找不到才退回 hash
+                    // 优先用当前平台 app_catalog 里写入的主色（=图标主色），找不到才退回 hash
                     let color = app_colors.get(&app).cloned().unwrap_or_else(|| color_for_app(&app));
-                    spans.push(crate::manictime::MtSpan {
+                    spans.push(PerceptionSpan {
                         id,
                         track: "apps".to_string(),
                         start_at: clipped_start,
@@ -1755,7 +1884,7 @@ impl Database {
                 }
                 "status" => {
                     let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                    spans.push(crate::manictime::MtSpan {
+                    spans.push(PerceptionSpan {
                         id,
                         track: "status".to_string(),
                         start_at: clipped_start,
@@ -1769,7 +1898,7 @@ impl Database {
                     let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let group = data.get("group_name").and_then(|v| v.as_str()).map(|s| s.to_string());
                     let color = data.get("color").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    spans.push(crate::manictime::MtSpan {
+                    spans.push(PerceptionSpan {
                         id,
                         track: "tags".to_string(),
                         start_at: clipped_start,
@@ -1789,8 +1918,12 @@ impl Database {
 
     pub async fn get_perception_app_icon_png(&self, app_name: &str) -> Result<Option<Vec<u8>>, String> {
         let conn = self.conn.lock().await;
+        let sql = format!(
+            "SELECT icon_png FROM {app_table} WHERE app_key = ? LIMIT 1",
+            app_table = APP_CATALOG_TABLE,
+        );
         match conn.query_row(
-            "SELECT icon_png FROM app_catalog WHERE app_key = ? LIMIT 1",
+            &sql,
             params![app_name],
             |row| row.get::<_, Option<Vec<u8>>>(0),
         ) {
@@ -1801,22 +1934,28 @@ impl Database {
     }
 
     /// 仅取 app_key 列表（用于 icon_cache 启动时回填）
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub async fn list_app_keys_with_icon(&self) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
-            "SELECT app_key FROM app_catalog WHERE icon_png IS NOT NULL"
-        ).map_err(|e| e.to_string())?;
+        let sql = format!(
+            "SELECT app_key FROM {app_table} WHERE icon_png IS NOT NULL",
+            app_table = APP_CATALOG_TABLE,
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    /// 拉出 app_catalog 里所有有图标的条目（启动时刷主色用）
+    /// 拉出当前平台 app_catalog 里所有有图标的条目（启动时刷主色用）
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub async fn list_app_catalog_icons(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
-            "SELECT app_key, icon_png FROM app_catalog WHERE icon_png IS NOT NULL"
-        ).map_err(|e| e.to_string())?;
+        let sql = format!(
+            "SELECT app_key, icon_png FROM {app_table} WHERE icon_png IS NOT NULL",
+            app_table = APP_CATALOG_TABLE,
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
         }).map_err(|e| e.to_string())?;
@@ -1824,15 +1963,21 @@ impl Database {
     }
 
     /// 仅更新某个 app 的颜色字段
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub async fn set_app_catalog_color(&self, app_name: &str, color: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
+        let sql = format!(
+            "UPDATE {app_table} SET color = ? WHERE app_key = ?",
+            app_table = APP_CATALOG_TABLE,
+        );
         conn.execute(
-            "UPDATE app_catalog SET color = ? WHERE app_key = ?",
+            &sql,
             params![color, app_name],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub async fn update_perception_app_icon(
         &self,
         app_name: &str,
@@ -1847,16 +1992,19 @@ impl Database {
             .map(|s| s.to_string())
             .unwrap_or_else(|| color_for_app(app_name));
         // 拿到图标 = 第一次"权威定色"，覆盖之前心跳写入的临时 hash 色
-        conn.execute(
-            r#"INSERT INTO app_catalog
+        let sql = format!(r#"INSERT INTO {app_table}
                (app_key, display_name, exe_path, color, icon_png, first_seen, last_seen)
                VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(app_key) DO UPDATE SET
                    display_name=excluded.display_name,
-                   exe_path=COALESCE(excluded.exe_path, app_catalog.exe_path),
+                   exe_path=COALESCE(excluded.exe_path, {app_table}.exe_path),
                    color=excluded.color,
                    icon_png=excluded.icon_png,
                    last_seen=excluded.last_seen"#,
+            app_table = APP_CATALOG_TABLE,
+        );
+        conn.execute(
+            &sql,
             params![app_name, app_name, exe_path, &color, icon_bmp, &now, &now],
         ).map_err(|e| e.to_string())?;
         Ok(())
@@ -2007,6 +2155,27 @@ impl Database {
     }
 }
 
+fn migrate_legacy_perception_tables(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(r#"
+        INSERT OR IGNORE INTO perception_buckets_windows
+            (id, kind, event_type, source, hostname, created_at, updated_at)
+        SELECT id, kind, event_type, source, hostname, created_at, updated_at
+        FROM perception_buckets;
+
+        INSERT OR IGNORE INTO perception_events_windows
+            (id, bucket_id, start_at, end_at, data_json, data_hash, created_at, updated_at)
+        SELECT id, bucket_id, start_at, end_at, data_json, data_hash, created_at, updated_at
+        FROM perception_events
+        WHERE bucket_id IN (SELECT id FROM perception_buckets_windows);
+
+        INSERT OR IGNORE INTO app_catalog_windows
+            (app_key, display_name, exe_path, color, icon_png, first_seen, last_seen)
+        SELECT app_key, display_name, exe_path, color, icon_png, first_seen, last_seen
+        FROM app_catalog;
+    "#).map_err(|e| format!("迁移旧感知表失败: {}", e))?;
+    Ok(())
+}
+
 fn local_now_string() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
@@ -2020,6 +2189,7 @@ fn stable_hash_hex(input: &str) -> String {
     format!("{:016x}", hash)
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn within_pulsetime(last_end: &str, observed_at: &str, pulsetime_seconds: i64) -> bool {
     let Some(last) = parse_local_dt(last_end) else { return false };
     let Some(now) = parse_local_dt(observed_at) else { return false };

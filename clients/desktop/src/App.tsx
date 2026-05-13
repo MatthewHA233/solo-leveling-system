@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// Solo Agent — Windows 客户端（务实版）
+// Solo Agent — Desktop 客户端（务实版）
 // 核心：昼夜表 + AI 聊天整理
 // ══════════════════════════════════════════════
 
@@ -7,10 +7,10 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Boxes, ChevronLeft, ChevronRight, Settings } from 'lucide-react'
 import BiliIcon from './components/icons/BiliIcon'
 import {
-  fetchManicTimeSpans, fetchBiliSpans, fetchGoals, parseGoalTags,
+  fetchPerceptionSpans, fetchBiliSpans, fetchGoals, parseGoalTags,
   fetchActivityPalette, fetchActivityBlocks, paintActivityBlocks, eraseActivityBlocks,
 } from './lib/local-api'
-import type { MtSpan, BiliSpan, ModelCallLog } from './lib/local-api'
+import type { PerceptionSpan, BiliSpan, ModelCallLog } from './lib/local-api'
 import type { ActivityBlock, ActivityPalette } from './types'
 import { theme, hud } from './theme'
 
@@ -257,11 +257,11 @@ export default function App() {
   // 撤回 / 恢复 — 栈深 5
   const [undoStack, setUndoStack] = useState<readonly ActivityBlock[][]>([])
   const [redoStack, setRedoStack] = useState<readonly ActivityBlock[][]>([])
-  const [mtSpans, setMtSpans] = useState<MtSpan[]>([])
+  const [perceptionSpans, setPerceptionSpans] = useState<PerceptionSpan[]>([])
   const [biliSpans, setBiliSpans] = useState<BiliSpan[]>([])
   // 悬浮预览（hover 触发）
-  const [hoveredTagSpan, setHoveredTagSpan] = useState<MtSpan | null>(null)
-  const [hoveredAppSpan, setHoveredAppSpan] = useState<MtSpan | null>(null)
+  const [hoveredTagSpan, setHoveredTagSpan] = useState<PerceptionSpan | null>(null)
+  const [hoveredAppSpan, setHoveredAppSpan] = useState<PerceptionSpan | null>(null)
   // 鼠标当前所在的整分钟（每张截图对应一分钟），用于右栏面板按光标精度切图
   const [hoveredAppMinute, setHoveredAppMinute] = useState<number | null>(null)
   const [hoveredBiliSpan, setHoveredBiliSpan] = useState<BiliSpan | null>(null)
@@ -509,7 +509,7 @@ export default function App() {
     return () => { unlisten?.() }
   }, [emitFairy])
 
-  // ── Fetch Activities + ManicTime Spans ──
+  // ── Fetch Activities + Perception Spans ──
   const isToday = useCallback((date: Date) => {
     const now = new Date()
     return date.getFullYear() === now.getFullYear() &&
@@ -517,9 +517,9 @@ export default function App() {
       date.getDate() === now.getDate()
   }, [])
 
-  const refreshMtSpans = useCallback(() => {
-    fetchManicTimeSpans(selectedDate)
-      .then(setMtSpans)
+  const refreshPerceptionSpans = useCallback(() => {
+    fetchPerceptionSpans(selectedDate)
+      .then(setPerceptionSpans)
       .catch(() => {})
     fetchBiliSpans(selectedDate)
       .then(setBiliSpans)
@@ -531,7 +531,7 @@ export default function App() {
     fetchActivityBlocks(selectedDate)
       .then((data) => { setActivityBlocks(data); setDbStatus('live') })
       .catch((err) => { console.error('获取活动块失败:', err); setActivityBlocks([]); setDbStatus('error') })
-    refreshMtSpans()
+    refreshPerceptionSpans()
   }, [selectedDate])
 
   // 启动时拉一次标签库
@@ -747,9 +747,9 @@ export default function App() {
   // 今天的数据实时轮询（15 秒）
   useEffect(() => {
     if (!isToday(selectedDate)) return
-    const timer = setInterval(refreshMtSpans, 15000)
+    const timer = setInterval(refreshPerceptionSpans, 15000)
     return () => clearInterval(timer)
-  }, [selectedDate, refreshMtSpans, isToday])
+  }, [selectedDate, refreshPerceptionSpans, isToday])
 
   // ── Voice Service（懒初始化）──
   const getVoiceService = useCallback(() => {
@@ -1285,9 +1285,9 @@ export default function App() {
     const today = new Date()
     const toHHmm = (s: string) => s.slice(11, 16)
 
-    const [goalsRes, mtSpans, activityBlocksRes, activityPaletteRes, biliSpans] = await Promise.allSettled([
+    const [goalsRes, perceptionSpans, activityBlocksRes, activityPaletteRes, biliSpans] = await Promise.allSettled([
       fetchGoals('active'),
-      fetchManicTimeSpans(today),
+      fetchPerceptionSpans(today),
       fetchActivityBlocks(today),
       fetchActivityPalette(),
       fetchBiliSpans(today),
@@ -1296,13 +1296,13 @@ export default function App() {
     const goals: GoalRecord[] = goalsRes.status === 'fulfilled'
       ? goalsRes.value.map((g) => ({ title: g.title, tags: parseGoalTags(g) }))
       : []
-    const mtData = mtSpans.status === 'fulfilled' ? mtSpans.value : []
+    const perceptionData = perceptionSpans.status === 'fulfilled' ? perceptionSpans.value : []
 
     const todayBlocks = activityBlocksRes.status === 'fulfilled' ? activityBlocksRes.value : []
     const currentPalette = activityPaletteRes.status === 'fulfilled' ? activityPaletteRes.value : activityPalette
     const activityTags = activityBlocksToContextRecords(todayBlocks, currentPalette, oneHourAgo, today)
 
-    const appUsage: AppUsageRecord[] = mtData
+    const appUsage: AppUsageRecord[] = perceptionData
       .filter((s) => s.track === 'apps' && new Date(s.end_at).getTime() >= oneHourAgo)
       .map((s) => ({ startTime: toHHmm(s.start_at), endTime: toHHmm(s.end_at), appName: s.title, windowTitle: s.group_name ?? '' }))
 
@@ -2031,7 +2031,7 @@ export default function App() {
             onUndo={handleUndo}
             onRedo={handleRedo}
             onApplyDrag={handleApplyDrag}
-            mtSpans={mtSpans}
+            perceptionSpans={perceptionSpans}
             biliSpans={biliSpans}
             selectedDate={selectedDate}
             onSpanClick={() => {}}
@@ -2059,7 +2059,7 @@ export default function App() {
             const pm = pinnedPos?.minute ?? null
             const dtToMin = (dt: string) => { const [h,m] = (dt.split(' ')[1]??'').split(':').map(Number); return h*60+m }
             const pinnedAppSpan = pm != null && trackMode === 'apps'
-              ? mtSpans.find((s) => s.track === 'apps' && pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
+              ? perceptionSpans.find((s) => s.track === 'apps' && pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
               : null
             const pinnedBili = pm != null && trackMode === 'bili'
               ? biliSpans.find((s) => pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
@@ -2071,7 +2071,7 @@ export default function App() {
               : null
             // 当前光标分钟是否处于 afk
             const probeMin = pm ?? hoveredAppMinute
-            const isAfk = probeMin != null && mtSpans.some((s) => {
+            const isAfk = probeMin != null && perceptionSpans.some((s) => {
               if (s.track !== 'status') return false
               const status = (s.group_name ?? s.title ?? '').toLowerCase()
               if (status !== 'afk') return false
@@ -2134,11 +2134,11 @@ export default function App() {
             const pm = pinnedPos?.minute ?? null
             const dtToMin = (dt: string) => { const [h,m] = (dt.split(' ')[1]??'').split(':').map(Number); return h*60+m }
             const pinnedTagSpan = pm != null
-              ? mtSpans.find((s) => s.track === 'tags' && pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
+              ? perceptionSpans.find((s) => s.track === 'tags' && pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
               : null
             // 按当前轨道模式只查对应管线 span
             const pinnedAppSpan = pm != null && trackMode === 'apps'
-              ? mtSpans.find((s) => s.track === 'apps' && pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
+              ? perceptionSpans.find((s) => s.track === 'apps' && pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
               : null
             const pinnedBili = pm != null && trackMode === 'bili'
               ? biliSpans.find((s) => pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
@@ -2151,7 +2151,7 @@ export default function App() {
               ? (pm != null ? Math.floor(pm) : hoveredAppMinute)
               : null
             const probeMin = pm ?? hoveredAppMinute
-            const isAfk = probeMin != null && mtSpans.some((s) => {
+            const isAfk = probeMin != null && perceptionSpans.some((s) => {
               if (s.track !== 'status') return false
               const status = (s.group_name ?? s.title ?? '').toLowerCase()
               if (status !== 'afk') return false

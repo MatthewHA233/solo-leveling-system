@@ -166,7 +166,7 @@ pub async fn qwen_audio_extract(
     }
 
     let dir = crate::ffmpeg::find_ffmpeg_dir_pub(&app)?;
-    let ffmpeg = dir.join("ffmpeg.exe");
+    let ffmpeg = dir.join(crate::ffmpeg::ffmpeg_bin_name());
 
     let out = tokio::process::Command::new(&ffmpeg)
         .args(["-hide_banner", "-y", "-nostats"])

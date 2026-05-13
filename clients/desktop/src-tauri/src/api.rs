@@ -22,7 +22,7 @@ use crate::db::{
     BiliHistoryRow, UpsertBiliItem, BiliSpan, BiliDayCount, Goal, PresenceSpan,
     ActivityCategory, ActivityTag, ActivityBlock, ActivityPalette,
     AddCategoryRequest, AddTagRequest, PaintBlocksRequest, EraseBlocksRequest,
-    UpdateCategoryRequest, RenamePathRequest,
+    UpdateCategoryRequest, RenamePathRequest, PerceptionSpan,
 };
 use crate::bili_download::{BiliDownloadState, PlayUrlMeta, QualityProbe, deliver_playurl_result, deliver_probe_result};
 
@@ -163,29 +163,14 @@ async fn health() -> Json<ApiResponse<&'static str>> {
     Json(ApiResponse::ok("ok"))
 }
 
-/// GET /api/manictime/screenshot?date=2026-04-04&time=13:30:00
-async fn get_manictime_screenshot(
+/// GET /api/perception/screenshot?date=2026-04-04&time=13:30:00
+async fn get_perception_screenshot(
     Query(query): Query<ScreenshotQuery>,
 ) -> Response {
-    let own_path = tokio::task::spawn_blocking({
+    let path = tokio::task::spawn_blocking({
         let date = query.date.clone();
         let time = query.time.clone();
         move || crate::perception::find_screenshot_near(&date, &time)
-    }).await.ok().flatten();
-
-    if let Some(p) = own_path {
-        return match tokio::fs::read(&p).await {
-            Err(_) => (StatusCode::NOT_FOUND, "file unreadable").into_response(),
-            Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, image_mime_for_path(&p))], bytes).into_response(),
-        };
-    }
-
-    if std::env::var("SLS_ALLOW_MANICTIME_FALLBACK").ok().as_deref() != Some("1") {
-        return (StatusCode::NOT_FOUND, "no screenshot").into_response();
-    }
-
-    let path = tokio::task::spawn_blocking(move || {
-        crate::manictime::find_screenshot_near(&query.date, &query.time)
     }).await.ok().flatten();
 
     match path {
@@ -221,8 +206,8 @@ struct ScreenshotQuery {
     time: String,
 }
 
-/// GET /api/manictime/app-icon?name=<group_name>
-async fn get_manictime_app_icon(
+/// GET /api/perception/app-icon?name=<group_name>
+async fn get_perception_app_icon(
     State(state): State<ApiState>,
     Query(query): Query<AppIconQuery>,
 ) -> Response {
@@ -231,14 +216,7 @@ async fn get_manictime_app_icon(
         return ([(axum::http::header::CONTENT_TYPE, "image/bmp")], bytes).into_response();
     }
 
-    if std::env::var("SLS_ALLOW_MANICTIME_FALLBACK").ok().as_deref() == Some("1") {
-        match crate::manictime::get_app_icon_png(&name) {
-            None => (StatusCode::NOT_FOUND, "no icon").into_response(),
-            Some(b) => ([(axum::http::header::CONTENT_TYPE, "image/png")], b).into_response(),
-        }
-    } else {
-        (StatusCode::NOT_FOUND, "no icon").into_response()
-    }
+    (StatusCode::NOT_FOUND, "no icon").into_response()
 }
 
 #[derive(Deserialize)]
@@ -246,32 +224,11 @@ struct AppIconQuery {
     name: String,
 }
 
-/// GET /api/manictime/spans?date=2026-04-04
-async fn get_manictime_spans(
-    State(state): State<ApiState>,
-    Query(query): Query<DateQuery>,
-) -> Json<ApiResponse<Vec<crate::manictime::MtSpan>>> {
-    match state.db.get_perception_spans_for_date(&query.date).await {
-        Ok(spans) if !spans.is_empty() => Json(ApiResponse::ok(spans)),
-        Ok(_) if std::env::var("SLS_ALLOW_MANICTIME_FALLBACK").ok().as_deref() == Some("1") => {
-            match tokio::task::spawn_blocking(move || {
-                crate::manictime::query_spans_for_date(&query.date)
-            }).await {
-                Ok(Ok(spans)) => Json(ApiResponse::ok(spans)),
-                Ok(Err(e))    => Json(ApiResponse::error(&e)),
-                Err(e)        => Json(ApiResponse::error(&e.to_string())),
-            }
-        }
-        Ok(spans) => Json(ApiResponse::ok(spans)),
-        Err(e) => Json(ApiResponse::error(&e)),
-    }
-}
-
 /// GET /api/perception/spans?date=2026-04-04
 async fn get_perception_spans(
     State(state): State<ApiState>,
     Query(query): Query<DateQuery>,
-) -> Json<ApiResponse<Vec<crate::manictime::MtSpan>>> {
+) -> Json<ApiResponse<Vec<PerceptionSpan>>> {
     match state.db.get_perception_spans_for_date(&query.date).await {
         Ok(spans) => Json(ApiResponse::ok(spans)),
         Err(e) => Json(ApiResponse::error(&e)),
@@ -1060,9 +1017,8 @@ pub fn create_router(
         .route("/api/bilibili/cover", get(proxy_bili_cover))
         .route("/api/bilibili/spans/day", get(get_bili_spans_day))
         .route("/api/perception/spans", get(get_perception_spans))
-        .route("/api/manictime/spans", get(get_manictime_spans))
-        .route("/api/manictime/screenshot", get(get_manictime_screenshot))
-        .route("/api/manictime/app-icon", get(get_manictime_app_icon))
+        .route("/api/perception/screenshot", get(get_perception_screenshot))
+        .route("/api/perception/app-icon", get(get_perception_app_icon))
         .route("/api/goals", get(get_goals).post(create_goal))
         .route("/api/goals/{id}", axum::routing::put(update_goal).delete(delete_goal))
         .route("/api/presence/spans", get(get_presence_spans).post(upsert_presence_span))

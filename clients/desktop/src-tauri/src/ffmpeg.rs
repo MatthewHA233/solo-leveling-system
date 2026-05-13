@@ -11,6 +11,7 @@
 // ══════════════════════════════════════════════
 
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -42,14 +43,24 @@ pub fn find_ffmpeg_dir_pub(app: &AppHandle) -> Result<PathBuf, String> {
     find_ffmpeg_dir(app)
 }
 
+pub fn ffmpeg_bin_name() -> &'static str {
+    if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }
+}
+
+pub fn ffprobe_bin_name() -> &'static str {
+    if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" }
+}
+
 /// 解析 ffmpeg 资源目录（先查 Tauri resource_dir，再尝试相对 exe 的 dev fallback）
 fn find_ffmpeg_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let mut tried: Vec<PathBuf> = Vec::new();
+    let ffmpeg_name = ffmpeg_bin_name();
+    let ffprobe_name = ffprobe_bin_name();
 
     // 1. Tauri 标准资源目录（打包后正常路径）
     if let Ok(rd) = app.path().resource_dir() {
         let p = rd.join("resources/ffmpeg");
-        if p.join("ffmpeg.exe").exists() {
+        if p.join(ffmpeg_name).exists() && p.join(ffprobe_name).exists() {
             return Ok(p);
         }
         tried.push(p);
@@ -65,7 +76,7 @@ fn find_ffmpeg_dir(app: &AppHandle) -> Result<PathBuf, String> {
                 "resources/ffmpeg",
             ] {
                 let p = exe_dir.join(rel);
-                if p.join("ffmpeg.exe").exists() {
+                if p.join(ffmpeg_name).exists() && p.join(ffprobe_name).exists() {
                     return Ok(p);
                 }
                 tried.push(p);
@@ -73,7 +84,21 @@ fn find_ffmpeg_dir(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
 
-    Err(format!("找不到 ffmpeg.exe；已尝试: {:?}", tried))
+    if let Some(path_dir) = find_tool_dir_in_path(ffmpeg_name, ffprobe_name) {
+        return Ok(path_dir);
+    }
+
+    Err(format!("找不到 {ffmpeg_name}/{ffprobe_name}；已尝试: {:?}", tried))
+}
+
+fn find_tool_dir_in_path(ffmpeg_name: &str, ffprobe_name: &str) -> Option<PathBuf> {
+    let paths = env::var_os("PATH")?;
+    for dir in env::split_paths(&paths) {
+        if dir.join(ffmpeg_name).exists() && dir.join(ffprobe_name).exists() {
+            return Some(dir);
+        }
+    }
+    None
 }
 
 /// 嗅探视频流 codec_name
@@ -114,6 +139,7 @@ async fn list_encoders(ffmpeg: &Path) -> Result<String, String> {
 
 fn pick_encoders(encoders_dump: &str) -> Vec<&'static str> {
     let priority = [
+        "h264_videotoolbox",
         "h264_nvenc",
         "h264_qsv",
         "h264_amf",
@@ -139,6 +165,7 @@ fn input_args_for_encoder(encoder: &str, input_codec: &str) -> Vec<String> {
             "-hwaccel_output_format".into(), "qsv".into(),
             "-c:v".into(), "hevc_qsv".into(),
         ],
+        ("h264_videotoolbox", _) => Vec::new(),
         ("h264_nvenc", _) => vec![
             "-hwaccel".into(), "cuda".into(),
         ],
@@ -246,8 +273,8 @@ pub async fn ensure_h264_playable(
     let _guard = key_lock.lock().await;
 
     let dir = find_ffmpeg_dir(&app)?;
-    let ffmpeg = dir.join("ffmpeg.exe");
-    let ffprobe = dir.join("ffprobe.exe");
+    let ffmpeg = dir.join(ffmpeg_bin_name());
+    let ffprobe = dir.join(ffprobe_bin_name());
     log::info!("[FFmpeg] dir={}", dir.display());
 
     let _ = app.emit(

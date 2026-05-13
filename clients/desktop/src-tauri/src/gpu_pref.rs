@@ -16,7 +16,9 @@ use serde::Serialize;
 #[allow(unused_imports)]
 use std::path::PathBuf;
 
+#[cfg(windows)]
 const REG_KEY: &str = r"SOFTWARE\Microsoft\DirectX\UserGpuPreferences";
+#[cfg(windows)]
 const HIGH_PERF_VALUE: &str = "GpuPreference=2;";
 
 #[derive(Debug, Serialize, Clone)]
@@ -44,7 +46,9 @@ pub fn read_status() -> GpuPrefStatus {
         .unwrap_or_default();
 
     let webview2 = find_webview2_path();
-    let webview2_path = webview2.as_ref().map(|(p, _)| p.to_string_lossy().to_string());
+    let webview2_path = webview2
+        .as_ref()
+        .map(|(p, _)| p.to_string_lossy().to_string());
     let edge_version = webview2.as_ref().map(|(_, v)| v.clone());
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -110,7 +114,11 @@ pub fn apply(enable: bool) -> Result<GpuPrefStatus, String> {
         }
         log::info!(
             "[GpuPref] 已为 solo-leveling-system.exe{} 设置高性能偏好",
-            if webview2.is_some() { " 与 msedgewebview2.exe" } else { "" }
+            if webview2.is_some() {
+                " 与 msedgewebview2.exe"
+            } else {
+                ""
+            }
         );
     } else {
         let _ = key.delete_value(&self_exe);
@@ -140,7 +148,10 @@ fn find_webview2_path() -> Option<(PathBuf, String)> {
     let candidates: [(isize, String); 3] = [
         (
             HKEY_LOCAL_MACHINE as isize,
-            format!(r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{}", WEBVIEW2_GUID),
+            format!(
+                r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{}",
+                WEBVIEW2_GUID
+            ),
         ),
         (
             HKEY_LOCAL_MACHINE as isize,

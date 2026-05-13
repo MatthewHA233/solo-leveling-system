@@ -16,7 +16,7 @@ interface Props {
   readonly onChange: (d: Date) => void
   readonly onClose: () => void
   /**
-   * 'tags'  → 默认模式，圆环显示当日 ManicTime 标签时段（用于全局日期选择）
+   * 'tags'  → 默认模式，圆环显示当日 Perception 标签时段（用于全局日期选择）
    * 'bili'  → 显示当日 B 站观看数 / 已下载数（用于 BiliHistoryDialog）
    */
   readonly mode?: 'tags' | 'bili'

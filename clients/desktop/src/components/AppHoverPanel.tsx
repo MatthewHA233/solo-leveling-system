@@ -6,12 +6,12 @@
 import { useState, useEffect } from 'react'
 import { EyeOff, Check } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
-import type { MtSpan } from '../lib/local-api'
+import type { PerceptionSpan } from '../lib/local-api'
 import { theme } from '../theme'
 import ConfirmDialog from './ConfirmDialog'
 
 interface Props {
-  span: MtSpan
+  span: PerceptionSpan
   date: Date
   /** 鼠标当前所在的整分钟（截图按分钟切换）；为 null 时回落到 span.start_at */
   focusMinute?: number | null
@@ -37,7 +37,7 @@ function fmt(dt: string) {
   return dt.split(' ')[1]?.slice(0, 5) ?? dt
 }
 
-function durationMin(span: MtSpan) {
+function durationMin(span: PerceptionSpan) {
   const toMin = (dt: string) => {
     const t = dt.split(' ')[1] ?? ''
     const [h, m] = t.split(':').map(Number)
@@ -114,7 +114,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
   useEffect(() => {
     if (!span.group_name) return
     let objUrl: string | null = null
-    fetch(`http://localhost:49733/api/manictime/app-icon?name=${encodeURIComponent(span.group_name)}`)
+    fetch(`http://localhost:49733/api/perception/app-icon?name=${encodeURIComponent(span.group_name)}`)
       .then((r) => { if (!r.ok) throw new Error('no icon'); return r.blob() })
       .then((blob) => { objUrl = URL.createObjectURL(blob); setIconUrl(objUrl) })
       .catch(() => setIconUrl(null))
@@ -134,7 +134,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
     } else {
       timeStr = span.start_at.split(' ')[1] ?? '00:00:00'
     }
-    const url = `http://localhost:49733/api/manictime/screenshot?date=${dateStr}&time=${encodeURIComponent(timeStr)}`
+    const url = `http://localhost:49733/api/perception/screenshot?date=${dateStr}&time=${encodeURIComponent(timeStr)}`
 
     let objectUrl: string | null = null
     fetch(url)

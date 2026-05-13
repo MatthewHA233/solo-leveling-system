@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import { Pencil, Undo2, Redo2 } from 'lucide-react'
 import type { ActivityBlock, ActivityPalette } from '../types'
-import type { MtSpan, BiliSpan } from '../lib/local-api'
+import type { PerceptionSpan, BiliSpan } from '../lib/local-api'
 import { theme } from '../theme'
 import { HudFrameSkeleton, HudTabButton } from './hud'
 import Tooltip from './Tooltip'
@@ -29,12 +29,12 @@ interface Props {
     rangeStartMin: number
     rangeEndMin: number
   }) => void
-  mtSpans?: MtSpan[]
+  perceptionSpans?: PerceptionSpan[]
   biliSpans?: BiliSpan[]
   selectedDate: Date
-  onSpanClick?: (span: MtSpan) => void
-  onSpanHover?: (span: MtSpan | null) => void
-  onAppSpanHover?: (span: MtSpan | null, hoverMinute?: number | null) => void
+  onSpanClick?: (span: PerceptionSpan) => void
+  onSpanHover?: (span: PerceptionSpan | null) => void
+  onAppSpanHover?: (span: PerceptionSpan | null, hoverMinute?: number | null) => void
   onBiliSpanHover?: (span: BiliSpan | null) => void
   trackMode?: 'apps' | 'bili'
   onTrackModeChange?: (mode: 'apps' | 'bili') => void
@@ -353,7 +353,7 @@ function drawZoneBands(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getGr
   // canvas 内不再绘制以避免重叠。
 }
 
-// ── ManicTime 感知轨道 ──
+// ── Perception 感知轨道 ──
 
 /** 从逗号分隔标签路径中分离路径部分和标记（以 : 开头为标记） */
 function parseTagTitle(title: string): { parts: string[]; markers: string[] } {
@@ -374,11 +374,11 @@ function dtToMinute(dt: string): number {
 
 const TRACE_GAP = 0  // 管道与活动矩形紧贴，无间隔
 
-/** ManicTime 标签层 → 跨单元格高亮矩形 */
+/** Perception 标签层 → 跨单元格高亮矩形 */
 function drawTagFills(
   ctx: CanvasRenderingContext2D,
   p: ReturnType<typeof getGridParams>,
-  spans: MtSpan[],
+  spans: PerceptionSpan[],
   hoveredSpanId: number | null,
 ) {
   const fillOffsetX = p.traceBaseX + traceWidth + TRACE_GAP
@@ -487,7 +487,7 @@ const PIPE_RIGHT = 6   // 右轨相对 traceBaseX 的偏移（管道宽 6px）
 function drawAppTraces(
   ctx: CanvasRenderingContext2D,
   p: ReturnType<typeof getGridParams>,
-  spans: MtSpan[],
+  spans: PerceptionSpan[],
   highlightedSpanId?: number | null,
 ) {
   for (const span of spans) {
@@ -542,7 +542,7 @@ function drawAppTraces(
 function drawAfkOverlay(
   ctx: CanvasRenderingContext2D,
   p: ReturnType<typeof getGridParams>,
-  spans: MtSpan[],
+  spans: PerceptionSpan[],
 ) {
   const RED = '#ff4d4d'
   for (const span of spans) {
@@ -615,11 +615,11 @@ function drawBiliTracesInPipe(
   }
 }
 
-/** ManicTime 标签标题 */
+/** Perception 标签标题 */
 function drawTagTitles(
   ctx: CanvasRenderingContext2D,
   p: ReturnType<typeof getGridParams>,
-  spans: MtSpan[],
+  spans: PerceptionSpan[],
 ) {
   // tag 矩形 X 范围：紧贴管道右侧 ~ cell 右边
   const fillOffsetX = p.traceBaseX + traceWidth + TRACE_GAP
@@ -1084,7 +1084,7 @@ function drawCrosshair(
   p: ReturnType<typeof getGridParams>,
   col: number,
   mouseY: number,
-  spans: MtSpan[],
+  spans: PerceptionSpan[],
   isPinned: boolean,
   getIcon?: (name: string) => HTMLImageElement | null,
   trackMode: 'apps' | 'bili' = 'apps',
@@ -1182,7 +1182,7 @@ function drawCrosshair(
       pipeLabel = hovBili.title
     }
   } else {
-    let hoveredAppSpan: MtSpan | null = null
+    let hoveredAppSpan: PerceptionSpan | null = null
     for (const span of spans) {
       if (span.track !== 'apps') continue
       const startMin = dtToMinute(span.start_at)
@@ -1957,7 +1957,7 @@ function ScrollingZoneLabels({ params }: { params: ReturnType<typeof getGridPara
 
 // ── 主组件 ──
 
-export default function DayNightChart({ activityBlocks, activityPalette, editMode, selectedTagId, onEditModeToggle, canUndo = false, canRedo = false, onUndo, onRedo, onApplyDrag, mtSpans: rawMtSpans = [], biliSpans = [], selectedDate, onSpanClick, onSpanHover, onAppSpanHover, onBiliSpanHover, trackMode = 'apps', onTrackModeChange, pinnedPos, onPinPos }: Props) {
+export default function DayNightChart({ activityBlocks, activityPalette, editMode, selectedTagId, onEditModeToggle, canUndo = false, canRedo = false, onUndo, onRedo, onApplyDrag, perceptionSpans: rawPerceptionSpans = [], biliSpans = [], selectedDate, onSpanClick, onSpanHover, onAppSpanHover, onBiliSpanHover, trackMode = 'apps', onTrackModeChange, pinnedPos, onPinPos }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const hoveredIdRef = useRef<string | null>(null)
@@ -1970,9 +1970,9 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
   // 固定/取消固定标签的画布命中区域
   const pinBadgeRef = useRef<{ x: number; y: number; w: number; h: number; pin: { col: number; y: number; minute: number } } | null>(null)
   // 悬浮的 tag span（用于右侧栏面板）
-  const hoveredTagSpanRef = useRef<MtSpan | null>(null)
+  const hoveredTagSpanRef = useRef<PerceptionSpan | null>(null)
   // 悬浮的 app span（用于右侧栏面板）
-  const hoveredAppSpanRef = useRef<MtSpan | null>(null)
+  const hoveredAppSpanRef = useRef<PerceptionSpan | null>(null)
   // 鼠标当前所在的整分钟（== 一张截图的精度），仅在 apps 轨上 hover 时维护
   const hoveredAppMinuteRef = useRef<number | null>(null)
   // 图标缓存（group_name → img | null | 'loading'）
@@ -2040,8 +2040,8 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     return `${y}-${m}-${d}`
   }, [selectedDate])
 
-  // ── 活动记录块 → 合并连续同 tag 的虚拟 MtSpan（track='tags'），喂给现有渲染 ──
-  const blockSpans = useMemo<MtSpan[]>(() => {
+  // ── 活动记录块 → 合并连续同 tag 的虚拟 PerceptionSpan（track='tags'），喂给现有渲染 ──
+  const blockSpans = useMemo<PerceptionSpan[]>(() => {
     if (activityBlocks.length === 0) return []
     const tagById = new Map(activityPalette.tags.map((t) => [t.id, t]))
     const catById = new Map(activityPalette.categories.map((c) => [c.id, c]))
@@ -2051,7 +2051,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
       const m = min % 60
       return `${selectedDateStr} ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`
     }
-    const out: MtSpan[] = []
+    const out: PerceptionSpan[] = []
     let cur: { tagId: number; startMin: number; endMin: number } | null = null
     for (const b of sorted) {
       if (cur && cur.tagId === b.tagId && cur.endMin === b.minute) {
@@ -2061,7 +2061,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
           const tag = tagById.get(cur.tagId)
           const cat = tag ? catById.get(tag.categoryId) : null
           out.push({
-            id: -(out.length + 1) * 1000 - cur.tagId, // 负 id 防止与 mtSpans 真实 id 冲突
+            id: -(out.length + 1) * 1000 - cur.tagId, // 负 id 防止与 perceptionSpans 真实 id 冲突
             track: 'tags',
             start_at: fmt(cur.startMin),
             end_at: fmt(cur.endMin),
@@ -2089,8 +2089,8 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     return out
   }, [activityBlocks, activityPalette, selectedDateStr])
 
-  // 合并：自研活动块（tags 轨）+ 原 perception MtSpans
-  const mtSpans = useMemo<MtSpan[]>(() => [...blockSpans, ...rawMtSpans], [blockSpans, rawMtSpans])
+  // 合并：自研活动块（tags 轨）+ perception spans
+  const perceptionSpans = useMemo<PerceptionSpan[]>(() => [...blockSpans, ...rawPerceptionSpans], [blockSpans, rawPerceptionSpans])
 
   // Bili span 时间重叠修正 + 跨天裁剪：
   // 一段 23:30 → 次日 00:30 的 span 在"前一天"被裁成 23:30→24:00，
@@ -2172,7 +2172,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     ctx.fillRect(0, 0, p.totalW, p.totalH)
 
     drawZoneBands(ctx, p)
-    drawTagFills(ctx, p, mtSpans, hoveredSpanId)
+    drawTagFills(ctx, p, perceptionSpans, hoveredSpanId)
     drawGrid(ctx, p)
     drawTimeLabels(ctx, p)
 
@@ -2190,7 +2190,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
       const img = new Image()
       img.onload  = () => { cache.set(name, img); redrawRef.current?.() }
       img.onerror = () => { cache.set(name, null) }
-      img.src = `http://localhost:49733/api/manictime/app-icon?name=${encodeURIComponent(name)}`
+      img.src = `http://localhost:49733/api/perception/app-icon?name=${encodeURIComponent(name)}`
       return null
     }
 
@@ -2200,7 +2200,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
       const targetTrack = 'apps'
       if (pinnedPos != null) {
         const pinnedMin = pinnedPos.minute
-        const pinnedSpan = mtSpans.find(s => s.track === targetTrack && pinnedMin >= dtToMinute(s.start_at) && pinnedMin < dtToMinute(s.end_at))
+        const pinnedSpan = perceptionSpans.find(s => s.track === targetTrack && pinnedMin >= dtToMinute(s.start_at) && pinnedMin < dtToMinute(s.end_at))
         highlightedAppSpanId = pinnedSpan?.id ?? null
       } else {
         highlightedAppSpanId = hoveredAppSpanRef.current?.id ?? null
@@ -2208,12 +2208,12 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     }
 
     if (trackMode === 'apps') {
-      drawAppTraces(ctx, p, mtSpans, highlightedAppSpanId)
-      drawAfkOverlay(ctx, p, mtSpans)
+      drawAppTraces(ctx, p, perceptionSpans, highlightedAppSpanId)
+      drawAfkOverlay(ctx, p, perceptionSpans)
     } else {
       drawBiliTracesInPipe(ctx, p, adjustedBiliSpans)
     }
-    drawTagTitles(ctx, p, mtSpans)
+    drawTagTitles(ctx, p, perceptionSpans)
 
     // 拖刷预览（覆盖在 tag 填充之上）
     const drag = dragRef.current
@@ -2224,21 +2224,21 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     drawNowTick(ctx, p, isToday)
 
     if (pinnedPos != null) {
-      const badge = drawCrosshair(ctx, p, pinnedPos.col, pinnedPos.y, mtSpans, true, getIcon, trackMode, adjustedBiliSpans)
+      const badge = drawCrosshair(ctx, p, pinnedPos.col, pinnedPos.y, perceptionSpans, true, getIcon, trackMode, adjustedBiliSpans)
       pinBadgeRef.current = badge
       if (_mouseY !== null && _hovCol !== null && _hovCol !== pinnedPos.col) {
-        drawCrosshair(ctx, p, _hovCol, _mouseY, mtSpans, false, getIcon, trackMode, adjustedBiliSpans)
+        drawCrosshair(ctx, p, _hovCol, _mouseY, perceptionSpans, false, getIcon, trackMode, adjustedBiliSpans)
       }
     } else {
       if (_mouseY !== null && _hovCol !== null) {
-        pinBadgeRef.current = drawCrosshair(ctx, p, _hovCol, _mouseY, mtSpans, false, getIcon, trackMode, adjustedBiliSpans)
+        pinBadgeRef.current = drawCrosshair(ctx, p, _hovCol, _mouseY, perceptionSpans, false, getIcon, trackMode, adjustedBiliSpans)
       } else {
         pinBadgeRef.current = null
       }
     }
 
     ctx.restore()
-  }, [p, mtSpans, adjustedBiliSpans, trackMode, isToday, dpr, pinnedPos]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [p, perceptionSpans, adjustedBiliSpans, trackMode, isToday, dpr, pinnedPos]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     draw()
@@ -2267,7 +2267,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
   // 检测鼠标是否在活动边缘（±6px）→ 返回 edge 信息
   // 将鼠标事件坐标转换为分钟（跨列支持，snap to 5 min）
 
-  function getHitAt(e: React.MouseEvent<HTMLCanvasElement>): { minute: number; snappedEnd: number; hitSpan: MtSpan | undefined } | null {
+  function getHitAt(e: React.MouseEvent<HTMLCanvasElement>): { minute: number; snappedEnd: number; hitSpan: PerceptionSpan | undefined } | null {
     const rect = canvasRef.current!.getBoundingClientRect()
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
@@ -2279,7 +2279,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     const m = c * p.minutesPerCol + rBlock * 5 + extraMin
     const snapped = Math.floor(m / 5) * 5
     const snappedEnd = Math.ceil((m + 1) / 5) * 5
-    const hitSpan = mtSpans.find((s) => s.track === 'tags' && m >= dtToMinute(s.start_at) && m < dtToMinute(s.end_at))
+    const hitSpan = perceptionSpans.find((s) => s.track === 'tags' && m >= dtToMinute(s.start_at) && m < dtToMinute(s.end_at))
     return { minute: snapped, snappedEnd, hitSpan }
   }
 
@@ -2294,8 +2294,8 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     return c * p.minutesPerCol + rBlock * 5
   }
 
-  function spanFromMinuteFloat(m: number): MtSpan | undefined {
-    return mtSpans.find((s) => s.track === 'tags' && m >= dtToMinute(s.start_at) && m < dtToMinute(s.end_at))
+  function spanFromMinuteFloat(m: number): PerceptionSpan | undefined {
+    return perceptionSpans.find((s) => s.track === 'tags' && m >= dtToMinute(s.start_at) && m < dtToMinute(s.end_at))
   }
 
   // ── 编辑模式：拖刷状态 ──
@@ -2399,7 +2399,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
         const localY = y - p.topPad - rBlock * p.rowStride
         const minuteFracInRow = Math.max(0, Math.min(5, localY / p.minuteH))
         const mFloat = c * p.minutesPerCol + rBlock * 5 + minuteFracInRow
-        const appSpan = mtSpans.find(
+        const appSpan = perceptionSpans.find(
           (s) => s.track === 'apps' && mFloat >= dtToMinute(s.start_at) && mFloat < dtToMinute(s.end_at)
         ) ?? null
         const curMin = appSpan ? Math.floor(mFloat) : null
@@ -2449,7 +2449,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
 
         // 检测管线 span hover（按 trackMode 切换）— 用浮点分钟，秒级精度
         if (trackMode === 'apps') {
-          const appSpan = mtSpans.find(
+          const appSpan = perceptionSpans.find(
             (s) => s.track === 'apps' && mFloat >= dtToMinute(s.start_at) && mFloat < dtToMinute(s.end_at)
           ) ?? null
           const spanChanged = appSpan !== hoveredAppSpanRef.current
@@ -2616,10 +2616,10 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate, isToday, p.minutesPerCol, p.colStride])
 
-  // 图例：从 ManicTime tags 提取一级标签
+  // 图例：从感知 tags 提取一级标签
   const tagLegend = useMemo(() => {
     const map = new Map<string, string>() // name → color
-    ;(mtSpans ?? []).filter((s) => s.track === 'tags').forEach((s) => {
+    ;(perceptionSpans ?? []).filter((s) => s.track === 'tags').forEach((s) => {
       const { parts } = parseTagTitle(s.title)
       const firstName = parts[0]
       if (firstName && !map.has(firstName)) {
@@ -2627,9 +2627,9 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
       }
     })
     return [...map.entries()]
-  }, [mtSpans])
+  }, [perceptionSpans])
 
-  const tagSpans = (mtSpans ?? []).filter((s) => s.track === 'tags')
+  const tagSpans = (perceptionSpans ?? []).filter((s) => s.track === 'tags')
   const totalTagMinutes = tagSpans.reduce((sum, s) => {
     const toMin = (dt: string) => {
       const t = dt.split(' ')[1] ?? ''

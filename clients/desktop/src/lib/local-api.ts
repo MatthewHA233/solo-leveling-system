@@ -196,9 +196,9 @@ export async function eraseActivityBlocks(date: Date, minutes: number[]): Promis
   return json.data ?? 0
 }
 
-// ── Perception Timeline API（保留 MtSpan 名称兼容旧绘图层） ──
+// ── Perception Timeline API（保留 PerceptionSpan 数据结构） ──
 
-export interface MtSpan {
+export interface PerceptionSpan {
   id: number
   track: string         // "apps" | "tags"
   start_at: string      // "2026-04-04 13:00:00"
@@ -209,10 +209,10 @@ export interface MtSpan {
 }
 
 /** 查询某天的本机感知 spans（apps + tags/status） */
-export async function fetchManicTimeSpans(date: Date): Promise<MtSpan[]> {
+export async function fetchPerceptionSpans(date: Date): Promise<PerceptionSpan[]> {
   const dateStr = toLocalDateStr(date)
-  const res = await fetch(`${API_BASE}/api/manictime/spans?date=${dateStr}`)
-  const json: ApiResponse<MtSpan[]> = await res.json()
+  const res = await fetch(`${API_BASE}/api/perception/spans?date=${dateStr}`)
+  const json: ApiResponse<PerceptionSpan[]> = await res.json()
   if (!json.success || !json.data) throw new Error(json.error || '获取感知数据失败')
   return json.data
 }
