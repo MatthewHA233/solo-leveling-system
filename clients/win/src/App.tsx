@@ -78,7 +78,7 @@ import Tooltip from './components/Tooltip'
 import { usePresenceDetection } from './hooks/usePresenceDetection'
 import { useDataDays, hasDataOrIsToday } from './hooks/useDataDays'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
-import soloLevelingLogo from './assets/SOLO LEVELING SYSTEM.png'
+import appIcon from './assets/app-icon.png'
 
 export interface OmniDebugItem {
   type: 'text' | 'audio'
@@ -1797,10 +1797,10 @@ export default function App() {
         overflow: 'visible',
         zIndex: 2,
       }}>
-        {/* ── 左：Logo 图标 + 字标 + SLS-01 ── */}
+        {/* ── 左：Logo 图标 + 字标 + SLS-V{version}（从 package.json 注入） ── */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <img
-            src={soloLevelingLogo}
+            src={appIcon}
             alt="SOLO LEVELING SYSTEM"
             draggable={false}
             onContextMenu={(e) => {
@@ -1830,7 +1830,7 @@ export default function App() {
               letterSpacing: 2.4, color: theme.electricBlue,
               opacity: 0.6,
             }}>
-              SLS-01
+              SLS-V{__APP_VERSION__.replace(/\./g, '-')}
             </span>
           </div>
         </div>
@@ -1955,19 +1955,11 @@ export default function App() {
               style={{ filter: `drop-shadow(0 0 3px ${theme.electricBlue}AA)` }}
             />
           </svg>
-          <span style={{
-            fontFamily: theme.fontBody, fontSize: 11, fontWeight: 500,
-            color: theme.textSecondary, opacity: 0.85,
-            letterSpacing: 0.5,
-            whiteSpace: 'nowrap',
-          }}>
-            Solo Leveling System · Core
-          </span>
         </div>
 
         <div style={{ flex: 1 }} />
 
-        {/* ── 右：图标按钮 + v0.1 ── */}
+        {/* ── 右：图标按钮 ── */}
         <Tooltip content="B站历史记录">
           <button
             onClick={() => {
@@ -2022,15 +2014,6 @@ export default function App() {
           </button>
         </Tooltip>
 
-        {/* v0.1 版本徽章 */}
-        <span style={{
-          fontFamily: theme.fontMono, fontSize: 9.5, fontWeight: 700,
-          letterSpacing: 1.6,
-          color: theme.textSecondary, opacity: 0.55,
-          marginLeft: 4,
-        }}>
-          v0.1
-        </span>
       </div>
 
       {/* ── Main: Chart + Right Panel ── */}
