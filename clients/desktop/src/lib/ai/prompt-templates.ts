@@ -140,7 +140,7 @@ ${existingSection}
     "endTs": 1708503300,
     "category": "coding",
     "subcategory": "refactoring",
-    "title": "开发 SoloAgent 通知系统",
+    "title": "开发 SoloLevelingSystem 通知系统",
     "summary": "重构了通知面板的生命周期管理...",
     "detailedSummary": "[10:30] 打开 OverlayManager.swift [Cursor]\\n[10:32] 修改 showNotification 方法...",
     "goalAlignment": "直接推进：在开发独自升级系统的客户端通知功能",

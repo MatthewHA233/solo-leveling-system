@@ -4,22 +4,22 @@
 
 ### macOS 客户端
 
-位于 `clients/mac_old/SoloAgent/`。
+位于 `clients/mac_old/SoloLevelingSystem/`。
 
 **构建 + 部署命令（必须使用固定签名 + Release）：**
 
 ```bash
-cd clients/mac_old/SoloAgent
-xcodebuild -scheme SoloAgent -configuration Release build CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="SoloAgent Dev"
+cd clients/mac_old/SoloLevelingSystem
+xcodebuild -scheme SoloLevelingSystem -configuration Release build CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="SoloLevelingSystem Dev"
 ```
 
 部署到 `/Applications/`：
 ```bash
-rm -rf /Applications/SoloAgent.app && cp -R ~/Library/Developer/Xcode/DerivedData/SoloAgent-*/Build/Products/Release/SoloAgent.app /Applications/SoloAgent.app
+rm -rf /Applications/SoloLevelingSystem.app && cp -R ~/Library/Developer/Xcode/DerivedData/SoloLevelingSystem-*/Build/Products/Release/SoloLevelingSystem.app /Applications/SoloLevelingSystem.app
 ```
 
 - 必须用 `-configuration Release`（Debug 模式的 stub executor + debug dylib 与自签证书有 Team ID 校验冲突）
-- 必须用 `CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="SoloAgent Dev"`（ad-hoc 签名会导致重新授权隐私权限）
+- 必须用 `CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="SoloLevelingSystem Dev"`（ad-hoc 签名会导致重新授权隐私权限）
 
 ### Windows Tauri 客户端（关键！）
 
@@ -45,7 +45,7 @@ cd clients/desktop/src-tauri && cargo xwin build
 ```
 
 **产物路径：**
-- 可执行文件：`target/x86_64-pc-windows-msvc/debug/solo-agent.exe`
+- 可执行文件：`target/x86_64-pc-windows-msvc/debug/solo-leveling-system.exe`
 - 不是 `target/debug/`（那是 host target 残留，无用）
 
 **正式打包：**
@@ -55,11 +55,11 @@ npx tauri build --runner cargo-xwin
 
 ### Windows Rust 修改后的开发工作流
 
-只要改了 `clients/desktop/src-tauri/src/**/*.rs`，需要按下面顺序处理。不要直接在应用运行时编译，因为 `solo-agent.exe` 会占用 debug 产物。
+只要改了 `clients/desktop/src-tauri/src/**/*.rs`，需要按下面顺序处理。不要直接在应用运行时编译，因为 `solo-leveling-system.exe` 会占用 debug 产物。
 
 ```powershell
 # 1. 关闭当前由 Codex/开发流程启动的应用进程
-Get-Process solo-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process solo-leveling-system -ErrorAction SilentlyContinue | Stop-Process -Force
 
 # 2. 编译纯后端 debug 产物
 cd D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri
@@ -67,7 +67,7 @@ cargo xwin build
 
 # 3. 如需继续调试 WebView2/MCP，用远程调试端口重新启动 exe
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
-D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri\target\x86_64-pc-windows-msvc\debug\solo-agent.exe
+D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri\target\x86_64-pc-windows-msvc\debug\solo-leveling-system.exe
 ```
 
 注意：前端 Vite dev server 由用户自己保持运行，Codex 不要自动运行 `npm run dev` 或 `npm run build`，除非用户明确要求。
@@ -101,7 +101,7 @@ CC Switch 里新增 MCP 时，完整 JSON 配置如下：
 
 ```powershell
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
-D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri\target\x86_64-pc-windows-msvc\debug\solo-agent.exe
+D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri\target\x86_64-pc-windows-msvc\debug\solo-leveling-system.exe
 ```
 
 使用 MCP 前，先确认端口已经可访问：

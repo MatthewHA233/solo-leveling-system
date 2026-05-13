@@ -73,7 +73,7 @@
 | `ContextAdvisor` | Buff 库摘要注入 contextHint，Phase 1/2 AI 感知用户世界观 |
 | `AgentTool` | 新增 `get_strategy_buffs()`、`add_strategy_buff()` |
 | 动机系统 | 拆解动机 → 行动目标时参考 Buff 库，而非泛化策略 |
-| `AgentMemory` | 独立持久化（`~/.config/solo-agent/strategy-buffs.json`），不随 `/new` 重置 |
+| `AgentMemory` | 独立持久化（`~/.config/solo-leveling-system/strategy-buffs.json`），不随 `/new` 重置 |
 
 ---
 

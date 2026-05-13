@@ -295,7 +295,7 @@ impl Database {
     pub fn default_data_dir() -> PathBuf {
         dirs::data_local_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("solo-agent")
+            .join("solo-leveling-system")
     }
 
     /// 初始化数据库（指定路径）

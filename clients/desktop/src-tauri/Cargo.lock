@@ -4162,7 +4162,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "solo-agent"
+name = "solo-leveling-system"
 version = "0.1.3"
 dependencies = [
  "axum",

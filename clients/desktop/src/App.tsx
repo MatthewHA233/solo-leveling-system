@@ -307,7 +307,7 @@ export default function App() {
   const sessionTitleRef = useRef<string>('新会话')       // 现存标题，用于决定是否触发 AI 重命名
   const persistedBufferRef = useRef<SessionMessage[]>([])  // 已持久化的历史（用于 title 生成的上下文窗口）
   const lastOmniUserInputRef = useRef<string>('')        // Omni 本轮用户输入（文字 or 转写）
-  const audioDirRef = useRef<string>('')                 // 音频根目录（Rust data_local/solo-agent/audio）
+  const audioDirRef = useRef<string>('')                 // 音频根目录（Rust data_local/solo-leveling-system/audio）
   const pendingAudioRef = useRef<Map<string, { audioPath: string; durationMs: number }>>(new Map())
   const [sessions, setSessions] = useState<readonly ChatSessionInfo[]>([])
   const [pickerOpen, setPickerOpen] = useState(false)

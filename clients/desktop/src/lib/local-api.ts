@@ -532,9 +532,9 @@ export type CallLogGranularity = 'minute' | 'hour' | 'day'
 // ── Windows 图形偏好 ──
 
 export interface GpuPrefStatus {
-  /** solo-agent.exe 完整路径 */
+  /** solo-leveling-system.exe 完整路径 */
   self_exe_path: string
-  /** solo-agent.exe 是否已写入"高性能"偏好 */
+  /** solo-leveling-system.exe 是否已写入"高性能"偏好 */
   self_exe_pref_set: boolean
   /** 检测到的 msedgewebview2.exe 完整路径（null = 找不到） */
   webview2_path: string | null

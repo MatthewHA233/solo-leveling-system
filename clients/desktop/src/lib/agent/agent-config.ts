@@ -3,7 +3,7 @@
 // 持久化配置（localStorage）
 // ══════════════════════════════════════════════
 
-const STORAGE_KEY = 'solo-agent-config'
+const STORAGE_KEY = 'solo-leveling-system-config'
 
 export interface AgentConfig {
   readonly deviceId: string
@@ -72,7 +72,7 @@ export interface AgentConfig {
 
   // ── 图形性能 ──
   /**
-   * 笔记本独显高性能模式：写入 HKCU UserGpuPreferences 让 solo-agent.exe
+   * 笔记本独显高性能模式：写入 HKCU UserGpuPreferences 让 solo-leveling-system.exe
    * 与 msedgewebview2.exe 走独显（默认 Windows 给电源敏感的应用分配集显，
    * 导致 WebView2 软合成卡顿）。修改后下次启动应用生效。
    */
