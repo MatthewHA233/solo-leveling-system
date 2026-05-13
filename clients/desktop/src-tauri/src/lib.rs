@@ -13,6 +13,7 @@ mod qwen_omni;
 mod qwen_video;
 mod bili_download;
 mod ffmpeg;
+#[cfg(windows)]
 mod gpu_pref;
 #[cfg(windows)]
 mod hotkey;
@@ -1214,12 +1215,14 @@ fn cursor_pos_phys() -> Option<(i32, i32)> {
 }
 
 /// 读取当前 Windows 图形偏好状态（HKCU UserGpuPreferences 注册表）
+#[cfg(windows)]
 #[tauri::command]
 async fn get_gpu_pref_status() -> gpu_pref::GpuPrefStatus {
     gpu_pref::read_status()
 }
 
 /// 写入 / 清除本应用 exe + msedgewebview2.exe 的"高性能"图形偏好
+#[cfg(windows)]
 #[tauri::command]
 async fn set_gpu_pref_high_performance(enable: bool) -> Result<gpu_pref::GpuPrefStatus, String> {
     gpu_pref::apply(enable)
@@ -1266,11 +1269,11 @@ async fn setup_fairy(app: tauri::AppHandle) -> Result<(), String> {
                     _ => break, // 窗口已关闭
                 };
 
-                // 窗口 280×280 logical，fairy-core 400×400 缩放 0.7 = 280px
-                // 圆心 = (140, 140) logical px from window origin，r = 140
-                let fairy_cx = outer.x as f64 + 140.0 * sf;
-                let fairy_cy = outer.y as f64 + 140.0 * sf;
-                let fairy_r  = 140.0 * sf;
+                // 窗口 252×252 logical，fairy-core 400×400 缩放 0.7，外圈 360×0.7 = 252px
+                // 圆心 = (126, 126) logical px from window origin，r = 126
+                let fairy_cx = outer.x as f64 + 126.0 * sf;
+                let fairy_cy = outer.y as f64 + 126.0 * sf;
+                let fairy_r  = 126.0 * sf;
 
                 let dx = cx as f64 - fairy_cx;
                 let dy = cy as f64 - fairy_cy;
@@ -1571,8 +1574,8 @@ pub fn run() {
             save_audio_file,
             get_audio_dir,
             setup_fairy,
-            get_gpu_pref_status,
-            set_gpu_pref_high_performance,
+            #[cfg(windows)] get_gpu_pref_status,
+            #[cfg(windows)] set_gpu_pref_high_performance,
             restart_app,
         ])
         .run(tauri::generate_context!())

@@ -12,11 +12,11 @@ import FairyHUD, { type FairyState } from './FairyHUD'
 
 type FairyPayload = { state: FairyState; text: string }
 
-const FAIRY_W = 280
-const FAIRY_H = 280
-// fairy 圆形视觉边界约在 230px（右侧有 ~50px 透明区），气泡左边缘贴近圆边
-const BUBBLE_LEFT = 248
-const BUBBLE_TOP  = 96   // 气泡距窗口顶部，往上偏（fairy 中心 y=140）
+const FAIRY_W = 252
+const FAIRY_H = 252
+// fairy 视觉外圈半径 126px（最外环 360px × 0.7 缩放），气泡贴近圆右侧
+const BUBBLE_LEFT = 224
+const BUBBLE_TOP  = 86   // 气泡距窗口顶部，往上偏（fairy 中心 y=126）
 const BUBBLE_PAD_H = 28     // bubble 左右内边距合计 (14*2)
 const BUBBLE_PAD_V = 20     // bubble 上下内边距合计 (10*2)
 const BUBBLE_MIN_W = 88     // 最小气泡宽度（仅状态动画/极短文字）

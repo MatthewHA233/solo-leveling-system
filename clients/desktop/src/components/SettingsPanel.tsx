@@ -904,6 +904,8 @@ export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose 
 
 // ── 设置左侧栏分组 ──
 
+const IS_WINDOWS = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
+
 const SECTION_LIST: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'persona',    label: 'AI 人设',  icon: Bot },
   { id: 'voice',      label: '语音',     icon: Mic },
@@ -911,7 +913,7 @@ const SECTION_LIST: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'tracking',   label: '追踪',     icon: Activity },
   { id: 'screenshot', label: '屏幕截图', icon: Camera },
   { id: 'ignore',     label: '忽略窗口', icon: Ban },
-  { id: 'gpu',        label: '图形性能', icon: Cpu },
+  ...(IS_WINDOWS ? [{ id: 'gpu', label: '图形性能', icon: Cpu }] : []),
   { id: 'database',   label: '数据库',   icon: Database },
 ]
 
