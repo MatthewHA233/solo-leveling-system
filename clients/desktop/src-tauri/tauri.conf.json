@@ -32,7 +32,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis"],
+    "targets": ["app"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -40,17 +40,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "resources/ffmpeg/ffmpeg.exe",
-      "resources/ffmpeg/ffprobe.exe",
-      "resources/ffmpeg/avcodec-62.dll",
-      "resources/ffmpeg/avdevice-62.dll",
-      "resources/ffmpeg/avfilter-11.dll",
-      "resources/ffmpeg/avformat-62.dll",
-      "resources/ffmpeg/avutil-60.dll",
-      "resources/ffmpeg/swresample-6.dll",
-      "resources/ffmpeg/swscale-9.dll",
-      "resources/ffmpeg/LICENSE.txt"
-    ]
+    "resources": []
   }
 }

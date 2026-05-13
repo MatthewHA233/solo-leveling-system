@@ -1,6 +1,6 @@
 # Bundled FFmpeg
 
-本目录的 `ffmpeg.exe` `ffprobe.exe` 与 7 个 `.dll` 来自 BtbN 的 LGPL Windows shared build，用于：
+本目录可放置 FFmpeg/FFprobe 二进制。运行时会先查 Tauri 打包资源中的 `resources/ffmpeg`，再回退到系统 `PATH`，用于：
 
 - HEVC/H.265 → H.264 视频转封（详情面板内嵌播放）
 - 视频元数据探测
@@ -11,12 +11,12 @@
 - Asset: `ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip`
 - License: LGPL v2.1+（详见同目录 `LICENSE.txt`）
 
-## 在仓库中重新放置（新开发者）
+## Windows 打包时放置（可选）
 
-二进制不进 git（`.gitignore` 已排除 `*.exe`/`*.dll`），克隆后请：
+二进制不进 git（`.gitignore` 已排除 `*.exe`/`*.dll`）。如果希望 Windows 安装包内置 FFmpeg，请在构建前：
 
 1. 下载 [`ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip`](https://github.com/BtbN/FFmpeg-Builds/releases/latest)
-2. 解压后从 `bin/` 目录复制以下 9 个文件到本目录：
+2. 解压后从 `bin/` 目录复制以下 9 个文件到本目录，Tauri 会把整个 `resources/ffmpeg` 目录打进包：
 
    ```
    ffmpeg.exe
@@ -31,6 +31,8 @@
    ```
 
 3. 不需要 `ffplay.exe`（多余 17MB）和 `doc/` `include/` `lib/` `presets/`
+
+macOS 开发机可以直接使用系统 PATH 中的 FFmpeg，例如 `brew install ffmpeg`。没有内置二进制时，转码相关功能会提示找不到 `ffmpeg/ffprobe`，但不会阻塞应用编译。
 
 ## 升级
 
