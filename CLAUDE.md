@@ -4,12 +4,12 @@
 
 ### macOS 客户端
 
-位于 `clients/macos/SoloAgent/`。
+位于 `clients/mac_old/SoloAgent/`。
 
 **构建 + 部署命令（必须使用固定签名 + Release）：**
 
 ```bash
-cd clients/macos/SoloAgent
+cd clients/mac_old/SoloAgent
 xcodebuild -scheme SoloAgent -configuration Release build CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="SoloAgent Dev"
 ```
 
@@ -23,7 +23,7 @@ rm -rf /Applications/SoloAgent.app && cp -R ~/Library/Developer/Xcode/DerivedDat
 
 ### Windows Tauri 客户端（关键！）
 
-位于 `clients/win/`。**无 Visual Studio，使用 `cargo-xwin` 交叉编译。**
+位于 `clients/desktop/`。**无 Visual Studio，使用 `cargo-xwin` 交叉编译。**
 
 **绝对禁止的操作：**
 
@@ -41,7 +41,7 @@ rm -rf /Applications/SoloAgent.app && cp -R ~/Library/Developer/Xcode/DerivedDat
 npm run dev
 
 # 终端 2：Rust 后端编译
-cd clients/win/src-tauri && cargo xwin build
+cd clients/desktop/src-tauri && cargo xwin build
 ```
 
 **产物路径：**
@@ -55,19 +55,19 @@ npx tauri build --runner cargo-xwin
 
 ### Windows Rust 修改后的开发工作流
 
-只要改了 `clients/win/src-tauri/src/**/*.rs`，需要按下面顺序处理。不要直接在应用运行时编译，因为 `solo-agent.exe` 会占用 debug 产物。
+只要改了 `clients/desktop/src-tauri/src/**/*.rs`，需要按下面顺序处理。不要直接在应用运行时编译，因为 `solo-agent.exe` 会占用 debug 产物。
 
 ```powershell
 # 1. 关闭当前由 Codex/开发流程启动的应用进程
 Get-Process solo-agent -ErrorAction SilentlyContinue | Stop-Process -Force
 
 # 2. 编译纯后端 debug 产物
-cd D:\my_pro\GitHub\solo-leveling-system\clients\win\src-tauri
+cd D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri
 cargo xwin build
 
 # 3. 如需继续调试 WebView2/MCP，用远程调试端口重新启动 exe
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
-D:\my_pro\GitHub\solo-leveling-system\clients\win\src-tauri\target\x86_64-pc-windows-msvc\debug\solo-agent.exe
+D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri\target\x86_64-pc-windows-msvc\debug\solo-agent.exe
 ```
 
 注意：前端 Vite dev server 由用户自己保持运行，Codex 不要自动运行 `npm run dev` 或 `npm run build`，除非用户明确要求。
@@ -101,7 +101,7 @@ CC Switch 里新增 MCP 时，完整 JSON 配置如下：
 
 ```powershell
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
-D:\my_pro\GitHub\solo-leveling-system\clients\win\src-tauri\target\x86_64-pc-windows-msvc\debug\solo-agent.exe
+D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri\target\x86_64-pc-windows-msvc\debug\solo-agent.exe
 ```
 
 使用 MCP 前，先确认端口已经可访问：
