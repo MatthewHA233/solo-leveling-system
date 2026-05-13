@@ -864,49 +864,180 @@ function drawNowTick(
   ctx.stroke()
   ctx.restore()
 
-  // ── 右侧 HUD 时间指示：时间文本贴线，NOW 小标签 + 脉冲圆点组成扁平 chip ──
+  // ── 右侧 HUD 时间指示：chip 尺寸适中（时间数字略主导但不喧宾夺主） ──
   const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  ctx.font = `700 ${p.fs(11)}px 'JetBrains Mono', 'Courier New', monospace`
+  const timeFontSize = p.fs(13)
+  const nowFontSize = p.fs(8)
+  ctx.font = `800 ${timeFontSize}px 'JetBrains Mono', 'Courier New', monospace`
   const timeW = ctx.measureText(timeStr).width
 
-  ctx.font = `700 ${p.fs(7)}px 'JetBrains Mono', 'Courier New', monospace`
+  ctx.font = `700 ${nowFontSize}px 'JetBrains Mono', 'Courier New', monospace`
   const nowLabelW = ctx.measureText('NOW').width
 
-  const padX = 6
-  const dotSize = 4
-  const gap = 5
-  const chipW = padX + dotSize + gap + nowLabelW + 6 + timeW + padX
-  const chipH = 16
-  // 原位：右侧（列末尾 + 箭头短连线 + 间距）
-  const chipX = cx + p.cellW + 10
+  const padX = 8
+  const dotSize = 5
+  const gap = 6
+  const nowTimeGap = 5
+  const chipW = padX + dotSize + gap + nowLabelW + nowTimeGap + timeW + padX
+  const chipH = 21
+
+  // ── ① 圆环锚点（套在左侧管道中线 = cx + (PIPE_LEFT + PIPE_RIGHT)/2 = cx + 3） ──
+  const anchorX = cx + 3
+  const anchorR = 4.5
+  const anchorGlow = 7 * pulse
+  // 外圈呼吸环（更大更淡，alpha 随 pulse 变化）
+  ctx.save()
+  ctx.strokeStyle = hexToRgba(cyan, 0.15 + 0.18 * pulse)
+  ctx.lineWidth = 0.7
+  ctx.beginPath()
+  ctx.arc(anchorX, y, anchorR + 3.2, 0, Math.PI * 2)
+  ctx.stroke()
+  ctx.restore()
+  // 主环
+  ctx.save()
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = anchorGlow
+  ctx.strokeStyle = cyan
+  ctx.lineWidth = 1.4
+  ctx.beginPath()
+  ctx.arc(anchorX, y, anchorR, 0, Math.PI * 2)
+  ctx.stroke()
+  ctx.restore()
+  // 4 向 crosshair 小刻度（主环与呼吸环之间）
+  ctx.save()
+  ctx.strokeStyle = hexToRgba(cyan, 0.92)
+  ctx.lineWidth = 1
+  const tIn = anchorR + 0.6
+  const tOut = anchorR + 2.4
+  ctx.beginPath()
+  ctx.moveTo(anchorX + tIn, y); ctx.lineTo(anchorX + tOut, y)     // 右
+  ctx.moveTo(anchorX - tIn, y); ctx.lineTo(anchorX - tOut, y)     // 左
+  ctx.moveTo(anchorX, y + tIn); ctx.lineTo(anchorX, y + tOut)     // 下
+  ctx.moveTo(anchorX, y - tIn); ctx.lineTo(anchorX, y - tOut)     // 上
+  ctx.stroke()
+  ctx.restore()
+  // 左指三角 ▷（呼吸环外左侧）
+  ctx.save()
+  ctx.fillStyle = cyan
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 3
+  const triRight = anchorX - anchorR - 4
+  ctx.beginPath()
+  ctx.moveTo(triRight, y - 2)
+  ctx.lineTo(triRight - 2.5, y)
+  ctx.lineTo(triRight, y + 2)
+  ctx.closePath()
+  ctx.fill()
+  ctx.restore()
+  // 中心实心圆
+  ctx.save()
+  ctx.fillStyle = cyan
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 4
+  ctx.beginPath()
+  ctx.arc(anchorX, y, 1.5, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+
+  // ── ② 列尾 → chip 的渐变连接线（cyan + 中心白心，管道感） ──
+  const lineStartX = cx + p.cellW + 5
+  const lineLen = 18
+  const lineEndX = lineStartX + lineLen
+  const chevronSize = 3.2
+  const chevronGap = 1.8
+  const chevronStartX = lineEndX + 2.5
+  const chevronTotalW = 3 * chevronSize + 2 * chevronGap
+  const chevronEndX = chevronStartX + chevronTotalW
+  const chipX = chevronEndX + 4
   const chipY = y - chipH / 2
 
-  // chip → 列末的指向短连线（无辉光）
   ctx.save()
-  ctx.strokeStyle = hexToRgba(cyan, 0.9)
-  ctx.lineWidth = 1
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 6
+  const connGrad = ctx.createLinearGradient(lineStartX, y, lineEndX, y)
+  connGrad.addColorStop(0, hexToRgba(cyan, 0.95))
+  connGrad.addColorStop(1, hexToRgba(cyan, 0.32))
+  ctx.strokeStyle = connGrad
+  ctx.lineWidth = 1.6
   ctx.beginPath()
-  ctx.moveTo(cx + p.cellW + 3, y); ctx.lineTo(chipX, y)
+  ctx.moveTo(lineStartX, y); ctx.lineTo(lineEndX, y)
+  ctx.stroke()
+  ctx.restore()
+  // 中央高光（白心 0.55 厚，让线呈现"管道感"）
+  ctx.save()
+  ctx.strokeStyle = 'rgba(220,250,255,0.72)'
+  ctx.lineWidth = 0.55
+  ctx.beginPath()
+  ctx.moveTo(lineStartX + 1, y); ctx.lineTo(lineEndX - 2, y)
   ctx.stroke()
   ctx.restore()
 
-  // chip 主体：纯净斜切框，无辉光
+  // ── ③ ▶▶▶ 箭头（3 个实心三角填充，朝右） ──
   ctx.save()
-  chamferPath(ctx, chipX, chipY, chipW, chipH, 3)
-  ctx.fillStyle = 'rgba(2,14,28,0.92)'
+  ctx.fillStyle = cyan
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 4
+  for (let i = 0; i < 3; i++) {
+    const cxArrow = chevronStartX + i * (chevronSize + chevronGap)
+    ctx.beginPath()
+    ctx.moveTo(cxArrow, y - chevronSize)
+    ctx.lineTo(cxArrow + chevronSize, y)
+    ctx.lineTo(cxArrow, y + chevronSize)
+    ctx.closePath()
+    ctx.fill()
+  }
+  ctx.restore()
+
+  // ④ 八边形 chip（左右长切角 + 上下短切角，胶囊感）
+  const chamferX = 5
+  const chamferY = 3.5
+  const buildOctPath = (offset: number) => {
+    const x0 = chipX - offset
+    const y0 = chipY - offset
+    const w = chipW + offset * 2
+    const h = chipH + offset * 2
+    ctx.beginPath()
+    ctx.moveTo(x0 + chamferX, y0)
+    ctx.lineTo(x0 + w - chamferX, y0)
+    ctx.lineTo(x0 + w, y0 + chamferY)
+    ctx.lineTo(x0 + w, y0 + h - chamferY)
+    ctx.lineTo(x0 + w - chamferX, y0 + h)
+    ctx.lineTo(x0 + chamferX, y0 + h)
+    ctx.lineTo(x0, y0 + h - chamferY)
+    ctx.lineTo(x0, y0 + chamferY)
+    ctx.closePath()
+  }
+
+  // chip 底色（深青墨）+ inset cyan radial glow
+  ctx.save()
+  buildOctPath(0)
+  ctx.fillStyle = 'rgba(0,30,42,0.82)'
   ctx.fill()
-  ctx.strokeStyle = hexToRgba(cyan, 0.85)
-  ctx.lineWidth = 1
-  ctx.stroke()
+  const insetGrad = ctx.createRadialGradient(
+    chipX + chipW / 2, chipY + chipH / 2, 1,
+    chipX + chipW / 2, chipY + chipH / 2, Math.max(chipW, chipH) * 0.7,
+  )
+  insetGrad.addColorStop(0, hexToRgba(cyan, 0.22))
+  insetGrad.addColorStop(0.55, hexToRgba(cyan, 0.07))
+  insetGrad.addColorStop(1, 'rgba(0,229,255,0)')
+  ctx.fillStyle = insetGrad
+  ctx.fill()
   ctx.restore()
 
-  // chip 顶/底 accent 细线（HUD 端口感，替代外部辉光）
+  // chip 主描边（cyan，带 glow）
   ctx.save()
-  ctx.strokeStyle = hexToRgba(cyan, 0.35)
-  ctx.lineWidth = 0.75
-  ctx.beginPath()
-  ctx.moveTo(chipX + 4, chipY - 1); ctx.lineTo(chipX + chipW - 4, chipY - 1)
-  ctx.moveTo(chipX + 4, chipY + chipH + 1); ctx.lineTo(chipX + chipW - 4, chipY + chipH + 1)
+  buildOctPath(0)
+  ctx.strokeStyle = hexToRgba(cyan, 0.95)
+  ctx.lineWidth = 1.4
+  ctx.shadowColor = cyan
+  ctx.shadowBlur = 5
+  ctx.stroke()
+  ctx.restore()
+  // chip 外侧次描边（offset 2，模拟"双框/重影"）
+  ctx.save()
+  buildOctPath(2)
+  ctx.strokeStyle = hexToRgba(cyan, 0.25)
+  ctx.lineWidth = 0.7
   ctx.stroke()
   ctx.restore()
 
@@ -914,29 +1045,31 @@ function drawNowTick(
   ctx.save()
   ctx.fillStyle = cyan
   ctx.shadowColor = cyan
-  ctx.shadowBlur = 3 * pulse
+  ctx.shadowBlur = 4 * pulse
   const dotCx = chipX + padX + dotSize / 2
   ctx.beginPath()
-  ctx.arc(dotCx, y, dotSize / 2 * (0.75 + 0.25 * pulse), 0, Math.PI * 2)
+  ctx.arc(dotCx, y, dotSize / 2 * (0.78 + 0.22 * pulse), 0, Math.PI * 2)
   ctx.fill()
   ctx.restore()
 
-  // NOW 小标签
+  // NOW 小标签（灰白次要色，让大字时间占主视觉）
   ctx.save()
-  ctx.font = `700 ${p.fs(7)}px 'JetBrains Mono', 'Courier New', monospace`
-  ctx.fillStyle = hexToRgba(cyan, 0.75)
+  ctx.font = `700 ${nowFontSize}px 'JetBrains Mono', 'Courier New', monospace`
+  ctx.fillStyle = 'rgba(200,225,235,0.68)'
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
   ctx.fillText('NOW', chipX + padX + dotSize + gap, y + 0.5)
   ctx.restore()
 
-  // 时间主文本（白色，无外发光）
+  // 时间主文本（大字号 + 加粗，纯白带轻微 cyan 内 glow）
   ctx.save()
-  ctx.font = `700 ${p.fs(11)}px 'JetBrains Mono', 'Courier New', monospace`
+  ctx.font = `800 ${timeFontSize}px 'JetBrains Mono', 'Courier New', monospace`
   ctx.fillStyle = '#FFFFFF'
+  ctx.shadowColor = hexToRgba(cyan, 0.55)
+  ctx.shadowBlur = 3
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
-  ctx.fillText(timeStr, chipX + padX + dotSize + gap + nowLabelW + 6, y + 0.5)
+  ctx.fillText(timeStr, chipX + padX + dotSize + gap + nowLabelW + nowTimeGap, y + 0.5)
   ctx.restore()
 
   // 防止全局 textBaseline 漏出
@@ -1403,7 +1536,7 @@ function CornerArt({ position }: { position: CornerPos }) {
 //   TIME AXIS 文字在 frame 之外的 padding 溢出区；HUD 刻度尺在 chart canvas 与 axis 交界处；
 //   底部 45° 大折角自 frame 左边线起，端点在 chart pane 内不出界。
 
-function LeftAxis() {
+function LeftAxis({ params }: { params: ReturnType<typeof getGridParams> }) {
   const cyan = theme.electricBlue
   const hostRef = useRef<HTMLDivElement>(null)
   const [h, setH] = useState(0)
@@ -1415,7 +1548,19 @@ function LeftAxis() {
     return () => obs.disconnect()
   }, [])
 
-  const ticks = Array.from({ length: 12 }, (_, i) => (i + 1) * 5)
+  // 刻度对齐 chart 行间"时间戳单元格"（rowGap）的中线，与 drawTimeLabels 的 gapY 一致：
+  //   - LeftAxis.top = 28 = params.topPad，LeftAxis 自身坐标 y=0 ↔ chart 第 0 行顶
+  //   - gapY = i * rowStride + cellH + rowGap/2，对应时刻 (i+1)*5 分钟
+  //   - major 间隔随密度自适应：12 行 → 每 15min，6/4 行 → 每 10min，3 行 → 每 5min（全 major）
+  const majorEvery = params.rowsPerCol >= 12 ? 15 : params.rowsPerCol >= 4 ? 10 : 5
+  const ticks = Array.from({ length: params.rowsPerCol }, (_, i) => {
+    const minute = (i + 1) * 5
+    return {
+      minute,
+      y: i * params.rowStride + params.cellH + params.rowGap / 2,
+      major: minute % majorEvery === 0,
+    }
+  })
 
   // 几何
   //   - frame 主线 (xMain) 完整保留，HudFrameSkeleton 自画
@@ -1429,7 +1574,13 @@ function LeftAxis() {
   const slant = 14          // 刀刃斜入/斜出高度
   const xText = xMain + 8   // 文字 x（frame 主线 + 刀刃中间）
   const xTickRail = W - 4
-  const xNum = xTickRail - 14
+  // major 刻度几何：主线 7 + cap 2.5×3.6 + 右端 rail 接合焊点 r=1.8
+  // 数字右缘贴 cap 左缘留 2px，整体形成"数字 ▮━━●"紧凑单元
+  const majorLen = 7
+  const capW = 2.5
+  const capH = 3.6
+  const numToCapGap = 2
+  const xNum = xTickRail - majorLen - capW - numToCapGap   // = 56.5
   void xText
   const taCenterRatio = 0.22  // 整体往上挪（之前 0.30 还不够上）
   const taHalfH = 70         // 刀刃 y 半高
@@ -1636,27 +1787,43 @@ function LeftAxis() {
               stroke={cyan} strokeOpacity="0.45" strokeWidth="1"
             />
 
-            {/* ── HUD 刻度尺主竖线（亮） ── */}
+            {/* ── HUD 刻度尺主竖线（亮 + 微 glow） ── */}
             <line x1={xTickRail} y1={6} x2={xTickRail} y2={diagStartY - 6}
-              stroke={cyan} strokeOpacity="0.75" strokeWidth="1" />
-            {/* ── HUD 刻度尺外层平行（淡，offset=4 内侧，朝 axis 中心方向） ── */}
-            <line x1={xTickRail - 4} y1={14} x2={xTickRail - 4} y2={diagStartY - 14}
-              stroke={cyan} strokeOpacity="0.28" strokeWidth="0.8" />
+              stroke={cyan} strokeOpacity="0.8" strokeWidth="1"
+              style={{ filter: `drop-shadow(0 0 1.5px ${cyan}66)` }} />
+            {/* ── 内侧重影（offset=-3 朝 axis 中心方向） ── */}
+            <line x1={xTickRail - 3} y1={16} x2={xTickRail - 3} y2={diagStartY - 16}
+              stroke={cyan} strokeOpacity="0.26" strokeWidth="0.7" />
+            {/* ── 外侧重影（offset=+1.8，紧贴主线右侧，制造"主+重影"双轨幻象） ── */}
+            <line x1={xTickRail + 1.8} y1={10} x2={xTickRail + 1.8} y2={diagStartY - 10}
+              stroke={cyan} strokeOpacity="0.42" strokeWidth="0.6" />
+            {/* ── 远侧 ghost 重影（offset=+4，更淡更短，渐远消散感） ── */}
+            <line x1={xTickRail + 4} y1={22} x2={xTickRail + 4} y2={diagStartY - 22}
+              stroke={cyan} strokeOpacity="0.18" strokeWidth="0.5" />
 
-            {ticks.map((_, i) => {
-              const y = ((i + 1) / 12) * h
-              if (y > diagStartY - 8) return null
-              const major = (i + 1) % 3 === 0
-              const lineLen = major ? 9 : 4
+            {ticks.map((t, i) => {
+              if (t.y > diagStartY - 8) return null
+              if (t.major) {
+                return (
+                  <g key={i} style={{ filter: `drop-shadow(0 0 2.5px ${cyan}aa)` }}>
+                    {/* 主刻度（亮，stroke 1.3） */}
+                    <line x1={xTickRail - majorLen} y1={t.y} x2={xTickRail} y2={t.y}
+                      stroke={cyan} strokeOpacity="0.95" strokeWidth="1.3" />
+                    {/* 内层 companion 平行线（offset y+2，半长，cyan 中调） */}
+                    <line x1={xTickRail - majorLen + 2.5} y1={t.y + 2} x2={xTickRail - 1} y2={t.y + 2}
+                      stroke={cyan} strokeOpacity="0.5" strokeWidth="0.75" />
+                    {/* 左端方块 cap（2.5×3.6 粗胖锚点） */}
+                    <rect x={xTickRail - majorLen - capW} y={t.y - capH / 2}
+                      width={capW} height={capH} fill={cyan} opacity="0.98" />
+                    {/* 右端 rail 接合"焊点"（HUD 节点语言，跨主线 + 外侧重影） */}
+                    <circle cx={xTickRail} cy={t.y} r="1.8" fill={cyan} opacity="1" />
+                  </g>
+                )
+              }
               return (
-                <g key={i}>
-                  <line x1={xTickRail - lineLen} y1={y} x2={xTickRail} y2={y}
-                    stroke={cyan} strokeOpacity={major ? 0.85 : 0.4} strokeWidth="1" />
-                  {major && (
-                    <rect x={xTickRail - lineLen - 2.6} y={y - 1.3}
-                      width="2.6" height="2.6" fill={cyan} opacity="0.9" />
-                  )}
-                </g>
+                /* minor 5min 刻度：长 4 / opacity 0.5（常规风格，不弱化） */
+                <line key={i} x1={xTickRail - 4} y1={t.y} x2={xTickRail} y2={t.y}
+                  stroke={cyan} strokeOpacity="0.5" strokeWidth="0.85" />
               )
             })}
 
@@ -1686,31 +1853,30 @@ function LeftAxis() {
         </div>
       )}
 
-      {/* 数字（major：15/30/45/60，紧贴刻度尺左侧） */}
-      {h > 0 && ticks.map((min, i) => {
-        const y = ((i + 1) / 12) * h
-        const major = (i + 1) % 3 === 0
-        if (!major) return null
-        if (y > h - 80 - 8) return null
+      {/* 数字：每个刻度都标，所有数字右缘对齐 xNum；major 强、minor 弱形成层次 */}
+      {h > 0 && ticks.map((t) => {
+        if (t.y > h - 80 - 8) return null
         return (
           <span
-            key={min}
+            key={t.minute}
             style={{
               position: 'absolute',
-              top: y, left: xNum,
+              top: t.y, left: xNum,
               transform: 'translate(-100%, -50%)',
               fontFamily: theme.fontMono,
-              fontSize: 10.5,
-              fontWeight: 700,
+              fontSize: t.major ? 10.5 : 8.5,
+              fontWeight: t.major ? 700 : 600,
               color: cyan,
-              opacity: 0.85,
-              letterSpacing: 0.6,
+              opacity: t.major ? 1 : 0.55,
+              letterSpacing: t.major ? 0.4 : 0.2,
               whiteSpace: 'nowrap',
-              textShadow: `0 0 4px ${cyan}55`,
-              paddingRight: 4,
+              textShadow: t.major
+                ? `0 0 4px ${cyan}, 0 0 8px ${cyan}55`
+                : `0 0 2px ${cyan}66`,
+              ...(t.major ? { WebkitTextStroke: `0.12px ${cyan}` } : null),
             }}
           >
-            {String(min).padStart(2, '0')}
+            {String(t.minute).padStart(2, '0')}
           </span>
         )
       })}
@@ -1763,8 +1929,7 @@ function ScrollingZoneLabels({ params }: { params: ReturnType<typeof getGridPara
           const x0 = colX(firstCol, params)
           const x1 = colX(Math.min(lastCol, params.cols - 1), params) + params.cellW
           const cx = (x0 + x1) / 2
-          const fillColor = `rgba(${br},${bg},${bb},0.95)`
-          const strokeColor = `rgba(${br},${bg},${bb},0.55)`
+          const fillColor = `rgba(${br},${bg},${bb},0.92)`
 
           return (
             <span
@@ -1773,11 +1938,12 @@ function ScrollingZoneLabels({ params }: { params: ReturnType<typeof getGridPara
                 position: 'absolute',
                 top: '50%', left: cx,
                 transform: 'translate(-50%, -50%)',
-                fontFamily: `'KaiTi', 'STKaiti', 'SimSun', serif`,
-                fontSize: 14, fontWeight: 700,
-                letterSpacing: 2, whiteSpace: 'nowrap',
+                fontFamily: `'DengXian', '等线', 'Microsoft YaHei', 'PingFang SC', sans-serif`,
+                fontSize: 14,
+                fontWeight: 600,
+                letterSpacing: 1.5,
+                whiteSpace: 'nowrap',
                 color: fillColor,
-                WebkitTextStroke: `0.6px ${strokeColor}`,
               }}
             >
               {z.label}
@@ -2624,6 +2790,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
         {/* 滚动 wrapper：覆盖 chart pane，sticky 时段层 + canvas 都跟随它滚 */}
         <div
           ref={containerRef}
+          className="daynight-scroll"
           style={{
             position: 'absolute', top: 0, left: 48, right: 0, bottom: 0,
             overflowX: 'auto', overflowY: 'auto', cursor: 'pointer',
@@ -2649,8 +2816,8 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
         {/* 左半固定 axis row：⊿ + 时间轴 + 当前阶段（zIndex 60，覆盖 sticky 内 0..100） */}
         <ChartTopAxisRow />
 
-        {/* 左侧 TIME AXIS 区（双层竖线 + 顶/底折角 + 12 个 5 分钟刻度） */}
-        <LeftAxis />
+        {/* 左侧 TIME AXIS 区（双层竖线 + 顶/底折角 + 跟随 rowsPerCol 的 5 分钟刻度） */}
+        <LeftAxis params={p} />
       </div>
 
       {/* 图例（HUD 风格） */}

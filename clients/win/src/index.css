@@ -68,6 +68,69 @@
   scrollbar-color: rgba(220, 250, 255, 0.7) transparent;
 }
 
+/* ── 昼夜表局部：cyan 数据流轨道 + 双重 glow（呼应工业仪表 HUD） ── */
+.daynight-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.daynight-scroll::-webkit-scrollbar-corner { background: transparent; }
+.daynight-scroll::-webkit-scrollbar-track {
+  background: rgba(0, 229, 255, 0.03);
+  box-shadow: inset 0 0 0 1px rgba(0, 229, 255, 0.08);
+}
+.daynight-scroll::-webkit-scrollbar-thumb {
+  border-radius: 0;
+  box-shadow:
+    0 0 4px rgba(0, 229, 255, 0.5),
+    0 0 10px rgba(0, 229, 255, 0.22);
+}
+.daynight-scroll::-webkit-scrollbar-thumb:vertical {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 229, 255, 0)     0%,
+    rgba(0, 229, 255, 0.55) 25%,
+    rgba(180, 250, 255, 0.95) 50%,
+    rgba(0, 229, 255, 0.55) 75%,
+    rgba(0, 229, 255, 0)   100%
+  );
+}
+.daynight-scroll::-webkit-scrollbar-thumb:horizontal {
+  background: linear-gradient(
+    180deg,
+    rgba(0, 229, 255, 0)     0%,
+    rgba(0, 229, 255, 0.55) 25%,
+    rgba(180, 250, 255, 0.95) 50%,
+    rgba(0, 229, 255, 0.55) 75%,
+    rgba(0, 229, 255, 0)   100%
+  );
+}
+.daynight-scroll::-webkit-scrollbar-thumb:hover {
+  box-shadow:
+    0 0 8px rgba(0, 229, 255, 0.9),
+    0 0 18px rgba(0, 229, 255, 0.5);
+}
+.daynight-scroll::-webkit-scrollbar-thumb:vertical:hover {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 229, 255, 0)     0%,
+    rgba(80, 235, 255, 0.85) 25%,
+    rgba(220, 250, 255, 1)   50%,
+    rgba(80, 235, 255, 0.85) 75%,
+    rgba(0, 229, 255, 0)   100%
+  );
+}
+.daynight-scroll::-webkit-scrollbar-thumb:horizontal:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(0, 229, 255, 0)     0%,
+    rgba(80, 235, 255, 0.85) 25%,
+    rgba(220, 250, 255, 1)   50%,
+    rgba(80, 235, 255, 0.85) 75%,
+    rgba(0, 229, 255, 0)   100%
+  );
+}
+/* Firefox 兜底（覆盖全局 `*` 规则） */
+.daynight-scroll {
+  scrollbar-color: rgba(0, 229, 255, 0.75) transparent;
+}
+
 /* ── Time input calendar icon ── */
 input[type="time"]::-webkit-calendar-picker-indicator {
   filter: invert(0.5) sepia(1) saturate(2) hue-rotate(160deg);
