@@ -797,10 +797,14 @@ fn update_tracking_settings(settings: perception::TrackingSettings) -> Result<pe
 #[tauri::command]
 async fn open_url_in_browser(url: String) -> Result<(), String> {
     #[cfg(windows)]
-    std::process::Command::new("cmd")
-        .args(["/c", "start", "", &url])
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &url])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
 
     #[cfg(target_os = "macos")]
     std::process::Command::new("open")
