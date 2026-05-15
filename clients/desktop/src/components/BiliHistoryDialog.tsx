@@ -77,6 +77,14 @@ interface Props {
   readonly onFullScan: () => void
   readonly onSetInterval: (s: number) => void
   readonly onClose: () => void
+
+  /**
+   * 外部"直达视频详情"入口:由昼夜表右栏的 BiliVideoPanel 触发。
+   * 每次点击都应传入新对象(key 递增),触发内部 useEffect 把 date+detailSpan+detailMode
+   * 一次性灌入。dialog 关闭时由 App 层置空,避免下次普通打开复用旧状态。
+   * mode=null:只展示详情(同卡片点击);'theater':自动进影院;'transcribe':自动开转录。
+   */
+  readonly pendingDetail?: { key: number; span: BiliSpan; mode: 'theater' | 'transcribe' | null } | null
 }
 
 // ── 工具函数 ──
@@ -213,6 +221,7 @@ export default function BiliHistoryDialog({
   windowClosed, cursor, hasMoreRemote: _hasMoreRemote,
   scanProgress, scanSnapshotBvids, scanLastPage,
   onPause, onResume, onRefresh, onFullScan, onSetInterval, onClose,
+  pendingDetail,
 }: Props) {
   const [date, setDate] = useState<Date>(initialDate)
   const [spans, setSpans] = useState<BiliSpan[]>([])
@@ -222,6 +231,8 @@ export default function BiliHistoryDialog({
   const [loginError, setLoginError] = useState<string | null>(null)
   const [isOpening, setIsOpening] = useState(false)
   const [detailSpan, setDetailSpan] = useState<BiliSpan | null>(null)
+  // 仅当通过昼夜表右栏直达时填充('theater' | 'transcribe'),从卡片点击进入时保持 null
+  const [detailMode, setDetailMode] = useState<'theater' | 'transcribe' | null>(null)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [biliUname, setBiliUname] = useState<string | null>(() => {
     try { return localStorage.getItem('bili.uname') } catch { return null }
@@ -277,6 +288,21 @@ export default function BiliHistoryDialog({
   }, [])
 
   useEffect(() => { if (open) loadSpans(date) }, [open, date, loadSpans])
+
+  // 外部直达:把 date+detailSpan+detailMode 一次性灌入。
+  // 依赖 pendingDetail?.key 而非整个对象,避免父组件因其它原因重新创建对象时误触发。
+  // 详情浮层会立刻挂载,后台列表 loadSpans 并行加载,体感"秒开"。
+  useEffect(() => {
+    if (!open || !pendingDetail) return
+    const sat = pendingDetail.span.start_at
+    const d = new Date(sat.replace(' ', 'T'))
+    if (!isNaN(d.getTime())) setDate(d)
+    setDetailSpan(pendingDetail.span)
+    setDetailMode(pendingDetail.mode)
+  }, [open, pendingDetail?.key])
+
+  // 详情关闭后顺手清掉模式,避免下次普通卡片点击复用上次的 'theater'/'transcribe'
+  useEffect(() => { if (!detailSpan) setDetailMode(null) }, [detailSpan])
 
   // 同步后刷新当前日列表
   useEffect(() => {
@@ -1114,7 +1140,7 @@ export default function BiliHistoryDialog({
                   cardW={CARD_W}
                   gap={CARD_GAP_X}
                   flashing={flashBvid === p.span.bvid}
-                  onOpenDetail={() => setDetailSpan(p.span)}
+                  onOpenDetail={() => { setDetailSpan(p.span); setDetailMode(null) }}
                   onHover={(h) => setHoveredId(h ? p.span.bvid : null)}
                 />
               ))}
@@ -1145,7 +1171,7 @@ export default function BiliHistoryDialog({
 
         {/* 详情浮层：放在弹窗 body 顶层，避开滚动容器 */}
         {detailSpan && (
-          <DetailOverlay span={detailSpan} onClose={() => setDetailSpan(null)} />
+          <DetailOverlay span={detailSpan} initialMode={detailMode} onClose={() => setDetailSpan(null)} />
         )}
 
         {/* 深度扫描增量报告 */}
@@ -1992,7 +2018,13 @@ interface BiliVideoAssetLite {
   download_path: string | null
 }
 
-function DetailOverlay({ span, onClose }: { span: BiliSpan; onClose: () => void }) {
+function DetailOverlay({
+  span, initialMode, onClose,
+}: {
+  span: BiliSpan
+  initialMode?: 'theater' | 'transcribe' | null
+  onClose: () => void
+}) {
   const [transcribeFile, setTranscribeFile] = useState<string | null>(null)
   // theater 模式下右侧面板扩宽 + 内嵌本地视频播放器
   const [theater, setTheater] = useState(false)
@@ -2000,7 +2032,9 @@ function DetailOverlay({ span, onClose }: { span: BiliSpan; onClose: () => void 
   const [currentSec, setCurrentSec] = useState<number | null>(null)
   const videoHandleRef = useRef<HudVideoHandle | null>(null)
 
-  // 切换 span 时：复位面板状态；查 download_path；若 transcribed → 自动打开转录
+  // 切换 span 时：复位面板状态；查 download_path；
+  // 若 transcribed 或 initialMode==='transcribe' → 自动打开转录
+  // 若 initialMode==='theater' → 自动进入影院模式
   useEffect(() => {
     setTranscribeFile(null)
     setTheater(false)
@@ -2013,12 +2047,13 @@ function DetailOverlay({ span, onClose }: { span: BiliSpan; onClose: () => void 
         const done = assets.find((a) => a.download_status === 'done' && a.download_path)
         if (done?.download_path) {
           setDownloadedPath(done.download_path)
-          if (span.transcribed) setTranscribeFile(done.download_path)
+          if (span.transcribed || initialMode === 'transcribe') setTranscribeFile(done.download_path)
+          if (initialMode === 'theater') setTheater(true)
         }
       })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [span.bvid, span.transcribed])
+  }, [span.bvid, span.transcribed, initialMode])
 
   // 监听下载完成事件：完成后立刻把 downloadedPath 灌入，让封面切到"本地播放"
   useEffect(() => {

@@ -37,12 +37,20 @@ export function HudTabButton({
   const scaleX = width / 170
   const xLeftBracket = 38 * scaleX
   const xRightBracket = width - 27 * scaleX
+  const xLeftEdge = 1.5
   const xRightEdge = width - 1.5
   const xRightTriIn = width - 7.5
+  const yTop = 1.5
   const yBottom = height - 1.5
   const yLeftBracketTop = height - 6.5
   const yRightBracketTop = 33 / 52 * height
   const yRightTriTop = height - 7.5
+  // 上半镜像变量：左上 L 短竖、右上 L 上扬（镜像右下）
+  const yLeftTopBracketBottom = 6.5
+  const yRightTopBracketBottom = height - 33 / 52 * height
+  // 中线底端要对齐 L(strokeWidth=3) 底端,需向下偏移 (3-1)/2 = 1px
+  const yMidLine = yBottom + 1
+  const yMidLineTop = yTop - 1
 
   return (
     <div
@@ -66,7 +74,7 @@ export function HudTabButton({
         opacity: lit ? 0.65 : 0.28,
         zIndex: 0,
         pointerEvents: 'none',
-        transition: 'opacity 0.3s ease',
+        transition: 'opacity 0.18s ease-out',
       }} />
 
       <svg
@@ -100,14 +108,27 @@ export function HudTabButton({
         {/* 顶部 1px 微亮边 */}
         <line x1="0" y1="0" x2={width} y2="0" stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
 
-        <g style={{ filter: `url(#${filtId})`, transition: 'opacity 0.3s ease', opacity: lit ? 1 : 0.78 }}>
-          {/* 左下 L */}
+        <g style={{ filter: `url(#${filtId})`, transition: 'opacity 0.18s ease-out', opacity: lit ? 1 : 0.78 }}>
+          {/* 左上 L（镜像左下,短竖段） */}
           <path
-            d={`M 1.5 ${yLeftBracketTop} L 1.5 ${yBottom} L ${xLeftBracket} ${yBottom}`}
+            d={`M ${xLeftEdge} ${yLeftTopBracketBottom} L ${xLeftEdge} ${yTop} L ${xLeftBracket} ${yTop}`}
             fill="none" stroke={color} strokeWidth="3" strokeLinejoin="miter"
           />
-          {/* 中间细线 */}
-          <line x1={xLeftBracket} y1={yBottom} x2={xRightBracket} y2={yBottom} stroke={color} strokeWidth="1" />
+          {/* 顶部中线（镜像底部细线,y 上抬 1px 让物理顶端与 L 顶端对齐） */}
+          <line x1={xLeftBracket} y1={yMidLineTop} x2={xRightBracket} y2={yMidLineTop} stroke={color} strokeWidth="1" />
+          {/* 右上 L（镜像右下,长竖段下扬） */}
+          <path
+            d={`M ${xRightBracket} ${yTop} L ${xRightEdge} ${yTop} L ${xRightEdge} ${yRightTopBracketBottom}`}
+            fill="none" stroke={color} strokeWidth="3" strokeLinejoin="miter"
+          />
+
+          {/* 左下 L */}
+          <path
+            d={`M ${xLeftEdge} ${yLeftBracketTop} L ${xLeftEdge} ${yBottom} L ${xLeftBracket} ${yBottom}`}
+            fill="none" stroke={color} strokeWidth="3" strokeLinejoin="miter"
+          />
+          {/* 中间细线（y 下沉 1px,物理底端与 L 底端对齐,消除"腾空"错觉） */}
+          <line x1={xLeftBracket} y1={yMidLine} x2={xRightBracket} y2={yMidLine} stroke={color} strokeWidth="1" />
           {/* 右下 L（上扬） */}
           <path
             d={`M ${xRightBracket} ${yBottom} L ${xRightEdge} ${yBottom} L ${xRightEdge} ${yRightBracketTop}`}
@@ -132,7 +153,7 @@ export function HudTabButton({
         textShadow: lit
           ? `0 0 5px #FFFFFF, 0 0 12px ${color}`
           : `0 0 3px rgba(255,255,255,0.5), 0 0 8px ${color}99`,
-        transition: 'all 0.3s ease',
+        transition: 'color 0.18s ease-out, text-shadow 0.18s ease-out',
         userSelect: 'none',
       } as CSSProperties}>
         {label}

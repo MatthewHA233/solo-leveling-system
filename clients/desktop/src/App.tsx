@@ -276,6 +276,26 @@ export default function App() {
   const [showBili, setShowBili] = useState(false)
   const [showModels, setShowModels] = useState(false)
 
+  // 昼夜表右栏 BiliVideoPanel 直达 B 站历史详情用：每次点击都 bump key，
+  // 触发 BiliHistoryDialog 内部 useEffect 把 date+detailSpan+detailMode 一次性灌入。
+  // mode=null：单纯查看详情；'theater'：进影院；'transcribe'：开转录。
+  const [pendingBiliDetail, setPendingBiliDetail] = useState<
+    { key: number; span: BiliSpan; mode: 'theater' | 'transcribe' | null } | null
+  >(null)
+  const requestBiliHistoryDetail = useCallback(
+    (span: BiliSpan, mode: 'theater' | 'transcribe' | null) => {
+      setPendingBiliDetail({ key: Date.now(), span, mode })
+      setShowBili(true)
+      setShowSettings(false)
+      setShowModels(false)
+    },
+    [],
+  )
+  const closeBiliDialog = useCallback(() => {
+    setShowBili(false)
+    setPendingBiliDetail(null)
+  }, [])
+
 
   // ── Activity Editor ──
 
@@ -1963,8 +1983,12 @@ export default function App() {
         <Tooltip content="B站历史记录">
           <button
             onClick={() => {
-              setShowBili(!showBili)
-              if (!showBili) { setShowSettings(false); setShowModels(false) }
+              if (showBili) {
+                closeBiliDialog()
+              } else {
+                setShowBili(true)
+                setShowSettings(false); setShowModels(false)
+              }
             }}
             style={{
               ...navBtn,
@@ -1982,7 +2006,7 @@ export default function App() {
           <button
             onClick={() => {
               setShowModels(!showModels)
-              if (!showModels) { setShowSettings(false); setShowBili(false) }
+              if (!showModels) { setShowSettings(false); closeBiliDialog() }
             }}
             style={{
               ...navBtn,
@@ -2000,7 +2024,7 @@ export default function App() {
           <button
             onClick={() => {
               setShowSettings(!showSettings)
-              if (!showSettings) { setShowBili(false); setShowModels(false) }
+              if (!showSettings) { closeBiliDialog(); setShowModels(false) }
             }}
             style={{
               ...navBtn,
@@ -2120,7 +2144,12 @@ export default function App() {
                       padding: '8px 4px',
                     }}>
                       {trackMode === 'bili' && biliSpan ? (
-                        <BiliVideoPanel span={biliSpan} />
+                        <BiliVideoPanel
+                          span={biliSpan}
+                          onOpenDetail={() => requestBiliHistoryDetail(biliSpan, null)}
+                          onPlayLocal={() => requestBiliHistoryDetail(biliSpan, 'theater')}
+                          onToggleTranscribe={() => requestBiliHistoryDetail(biliSpan, 'transcribe')}
+                        />
                       ) : appSpan ? (
                         <AppHoverPanel span={appSpan} date={selectedDate} focusMinute={appFocusMinute} isAfk={isAfk} />
                       ) : null}
@@ -2214,7 +2243,14 @@ export default function App() {
                     }}>
                       {tagSpan && <SpanDetailPanel span={tagSpan} />}
                       {appSpan && <AppHoverPanel span={appSpan} date={selectedDate} focusMinute={appFocusMinute} isAfk={isAfk} />}
-                      {biliSpan && <BiliVideoPanel span={biliSpan} />}
+                      {biliSpan && (
+                        <BiliVideoPanel
+                          span={biliSpan}
+                          onOpenDetail={() => requestBiliHistoryDetail(biliSpan, null)}
+                          onPlayLocal={() => requestBiliHistoryDetail(biliSpan, 'theater')}
+                          onToggleTranscribe={() => requestBiliHistoryDetail(biliSpan, 'transcribe')}
+                        />
+                      )}
                       <div style={{ flex: 1 }} />
                     </div>
                   </div>
@@ -2282,7 +2318,8 @@ export default function App() {
         onRefresh={refreshBili}
         onFullScan={biliFullScan}
         onSetInterval={setBiliInterval}
-        onClose={() => setShowBili(false)}
+        onClose={closeBiliDialog}
+        pendingDetail={pendingBiliDetail}
       />
 
       <ModelDialog

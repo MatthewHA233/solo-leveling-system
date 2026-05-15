@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useMemo, useState, useCallback, useRef, useEffect } from 'react'
-import { Plus, Trash2, ChevronRight, ChevronDown, Folder, Tag as TagIcon, X, Pencil, Check } from 'lucide-react'
+import { Plus, Trash2, ChevronRight, ChevronDown, Folder, Tag as TagIcon, X, Pencil, Check, Search } from 'lucide-react'
 import type { ActivityCategory, ActivityTag, ActivityPalette } from '../types'
 import {
   addActivityCategory, deleteActivityCategory, updateActivityCategory,
@@ -33,6 +33,9 @@ const COLOR_PALETTE = [
   '#22C55E', '#38BDF8', '#F97316', '#E879F9', '#FACC15', '#14B8A6',
   '#FB7185', '#A78BFA', '#84CC16', '#60A5FA', '#F472B6', '#2DD4BF',
 ] as const
+
+// 搜索时复用的稳定空集,避免每次渲染都新建 Set 触发下游 memo 失效
+const EMPTY_SET: ReadonlySet<string> = new Set()
 
 function buildTree(category: ActivityCategory, tags: ActivityTag[]): PathNode {
   const root: PathNode = {
@@ -78,11 +81,40 @@ export default function ActivityTagPalette({
   // 编辑某个节点 / 分类（旧路径作为 key）
   const [editingPath, setEditingPath] = useState<{ categoryId: number; fullPath: string; isCategory: boolean } | null>(null)
   const [editingValue, setEditingValue] = useState('')
+  // 搜索过滤：query 命中 segment / category 名时,保留节点 + 祖先链;搜索时强制展开
+  const [searchQuery, setSearchQuery] = useState('')
 
   const trees = useMemo(() => {
     const sorted = [...palette.categories].sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt))
     return sorted.map((cat) => ({ category: cat, root: buildTree(cat, palette.tags) }))
   }, [palette])
+
+  const query = searchQuery.trim().toLowerCase()
+  const isSearching = query.length > 0
+
+  const visibleTrees = useMemo(() => {
+    if (!isSearching) return trees
+    function filterSubtree(node: PathNode): PathNode | null {
+      if (node.segment.toLowerCase().includes(query)) return node
+      const kids = new Map<string, PathNode>()
+      for (const [k, child] of node.children) {
+        const f = filterSubtree(child)
+        if (f) kids.set(k, f)
+      }
+      if (kids.size === 0) return null
+      return { ...node, children: kids }
+    }
+    return trees
+      .map(({ category, root }) => {
+        if (category.name.toLowerCase().includes(query)) return { category, root }
+        const filtered = filterSubtree(root)
+        return filtered ? { category, root: filtered } : null
+      })
+      .filter((x): x is { category: ActivityCategory; root: PathNode } => x !== null)
+  }, [trees, isSearching, query])
+
+  // 搜索时强制展开:把已收起的路径暂时忽略,让命中链路全部可见
+  const effectiveCollapsed = isSearching ? EMPTY_SET : collapsed
 
   const toggle = useCallback((path: string) => {
     setCollapsed((prev) => {
@@ -252,8 +284,77 @@ export default function ActivityTagPalette({
         padding: '24px 8px 8px 8px',
         gap: 6,
       }}>
-        {/* 顶部：新建分类（折叠为按钮 / 展开为输入条） */}
-        {addingCat ? (
+        {/* 顶部：搜索框 + 右侧小图标按钮"新建分类" */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{
+            flex: 1, minWidth: 0,
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '5px 9px',
+            border: `1px solid ${theme.hudFrameSoft}`,
+            background: 'rgba(34,197,94,0.04)',
+            clipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
+            WebkitClipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
+          }}>
+            <Search size={11} style={{ color: theme.textPrimary, flexShrink: 0 }} />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="搜索分类、标签..."
+              style={{
+                flex: 1, background: 'transparent', border: 'none',
+                color: theme.textPrimary, fontFamily: theme.fontBody,
+                fontSize: 12, outline: 'none', minWidth: 0,
+              }}
+            />
+            {searchQuery && (
+              <Tooltip content="清空">
+                <button
+                  onClick={() => setSearchQuery('')}
+                  aria-label="清空搜索"
+                  style={{
+                    flexShrink: 0,
+                    width: 16, height: 16,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    borderRadius: '50%',
+                    background: `${theme.textMuted}28`,
+                    border: 'none',
+                    color: theme.textPrimary,
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                >
+                  <X size={10} />
+                </button>
+              </Tooltip>
+            )}
+          </div>
+          <Tooltip content={addingCat ? '收起新建分类' : '新建分类'}>
+            <button
+              onClick={() => { if (addingCat) { setAddingCat(false); setNewCatName('') } else startAddCategory() }}
+              aria-label="新建分类"
+              style={{
+                flexShrink: 0,
+                width: 28, height: 28,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                background: addingCat
+                  ? `${theme.expGreen}28`
+                  : `${theme.expGreen}10`,
+                border: `1px solid ${theme.expGreen}${addingCat ? '88' : '55'}`,
+                color: theme.expGreen,
+                cursor: 'pointer',
+                clipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
+                WebkitClipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
+                textShadow: addingCat ? `0 0 5px ${theme.expGreen}` : undefined,
+                transition: 'background 0.15s, border-color 0.15s',
+              }}
+            >
+              <Plus size={13} />
+            </button>
+          </Tooltip>
+        </div>
+
+        {/* 展开后的新建分类输入面板（搜索框下方） */}
+        {addingCat && (
           <div style={{
             border: `1px solid ${theme.expGreen}66`,
             background: 'rgba(34,197,94,0.06)',
@@ -264,7 +365,7 @@ export default function ActivityTagPalette({
               autoFocus
               value={newCatName}
               onChange={(e) => setNewCatName(e.target.value)}
-              placeholder="分类名（如 工作 / 学习）"
+              placeholder="分类名（如 工作、学习）"
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleAddCategory()
                 else if (e.key === 'Escape') { setAddingCat(false); setNewCatName('') }
@@ -301,21 +402,6 @@ export default function ActivityTagPalette({
               >取消</button>
             </div>
           </div>
-        ) : (
-          <button
-            onClick={startAddCategory}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              gap: 6,
-              background: 'rgba(34,197,94,0.06)',
-              border: `1px dashed ${theme.expGreen}55`,
-              color: theme.expGreen,
-              padding: '7px 0',
-              cursor: 'pointer', fontSize: 11,
-            }}
-          >
-            <Plus size={12} /> 新建分类
-          </button>
         )}
 
         {trees.length === 0 && !addingCat && (
@@ -323,16 +409,25 @@ export default function ActivityTagPalette({
             color: theme.textMuted, fontSize: 11, textAlign: 'center',
             marginTop: 18, lineHeight: 1.6,
           }}>
-            还没有分类。<br />点上方 + 新建一个开始记录。
+            还没有分类。<br />点右上 + 新建一个开始记录。
           </div>
         )}
 
-        {trees.map(({ category, root }) => (
+        {trees.length > 0 && visibleTrees.length === 0 && (
+          <div style={{
+            color: theme.textMuted, fontSize: 11, textAlign: 'center',
+            marginTop: 18, lineHeight: 1.6,
+          }}>
+            没有匹配「{searchQuery}」的分类或标签
+          </div>
+        )}
+
+        {visibleTrees.map(({ category, root }) => (
           <CategoryBlock
             key={category.id}
             category={category}
             root={root}
-            collapsed={collapsed}
+            collapsed={effectiveCollapsed}
             onToggle={toggle}
             selectedTagId={selectedTagId}
             onSelectTag={onSelectTag}
@@ -351,6 +446,7 @@ export default function ActivityTagPalette({
             onCancelEdit={cancelEdit}
             onConfirmEdit={handleConfirmEdit}
             onChangeCategoryColor={handleChangeCategoryColor}
+            highlight={isSearching ? query : ''}
           />
         ))}
       </div>
@@ -361,7 +457,7 @@ export default function ActivityTagPalette({
 // ── 分类块 ──
 
 interface SharedNodeHandlers {
-  collapsed: Set<string>
+  collapsed: ReadonlySet<string>
   onToggle: (path: string) => void
   selectedTagId: number | null
   onSelectTag: (id: number | null) => void
@@ -378,6 +474,8 @@ interface SharedNodeHandlers {
   onStartEdit: (categoryId: number, fullPath: string, currentSegment: string, isCategory: boolean) => void
   onCancelEdit: () => void
   onConfirmEdit: () => void
+  /** 搜索关键字（小写）。非空时会在 segment 上做黄色高亮 */
+  highlight: string
 }
 
 function CategoryBlock({
@@ -463,7 +561,7 @@ function CategoryBlock({
             fontSize: 12, fontWeight: 600, color: theme.textPrimary,
             flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
-            {category.name}
+            <Highlight text={category.name} keyword={rest.highlight} />
           </span>
         )}
 
@@ -604,7 +702,7 @@ function TreeNode({
             fontSize: 11.5, color: theme.textPrimary,
             flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
-            {node.segment}
+            <Highlight text={node.segment} keyword={rest.highlight} />
           </span>
         )}
 
@@ -728,6 +826,37 @@ function InlineAddTag({
       </button>
     </div>
   )
+}
+
+// 搜索高亮:把命中片段包成 <mark>。keyword 已统一为小写;原文片段保持原样输出。
+function Highlight({ text, keyword }: { text: string; keyword: string }) {
+  if (!keyword) return <>{text}</>
+  const lowerText = text.toLowerCase()
+  const parts: React.ReactNode[] = []
+  let cursor = 0
+  let i = lowerText.indexOf(keyword)
+  let n = 0
+  while (i >= 0) {
+    if (i > cursor) parts.push(text.slice(cursor, i))
+    parts.push(
+      <mark
+        key={`m-${n++}`}
+        style={{
+          background: `${theme.warningOrange}40`,
+          color: theme.warningOrange,
+          padding: '0 1px',
+          borderRadius: 2,
+          fontWeight: 700,
+        }}
+      >
+        {text.slice(i, i + keyword.length)}
+      </mark>,
+    )
+    cursor = i + keyword.length
+    i = lowerText.indexOf(keyword, cursor)
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor))
+  return <>{parts}</>
 }
 
 function ColorSwatchRow({

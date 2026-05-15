@@ -49,6 +49,8 @@ interface Props {
   onPlayLocal?: () => void
   /** 影院模式生效中：父级已挂载真实视频，封面应该隐去 */
   theaterActive?: boolean
+  /** 提供时，点击标题不再跳浏览器，而是让父级打开"视频详情"（如 BiliHistoryDialog 的 overlay） */
+  onOpenDetail?: () => void
 }
 
 type DlStage =
@@ -121,7 +123,7 @@ function openInExplorer(filePath: string) {
   invoke('open_url_in_browser', { url: `file:///${filePath.replace(/\\/g, '/')}` }).catch(() => {})
 }
 
-export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscribe, onPlayLocal, theaterActive }: Props) {
+export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscribe, onPlayLocal, theaterActive, onOpenDetail }: Props) {
   const progressPct = span.duration > 0
     ? Math.min(100, Math.round((span.progress / span.duration) * 100))
     : 0
@@ -251,14 +253,17 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
         </span>
       </div>
 
-      {/* 封面（有本地视频→点击进入影院模式；否则打开浏览器；影院模式下隐藏） */}
-      {span.cover && !theaterActive && (
-        <Tooltip content={onPlayLocal ? '播放本地视频' : '在浏览器打开'}>
+      {/* 封面（有本地视频→点击进入影院/外部详情；否则打开浏览器；影院模式下隐藏） */}
+      {span.cover && !theaterActive && (() => {
+        // 只有当本面板内部已确认下载完成,且父级提供了 onPlayLocal,才走"本地播放"路径
+        const canPlayLocal = dl.stage === 'done' && !!onPlayLocal
+        return (
+        <Tooltip content={canPlayLocal ? '播放本地视频' : '在浏览器打开'}>
         <div
-          onClick={() => { if (onPlayLocal) onPlayLocal(); else openBili(span.bvid) }}
+          onClick={() => { if (canPlayLocal) onPlayLocal!(); else openBili(span.bvid) }}
           style={{
             marginBottom: 8, borderRadius: 4, overflow: 'hidden',
-            border: `1px solid ${onPlayLocal ? theme.shadowPurple : theme.divider}`,
+            border: `1px solid ${canPlayLocal ? theme.shadowPurple : theme.divider}`,
             cursor: 'pointer', position: 'relative',
           }}
         >
@@ -289,11 +294,13 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
           </div>
         </div>
         </Tooltip>
-      )}
+        )
+      })()}
 
-      {/* 视频标题（点击打开浏览器） */}
+      {/* 视频标题（父级提供 onOpenDetail 时 → 打开视频详情；否则 → 打开浏览器） */}
+      <Tooltip content={onOpenDetail ? '查看视频详情' : '在浏览器打开'}>
       <div
-        onClick={() => openBili(span.bvid)}
+        onClick={() => { if (onOpenDetail) onOpenDetail(); else openBili(span.bvid) }}
         style={{
           fontSize: 13, fontWeight: 600,
           color: theme.textPrimary,
@@ -306,6 +313,7 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
       >
         {span.title}
       </div>
+      </Tooltip>
 
       {/* UP主 + 观看时间（右对齐） */}
       <div style={{

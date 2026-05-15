@@ -1363,6 +1363,77 @@ function historyBtnStyle(enabled: boolean): React.CSSProperties {
   }
 }
 
+// 编辑模式开关：与 ChatPanel 的 HistoryToggle 同款断裂 HUD 边框（4 角 L + 上下刻度段 +
+// 右侧信号插头），绿色调对应"编辑"语义。
+function EditModeToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+  const c = theme.expGreen
+  const dim = on ? 1 : 0.5
+  return (
+    <Tooltip
+      content={on ? '退出编辑 (Ctrl+E)' : '编辑活动记录 (Ctrl+E)'}
+      wrapStyle={{ alignSelf: 'center' }}
+    >
+    <button
+      className="hud-edit-toggle"
+      data-on={on ? '1' : '0'}
+      onClick={onClick}
+      style={{
+        position: 'relative',
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '5px 14px 5px 10px',
+        background: on
+          ? `linear-gradient(90deg, ${hexToRgba(c, 0.22)} 0%, ${hexToRgba(c, 0.04)} 100%)`
+          : 'transparent',
+        border: 'none',
+        color: on ? c : hexToRgba(c, 0.55),
+        fontSize: 10.5, fontFamily: theme.fontMono,
+        fontWeight: 700, letterSpacing: 1.6,
+        cursor: 'pointer',
+        textShadow: on ? `0 0 5px ${c}` : undefined,
+        transition: 'color 0.15s, background 0.15s',
+        lineHeight: 1,
+      }}
+    >
+      <svg
+        width="100%" height="100%"
+        preserveAspectRatio="none"
+        style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none',
+          overflow: 'visible',
+          filter: on ? `drop-shadow(0 0 4px ${hexToRgba(c, 0.75)})` : undefined,
+        }}
+        viewBox="0 0 100 100"
+      >
+        <polyline points="0,14 0,0 14,0"   stroke={c} strokeWidth="2" fill="none" opacity={dim} />
+        <polyline points="86,0 100,0 100,14" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
+        <polyline points="100,86 100,100 86,100" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
+        <polyline points="14,100 0,100 0,86" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
+        <line x1="35" y1="0" x2="65" y2="0"     stroke={c} strokeWidth="1" opacity={dim * 0.6} />
+        <line x1="35" y1="100" x2="65" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.6} />
+        <line x1="25" y1="0" x2="25" y2="4"   stroke={c} strokeWidth="1" opacity={dim * 0.8} />
+        <line x1="75" y1="0" x2="75" y2="4"   stroke={c} strokeWidth="1" opacity={dim * 0.8} />
+        <line x1="25" y1="96" x2="25" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.8} />
+        <line x1="75" y1="96" x2="75" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.8} />
+      </svg>
+
+      <Pencil size={11} style={{ position: 'relative' }} />
+      <span style={{ position: 'relative' }}>{on ? '编辑中' : '编辑'}</span>
+
+      {on && (
+        <span style={{
+          position: 'absolute',
+          right: -7, top: 'calc(50% - 0.5px)',
+          width: 7, height: 1,
+          background: c,
+          boxShadow: `0 0 4px ${c}, 0 0 8px ${hexToRgba(c, 0.55)}`,
+          pointerEvents: 'none',
+        }} />
+      )}
+    </button>
+    </Tooltip>
+  )
+}
+
 function drawDragPreview(
   ctx: CanvasRenderingContext2D,
   p: ReturnType<typeof getGridParams>,
@@ -2649,7 +2720,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
         paddingLeft: 24,  // 左外边距：给 axis 溢出文本/装饰留空间（双层线 + TIME AXIS 文字）
       }}
     >
-      {/* 管线模式切换：tab 区紧贴顶部，tab 之间无 gap */}
+      {/* 管线模式切换：tab 区紧贴顶部，tab 之间无 gap；tab 整体贴底,标签/按钮单独居中 */}
       <div style={{
         display: 'flex', alignItems: 'flex-end', gap: 0,
         padding: '0 0 0 12px',
@@ -2657,6 +2728,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
         height: tabsHeight,
       }}>
         <span style={{
+          alignSelf: 'center',
           fontFamily: theme.fontMono, fontSize: 10.5, fontWeight: 700,
           letterSpacing: 2, color: theme.electricBlue,
           textShadow: `0 0 6px ${hexToRgba(theme.electricBlue, 0.55)}`,
@@ -2687,7 +2759,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
 
         {/* 编辑模式专用：撤回 / 恢复 */}
         {editMode && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginRight: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginRight: 6, alignSelf: 'center' }}>
             <Tooltip content="撤回 (Ctrl+Z)">
               <button
                 type="button"
@@ -2711,36 +2783,8 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
           </div>
         )}
 
-        {/* 编辑模式按钮（最右侧） */}
-        <Tooltip content={editMode ? '退出编辑 (Ctrl+E)' : '编辑活动记录 (Ctrl+E)'}>
-        <button
-          onClick={onEditModeToggle}
-          className="daynight-edit-btn"
-          data-active={editMode ? '1' : '0'}
-          style={{
-            position: 'relative',
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: editMode
-              ? `linear-gradient(90deg, ${hexToRgba(theme.expGreen, 0.26)} 0%, ${hexToRgba(theme.expGreen, 0.08)} 100%)`
-              : 'transparent',
-            border: `1px solid ${editMode ? hexToRgba(theme.expGreen, 0.7) : hexToRgba(theme.expGreen, 0.28)}`,
-            clipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
-            WebkitClipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
-            cursor: 'pointer',
-            padding: '3px 12px',
-            fontFamily: theme.fontBody,
-            fontSize: 11.5, fontWeight: 700,
-            color: editMode ? theme.expGreen : hexToRgba(theme.expGreen, 0.6),
-            textShadow: editMode ? `0 0 6px ${hexToRgba(theme.expGreen, 0.6)}` : undefined,
-            boxShadow: editMode ? `0 0 10px ${hexToRgba(theme.expGreen, 0.4)}, inset 0 0 8px ${hexToRgba(theme.expGreen, 0.2)}` : undefined,
-            letterSpacing: 1.2,
-            transition: 'color 0.15s, background 0.15s, box-shadow 0.15s, border-color 0.15s',
-          }}
-        >
-          <Pencil size={12} />
-          {editMode ? '编辑中' : '编辑'}
-        </button>
-        </Tooltip>
+        {/* 编辑模式按钮（最右侧）—— 与 ChatPanel 的"历史"按钮同款断裂 HUD 边框，绿色调 */}
+        <EditModeToggle on={editMode} onClick={onEditModeToggle} />
       </div>
 
       {/* 图表区：滚动 wrapper 占整片，sticky 时段层 + canvas；左半固定 axis 浮在上层 */}
