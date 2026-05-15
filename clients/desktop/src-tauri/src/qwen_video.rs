@@ -168,13 +168,16 @@ pub async fn qwen_audio_extract(
     let dir = crate::ffmpeg::find_ffmpeg_dir_pub(&app)?;
     let ffmpeg = dir.join(crate::ffmpeg::ffmpeg_bin_name());
 
-    let out = tokio::process::Command::new(&ffmpeg)
-        .args(["-hide_banner", "-y", "-nostats"])
+    let mut cmd = tokio::process::Command::new(&ffmpeg);
+    cmd.args(["-hide_banner", "-y", "-nostats"])
         .arg("-i").arg(&input)
         .args(["-vn", "-c:a", "aac", "-b:a", "128k"])
         .arg(&output)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let out = cmd
         .output()
         .await
         .map_err(|e| format!("ffmpeg 音频提取失败: {e}"))?;

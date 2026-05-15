@@ -103,16 +103,19 @@ fn find_tool_dir_in_path(ffmpeg_name: &str, ffprobe_name: &str) -> Option<PathBu
 
 /// 嗅探视频流 codec_name
 async fn probe(ffprobe: &Path, input: &Path) -> Result<String, String> {
-    let output = Command::new(ffprobe)
-        .args([
-            "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=codec_name",
-            "-of", "default=nw=1:nk=1",
-        ])
-        .arg(input)
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
+    let mut cmd = Command::new(ffprobe);
+    cmd.args([
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name",
+        "-of", "default=nw=1:nk=1",
+    ])
+    .arg(input)
+    .stderr(Stdio::piped())
+    .stdout(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("ffprobe spawn 失败: {e}"))?;
@@ -127,10 +130,13 @@ async fn probe(ffprobe: &Path, input: &Path) -> Result<String, String> {
 }
 
 async fn list_encoders(ffmpeg: &Path) -> Result<String, String> {
-    let output = Command::new(ffmpeg)
-        .args(["-hide_banner", "-encoders"])
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-encoders"])
         .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("ffmpeg -encoders 失败: {e}"))?;
@@ -219,6 +225,8 @@ async fn transcode(
         .arg(output)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
     let out = cmd
         .output()
