@@ -10,6 +10,7 @@ import {
   Check,
   ChevronRight,
   Globe,
+  Laptop,
   Link2,
   Link2Off,
   Monitor,
@@ -19,6 +20,7 @@ import {
   RotateCw,
   Server,
   Smartphone,
+  Timer,
   Wifi,
   X,
 } from 'lucide-react'
@@ -41,21 +43,30 @@ interface Props {
   readonly open: boolean
   readonly onClose: () => void
   readonly anchorRect?: DOMRect | null
+  /** 距下次自动同步剩余秒数（由 App.tsx 全局计时） */
+  readonly nextSyncCountdownS?: number
+  /** 是否有任意 linked 设备正在同步（用于波形和倒计时暂停文案） */
+  readonly anySyncing?: boolean
 }
 
 function peerBaseUrl(peer: SyncPeer): string {
   return `${peer.protocol || 'http'}://${peer.ip}:${peer.port}`
 }
 
-function platformIcon(deviceType: string, alias: string): typeof Monitor {
-  const type = deviceType?.toLowerCase() ?? ''
+function platformIcon(deviceType: string, deviceModel: string, alias: string): typeof Monitor {
+  const type = (deviceType ?? '').toLowerCase()
+  const model = (deviceModel ?? '').toLowerCase()
   if (type === 'mobile') return Smartphone
   if (type === 'web') return Globe
   if (type === 'server' || type === 'headless') return Server
-  if (type === 'desktop') return Monitor
+  if (type === 'desktop') {
+    if (model.includes('mac')) return Laptop
+    return Monitor
+  }
   if (/(iphone|ipad|android|redmi|xiaomi|huawei|honor|pixel|oppo|vivo|samsung|mi\s*\d)/i.test(alias)) {
     return Smartphone
   }
+  if (/(macbook|mac\b|imac)/i.test(alias)) return Laptop
   return Monitor
 }
 
@@ -70,7 +81,7 @@ function formatLastSync(value: string | null): string {
   return date === todayStr ? `今天 ${time.slice(0, 5)}` : `${date.slice(5)} ${time.slice(0, 5)}`
 }
 
-export default function SyncPeerDialog({ open, onClose, anchorRect }: Props) {
+export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCountdownS, anySyncing }: Props) {
   const [localHello, setLocalHello] = useState<SyncHello | null>(null)
   const [peers, setPeers] = useState<SyncPeer[]>([])
   const [links, setLinks] = useState<LinkedDevice[]>([])
@@ -272,7 +283,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect }: Props) {
 
   if (!open) return null
 
-  const LocalIcon = platformIcon(localHello?.device_type ?? 'desktop', localHello?.alias ?? '')
+  const LocalIcon = platformIcon(localHello?.device_type ?? 'desktop', localHello?.device_model ?? '', localHello?.alias ?? '')
 
   return (
     <div
@@ -402,8 +413,25 @@ export default function SyncPeerDialog({ open, onClose, anchorRect }: Props) {
             <Link2 size={12} color={theme.expGreen} />
             <span style={{ ...sectionTitleStyle, color: theme.expGreen }}>LINKED</span>
             <span style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted }}>
-              · {links.length} 台 · 启动即自动同步
+              · {links.length} 台
             </span>
+            {links.length > 0 && typeof nextSyncCountdownS === 'number' && (
+              <span style={{
+                marginLeft: 'auto',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                fontFamily: theme.fontMono,
+                fontSize: 10,
+                color: anySyncing ? theme.expGreen : theme.textMuted,
+                letterSpacing: 0.6,
+              }}>
+                <Timer size={10} className={anySyncing ? 'spin' : undefined} />
+                {anySyncing
+                  ? '同步中…'
+                  : `下次自动 ${Math.max(0, Math.round(nextSyncCountdownS))}s`}
+              </span>
+            )}
           </div>
           {links.length === 0 ? (
             <div style={{
@@ -420,7 +448,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect }: Props) {
               {links.map((link) => {
                 const peer = peerByDeviceId.get(link.device_id)
                 const online = !!peer
-                const Icon = platformIcon(peer?.device_type ?? 'desktop', link.alias)
+                const Icon = platformIcon(peer?.device_type ?? 'desktop', peer?.device_model ?? '', link.alias)
                 const busy = busyLinkId === link.device_id
                 return (
                   <LinkedCard
@@ -642,7 +670,7 @@ function UnlinkedCard({
   busy: boolean
   onLink: () => void
 }) {
-  const Icon = platformIcon(peer.device_type, peer.alias)
+  const Icon = platformIcon(peer.device_type, peer.device_model, peer.alias)
   return (
     <div style={{
       display: 'flex',

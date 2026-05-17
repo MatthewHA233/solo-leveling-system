@@ -1385,9 +1385,11 @@ fn install_panic_hook() {
         write_panic_log(&format!("    {msg}"));
         eprintln!("[PANIC {now}] thread '{thread_name}' panicked at {location}: {msg}");
 
-        // 然后尝试 backtrace —— catch_unwind 兜底，walker 自己出问题也不再升级
+        // 用 `backtrace` crate 取代 std::backtrace —— Windows DbgHelp 在 panic 语境
+        // 下不稳定，stdlib 的实现常二次崩溃；这个第三方实现更鲁棒，且支持解析符号
         let bt_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            format!("{}", std::backtrace::Backtrace::force_capture())
+            let bt = backtrace::Backtrace::new();
+            format!("{:?}", bt)
         }));
         match bt_result {
             Ok(bt) => write_panic_log(&bt),

@@ -405,6 +405,56 @@ export interface SyncPlannedBlock {
   deleted_at: string | null
 }
 
+export interface SyncModelApiKey {
+  id: string
+  label: string
+  api_key: string
+  is_active: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SyncModelCallLog {
+  id: string
+  api_key_id: string | null
+  feature: string
+  model_id: string
+  started_at: string
+  duration_ms: number | null
+  prompt_text_tokens: number
+  prompt_image_tokens: number
+  prompt_video_tokens: number
+  prompt_audio_tokens: number
+  completion_text_tokens: number
+  completion_audio_tokens: number
+  cost_cny: number | null
+  free_quota_tokens: number
+  free_quota_saved_cny: number
+  success: number
+  error_message: string | null
+  metadata: string | null
+}
+
+export interface SyncModelFreeQuota {
+  model_id: string
+  has_free_quota: number
+  not_supported: number
+  used_tokens: number
+  total_tokens: number
+  remaining_tokens: number
+  used_percent: string | null
+  expire_date: string | null
+  raw_quota: string | null
+  scanned_at: string
+  error_message: string | null
+}
+
+export interface SyncFeatureBinding {
+  feature: string
+  model_id: string
+  updated_at: string
+}
+
 export interface SyncExport {
   device_id: string
   exported_at: string
@@ -414,6 +464,10 @@ export interface SyncExport {
   activity_blocks: SyncActivityBlock[]
   plan_nodes: SyncPlanNode[]
   planned_blocks: SyncPlannedBlock[]
+  model_api_keys: SyncModelApiKey[]
+  model_call_log: SyncModelCallLog[]
+  model_free_quota: SyncModelFreeQuota[]
+  feature_bindings: SyncFeatureBinding[]
 }
 
 export interface SyncImportResult {
@@ -422,6 +476,10 @@ export interface SyncImportResult {
   activity_blocks: number
   plan_nodes: number
   planned_blocks: number
+  model_api_keys: number
+  model_call_log: number
+  model_free_quota: number
+  feature_bindings: number
   skipped: number
 }
 

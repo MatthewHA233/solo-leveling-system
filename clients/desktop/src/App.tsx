@@ -10,7 +10,7 @@ import {
   fetchPerceptionSpans, fetchBiliSpans, fetchGoals, parseGoalTags,
   fetchActivityPalette, fetchActivityBlocks, paintActivityBlocks, eraseActivityBlocks,
   fetchPlanNodes, fetchPlannedBlocks, paintPlannedBlocks, erasePlannedBlocks,
-  fetchSyncLinks, fetchSyncPeers,
+  fetchSyncLinks, fetchSyncPeers, runSyncLink,
 } from './lib/local-api'
 import type { PerceptionSpan, BiliSpan, ModelCallLog, LinkedDevice, SyncPeer } from './lib/local-api'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from './types'
@@ -292,6 +292,7 @@ export default function App() {
   const [linkedDevices, setLinkedDevices] = useState<LinkedDevice[]>([])
   const [discoveredPeers, setDiscoveredPeers] = useState<SyncPeer[]>([])
   const [syncingDeviceIds, setSyncingDeviceIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [autoSyncCountdownS, setAutoSyncCountdownS] = useState<number>(60)
 
   // 昼夜表右栏 BiliVideoPanel 直达 B 站历史详情用：每次点击都 bump key，
   // 触发 BiliHistoryDialog 内部 useEffect 把 date+detailSpan+detailMode 一次性灌入。
@@ -698,6 +699,39 @@ export default function App() {
       fetchSyncPeers().then(setDiscoveredPeers).catch(() => {})
     }, 5000)
     return () => clearInterval(timer)
+  }, [])
+
+  // 自动同步：每 60 秒对所有在线 linked 设备触发一次双向同步
+  const AUTO_SYNC_INTERVAL_S = 60
+  const linkedDevicesRef = useRef(linkedDevices)
+  const discoveredPeersRef = useRef(discoveredPeers)
+  const syncingIdsRef = useRef(syncingDeviceIds)
+  useEffect(() => { linkedDevicesRef.current = linkedDevices }, [linkedDevices])
+  useEffect(() => { discoveredPeersRef.current = discoveredPeers }, [discoveredPeers])
+  useEffect(() => { syncingIdsRef.current = syncingDeviceIds }, [syncingDeviceIds])
+
+  useEffect(() => {
+    const triggerAutoSync = () => {
+      const onlineIds = new Set(discoveredPeersRef.current.map((p) => p.device_id))
+      const syncingNow = syncingIdsRef.current
+      for (const link of linkedDevicesRef.current) {
+        if (!onlineIds.has(link.device_id)) continue
+        if (syncingNow.has(link.device_id)) continue
+        runSyncLink(link.device_id).catch((err) => {
+          console.warn('[AutoSync] failed for', link.alias, err)
+        })
+      }
+    }
+    const tick = setInterval(() => {
+      setAutoSyncCountdownS((s) => {
+        if (s <= 1) {
+          triggerAutoSync()
+          return AUTO_SYNC_INTERVAL_S
+        }
+        return s - 1
+      })
+    }, 1000)
+    return () => clearInterval(tick)
   }, [])
 
   // 切换日期 / 进出编辑模式 → 清空撤回栈（栈是当日操作的快照，跨日无意义）
@@ -2257,7 +2291,11 @@ export default function App() {
                         width: 5, height: 5, borderRadius: '50%',
                         background: chipColor,
                         boxShadow: isOnline || isSyncing ? `0 0 5px ${chipColor}` : undefined,
-                        animation: isSyncing ? 'glowPulse 1.2s ease-in-out infinite' : undefined,
+                        animation: isSyncing
+                          ? 'glowPulse 0.8s ease-in-out infinite'
+                          : isOnline
+                            ? 'glowPulse 2.2s ease-in-out infinite'
+                            : undefined,
                         flexShrink: 0,
                       }} />
                       {link.alias}
@@ -2272,18 +2310,20 @@ export default function App() {
                   }}>+{overflow}</span>
                 )}
 
-                {/* 流动波形：anySyncing 时滚动，否则保留静态心跳 */}
+                {/* 流动波形：anySyncing 时强烈滚动，平时静态心跳，未链接时灰且暗 */}
                 <svg width={52} height={18} viewBox="0 0 52 18" style={{ overflow: 'visible', marginLeft: 2 }}>
                   <polyline
                     className={anySyncing ? 'sync-flow' : undefined}
                     points="0,9 8,9 12,4 16,14 20,2 24,16 28,9 36,9 40,5 44,13 48,9 52,9"
                     fill="none"
                     stroke={tintColor}
-                    strokeWidth={1.3}
+                    strokeWidth={anySyncing ? 1.8 : 1.3}
                     strokeDasharray={anySyncing ? '4 3' : undefined}
                     style={{
-                      filter: `drop-shadow(0 0 3px ${tintColor}AA)`,
-                      opacity: hasLinks || anySyncing ? 1 : 0.4,
+                      filter: anySyncing
+                        ? `drop-shadow(0 0 6px ${tintColor}) drop-shadow(0 0 2px ${tintColor})`
+                        : `drop-shadow(0 0 3px ${tintColor}AA)`,
+                      opacity: anySyncing ? 1 : hasLinks ? 0.85 : 0.35,
                     }}
                   />
                 </svg>
@@ -2672,6 +2712,8 @@ export default function App() {
         open={showSync}
         anchorRect={syncAnchorRect}
         onClose={() => setShowSync(false)}
+        nextSyncCountdownS={autoSyncCountdownS}
+        anySyncing={syncingDeviceIds.size > 0}
       />
 
       {/* 活动记录涂块 toast（10s 自动消失） */}

@@ -159,6 +159,68 @@ pub struct SyncExport {
     pub activity_blocks: Vec<SyncActivityBlock>,
     pub plan_nodes: Vec<SyncPlanNode>,
     pub planned_blocks: Vec<SyncPlannedBlock>,
+    #[serde(default)]
+    pub model_api_keys: Vec<SyncModelApiKey>,
+    #[serde(default)]
+    pub model_call_log: Vec<SyncModelCallLog>,
+    #[serde(default)]
+    pub model_free_quota: Vec<SyncModelFreeQuota>,
+    #[serde(default)]
+    pub feature_bindings: Vec<SyncFeatureBinding>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncModelApiKey {
+    pub id: String,
+    pub label: String,
+    pub api_key: String,
+    pub is_active: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncModelCallLog {
+    pub id: String,
+    pub api_key_id: Option<String>,
+    pub feature: String,
+    pub model_id: String,
+    pub started_at: String,
+    pub duration_ms: Option<i64>,
+    pub prompt_text_tokens: i64,
+    pub prompt_image_tokens: i64,
+    pub prompt_video_tokens: i64,
+    pub prompt_audio_tokens: i64,
+    pub completion_text_tokens: i64,
+    pub completion_audio_tokens: i64,
+    pub cost_cny: Option<f64>,
+    pub free_quota_tokens: i64,
+    pub free_quota_saved_cny: f64,
+    pub success: i32,
+    pub error_message: Option<String>,
+    pub metadata: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncModelFreeQuota {
+    pub model_id: String,
+    pub has_free_quota: i32,
+    pub not_supported: i32,
+    pub used_tokens: i64,
+    pub total_tokens: i64,
+    pub remaining_tokens: i64,
+    pub used_percent: Option<String>,
+    pub expire_date: Option<String>,
+    pub raw_quota: Option<String>,
+    pub scanned_at: String,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncFeatureBinding {
+    pub feature: String,
+    pub model_id: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -177,6 +239,14 @@ pub struct SyncImportResult {
     pub activity_blocks: usize,
     pub plan_nodes: usize,
     pub planned_blocks: usize,
+    #[serde(default)]
+    pub model_api_keys: usize,
+    #[serde(default)]
+    pub model_call_log: usize,
+    #[serde(default)]
+    pub model_free_quota: usize,
+    #[serde(default)]
+    pub feature_bindings: usize,
     pub skipped: usize,
 }
 
@@ -1865,6 +1935,97 @@ impl Database {
           .filter(|r| changed(&r.updated_at, r.deleted_at.as_deref()))
           .collect::<Vec<_>>();
 
+        // ── 模型相关 4 张表 ──
+        let mut stmt = conn.prepare(
+            "SELECT id, label, api_key, is_active, created_at, updated_at FROM model_api_keys"
+        ).map_err(|e| e.to_string())?;
+        let model_api_keys = stmt.query_map([], |row| {
+            Ok(SyncModelApiKey {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                api_key: row.get(2)?,
+                is_active: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        }).map_err(|e| e.to_string())?
+          .filter_map(|r| r.ok())
+          .filter(|r| changed(&r.updated_at, None))
+          .collect::<Vec<_>>();
+
+        // call_log 是 append-only：用 started_at 当增量游标
+        let mut stmt = conn.prepare(
+            "SELECT id, api_key_id, feature, model_id, started_at, duration_ms,
+                    prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
+                    completion_text_tokens, completion_audio_tokens,
+                    cost_cny, free_quota_tokens, free_quota_saved_cny,
+                    success, error_message, metadata
+             FROM model_call_log"
+        ).map_err(|e| e.to_string())?;
+        let model_call_log = stmt.query_map([], |row| {
+            Ok(SyncModelCallLog {
+                id: row.get(0)?,
+                api_key_id: row.get(1)?,
+                feature: row.get(2)?,
+                model_id: row.get(3)?,
+                started_at: row.get(4)?,
+                duration_ms: row.get(5)?,
+                prompt_text_tokens: row.get(6)?,
+                prompt_image_tokens: row.get(7)?,
+                prompt_video_tokens: row.get(8)?,
+                prompt_audio_tokens: row.get(9)?,
+                completion_text_tokens: row.get(10)?,
+                completion_audio_tokens: row.get(11)?,
+                cost_cny: row.get(12)?,
+                free_quota_tokens: row.get(13)?,
+                free_quota_saved_cny: row.get(14)?,
+                success: row.get(15)?,
+                error_message: row.get(16)?,
+                metadata: row.get(17)?,
+            })
+        }).map_err(|e| e.to_string())?
+          .filter_map(|r| r.ok())
+          .filter(|r| changed(&r.started_at, None))
+          .collect::<Vec<_>>();
+
+        let mut stmt = conn.prepare(
+            "SELECT model_id, has_free_quota, not_supported, used_tokens, total_tokens,
+                    remaining_tokens, used_percent, expire_date, raw_quota, scanned_at, error_message
+             FROM model_free_quota"
+        ).map_err(|e| e.to_string())?;
+        let model_free_quota = stmt.query_map([], |row| {
+            Ok(SyncModelFreeQuota {
+                model_id: row.get(0)?,
+                has_free_quota: row.get(1)?,
+                not_supported: row.get(2)?,
+                used_tokens: row.get(3)?,
+                total_tokens: row.get(4)?,
+                remaining_tokens: row.get(5)?,
+                used_percent: row.get(6)?,
+                expire_date: row.get(7)?,
+                raw_quota: row.get(8)?,
+                scanned_at: row.get(9)?,
+                error_message: row.get(10)?,
+            })
+        }).map_err(|e| e.to_string())?
+          .filter_map(|r| r.ok())
+          .filter(|r| changed(&r.scanned_at, None))
+          .collect::<Vec<_>>();
+
+        let mut stmt = conn.prepare(
+            "SELECT feature, model_id, updated_at FROM feature_bindings"
+        ).map_err(|e| e.to_string())?;
+        let feature_bindings = stmt.query_map([], |row| {
+            Ok(SyncFeatureBinding {
+                feature: row.get(0)?,
+                model_id: row.get(1)?,
+                updated_at: row.get(2)?,
+            })
+        }).map_err(|e| e.to_string())?
+          .filter_map(|r| r.ok())
+          .filter(|r| changed(&r.updated_at, None))
+          .collect::<Vec<_>>();
+
         Ok(SyncExport {
             device_id,
             exported_at: exported_at.clone(),
@@ -1874,6 +2035,10 @@ impl Database {
             activity_blocks,
             plan_nodes,
             planned_blocks,
+            model_api_keys,
+            model_call_log,
+            model_free_quota,
+            feature_bindings,
         })
     }
 
@@ -1885,6 +2050,10 @@ impl Database {
             activity_blocks: 0,
             plan_nodes: 0,
             planned_blocks: 0,
+            model_api_keys: 0,
+            model_call_log: 0,
+            model_free_quota: 0,
+            feature_bindings: 0,
             skipped: 0,
         };
 
@@ -2033,6 +2202,109 @@ impl Database {
                 params![&row.sync_id, &row.date, row.minute, plan_node_id, &row.note, &row.created_at, &row.updated_at, &row.deleted_at],
             ).map_err(|e| e.to_string())?;
             result.planned_blocks += 1;
+        }
+
+        // ── 模型 API Keys：LWW by updated_at，PK=id ──
+        for row in payload.model_api_keys {
+            let local_updated: Option<String> = conn.query_row(
+                "SELECT updated_at FROM model_api_keys WHERE id = ?",
+                params![&row.id],
+                |r| r.get(0),
+            ).optional().map_err(|e| e.to_string())?;
+            if local_updated.as_deref().map(|t| row.updated_at <= t.to_string()).unwrap_or(false) {
+                result.skipped += 1;
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO model_api_keys (id, label, api_key, is_active, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   label=excluded.label, api_key=excluded.api_key, is_active=excluded.is_active,
+                   created_at=excluded.created_at, updated_at=excluded.updated_at",
+                params![&row.id, &row.label, &row.api_key, row.is_active, &row.created_at, &row.updated_at],
+            ).map_err(|e| e.to_string())?;
+            result.model_api_keys += 1;
+        }
+
+        // ── 模型调用日志：append-only，PK=id 撞了就跳过 ──
+        for row in payload.model_call_log {
+            let exists: bool = conn.query_row(
+                "SELECT 1 FROM model_call_log WHERE id = ?",
+                params![&row.id],
+                |_| Ok(true),
+            ).optional().map_err(|e| e.to_string())?.unwrap_or(false);
+            if exists {
+                result.skipped += 1;
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO model_call_log (id, api_key_id, feature, model_id, started_at, duration_ms,
+                    prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
+                    completion_text_tokens, completion_audio_tokens,
+                    cost_cny, free_quota_tokens, free_quota_saved_cny,
+                    success, error_message, metadata)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    &row.id, &row.api_key_id, &row.feature, &row.model_id, &row.started_at, row.duration_ms,
+                    row.prompt_text_tokens, row.prompt_image_tokens, row.prompt_video_tokens, row.prompt_audio_tokens,
+                    row.completion_text_tokens, row.completion_audio_tokens,
+                    row.cost_cny, row.free_quota_tokens, row.free_quota_saved_cny,
+                    row.success, &row.error_message, &row.metadata,
+                ],
+            ).map_err(|e| e.to_string())?;
+            result.model_call_log += 1;
+        }
+
+        // ── 模型免费额度状态：LWW by scanned_at，PK=model_id ──
+        for row in payload.model_free_quota {
+            let local_scanned: Option<String> = conn.query_row(
+                "SELECT scanned_at FROM model_free_quota WHERE model_id = ?",
+                params![&row.model_id],
+                |r| r.get(0),
+            ).optional().map_err(|e| e.to_string())?;
+            if local_scanned.as_deref().map(|t| row.scanned_at <= t.to_string()).unwrap_or(false) {
+                result.skipped += 1;
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO model_free_quota (model_id, has_free_quota, not_supported,
+                    used_tokens, total_tokens, remaining_tokens, used_percent, expire_date, raw_quota,
+                    scanned_at, error_message)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(model_id) DO UPDATE SET
+                   has_free_quota=excluded.has_free_quota, not_supported=excluded.not_supported,
+                   used_tokens=excluded.used_tokens, total_tokens=excluded.total_tokens,
+                   remaining_tokens=excluded.remaining_tokens, used_percent=excluded.used_percent,
+                   expire_date=excluded.expire_date, raw_quota=excluded.raw_quota,
+                   scanned_at=excluded.scanned_at, error_message=excluded.error_message",
+                params![
+                    &row.model_id, row.has_free_quota, row.not_supported,
+                    row.used_tokens, row.total_tokens, row.remaining_tokens,
+                    &row.used_percent, &row.expire_date, &row.raw_quota,
+                    &row.scanned_at, &row.error_message,
+                ],
+            ).map_err(|e| e.to_string())?;
+            result.model_free_quota += 1;
+        }
+
+        // ── Feature ↔ 模型 绑定：LWW by updated_at，PK=feature ──
+        for row in payload.feature_bindings {
+            let local_updated: Option<String> = conn.query_row(
+                "SELECT updated_at FROM feature_bindings WHERE feature = ?",
+                params![&row.feature],
+                |r| r.get(0),
+            ).optional().map_err(|e| e.to_string())?;
+            if local_updated.as_deref().map(|t| row.updated_at <= t.to_string()).unwrap_or(false) {
+                result.skipped += 1;
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO feature_bindings (feature, model_id, updated_at) VALUES (?, ?, ?)
+                 ON CONFLICT(feature) DO UPDATE SET
+                   model_id=excluded.model_id, updated_at=excluded.updated_at",
+                params![&row.feature, &row.model_id, &row.updated_at],
+            ).map_err(|e| e.to_string())?;
+            result.feature_bindings += 1;
         }
 
         Ok(result)
