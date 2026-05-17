@@ -330,6 +330,9 @@ export interface SyncHello {
   server_time: string
   protocol_version: number
   tables: string[]
+  alias: string
+  device_type: string
+  device_model: string
 }
 
 export interface SyncPeer {
@@ -341,6 +344,8 @@ export interface SyncPeer {
   protocol: string
   last_seen_at: string
   source: string
+  device_type: string
+  device_model: string
 }
 
 export interface SyncActivityCategory {
@@ -488,6 +493,63 @@ export async function pushSyncToPeer(peerBase: string, since?: string | null): P
   const snapshot = await exportSync(since)
   const importResult = await importSync(snapshot, peerBase)
   return { snapshot, importResult }
+}
+
+export async function setLocalSyncAlias(alias: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/sync/alias`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ alias }),
+  })
+  const json: ApiResponse<string> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '更新别名失败')
+  return json.data
+}
+
+// ── 已链接（持久自动同步）设备 ──
+
+export interface LinkedDevice {
+  device_id: string
+  alias: string
+  last_base: string
+  last_synced_at: string | null
+  created_at: string
+}
+
+export interface SyncRoundResult {
+  pulled: SyncImportResult
+  pushed: SyncImportResult
+}
+
+export async function fetchSyncLinks(): Promise<LinkedDevice[]> {
+  const res = await fetch(`${API_BASE}/api/sync/links`)
+  const json: ApiResponse<LinkedDevice[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '获取链接列表失败')
+  return json.data
+}
+
+export async function addSyncLink(deviceId: string, alias: string, lastBase: string): Promise<LinkedDevice> {
+  const res = await fetch(`${API_BASE}/api/sync/links`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_id: deviceId, alias, last_base: lastBase }),
+  })
+  const json: ApiResponse<LinkedDevice> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '建立链接失败')
+  return json.data
+}
+
+export async function removeSyncLink(deviceId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/sync/links/${encodeURIComponent(deviceId)}`, { method: 'DELETE' })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '解除链接失败')
+}
+
+export async function runSyncLink(deviceId: string): Promise<SyncRoundResult> {
+  const res = await fetch(`${API_BASE}/api/sync/links/${encodeURIComponent(deviceId)}/sync`, { method: 'POST' })
+  const json: ApiResponse<SyncRoundResult> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '同步失败')
+  return json.data
 }
 
 // ── Perception Timeline API（保留 PerceptionSpan 数据结构） ──

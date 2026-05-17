@@ -20,6 +20,10 @@ pub struct SyncPeer {
     pub protocol: String,
     pub last_seen_at: String,
     pub source: String,
+    #[serde(default)]
+    pub device_type: String,
+    #[serde(default)]
+    pub device_model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,14 +35,21 @@ pub struct SyncDiscoveryDto {
     pub port: u16,
     pub protocol: String,
     pub announce: bool,
+    #[serde(default)]
+    pub device_type: String,
+    #[serde(default)]
+    pub device_model: String,
 }
 
 pub struct SyncDiscoveryState {
     pub peers: Mutex<HashMap<String, SyncPeer>>,
     pub device_id: String,
     pub pair_code: String,
-    pub alias: String,
+    pub alias: std::sync::Mutex<String>,
     pub port: u16,
+    pub device_type: &'static str,
+    pub device_model: &'static str,
+    pub db: Arc<Database>,
 }
 
 impl SyncDiscoveryState {
@@ -48,33 +59,57 @@ impl SyncDiscoveryState {
         peers
     }
 
+    pub fn alias(&self) -> String {
+        self.alias.lock().map(|g| g.clone()).unwrap_or_else(|_| String::new())
+    }
+
+    pub fn set_alias(&self, alias: String) {
+        if let Ok(mut guard) = self.alias.lock() {
+            *guard = alias;
+        }
+    }
+
     pub async fn remember_peer(&self, dto: SyncDiscoveryDto, addr: SocketAddr, source: &'static str) {
         if dto.device_id == self.device_id {
             return;
         }
 
+        let ip = addr.ip().to_string();
+        let peer_port = dto.port;
+        let peer_base = format!("{}://{}:{}", dto.protocol.clone().to_owned().as_str(), &ip, peer_port);
         let peer = SyncPeer {
             device_id: dto.device_id.clone(),
             pair_code: dto.pair_code,
             alias: dto.alias,
-            ip: addr.ip().to_string(),
-            port: dto.port,
+            ip,
+            port: peer_port,
             protocol: dto.protocol,
             last_seen_at: local_now_string(),
             source: source.to_string(),
+            device_type: dto.device_type,
+            device_model: dto.device_model,
         };
+        let device_id = dto.device_id.clone();
         self.peers.lock().await.insert(dto.device_id, peer);
+
+        // 命中已链接设备则自动后台同步
+        let db = self.db.clone();
+        tokio::spawn(async move {
+            crate::sync_engine::maybe_sync_on_discover(db, &device_id, &peer_base).await;
+        });
     }
 
     pub fn dto(&self, announce: bool) -> SyncDiscoveryDto {
         SyncDiscoveryDto {
-            alias: self.alias.clone(),
+            alias: self.alias(),
             version: SYNC_DISCOVERY_VERSION.to_string(),
             device_id: self.device_id.clone(),
             pair_code: self.pair_code.clone(),
             port: self.port,
             protocol: "http".to_string(),
             announce,
+            device_type: self.device_type.to_string(),
+            device_model: self.device_model.to_string(),
         }
     }
 
@@ -94,12 +129,16 @@ impl SyncDiscoveryState {
 
 pub async fn start(db: Arc<Database>, port: u16) -> Arc<SyncDiscoveryState> {
     let device_id = db.sync_device_id().await.unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+    let alias = db.sync_alias().await.unwrap_or_else(|_| crate::db::generate_alias(&device_id));
     let state = Arc::new(SyncDiscoveryState {
         pair_code: sync_pair_code(&device_id),
         device_id,
-        alias: default_alias(),
+        alias: std::sync::Mutex::new(alias),
         port,
         peers: Mutex::new(HashMap::new()),
+        device_type: device_type(),
+        device_model: device_model(),
+        db: db.clone(),
     });
 
     let listener_state = state.clone();
@@ -150,12 +189,21 @@ async fn run_listener(state: Arc<SyncDiscoveryState>) -> Result<(), String> {
     }
 }
 
-fn default_alias() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "SOLO LEVELING SYSTEM".to_string())
+pub fn device_type() -> &'static str {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        "mobile"
+    } else {
+        "desktop"
+    }
+}
+
+pub fn device_model() -> &'static str {
+    if cfg!(target_os = "windows") { "Windows" }
+    else if cfg!(target_os = "macos") { "macOS" }
+    else if cfg!(target_os = "linux") { "Linux" }
+    else if cfg!(target_os = "android") { "Android" }
+    else if cfg!(target_os = "ios") { "iOS" }
+    else { "Unknown" }
 }
 
 fn local_now_string() -> String {

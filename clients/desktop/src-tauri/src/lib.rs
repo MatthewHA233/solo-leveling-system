@@ -7,6 +7,7 @@ use tauri::Emitter;
 mod db;
 mod api;
 mod sync_discovery;
+mod sync_engine;
 mod fish_tts;
 mod perception;
 mod qwen_asr;
@@ -1402,8 +1403,16 @@ pub fn run() {
                 let bailian_clone = bailian_state.clone();
                 let bili_dl_clone = bili_dl_state.clone();
                 let db_for_api = db_clone.clone();
+                let app_handle_for_api = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    api::start_server(db_for_api, bili_clone, bailian_clone, bili_dl_clone, 49733).await;
+                    api::start_server(db_for_api, bili_clone, bailian_clone, bili_dl_clone, app_handle_for_api, 49733).await;
+                });
+
+                // 启动后台同步：等 HTTP server 起来 + 多播广播完成，再扫一遍已链接设备
+                let db_for_startup_sync = db_clone.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    sync_engine::run_startup_sync(db_for_startup_sync).await;
                 });
 
                 #[cfg(windows)]

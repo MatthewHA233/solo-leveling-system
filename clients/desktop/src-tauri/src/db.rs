@@ -162,6 +162,15 @@ pub struct SyncExport {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LinkedDevice {
+    pub device_id: String,
+    pub alias: String,
+    pub last_base: String,
+    pub last_synced_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SyncImportResult {
     pub activity_categories: usize,
     pub activity_tags: usize,
@@ -726,6 +735,17 @@ impl Database {
 
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_planned_blocks_node ON planned_blocks(plan_node_id);")
             .map_err(|e| format!("创建 planned_blocks 索引失败: {}", e))?;
+
+        // 已链接设备：用户认下的"长期同步"对端，启动时自动双向同步
+        conn.execute_batch(r#"
+            CREATE TABLE IF NOT EXISTS linked_devices (
+                device_id TEXT PRIMARY KEY,
+                alias TEXT NOT NULL,
+                last_base TEXT NOT NULL,
+                last_synced_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+        "#).map_err(|e| format!("创建 linked_devices 失败: {}", e))?;
 
         ensure_sync_metadata(&conn)?;
 
@@ -1626,6 +1646,103 @@ impl Database {
     pub async fn sync_device_id(&self) -> Result<String, String> {
         let conn = self.conn.lock().await;
         get_or_create_device_id(&conn)
+    }
+
+    pub async fn sync_alias(&self) -> Result<String, String> {
+        let conn = self.conn.lock().await;
+        let existing: Option<String> = conn.query_row(
+            "SELECT value FROM sync_meta WHERE key = 'device_alias'",
+            [],
+            |row| row.get(0),
+        ).optional().map_err(|e| e.to_string())?;
+        if let Some(alias) = existing.filter(|s| !s.trim().is_empty()) {
+            return Ok(alias);
+        }
+        let device_id = get_or_create_device_id(&conn)?;
+        let alias = generate_alias(&device_id);
+        conn.execute(
+            "INSERT INTO sync_meta (key, value, updated_at) VALUES ('device_alias', ?, ?)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            params![&alias, local_now_string()],
+        ).map_err(|e| e.to_string())?;
+        Ok(alias)
+    }
+
+    pub async fn set_sync_alias(&self, alias: String) -> Result<String, String> {
+        let alias = alias.trim().to_string();
+        if alias.is_empty() {
+            return Err("别名不能为空".to_string());
+        }
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO sync_meta (key, value, updated_at) VALUES ('device_alias', ?, ?)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            params![&alias, local_now_string()],
+        ).map_err(|e| e.to_string())?;
+        Ok(alias)
+    }
+
+    pub async fn list_linked_devices(&self) -> Result<Vec<LinkedDevice>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT device_id, alias, last_base, last_synced_at, created_at
+             FROM linked_devices
+             ORDER BY COALESCE(last_synced_at, '') DESC, alias ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(LinkedDevice {
+                device_id: row.get(0)?,
+                alias: row.get(1)?,
+                last_base: row.get(2)?,
+                last_synced_at: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub async fn add_linked_device(&self, device_id: String, alias: String, last_base: String) -> Result<LinkedDevice, String> {
+        let device_id = device_id.trim().to_string();
+        if device_id.is_empty() {
+            return Err("device_id 不能为空".to_string());
+        }
+        let alias = alias.trim().to_string();
+        let last_base = last_base.trim().to_string();
+        let conn = self.conn.lock().await;
+        let now = local_now_string();
+        conn.execute(
+            "INSERT INTO linked_devices (device_id, alias, last_base, created_at) VALUES (?, ?, ?, ?)
+             ON CONFLICT(device_id) DO UPDATE SET
+               alias=excluded.alias, last_base=excluded.last_base",
+            params![&device_id, &alias, &last_base, &now],
+        ).map_err(|e| e.to_string())?;
+        let created_at: String = conn.query_row(
+            "SELECT created_at FROM linked_devices WHERE device_id = ?",
+            params![&device_id],
+            |r| r.get(0),
+        ).map_err(|e| e.to_string())?;
+        let last_synced_at: Option<String> = conn.query_row(
+            "SELECT last_synced_at FROM linked_devices WHERE device_id = ?",
+            params![&device_id],
+            |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())?.flatten();
+        Ok(LinkedDevice { device_id, alias, last_base, last_synced_at, created_at })
+    }
+
+    pub async fn remove_linked_device(&self, device_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute("DELETE FROM linked_devices WHERE device_id = ?", params![device_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn touch_link_synced(&self, device_id: &str, last_base: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE linked_devices SET last_synced_at = ?, last_base = ? WHERE device_id = ?",
+            params![local_now_string(), last_base, device_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub async fn export_sync(&self, since: Option<String>) -> Result<SyncExport, String> {
@@ -3121,6 +3238,32 @@ fn get_or_create_device_id(conn: &Connection) -> Result<String, String> {
 pub fn sync_pair_code(device_id: &str) -> String {
     let hash = stable_hash_hex(&format!("solo-leveling-system:sync:v1:{device_id}"));
     format!("{}-{}", &hash[0..4], &hash[4..8]).to_uppercase()
+}
+
+// LocalSend 风格"形容词 + 水果"萌系别名词库（中文，与 LocalSend zh-CN 同源）
+const ALIAS_ADJECTIVES: &[&str] = &[
+    "迷人", "美丽", "巨大", "明亮", "干净", "聪明", "帅气", "可爱", "狡猾", "坚定",
+    "有活力", "高效", "极好", "快速", "不错", "新鲜", "华丽", "伟大", "英俊", "炽热",
+    "善良", "诚实", "神秘", "整洁", "开心", "耐心", "漂亮", "强大", "富有", "秘密",
+    "稳固", "特别", "战略", "智慧",
+];
+const ALIAS_FRUITS: &[&str] = &[
+    "苹果", "鳄梨", "香蕉", "黑莓", "蓝莓", "西兰花", "胡萝卜", "樱桃", "椰子", "葡萄",
+    "柠檬", "莴苣", "芒果", "甜瓜", "蘑菇", "洋葱", "橙子", "木瓜", "桃子", "梨",
+    "菠萝", "土豆", "南瓜", "覆盆子", "草莓", "番茄",
+];
+
+pub fn generate_alias(device_id: &str) -> String {
+    let hex = stable_hash_hex(&format!("solo-leveling-system:alias:v1:{device_id}"));
+    let bytes = hex.as_bytes();
+    let parse_u32 = |slice: &[u8]| -> u32 {
+        std::str::from_utf8(slice).ok()
+            .and_then(|s| u32::from_str_radix(s, 16).ok())
+            .unwrap_or(0)
+    };
+    let adj_idx = parse_u32(&bytes[0..8]) as usize % ALIAS_ADJECTIVES.len();
+    let fruit_idx = parse_u32(&bytes[8..16]) as usize % ALIAS_FRUITS.len();
+    format!("{}的{}", ALIAS_ADJECTIVES[adj_idx], ALIAS_FRUITS[fruit_idx])
 }
 
 fn should_apply_sync_row(conn: &Connection, table: &str, sync_id: &str, incoming_updated_at: &str) -> Result<bool, String> {

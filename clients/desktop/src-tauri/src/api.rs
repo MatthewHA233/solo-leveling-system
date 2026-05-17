@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use uuid;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::{oneshot, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 
@@ -24,9 +25,11 @@ use crate::db::{
     AddCategoryRequest, AddTagRequest, PaintBlocksRequest, EraseBlocksRequest,
     AddPlanNodeRequest, UpdatePlanNodeRequest, PaintPlannedBlocksRequest,
     UpdateCategoryRequest, RenamePathRequest, PerceptionSpan, SyncExport, SyncImportResult,
+    LinkedDevice,
 };
 use crate::bili_download::{BiliDownloadState, PlayUrlMeta, QualityProbe, deliver_playurl_result, deliver_probe_result};
 use crate::sync_discovery::{SyncDiscoveryState, SyncPeer};
+use crate::sync_engine::{self, SyncRoundResult};
 
 // ── Bilibili 回调状态 ──
 
@@ -69,6 +72,7 @@ pub struct ApiState {
     pub bailian: Arc<BailianState>,
     pub bili_dl: Arc<BiliDownloadState>,
     pub sync_discovery: Arc<SyncDiscoveryState>,
+    pub app_handle: AppHandle,
 }
 
 // ── Response Types ──
@@ -176,6 +180,21 @@ struct SyncHello {
     server_time: String,
     protocol_version: i32,
     tables: Vec<&'static str>,
+    alias: String,
+    device_type: String,
+    device_model: String,
+}
+
+#[derive(Deserialize)]
+struct SetAliasPayload {
+    alias: String,
+}
+
+#[derive(Deserialize)]
+struct AddLinkPayload {
+    device_id: String,
+    alias: String,
+    last_base: String,
 }
 
 // ── Handlers ──
@@ -464,19 +483,44 @@ async fn erase_planned_blocks(
 /// GET /api/sync/hello
 async fn sync_hello(State(state): State<ApiState>) -> Json<ApiResponse<SyncHello>> {
     match state.db.sync_device_id().await {
-        Ok(device_id) => Json(ApiResponse::ok(SyncHello {
-            pair_code: crate::db::sync_pair_code(&device_id),
-            device_id,
-            server_time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-            protocol_version: 1,
-            tables: vec![
-                "activity_categories",
-                "activity_tags",
-                "activity_blocks",
-                "plan_nodes",
-                "planned_blocks",
-            ],
-        })),
+        Ok(device_id) => {
+            let alias = state.sync_discovery.alias();
+            Json(ApiResponse::ok(SyncHello {
+                pair_code: crate::db::sync_pair_code(&device_id),
+                device_id,
+                server_time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                protocol_version: 1,
+                tables: vec![
+                    "activity_categories",
+                    "activity_tags",
+                    "activity_blocks",
+                    "plan_nodes",
+                    "planned_blocks",
+                ],
+                alias,
+                device_type: state.sync_discovery.device_type.to_string(),
+                device_model: state.sync_discovery.device_model.to_string(),
+            }))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/sync/alias  — 改本机别名（写入 sync_meta + 广播状态）
+async fn sync_set_alias(
+    State(state): State<ApiState>,
+    Json(payload): Json<SetAliasPayload>,
+) -> Json<ApiResponse<String>> {
+    match state.db.set_sync_alias(payload.alias).await {
+        Ok(stored) => {
+            state.sync_discovery.set_alias(stored.clone());
+            // 通知 LAN 上其他设备别名已更新（让对端缓存的 alias 也刷新）
+            let announcer = state.sync_discovery.clone();
+            tokio::spawn(async move {
+                let _ = announcer.send_announcement().await;
+            });
+            Json(ApiResponse::ok(stored))
+        }
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -497,8 +541,85 @@ async fn sync_import(
     State(state): State<ApiState>,
     Json(payload): Json<SyncExport>,
 ) -> Json<ApiResponse<SyncImportResult>> {
+    let from_device_id = payload.device_id.clone();
     match state.db.import_sync(payload).await {
-        Ok(result) => Json(ApiResponse::ok(result)),
+        Ok(result) => {
+            // 通知前端：数据库被对端 import 改过了，全局重拉
+            let total = result.activity_categories
+                + result.activity_tags
+                + result.activity_blocks
+                + result.plan_nodes
+                + result.planned_blocks;
+            if total > 0 {
+                let _ = state.app_handle.emit("sync:imported", serde_json::json!({
+                    "from_device_id": from_device_id,
+                    "changed": total,
+                    "result": &result,
+                }));
+            }
+            Json(ApiResponse::ok(result))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// GET /api/sync/links — 已链接（持久自动同步）设备列表
+async fn sync_links(State(state): State<ApiState>) -> Json<ApiResponse<Vec<LinkedDevice>>> {
+    match state.db.list_linked_devices().await {
+        Ok(list) => Json(ApiResponse::ok(list)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/sync/links — 建立链接（写入 linked_devices 并立刻同步一轮）
+async fn sync_link_add(
+    State(state): State<ApiState>,
+    Json(body): Json<AddLinkPayload>,
+) -> Json<ApiResponse<LinkedDevice>> {
+    match state.db.add_linked_device(body.device_id, body.alias, body.last_base.clone()).await {
+        Ok(link) => {
+            let db_for_sync = state.db.clone();
+            let base = link.last_base.clone();
+            let device_id = link.device_id.clone();
+            tokio::spawn(async move {
+                if let Ok(_) = sync_engine::bidirectional_sync(db_for_sync.clone(), &base).await {
+                    let _ = db_for_sync.touch_link_synced(&device_id, &base).await;
+                }
+            });
+            Json(ApiResponse::ok(link))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// DELETE /api/sync/links/{device_id} — 解除链接
+async fn sync_link_remove(
+    State(state): State<ApiState>,
+    Path(device_id): Path<String>,
+) -> Json<ApiResponse<()>> {
+    match state.db.remove_linked_device(&device_id).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/sync/links/{device_id}/sync — 立即手动同步一次
+async fn sync_link_run(
+    State(state): State<ApiState>,
+    Path(device_id): Path<String>,
+) -> Json<ApiResponse<SyncRoundResult>> {
+    let links = match state.db.list_linked_devices().await {
+        Ok(l) => l,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let Some(link) = links.into_iter().find(|l| l.device_id == device_id) else {
+        return Json(ApiResponse::error("设备未链接"));
+    };
+    match sync_engine::bidirectional_sync(state.db.clone(), &link.last_base).await {
+        Ok(result) => {
+            let _ = state.db.touch_link_synced(&device_id, &link.last_base).await;
+            Json(ApiResponse::ok(result))
+        }
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -1140,8 +1261,9 @@ pub fn create_router(
     bailian: Arc<BailianState>,
     bili_dl: Arc<BiliDownloadState>,
     sync_discovery: Arc<SyncDiscoveryState>,
+    app_handle: AppHandle,
 ) -> Router {
-    let state = ApiState { db, bili, bailian, bili_dl, sync_discovery };
+    let state = ApiState { db, bili, bailian, bili_dl, sync_discovery, app_handle };
 
     Router::new()
         .route("/api/health", get(health))
@@ -1161,10 +1283,14 @@ pub fn create_router(
         .route("/api/plans/blocks/paint", post(paint_planned_blocks))
         .route("/api/plans/blocks/erase", post(erase_planned_blocks))
         .route("/api/sync/hello", get(sync_hello))
+        .route("/api/sync/alias", post(sync_set_alias))
         .route("/api/sync/export", get(sync_export))
         .route("/api/sync/import", post(sync_import))
         .route("/api/sync/peers", get(sync_peers))
         .route("/api/sync/discover", post(sync_discover))
+        .route("/api/sync/links", get(sync_links).post(sync_link_add))
+        .route("/api/sync/links/{device_id}", delete(sync_link_remove))
+        .route("/api/sync/links/{device_id}/sync", post(sync_link_run))
         .route("/api/sessions", get(list_chat_sessions).post(create_chat_session))
         .route("/api/sessions/search", get(search_chat_sessions))
         .route("/api/sessions/cleanup_empty", post(cleanup_empty_chat_sessions))
@@ -1205,10 +1331,11 @@ pub async fn start_server(
     bili: Arc<BiliState>,
     bailian: Arc<BailianState>,
     bili_dl: Arc<BiliDownloadState>,
+    app_handle: AppHandle,
     port: u16,
 ) {
     let sync_discovery = crate::sync_discovery::start(db.clone(), port).await;
-    let app = create_router(db, bili, bailian, bili_dl, sync_discovery);
+    let app = create_router(db, bili, bailian, bili_dl, sync_discovery, app_handle);
     let addr = format!("0.0.0.0:{}", port);
 
     log::info!("[API] HTTP 服务器启动: http://{}", addr);

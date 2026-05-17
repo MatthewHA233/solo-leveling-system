@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Boxes, ChevronLeft, ChevronRight, Settings } from 'lucide-react'
+import { Boxes, ChevronLeft, ChevronRight, Settings, Wifi } from 'lucide-react'
 import BiliIcon from './components/icons/BiliIcon'
 import {
   fetchPerceptionSpans, fetchBiliSpans, fetchGoals, parseGoalTags,
@@ -69,6 +69,7 @@ import AppHoverPanel from './components/AppHoverPanel'
 import BiliVideoPanel from './components/BiliVideoPanel'
 import BiliHistoryDialog from './components/BiliHistoryDialog'
 import ModelDialog from './components/ModelDialog'
+import SyncPeerDialog from './components/SyncPeerDialog'
 import { useBiliHistory } from './lib/bilibili/useHistory'
 import ActivityTagPalette from './components/ActivityTagPalette'
 import PlanNodePalette from './components/PlanNodePalette'
@@ -284,6 +285,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showBili, setShowBili] = useState(false)
   const [showModels, setShowModels] = useState(false)
+  const [showSync, setShowSync] = useState(false)
+  const [syncAnchorRect, setSyncAnchorRect] = useState<DOMRect | null>(null)
+  const syncTriggerRef = useRef<HTMLButtonElement | null>(null)
 
   // 昼夜表右栏 BiliVideoPanel 直达 B 站历史详情用：每次点击都 bump key，
   // 触发 BiliHistoryDialog 内部 useEffect 把 date+detailSpan+detailMode 一次性灌入。
@@ -633,6 +637,22 @@ export default function App() {
   const refreshActivityPalette = useCallback(() => {
     fetchActivityPalette().then(setActivityPalette).catch(() => {})
   }, [])
+
+  // 监听后端 sync:imported 事件 —— 对端 push 到我们这里后，Rust 端发出广播，
+  // 这里把标签库 / 实际涂块 / 计划块 / 计划节点一并刷新。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen('sync:imported', () => {
+        refreshActivityPalette()
+        refreshActivityBlocks()
+        refreshPlannedBlocks()
+        refreshPlanNodes()
+        invalidateActivityRangeCache(selectedDate)
+      }).then((fn) => { unlisten = fn }).catch(() => {})
+    })
+    return () => { unlisten?.() }
+  }, [refreshActivityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshPlanNodes, selectedDate])
 
   // 切换日期 / 进出编辑模式 → 清空撤回栈（栈是当日操作的快照，跨日无意义）
   useEffect(() => {
@@ -2149,6 +2169,39 @@ export default function App() {
               style={{ filter: `drop-shadow(0 0 3px ${theme.electricBlue}AA)` }}
             />
           </svg>
+          <Tooltip content="局域网同步">
+            <button
+              ref={syncTriggerRef}
+              onClick={() => {
+                setShowSync((open) => {
+                  const next = !open
+                  if (next) {
+                    setSyncAnchorRect(syncTriggerRef.current?.getBoundingClientRect() ?? null)
+                  }
+                  return next
+                })
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                height: 22,
+                padding: '0 8px',
+                background: showSync ? `${theme.electricBlue}1A` : 'rgba(0,229,255,0.04)',
+                border: `1px solid ${showSync ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
+                color: showSync ? theme.electricBlue : theme.textSecondary,
+                fontFamily: theme.fontMono,
+                fontSize: 10,
+                letterSpacing: 1.4,
+                fontWeight: 700,
+                cursor: 'pointer',
+                textShadow: showSync ? `0 0 6px ${theme.electricBlue}AA` : undefined,
+              }}
+            >
+              <Wifi size={11} />
+              LAN
+            </button>
+          </Tooltip>
         </div>
 
         <div style={{ flex: 1 }} />
@@ -2525,6 +2578,12 @@ export default function App() {
         config={config}
         onUpdate={handleConfigUpdate}
         onClose={() => setShowSettings(false)}
+      />
+
+      <SyncPeerDialog
+        open={showSync}
+        anchorRect={syncAnchorRect}
+        onClose={() => setShowSync(false)}
       />
 
       {/* 活动记录涂块 toast（10s 自动消失） */}
