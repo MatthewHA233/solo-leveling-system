@@ -20,8 +20,9 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::db::{
     AppendChatMessagesRequest, ChatMessage, ChatSession, Database, UpdateChatSessionRequest,
     BiliHistoryRow, UpsertBiliItem, BiliSpan, BiliDayCount, Goal, PresenceSpan,
-    ActivityCategory, ActivityTag, ActivityBlock, ActivityPalette,
+    ActivityCategory, ActivityTag, ActivityBlock, ActivityPalette, PlanNode, PlannedBlock,
     AddCategoryRequest, AddTagRequest, PaintBlocksRequest, EraseBlocksRequest,
+    AddPlanNodeRequest, UpdatePlanNodeRequest, PaintPlannedBlocksRequest,
     UpdateCategoryRequest, RenamePathRequest, PerceptionSpan,
 };
 use crate::bili_download::{BiliDownloadState, PlayUrlMeta, QualityProbe, deliver_playurl_result, deliver_probe_result};
@@ -92,6 +93,11 @@ impl<T: Serialize> ApiResponse<T> {
 #[derive(Deserialize)]
 struct DateQuery {
     date: String,
+}
+
+#[derive(Deserialize)]
+struct ProjectTagQuery {
+    project_tag_id: i64,
 }
 
 #[derive(Deserialize)]
@@ -355,6 +361,85 @@ async fn erase_activity_blocks(
     Json(body): Json<EraseBlocksRequest>,
 ) -> Json<ApiResponse<i64>> {
     match state.db.erase_activity_blocks(body).await {
+        Ok(n) => Json(ApiResponse::ok(n)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// GET /api/plans/nodes?project_tag_id=123
+async fn get_plan_nodes(
+    State(state): State<ApiState>,
+    Query(query): Query<ProjectTagQuery>,
+) -> Json<ApiResponse<Vec<PlanNode>>> {
+    match state.db.get_plan_nodes_by_project(query.project_tag_id).await {
+        Ok(nodes) => Json(ApiResponse::ok(nodes)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/plans/nodes
+async fn add_plan_node(
+    State(state): State<ApiState>,
+    Json(body): Json<AddPlanNodeRequest>,
+) -> Json<ApiResponse<PlanNode>> {
+    match state.db.add_plan_node(body).await {
+        Ok(node) => Json(ApiResponse::ok(node)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// PATCH /api/plans/nodes/{id}
+async fn update_plan_node(
+    State(state): State<ApiState>,
+    Path(id): Path<i64>,
+    Json(mut body): Json<UpdatePlanNodeRequest>,
+) -> Json<ApiResponse<()>> {
+    body.id = id;
+    match state.db.update_plan_node(body).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// DELETE /api/plans/nodes/{id}
+async fn delete_plan_node(
+    State(state): State<ApiState>,
+    Path(id): Path<i64>,
+) -> Json<ApiResponse<()>> {
+    match state.db.delete_plan_node(id).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// GET /api/plans/blocks?date=2026-04-04
+async fn get_planned_blocks(
+    State(state): State<ApiState>,
+    Query(query): Query<DateQuery>,
+) -> Json<ApiResponse<Vec<PlannedBlock>>> {
+    match state.db.get_planned_blocks_by_date(&query.date).await {
+        Ok(blocks) => Json(ApiResponse::ok(blocks)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/plans/blocks/paint
+async fn paint_planned_blocks(
+    State(state): State<ApiState>,
+    Json(body): Json<PaintPlannedBlocksRequest>,
+) -> Json<ApiResponse<i64>> {
+    match state.db.paint_planned_blocks(body).await {
+        Ok(n) => Json(ApiResponse::ok(n)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/plans/blocks/erase
+async fn erase_planned_blocks(
+    State(state): State<ApiState>,
+    Json(body): Json<EraseBlocksRequest>,
+) -> Json<ApiResponse<i64>> {
+    match state.db.erase_planned_blocks(body).await {
         Ok(n) => Json(ApiResponse::ok(n)),
         Err(e) => Json(ApiResponse::error(&e)),
     }
@@ -997,6 +1082,11 @@ pub fn create_router(
         .route("/api/activities/blocks", get(get_activity_blocks))
         .route("/api/activities/blocks/paint", post(paint_activity_blocks))
         .route("/api/activities/blocks/erase", post(erase_activity_blocks))
+        .route("/api/plans/nodes", get(get_plan_nodes).post(add_plan_node))
+        .route("/api/plans/nodes/{id}", patch(update_plan_node).delete(delete_plan_node))
+        .route("/api/plans/blocks", get(get_planned_blocks))
+        .route("/api/plans/blocks/paint", post(paint_planned_blocks))
+        .route("/api/plans/blocks/erase", post(erase_planned_blocks))
         .route("/api/sessions", get(list_chat_sessions).post(create_chat_session))
         .route("/api/sessions/search", get(search_chat_sessions))
         .route("/api/sessions/cleanup_empty", post(cleanup_empty_chat_sessions))

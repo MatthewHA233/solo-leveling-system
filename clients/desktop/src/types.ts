@@ -27,6 +27,27 @@ export interface ActivityBlock {
   createdAt: string
 }
 
+export interface PlanNode {
+  id: number
+  projectTagId: number
+  parentId: number | null
+  title: string
+  status: 'active' | 'done' | 'archived'
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PlannedBlock {
+  date: string
+  minute: number
+  planNodeId: number
+  note: string | null
+  createdAt: string
+}
+
+export type RecordLayer = 'actual' | 'plan'
+
 export interface ActivityPalette {
   categories: ActivityCategory[]
   tags: ActivityTag[]
