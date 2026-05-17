@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Boxes, ChevronLeft, ChevronRight, Link2, Settings } from 'lucide-react'
+import { Boxes, ChevronLeft, ChevronRight, Globe, Laptop, Link2, Monitor, Server, Settings, Smartphone } from 'lucide-react'
 import BiliIcon from './components/icons/BiliIcon'
 import {
   fetchPerceptionSpans, fetchBiliSpans, fetchGoals, parseGoalTags,
@@ -70,7 +70,7 @@ import AppHoverPanel from './components/AppHoverPanel'
 import BiliVideoPanel from './components/BiliVideoPanel'
 import BiliHistoryDialog from './components/BiliHistoryDialog'
 import ModelDialog from './components/ModelDialog'
-import SyncPeerDialog from './components/SyncPeerDialog'
+import SyncPeerDialog, { type SyncLogEntry } from './components/SyncPeerDialog'
 import { useBiliHistory } from './lib/bilibili/useHistory'
 import ActivityTagPalette from './components/ActivityTagPalette'
 import PlanNodePalette from './components/PlanNodePalette'
@@ -293,6 +293,14 @@ export default function App() {
   const [discoveredPeers, setDiscoveredPeers] = useState<SyncPeer[]>([])
   const [syncingDeviceIds, setSyncingDeviceIds] = useState<ReadonlySet<string>>(() => new Set())
   const [autoSyncCountdownS, setAutoSyncCountdownS] = useState<number>(60)
+  // 同步日志：最近 20 条事件（启动/完成/错误/本地操作反馈），LAN 浮层日志面板展示
+  const [syncLog, setSyncLog] = useState<readonly SyncLogEntry[]>([])
+  const pushSyncLog = useCallback((entry: Omit<SyncLogEntry, 'ts'>) => {
+    setSyncLog((prev) => {
+      const next: SyncLogEntry = { ...entry, ts: Date.now() }
+      return [next, ...prev].slice(0, 20)
+    })
+  }, [])
 
   // 昼夜表右栏 BiliVideoPanel 直达 B 站历史详情用：每次点击都 bump key，
   // 触发 BiliHistoryDialog 内部 useEffect 把 date+detailSpan+detailMode 一次性灌入。
@@ -655,15 +663,26 @@ export default function App() {
   //   - sync:finished   → 同步结束，从 syncing 集合移除并刷新 links
   useEffect(() => {
     const cleanups: Array<() => void> = []
+    const linkAliasOf = (deviceId: string | undefined): string | undefined => {
+      if (!deviceId) return undefined
+      return linkedDevicesRef.current.find((l) => l.device_id === deviceId)?.alias
+    }
     import('@tauri-apps/api/event').then(({ listen }) => {
       const promises = [
-        listen<{ device_id?: string }>('sync:imported', () => {
+        listen<{ device_id?: string; changed?: number }>('sync:imported', (e) => {
           refreshActivityPalette()
           refreshActivityBlocks()
           refreshPlannedBlocks()
           refreshPlanNodes()
           invalidateActivityRangeCache(selectedDate)
           fetchSyncLinks().then(setLinkedDevices).catch(() => {})
+          const changed = e.payload?.changed ?? 0
+          const alias = linkAliasOf(e.payload?.device_id) ?? '对端'
+          pushSyncLog({
+            kind: 'sync',
+            alias,
+            text: `${alias} 推送 ${changed} 条变更到本机`,
+          })
         }),
         listen<{ device_id: string }>('sync:started', (e) => {
           const id = e.payload?.device_id
@@ -674,7 +693,7 @@ export default function App() {
             return next
           })
         }),
-        listen<{ device_id: string }>('sync:finished', (e) => {
+        listen<{ device_id: string; ok?: boolean; error?: string | null }>('sync:finished', (e) => {
           const id = e.payload?.device_id
           if (id) {
             setSyncingDeviceIds((prev) => {
@@ -684,6 +703,12 @@ export default function App() {
             })
           }
           fetchSyncLinks().then(setLinkedDevices).catch(() => {})
+          const alias = linkAliasOf(id) ?? id ?? '设备'
+          if (e.payload?.ok) {
+            pushSyncLog({ kind: 'sync', alias, text: `与 ${alias} 同步完成` })
+          } else {
+            pushSyncLog({ kind: 'error', alias, text: `与 ${alias} 同步失败: ${e.payload?.error ?? '未知错误'}` })
+          }
         }),
       ]
       Promise.all(promises).then((unlisteners) => {
@@ -691,7 +716,7 @@ export default function App() {
       }).catch(() => {})
     })
     return () => { cleanups.forEach((fn) => fn()) }
-  }, [refreshActivityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshPlanNodes, selectedDate])
+  }, [refreshActivityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshPlanNodes, selectedDate, pushSyncLog])
 
   // 定时刷新 discovered peers（每 5 秒）—— 顶栏判断 linked 设备在线/离线
   useEffect(() => {
@@ -2265,39 +2290,54 @@ export default function App() {
                 )}
 
                 {visibleLinks.map((link) => {
+                  const peer = discoveredPeers.find((p) => p.device_id === link.device_id)
                   const isOnline = onlineDeviceIds.has(link.device_id)
                   const isSyncing = syncingDeviceIds.has(link.device_id)
                   const chipColor = isSyncing ? theme.expGreen : isOnline ? theme.electricBlue : theme.textMuted
+                  const pickIcon = (() => {
+                    const t = (peer?.device_type ?? '').toLowerCase()
+                    const m = (peer?.device_model ?? '').toLowerCase()
+                    if (t === 'mobile') return Smartphone
+                    if (t === 'web') return Globe
+                    if (t === 'server' || t === 'headless') return Server
+                    if (t === 'desktop' && m.includes('mac')) return Laptop
+                    if (/(iphone|ipad|android|redmi|xiaomi|huawei|honor|pixel|oppo|vivo|samsung|mi\s*\d)/i.test(link.alias)) return Smartphone
+                    if (/(macbook|mac\b|imac)/i.test(link.alias)) return Laptop
+                    return Monitor
+                  })()
+                  const Icon = pickIcon
                   return (
                     <span
                       key={link.device_id}
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: 4,
+                        gap: 5,
                         padding: '2px 7px',
                         background: `${chipColor}14`,
                         border: `1px solid ${chipColor}55`,
                         color: chipColor,
                         fontSize: 10.5,
                         fontWeight: 600,
-                        maxWidth: 90,
+                        maxWidth: 110,
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                       }}
                     >
-                      <span style={{
-                        width: 5, height: 5, borderRadius: '50%',
-                        background: chipColor,
-                        boxShadow: isOnline || isSyncing ? `0 0 5px ${chipColor}` : undefined,
-                        animation: isSyncing
-                          ? 'glowPulse 0.8s ease-in-out infinite'
-                          : isOnline
-                            ? 'glowPulse 2.2s ease-in-out infinite'
-                            : undefined,
-                        flexShrink: 0,
-                      }} />
+                      <Icon
+                        size={11}
+                        style={{
+                          flexShrink: 0,
+                          filter: isOnline || isSyncing ? `drop-shadow(0 0 4px ${chipColor})` : undefined,
+                          animation: isSyncing
+                            ? 'glowPulse 0.8s ease-in-out infinite'
+                            : isOnline
+                              ? 'glowPulse 2.2s ease-in-out infinite'
+                              : undefined,
+                          opacity: isOnline || isSyncing ? 1 : 0.6,
+                        }}
+                      />
                       {link.alias}
                     </span>
                   )
@@ -2714,6 +2754,8 @@ export default function App() {
         onClose={() => setShowSync(false)}
         nextSyncCountdownS={autoSyncCountdownS}
         anySyncing={syncingDeviceIds.size > 0}
+        syncLog={syncLog}
+        appendLog={pushSyncLog}
       />
 
       {/* 活动记录涂块 toast（10s 自动消失） */}

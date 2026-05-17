@@ -18,6 +18,7 @@ import {
   Plug,
   RefreshCw,
   RotateCw,
+  ScrollText,
   Server,
   Smartphone,
   Timer,
@@ -39,6 +40,15 @@ import { theme } from '../theme'
 import { HudFrame } from './hud'
 import Tooltip from './Tooltip'
 
+export interface SyncLogEntry {
+  /** epoch ms */
+  ts: number
+  kind: 'sync' | 'info' | 'error'
+  /** 关联的设备别名（如果适用） */
+  alias?: string
+  text: string
+}
+
 interface Props {
   readonly open: boolean
   readonly onClose: () => void
@@ -47,6 +57,10 @@ interface Props {
   readonly nextSyncCountdownS?: number
   /** 是否有任意 linked 设备正在同步（用于波形和倒计时暂停文案） */
   readonly anySyncing?: boolean
+  /** 同步事件日志（来自 App.tsx 全局） */
+  readonly syncLog?: readonly SyncLogEntry[]
+  /** 浮层内部本地反馈也写入全局日志 */
+  readonly appendLog?: (entry: Omit<SyncLogEntry, 'ts'>) => void
 }
 
 function peerBaseUrl(peer: SyncPeer): string {
@@ -81,7 +95,7 @@ function formatLastSync(value: string | null): string {
   return date === todayStr ? `今天 ${time.slice(0, 5)}` : `${date.slice(5)} ${time.slice(0, 5)}`
 }
 
-export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCountdownS, anySyncing }: Props) {
+export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCountdownS, anySyncing, syncLog, appendLog }: Props) {
   const [localHello, setLocalHello] = useState<SyncHello | null>(null)
   const [peers, setPeers] = useState<SyncPeer[]>([])
   const [links, setLinks] = useState<LinkedDevice[]>([])
@@ -90,8 +104,17 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
   const [manualUrl, setManualUrl] = useState(() => localStorage.getItem('sls.sync.peerUrl') ?? '')
   const [manualBusy, setManualBusy] = useState(false)
   const [busyLinkId, setBusyLinkId] = useState<string | null>(null)
-  const [message, setMessage] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [logOpen, setLogOpen] = useState(false)
+  // 本地反馈直接写入全局日志（替代之前底部 toast 行）
+  // 旧调用点 setMessage(null) / setError(null) 用来"清空" —— 日志模式下不需要清，转无操作
+  const setMessage = useCallback((text: string | null) => {
+    if (text == null) return
+    appendLog?.({ kind: 'info', text })
+  }, [appendLog])
+  const setError = useCallback((text: string | null) => {
+    if (text == null) return
+    appendLog?.({ kind: 'error', text })
+  }, [appendLog])
   const [editingAlias, setEditingAlias] = useState(false)
   const [aliasDraft, setAliasDraft] = useState('')
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -400,6 +423,36 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
               <RefreshCw size={14} className={discovering ? 'spin' : undefined} />
             </button>
           </Tooltip>
+          <Tooltip content={`同步日志（最近 ${Math.min(syncLog?.length ?? 0, 20)} 条）`}>
+            <button
+              type="button"
+              onClick={() => setLogOpen((v) => !v)}
+              style={{
+                ...iconButtonStyle(logOpen ? theme.electricBlue : theme.textSecondary, false),
+                background: logOpen ? `${theme.electricBlue}1A` : 'rgba(0,229,255,0.04)',
+                position: 'relative',
+              }}
+            >
+              <ScrollText size={14} />
+              {(syncLog?.length ?? 0) > 0 && !logOpen && (
+                <span style={{
+                  position: 'absolute',
+                  top: 1, right: 2,
+                  minWidth: 11, height: 11,
+                  padding: '0 3px',
+                  borderRadius: 6,
+                  background: theme.electricBlue,
+                  color: theme.background,
+                  fontFamily: theme.fontMono,
+                  fontSize: 8,
+                  fontWeight: 800,
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  {Math.min(syncLog!.length, 99)}
+                </span>
+              )}
+            </button>
+          </Tooltip>
           <Tooltip content="关闭">
             <button type="button" onClick={onClose} style={iconButtonStyle(theme.textSecondary, false)}>
               <X size={14} />
@@ -547,16 +600,44 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
           )}
         </div>
 
-        {(message || error) && (
+        {logOpen && (
           <div style={{
-            border: `1px solid ${error ? 'rgba(255,80,80,0.35)' : 'rgba(70,255,170,0.28)'}`,
-            background: error ? 'rgba(255,80,80,0.06)' : 'rgba(70,255,170,0.05)',
-            color: error ? '#ff9b9b' : theme.expGreen,
+            border: `1px solid ${theme.hudFrameSoft}`,
+            background: 'rgba(0,229,255,0.03)',
             padding: '7px 10px',
-            fontSize: 11.5,
-            lineHeight: 1.45,
+            display: 'flex', flexDirection: 'column', gap: 4,
+            maxHeight: 200, overflow: 'auto',
           }}>
-            {error ?? message}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+              <ScrollText size={11} color={theme.electricBlue} />
+              <span style={sectionTitleStyle}>SYNC LOG · 最近 {Math.min(syncLog?.length ?? 0, 20)} 条</span>
+            </div>
+            {(syncLog?.length ?? 0) === 0 ? (
+              <span style={{ fontSize: 11, color: theme.textMuted, padding: '4px 2px' }}>
+                还没有日志记录
+              </span>
+            ) : (
+              syncLog!.map((entry, idx) => (
+                <div key={`${entry.ts}-${idx}`} style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'auto 1fr',
+                  gap: 6,
+                  fontSize: 11,
+                  lineHeight: 1.4,
+                  color: entry.kind === 'error' ? '#ff9b9b' : entry.kind === 'sync' ? theme.expGreen : theme.textPrimary,
+                  padding: '2px 0',
+                  borderBottom: idx < syncLog!.length - 1 ? `1px solid ${theme.glassBorder}` : undefined,
+                }}>
+                  <span style={{
+                    fontFamily: theme.fontMono, fontSize: 9.5, color: theme.textMuted, opacity: 0.8,
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {new Date(entry.ts).toLocaleTimeString('zh-CN', { hour12: false })}
+                  </span>
+                  <span style={{ minWidth: 0, wordBreak: 'break-all' }}>{entry.text}</span>
+                </div>
+              ))
+            )}
           </div>
         )}
       </div>

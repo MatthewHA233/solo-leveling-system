@@ -1362,6 +1362,40 @@ fn write_panic_log(line: &str) {
     }
 }
 
+/// 用 Win32 `RtlCaptureStackBackTrace` 抓原始返回地址 —— 不依赖 DbgHelp，async-signal-safe
+/// 拿到原始 PC 地址后可用 `addr2line.exe -e solo-leveling-system.exe -f -C 0x...` 还原符号
+#[cfg(windows)]
+fn capture_raw_backtrace(skip: u32) -> String {
+    use std::ptr;
+    const MAX_FRAMES: usize = 62;
+    let mut buf: [*mut core::ffi::c_void; MAX_FRAMES] = [ptr::null_mut(); MAX_FRAMES];
+    // Win32 文档：单次最多 62 帧（Windows Server 2003 / XP 限制残留，但仍是公认上限）
+    let captured = unsafe {
+        windows_sys::Win32::System::Diagnostics::Debug::RtlCaptureStackBackTrace(
+            skip,
+            MAX_FRAMES as u32,
+            buf.as_mut_ptr(),
+            ptr::null_mut(),
+        )
+    };
+    let n = captured as usize;
+    if n == 0 {
+        return String::from("    <RtlCaptureStackBackTrace returned 0 frames>");
+    }
+    let mut out = String::from("    raw stack (PC addresses, post-process with addr2line):\n");
+    for i in 0..n {
+        let addr = buf[i] as usize;
+        if addr == 0 { break; }
+        out.push_str(&format!("    [{:>2}] 0x{:016x}\n", i, addr));
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn capture_raw_backtrace(_skip: u32) -> String {
+    String::new()
+}
+
 fn install_panic_hook() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -1385,15 +1419,19 @@ fn install_panic_hook() {
         write_panic_log(&format!("    {msg}"));
         eprintln!("[PANIC {now}] thread '{thread_name}' panicked at {location}: {msg}");
 
-        // 用 `backtrace` crate 取代 std::backtrace —— Windows DbgHelp 在 panic 语境
-        // 下不稳定，stdlib 的实现常二次崩溃；这个第三方实现更鲁棒，且支持解析符号
+        // 第一优先：Win32 RtlCaptureStackBackTrace 拿原始 PC 地址。这条路径不走
+        // DbgHelp，几乎不会二次崩溃。skip=2 跳过 panic hook 自身的两个栈帧
+        write_panic_log(&capture_raw_backtrace(2));
+
+        // 第二优先：尝试 `backtrace` crate 拿符号化栈。这条路径走 DbgHelp 可能崩，
+        // catch_unwind 兜底，捕到错就不再升级
         let bt_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let bt = backtrace::Backtrace::new();
             format!("{:?}", bt)
         }));
         match bt_result {
-            Ok(bt) => write_panic_log(&bt),
-            Err(_) => write_panic_log("    <backtrace capture itself panicked>"),
+            Ok(bt) => write_panic_log(&format!("    symbolicated backtrace:\n{bt}")),
+            Err(_) => write_panic_log("    <symbolicated backtrace capture itself panicked>"),
         }
 
         prev(info);
@@ -1435,6 +1473,8 @@ fn install_seh_handler() {
             0xC00000FD => write_panic_log("    (STACK_OVERFLOW)"),
             _ => {}
         }
+        // 原始栈：SEH 上下文里 DbgHelp 风险大，只走 Win32 直采
+        write_panic_log(&capture_raw_backtrace(0));
         0 // EXCEPTION_CONTINUE_SEARCH 让 Windows 接管（崩溃 + 写 dump）
     }
 
