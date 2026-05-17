@@ -56,7 +56,14 @@ pub struct SyncDiscoveryState {
 
 impl SyncDiscoveryState {
     pub async fn peers(&self) -> Vec<SyncPeer> {
-        let mut peers = self.peers.lock().await.values().cloned().collect::<Vec<_>>();
+        // 75 秒陈旧阈值：多播周期 30s + 重传抖动 + 网络抖动留 buffer
+        let threshold = (chrono::Local::now() - chrono::Duration::seconds(75))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let mut peers = self.peers.lock().await.values()
+            .filter(|p| p.last_seen_at.as_str() >= threshold.as_str())
+            .cloned()
+            .collect::<Vec<_>>();
         peers.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at).then(a.alias.cmp(&b.alias)));
         peers
     }
@@ -157,6 +164,17 @@ pub async fn start(db: Arc<Database>, app_handle: AppHandle, port: u16) -> Arc<S
         tokio::time::sleep(std::time::Duration::from_millis(900)).await;
         if let Err(e) = announce_state.send_announcement().await {
             log::warn!("[SyncDiscovery] 启动广播失败: {}", e);
+        }
+    });
+
+    // 周期性重新广播 + 让对端持续刷新自己的 last_seen_at（用来识别离线）
+    let beacon_state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            if let Err(e) = beacon_state.send_announcement().await {
+                log::warn!("[SyncDiscovery] 周期广播失败: {}", e);
+            }
         }
     });
 

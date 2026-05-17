@@ -1363,13 +1363,12 @@ fn write_panic_log(line: &str) {
 }
 
 /// 用 Win32 `RtlCaptureStackBackTrace` 抓原始返回地址 —— 不依赖 DbgHelp，async-signal-safe
-/// 拿到原始 PC 地址后可用 `addr2line.exe -e solo-leveling-system.exe -f -C 0x...` 还原符号
+/// 同时计算每帧相对本 exe 模块基址的 RVA，便于 `addr2line --exe=...exe 0xRVA` 还原符号
 #[cfg(windows)]
 fn capture_raw_backtrace(skip: u32) -> String {
     use std::ptr;
     const MAX_FRAMES: usize = 62;
     let mut buf: [*mut core::ffi::c_void; MAX_FRAMES] = [ptr::null_mut(); MAX_FRAMES];
-    // Win32 文档：单次最多 62 帧（Windows Server 2003 / XP 限制残留，但仍是公认上限）
     let captured = unsafe {
         windows_sys::Win32::System::Diagnostics::Debug::RtlCaptureStackBackTrace(
             skip,
@@ -1382,11 +1381,19 @@ fn capture_raw_backtrace(skip: u32) -> String {
     if n == 0 {
         return String::from("    <RtlCaptureStackBackTrace returned 0 frames>");
     }
-    let mut out = String::from("    raw stack (PC addresses, post-process with addr2line):\n");
+    // 主 exe 模块基址（ASLR 加过偏移），用来把绝对地址换成 RVA
+    let module_base = unsafe {
+        windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(ptr::null())
+    } as usize;
+    let mut out = String::new();
+    out.push_str(&format!("    raw stack (module base 0x{:016x}, rva for addr2line):\n", module_base));
     for i in 0..n {
         let addr = buf[i] as usize;
         if addr == 0 { break; }
-        out.push_str(&format!("    [{:>2}] 0x{:016x}\n", i, addr));
+        // 计算 RVA：addr - base。如果 addr 落在外部模块（不在 exe 内），RVA 是个
+        // 很大的数；可以通过这种异常值快速判断它属于哪个模块
+        let rva = addr.wrapping_sub(module_base);
+        out.push_str(&format!("    [{:>2}] 0x{:016x}  rva=0x{:08x}\n", i, addr, rva));
     }
     out
 }

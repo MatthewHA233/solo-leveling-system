@@ -294,10 +294,16 @@ export default function App() {
   const [syncingDeviceIds, setSyncingDeviceIds] = useState<ReadonlySet<string>>(() => new Set())
   const [autoSyncCountdownS, setAutoSyncCountdownS] = useState<number>(60)
   // 同步日志：最近 20 条事件（启动/完成/错误/本地操作反馈），LAN 浮层日志面板展示
+  // 去重：5 秒内相同 text 不重复入库，避免离线重试刷屏
   const [syncLog, setSyncLog] = useState<readonly SyncLogEntry[]>([])
   const pushSyncLog = useCallback((entry: Omit<SyncLogEntry, 'ts'>) => {
+    const now = Date.now()
     setSyncLog((prev) => {
-      const next: SyncLogEntry = { ...entry, ts: Date.now() }
+      const latest = prev[0]
+      if (latest && latest.text === entry.text && now - latest.ts < 5000) {
+        return prev
+      }
+      const next: SyncLogEntry = { ...entry, ts: now }
       return [next, ...prev].slice(0, 20)
     })
   }, [])
@@ -661,14 +667,19 @@ export default function App() {
   //   - sync:imported   → 我这边被对端 push 写入了数据，全局刷新
   //   - sync:started    → 我作为发起方开始同步某 device_id（顶栏波形流动）
   //   - sync:finished   → 同步结束，从 syncing 集合移除并刷新 links
+  // 注意：listen() 是异步注册，必须用 cancelled flag 防止 StrictMode 重挂载时
+  //       cleanup 先于注册完成，导致 listener 双重注册触发重复事件
   useEffect(() => {
-    const cleanups: Array<() => void> = []
+    let cancelled = false
+    let unlisteners: Array<() => void> = []
     const linkAliasOf = (deviceId: string | undefined): string | undefined => {
       if (!deviceId) return undefined
       return linkedDevicesRef.current.find((l) => l.device_id === deviceId)?.alias
     }
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      const promises = [
+    ;(async () => {
+      const { listen } = await import('@tauri-apps/api/event')
+      if (cancelled) return
+      const us = await Promise.all([
         listen<{ device_id?: string; changed?: number }>('sync:imported', (e) => {
           refreshActivityPalette()
           refreshActivityBlocks()
@@ -710,12 +721,17 @@ export default function App() {
             pushSyncLog({ kind: 'error', alias, text: `与 ${alias} 同步失败: ${e.payload?.error ?? '未知错误'}` })
           }
         }),
-      ]
-      Promise.all(promises).then((unlisteners) => {
-        cleanups.push(...unlisteners)
-      }).catch(() => {})
-    })
-    return () => { cleanups.forEach((fn) => fn()) }
+      ])
+      if (cancelled) {
+        us.forEach((u) => u())
+        return
+      }
+      unlisteners = us
+    })().catch(() => {})
+    return () => {
+      cancelled = true
+      unlisteners.forEach((u) => u())
+    }
   }, [refreshActivityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshPlanNodes, selectedDate, pushSyncLog])
 
   // 定时刷新 discovered peers（每 5 秒）—— 顶栏判断 linked 设备在线/离线
