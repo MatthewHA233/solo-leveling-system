@@ -5,11 +5,12 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { theme } from '../theme'
 
-export type TabKey = 'daynight' | 'chat'
+export type TabKey = 'daynight' | 'chat' | 'perception'
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'daynight', label: '昼夜表' },
   { key: 'chat', label: '暗影聊天' },
+  { key: 'perception', label: '感知' },
 ]
 
 export default function TabBar({

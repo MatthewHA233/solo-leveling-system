@@ -10,6 +10,7 @@ import TabBar from './src/components/TabBar'
 import type { TabKey } from './src/components/TabBar'
 import DayNightScreen from './src/screens/DayNightScreen'
 import ChatScreen from './src/screens/ChatScreen'
+import PerceptionScreen from './src/screens/PerceptionScreen'
 import { theme } from './src/theme'
 
 function App() {
@@ -28,7 +29,13 @@ function AppContent() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.body}>
-        {tab === 'daynight' ? <DayNightScreen /> : <ChatScreen />}
+        {tab === 'daynight' ? (
+          <DayNightScreen />
+        ) : tab === 'chat' ? (
+          <ChatScreen />
+        ) : (
+          <PerceptionScreen />
+        )}
       </View>
       <View style={{ paddingBottom: insets.bottom, backgroundColor: theme.surface }}>
         <TabBar active={tab} onChange={setTab} />
