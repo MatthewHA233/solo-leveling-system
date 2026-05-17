@@ -77,6 +77,55 @@ D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri\target\x86_64-pc
 
 注意：前端 Vite dev server 由用户自己保持运行，Codex 不要自动运行 `npm run dev` 或 `npm run build`，除非用户明确要求。
 
+#### macOS 开发工作流
+
+**原生 cargo + Tauri CLI，跟 Windows 不一样：mac 上 `npm run dev` 由 Claude 自己后台跑**，因为 `tauri dev` 在两端工具链都装齐的 mac 上能稳定起，没有 Windows 那种"vite 长跑 + cargo xwin build 单次"的拆分需求。
+
+**绝对禁止的操作：**
+
+| 操作 | 原因 |
+|------|------|
+| `cargo build` / `cargo check` | `tauri features ↔ conf.json allowlist 不匹配` — `app.macOSPrivateApi: true` 只在 `tauri.macos.conf.json` overlay 里声明，cargo 不读 overlay。**只有** `tauri dev` / `tauri build` 会 merge overlay |
+| 自主使用 release 打包（`npm run tauri:build:mac`） | 除非用户明确要求 |
+| 用 `TAURI_CONFIG` env 绕开 conf overlay | build script 不读 runtime env，绕不过去 |
+
+**开发模式（两个后台进程，都由 Claude 起）：**
+
+```bash
+# 终端 1：前端 Vite（tauri.conf.json 配置的 devUrl 是 http://localhost:5172）
+cd clients/desktop && npm run dev
+
+# 终端 2：Tauri dev（合 mac overlay → cargo run → 启 .app 窗口）
+cd clients/desktop && PATH="$HOME/.cargo/bin:$PATH" npx tauri dev
+```
+
+**关键细节：**
+- `tauri.conf.json` **没**设 `beforeDevCommand`，所以 `tauri dev` 自己不起 vite —— 必须先起 vite（或并行），不然会一直 `Warn Waiting for your frontend dev server to start on http://localhost:5172/...`
+- 启动顺序：vite 起到监听 5172 → tauri dev 探测到 → cargo run 增量编译 rust → `[App] SOLO LEVELING SYSTEM 启动完成` → .app 窗口弹出
+
+**产物：** `target/debug/solo-leveling-system`（native binary，tauri dev 自动启动 `.app` 窗口、按 ctrl-C 退出会自动清理）
+
+**Rust 修改后重启：**
+```bash
+# kill 全部 dev 进程
+pkill -f "tauri dev|solo-leveling-system|cargo run|vite"
+
+# 重新按上面 2 个终端的顺序起
+```
+
+**⚠️ Cargo.toml 被 tauri dev 自动污染的坑：**
+
+mac 上跑 `tauri dev` / `tauri build` 时，Tauri CLI 的"修复辅助"会**自动把 `macos-private-api` 加到 base `[dependencies].tauri.features`**，让 cargo run 不报 `tauri features ↔ conf.json allowlist 不匹配`。但这违反 03e43e0 commit 设计的"macOS-only 特性隔离"，会让 Windows `cargo xwin build` 报反向错误。
+
+**所以：mac 上 `tauri dev` 跑过后，commit 前必须 revert `Cargo.toml`：**
+
+```bash
+git diff clients/desktop/src-tauri/Cargo.toml   # 应该只看到 base features 多了 macos-private-api
+git checkout -- clients/desktop/src-tauri/Cargo.toml
+```
+
+`grep` 验证 base 应该是 `["protocol-asset", "tray-icon"]`、target 块才有 `["macos-private-api"]`。
+
 #### 跨平台特性配置（Cargo.toml）
 
 `tauri` 的 `macos-private-api` 特性**只在 macOS 启用**（透明 Fairy 窗口需要）。Cargo.toml 已用 target-specific 依赖块隔离：
