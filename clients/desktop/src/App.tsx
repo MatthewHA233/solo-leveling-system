@@ -4,14 +4,15 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Boxes, ChevronLeft, ChevronRight, Settings, Wifi } from 'lucide-react'
+import { Boxes, ChevronLeft, ChevronRight, Link2, Settings } from 'lucide-react'
 import BiliIcon from './components/icons/BiliIcon'
 import {
   fetchPerceptionSpans, fetchBiliSpans, fetchGoals, parseGoalTags,
   fetchActivityPalette, fetchActivityBlocks, paintActivityBlocks, eraseActivityBlocks,
   fetchPlanNodes, fetchPlannedBlocks, paintPlannedBlocks, erasePlannedBlocks,
+  fetchSyncLinks, fetchSyncPeers,
 } from './lib/local-api'
-import type { PerceptionSpan, BiliSpan, ModelCallLog } from './lib/local-api'
+import type { PerceptionSpan, BiliSpan, ModelCallLog, LinkedDevice, SyncPeer } from './lib/local-api'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from './types'
 import { theme, hud } from './theme'
 
@@ -288,6 +289,9 @@ export default function App() {
   const [showSync, setShowSync] = useState(false)
   const [syncAnchorRect, setSyncAnchorRect] = useState<DOMRect | null>(null)
   const syncTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const [linkedDevices, setLinkedDevices] = useState<LinkedDevice[]>([])
+  const [discoveredPeers, setDiscoveredPeers] = useState<SyncPeer[]>([])
+  const [syncingDeviceIds, setSyncingDeviceIds] = useState<ReadonlySet<string>>(() => new Set())
 
   // 昼夜表右栏 BiliVideoPanel 直达 B 站历史详情用：每次点击都 bump key，
   // 触发 BiliHistoryDialog 内部 useEffect 把 date+detailSpan+detailMode 一次性灌入。
@@ -638,21 +642,63 @@ export default function App() {
     fetchActivityPalette().then(setActivityPalette).catch(() => {})
   }, [])
 
-  // 监听后端 sync:imported 事件 —— 对端 push 到我们这里后，Rust 端发出广播，
-  // 这里把标签库 / 实际涂块 / 计划块 / 计划节点一并刷新。
+  // 同步设备链接状态：进程内常驻，供顶栏徽章 + SyncPeerDialog 共用
   useEffect(() => {
-    let unlisten: (() => void) | undefined
+    fetchSyncLinks().then(setLinkedDevices).catch(() => {})
+    fetchSyncPeers().then(setDiscoveredPeers).catch(() => {})
+  }, [])
+
+  // 监听后端 sync:* 事件：
+  //   - sync:imported   → 我这边被对端 push 写入了数据，全局刷新
+  //   - sync:started    → 我作为发起方开始同步某 device_id（顶栏波形流动）
+  //   - sync:finished   → 同步结束，从 syncing 集合移除并刷新 links
+  useEffect(() => {
+    const cleanups: Array<() => void> = []
     import('@tauri-apps/api/event').then(({ listen }) => {
-      listen('sync:imported', () => {
-        refreshActivityPalette()
-        refreshActivityBlocks()
-        refreshPlannedBlocks()
-        refreshPlanNodes()
-        invalidateActivityRangeCache(selectedDate)
-      }).then((fn) => { unlisten = fn }).catch(() => {})
+      const promises = [
+        listen<{ device_id?: string }>('sync:imported', () => {
+          refreshActivityPalette()
+          refreshActivityBlocks()
+          refreshPlannedBlocks()
+          refreshPlanNodes()
+          invalidateActivityRangeCache(selectedDate)
+          fetchSyncLinks().then(setLinkedDevices).catch(() => {})
+        }),
+        listen<{ device_id: string }>('sync:started', (e) => {
+          const id = e.payload?.device_id
+          if (!id) return
+          setSyncingDeviceIds((prev) => {
+            const next = new Set(prev)
+            next.add(id)
+            return next
+          })
+        }),
+        listen<{ device_id: string }>('sync:finished', (e) => {
+          const id = e.payload?.device_id
+          if (id) {
+            setSyncingDeviceIds((prev) => {
+              const next = new Set(prev)
+              next.delete(id)
+              return next
+            })
+          }
+          fetchSyncLinks().then(setLinkedDevices).catch(() => {})
+        }),
+      ]
+      Promise.all(promises).then((unlisteners) => {
+        cleanups.push(...unlisteners)
+      }).catch(() => {})
     })
-    return () => { unlisten?.() }
+    return () => { cleanups.forEach((fn) => fn()) }
   }, [refreshActivityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshPlanNodes, selectedDate])
+
+  // 定时刷新 discovered peers（每 5 秒）—— 顶栏判断 linked 设备在线/离线
+  useEffect(() => {
+    const timer = setInterval(() => {
+      fetchSyncPeers().then(setDiscoveredPeers).catch(() => {})
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [])
 
   // 切换日期 / 进出编辑模式 → 清空撤回栈（栈是当日操作的快照，跨日无意义）
   useEffect(() => {
@@ -2127,82 +2173,124 @@ export default function App() {
 
         <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 6px' }} />
 
-        {/* ── 系统状态：ONLINE 灯 + 心跳波形 + Core 标签 ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{
-            fontFamily: theme.fontMono, fontSize: 9, fontWeight: 700,
-            letterSpacing: 2, color: theme.textSecondary, opacity: 0.7,
-          }}>系统状态:</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <span style={{
-              width: 6, height: 6, borderRadius: '50%',
-              background: dbStatus === 'live' ? theme.expGreen : dbStatus === 'error' ? theme.dangerRed : theme.textSecondary,
-              boxShadow: dbStatus === 'live' ? `0 0 8px ${theme.expGreen}` : undefined,
-              animation: dbStatus === 'live' ? 'glowPulse 2s ease-in-out infinite' : undefined,
-            }} />
-            <span style={{
-              fontFamily: theme.fontMono, fontSize: 11, fontWeight: 700,
-              letterSpacing: 1.5,
-              color: dbStatus === 'live' ? theme.expGreen : dbStatus === 'error' ? theme.dangerRed : theme.textSecondary,
-              textShadow: dbStatus === 'live' ? `0 0 6px ${theme.expGreen}AA` : undefined,
-            }}>
-              {dbStatus === 'live' ? 'ONLINE' : dbStatus === 'error' ? 'ERROR' : 'SYNC'}
-            </span>
-          </span>
-          {/* 心跳波形 */}
-          <svg width={64} height={18} viewBox="0 0 64 18" style={{ overflow: 'visible' }}>
-            <defs>
-              <linearGradient id="hb-grad" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stopColor={theme.electricBlue} stopOpacity="0" />
-                <stop offset="20%" stopColor={theme.electricBlue} stopOpacity="0.9" />
-                <stop offset="80%" stopColor={theme.electricBlue} stopOpacity="0.9" />
-                <stop offset="100%" stopColor={theme.electricBlue} stopOpacity="0" />
-              </linearGradient>
-            </defs>
-            <polyline
-              points="0,9 10,9 14,9 18,4 22,14 26,2 30,16 34,9 40,9 50,9 54,9 58,5 62,9 64,9"
-              fill="none"
-              stroke="url(#hb-grad)"
-              strokeWidth={1.3}
-              strokeLinejoin="miter"
-              strokeLinecap="butt"
-              style={{ filter: `drop-shadow(0 0 3px ${theme.electricBlue}AA)` }}
-            />
-          </svg>
-          <Tooltip content="局域网同步">
-            <button
-              ref={syncTriggerRef}
-              onClick={() => {
-                setShowSync((open) => {
-                  const next = !open
-                  if (next) {
-                    setSyncAnchorRect(syncTriggerRef.current?.getBoundingClientRect() ?? null)
-                  }
-                  return next
-                })
-              }}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4,
-                height: 22,
-                padding: '0 8px',
-                background: showSync ? `${theme.electricBlue}1A` : 'rgba(0,229,255,0.04)',
-                border: `1px solid ${showSync ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
-                color: showSync ? theme.electricBlue : theme.textSecondary,
-                fontFamily: theme.fontMono,
-                fontSize: 10,
-                letterSpacing: 1.4,
-                fontWeight: 700,
-                cursor: 'pointer',
-                textShadow: showSync ? `0 0 6px ${theme.electricBlue}AA` : undefined,
-              }}
-            >
-              <Wifi size={11} />
-              LAN
-            </button>
-          </Tooltip>
-        </div>
+        {/* ── 同步设备链接状态：取代 ONLINE/心跳，整块点击打开 SyncPeerDialog ── */}
+        {(() => {
+          const onlineDeviceIds = new Set(discoveredPeers.map((p) => p.device_id))
+          const hasLinks = linkedDevices.length > 0
+          const anyOnline = linkedDevices.some((l) => onlineDeviceIds.has(l.device_id))
+          const anySyncing = syncingDeviceIds.size > 0
+          const tintColor = anySyncing
+            ? theme.expGreen
+            : anyOnline
+              ? theme.electricBlue
+              : hasLinks
+                ? theme.textSecondary
+                : theme.textMuted
+          const visibleLinks = linkedDevices.slice(0, 3)
+          const overflow = Math.max(0, linkedDevices.length - visibleLinks.length)
+
+          return (
+            <Tooltip content={hasLinks ? `已链接 ${linkedDevices.length} 台 · 启动即自动同步` : '点击建立同步链接'}>
+              <button
+                ref={syncTriggerRef}
+                onClick={() => {
+                  setShowSync((open) => {
+                    const next = !open
+                    if (next) {
+                      setSyncAnchorRect(syncTriggerRef.current?.getBoundingClientRect() ?? null)
+                    }
+                    return next
+                  })
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 7,
+                  height: 28,
+                  padding: '0 10px',
+                  background: showSync ? `${tintColor}1A` : `${tintColor}08`,
+                  border: `1px solid ${showSync ? `${tintColor}88` : `${tintColor}33`}`,
+                  color: tintColor,
+                  cursor: 'pointer',
+                  fontFamily: theme.fontBody,
+                  boxShadow: anySyncing ? `0 0 10px ${theme.expGreen}33` : undefined,
+                }}
+              >
+                <Link2 size={12} />
+                <span style={{
+                  fontFamily: theme.fontMono, fontSize: 9, fontWeight: 700,
+                  letterSpacing: 1.6, color: theme.textSecondary, opacity: 0.8,
+                }}>
+                  同步设备
+                </span>
+
+                {!hasLinks && (
+                  <span style={{ fontSize: 11, color: theme.textMuted, fontStyle: 'italic' }}>
+                    未链接
+                  </span>
+                )}
+
+                {visibleLinks.map((link) => {
+                  const isOnline = onlineDeviceIds.has(link.device_id)
+                  const isSyncing = syncingDeviceIds.has(link.device_id)
+                  const chipColor = isSyncing ? theme.expGreen : isOnline ? theme.electricBlue : theme.textMuted
+                  return (
+                    <span
+                      key={link.device_id}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        padding: '2px 7px',
+                        background: `${chipColor}14`,
+                        border: `1px solid ${chipColor}55`,
+                        color: chipColor,
+                        fontSize: 10.5,
+                        fontWeight: 600,
+                        maxWidth: 90,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      <span style={{
+                        width: 5, height: 5, borderRadius: '50%',
+                        background: chipColor,
+                        boxShadow: isOnline || isSyncing ? `0 0 5px ${chipColor}` : undefined,
+                        animation: isSyncing ? 'glowPulse 1.2s ease-in-out infinite' : undefined,
+                        flexShrink: 0,
+                      }} />
+                      {link.alias}
+                    </span>
+                  )
+                })}
+
+                {overflow > 0 && (
+                  <span style={{
+                    fontFamily: theme.fontMono,
+                    fontSize: 10, color: theme.textMuted,
+                  }}>+{overflow}</span>
+                )}
+
+                {/* 流动波形：anySyncing 时滚动，否则保留静态心跳 */}
+                <svg width={52} height={18} viewBox="0 0 52 18" style={{ overflow: 'visible', marginLeft: 2 }}>
+                  <polyline
+                    className={anySyncing ? 'sync-flow' : undefined}
+                    points="0,9 8,9 12,4 16,14 20,2 24,16 28,9 36,9 40,5 44,13 48,9 52,9"
+                    fill="none"
+                    stroke={tintColor}
+                    strokeWidth={1.3}
+                    strokeDasharray={anySyncing ? '4 3' : undefined}
+                    style={{
+                      filter: `drop-shadow(0 0 3px ${tintColor}AA)`,
+                      opacity: hasLinks || anySyncing ? 1 : 0.4,
+                    }}
+                  />
+                </svg>
+              </button>
+            </Tooltip>
+          )
+        })()}
 
         <div style={{ flex: 1 }} />
 

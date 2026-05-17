@@ -1349,7 +1349,104 @@ async fn write_file(path: String, content: String) -> Result<(), String> {
 // ── 入口 ──
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 写一行到 panic.log（不依赖 logger，崩溃语境下也安全）
+fn write_panic_log(line: &str) {
+    let path = Database::default_data_dir().join("panic.log");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
+        let _ = f.flush();
+    }
+}
+
+fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // 先把关键信息落盘 —— 即使后续 backtrace 二次崩溃，至少有定位线索
+        let location = info.location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".into());
+        let payload = info.payload();
+        let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<non-string panic>".into()
+        };
+        let thread_name = std::thread::current().name().unwrap_or("<unnamed>").to_string();
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        write_panic_log("═══════════════════════════════════════════════════════════════");
+        write_panic_log(&format!("[{now}] PANIC thread '{thread_name}' at {location}"));
+        write_panic_log(&format!("    {msg}"));
+        eprintln!("[PANIC {now}] thread '{thread_name}' panicked at {location}: {msg}");
+
+        // 然后尝试 backtrace —— catch_unwind 兜底，walker 自己出问题也不再升级
+        let bt_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            format!("{}", std::backtrace::Backtrace::force_capture())
+        }));
+        match bt_result {
+            Ok(bt) => write_panic_log(&bt),
+            Err(_) => write_panic_log("    <backtrace capture itself panicked>"),
+        }
+
+        prev(info);
+    }));
+}
+
+#[cfg(windows)]
+fn install_seh_handler() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use windows_sys::Win32::System::Diagnostics::Debug::{SetUnhandledExceptionFilter, EXCEPTION_POINTERS};
+
+    static FIRED: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "system" fn filter(info: *const EXCEPTION_POINTERS) -> i32 {
+        // 只触发一次，避免无限递归
+        if FIRED.swap(true, Ordering::SeqCst) {
+            return 0; // EXCEPTION_CONTINUE_SEARCH
+        }
+        let (code, addr) = if !info.is_null() {
+            let record = (*info).ExceptionRecord;
+            if record.is_null() {
+                (0u32, 0usize)
+            } else {
+                ((*record).ExceptionCode as u32, (*record).ExceptionAddress as usize)
+            }
+        } else {
+            (0u32, 0usize)
+        };
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let thread_name = std::thread::current().name().unwrap_or("<unnamed>").to_string();
+        write_panic_log("═══════════════════════════════════════════════════════════════");
+        write_panic_log(&format!(
+            "[{now}] NATIVE thread '{thread_name}' exception=0x{code:08x} addr=0x{addr:016x}"
+        ));
+        match code {
+            0xC0000005 => write_panic_log("    (ACCESS_VIOLATION)"),
+            0xC000001D => write_panic_log("    (ILLEGAL_INSTRUCTION)"),
+            0xC0000409 => write_panic_log("    (STACK_BUFFER_OVERRUN / fastfail — usually Rust abort)"),
+            0xC00000FD => write_panic_log("    (STACK_OVERFLOW)"),
+            _ => {}
+        }
+        0 // EXCEPTION_CONTINUE_SEARCH 让 Windows 接管（崩溃 + 写 dump）
+    }
+
+    unsafe {
+        SetUnhandledExceptionFilter(Some(filter));
+    }
+}
+
+#[cfg(not(windows))]
+fn install_seh_handler() {}
+
 pub fn run() {
+    install_panic_hook();
+    install_seh_handler();
     // 初始化数据库
     let app_data_dir = Database::default_data_dir();
     let db = match Database::new(app_data_dir.clone()) {
@@ -1410,9 +1507,10 @@ pub fn run() {
 
                 // 启动后台同步：等 HTTP server 起来 + 多播广播完成，再扫一遍已链接设备
                 let db_for_startup_sync = db_clone.clone();
+                let app_for_startup_sync = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    sync_engine::run_startup_sync(db_for_startup_sync).await;
+                    sync_engine::run_startup_sync(db_for_startup_sync, app_for_startup_sync).await;
                 });
 
                 #[cfg(windows)]

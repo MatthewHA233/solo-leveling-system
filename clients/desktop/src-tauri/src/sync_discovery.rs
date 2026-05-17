@@ -5,6 +5,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
 };
+use tauri::AppHandle;
 use tokio::{net::UdpSocket, sync::Mutex};
 
 const MULTICAST_GROUP: &str = "224.0.0.167";
@@ -50,6 +51,7 @@ pub struct SyncDiscoveryState {
     pub device_type: &'static str,
     pub device_model: &'static str,
     pub db: Arc<Database>,
+    pub app_handle: AppHandle,
 }
 
 impl SyncDiscoveryState {
@@ -94,8 +96,9 @@ impl SyncDiscoveryState {
 
         // 命中已链接设备则自动后台同步
         let db = self.db.clone();
+        let app = self.app_handle.clone();
         tokio::spawn(async move {
-            crate::sync_engine::maybe_sync_on_discover(db, &device_id, &peer_base).await;
+            crate::sync_engine::maybe_sync_on_discover(db, app, &device_id, &peer_base).await;
         });
     }
 
@@ -127,7 +130,7 @@ impl SyncDiscoveryState {
     }
 }
 
-pub async fn start(db: Arc<Database>, port: u16) -> Arc<SyncDiscoveryState> {
+pub async fn start(db: Arc<Database>, app_handle: AppHandle, port: u16) -> Arc<SyncDiscoveryState> {
     let device_id = db.sync_device_id().await.unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
     let alias = db.sync_alias().await.unwrap_or_else(|_| crate::db::generate_alias(&device_id));
     let state = Arc::new(SyncDiscoveryState {
@@ -139,6 +142,7 @@ pub async fn start(db: Arc<Database>, port: u16) -> Arc<SyncDiscoveryState> {
         device_type: device_type(),
         device_model: device_model(),
         db: db.clone(),
+        app_handle,
     });
 
     let listener_state = state.clone();

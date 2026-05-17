@@ -6,8 +6,36 @@
 
 use crate::db::{Database, SyncExport, SyncImportResult};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter};
+
+fn emit_started(app: &AppHandle, device_id: &str) {
+    let _ = app.emit("sync:started", serde_json::json!({ "device_id": device_id }));
+}
+
+fn emit_finished(app: &AppHandle, device_id: &str, ok: bool, error: Option<&str>) {
+    let _ = app.emit("sync:finished", serde_json::json!({
+        "device_id": device_id,
+        "ok": ok,
+        "error": error,
+    }));
+}
+
+/// 正在跑同步的对端 device_id 集合 —— 防多播洪水触发并发风暴
+fn syncing_set() -> &'static std::sync::Mutex<HashSet<String>> {
+    static CELL: OnceLock<std::sync::Mutex<HashSet<String>>> = OnceLock::new();
+    CELL.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+}
+
+/// 上次成功同步时间 —— maybe_sync_on_discover 用，10 秒冷却
+fn last_synced() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
+    static CELL: OnceLock<std::sync::Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    CELL.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+const DISCOVER_COOLDOWN: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRoundResult {
@@ -40,7 +68,10 @@ fn normalize_base(base: &str) -> String {
 
 /// 双向：先从对端 export 拉本地 import，再本地 export 推到对端 import。
 /// 任何一段失败就早退，错误带上下文。
-pub async fn bidirectional_sync(db: Arc<Database>, peer_base: &str) -> Result<SyncRoundResult, String> {
+pub async fn bidirectional_sync(
+    db: Arc<Database>,
+    peer_base: &str,
+) -> Result<SyncRoundResult, String> {
     let base = normalize_base(peer_base);
     let client = http_client()?;
 
@@ -78,7 +109,7 @@ pub async fn bidirectional_sync(db: Arc<Database>, peer_base: &str) -> Result<Sy
 }
 
 /// 启动时遍历 linked_devices 做一轮，失败只记日志不打扰用户。
-pub async fn run_startup_sync(db: Arc<Database>) {
+pub async fn run_startup_sync(db: Arc<Database>, app: AppHandle) {
     let links = match db.list_linked_devices().await {
         Ok(l) => l,
         Err(e) => {
@@ -94,45 +125,111 @@ pub async fn run_startup_sync(db: Arc<Database>) {
     log::info!("[SyncEngine] 启动时尝试自动同步 {} 台已链接设备", links.len());
     for link in links {
         let db_for_sync = db.clone();
+        let app_for_sync = app.clone();
         let base = link.last_base.clone();
         let device_id = link.device_id.clone();
         let alias = link.alias.clone();
+
+        // 占位避免与 discover 钩子并发
+        {
+            let mut set = lock_set(syncing_set());
+            if !set.insert(device_id.clone()) {
+                continue;
+            }
+        }
+
         tokio::spawn(async move {
-            match bidirectional_sync(db_for_sync.clone(), &base).await {
-                Ok(result) => {
-                    let total = result.pulled.activity_categories + result.pulled.activity_tags
-                        + result.pulled.activity_blocks + result.pulled.plan_nodes
-                        + result.pulled.planned_blocks
-                        + result.pushed.activity_categories + result.pushed.activity_tags
-                        + result.pushed.activity_blocks + result.pushed.plan_nodes
-                        + result.pushed.planned_blocks;
+            emit_started(&app_for_sync, &device_id);
+            let result = bidirectional_sync(db_for_sync.clone(), &base).await;
+            match &result {
+                Ok(round) => {
+                    let total = round.pulled.activity_categories + round.pulled.activity_tags
+                        + round.pulled.activity_blocks + round.pulled.plan_nodes
+                        + round.pulled.planned_blocks
+                        + round.pushed.activity_categories + round.pushed.activity_tags
+                        + round.pushed.activity_blocks + round.pushed.plan_nodes
+                        + round.pushed.planned_blocks;
                     if let Err(e) = db_for_sync.touch_link_synced(&device_id, &base).await {
                         log::warn!("[SyncEngine] 更新 {} 同步时间失败: {}", alias, e);
                     }
+                    let mut map = lock_map(last_synced());
+                    map.insert(device_id.clone(), Instant::now());
                     log::info!("[SyncEngine] 已同步 {} ({}): {} 条变更", alias, base, total);
                 }
                 Err(e) => {
                     log::warn!("[SyncEngine] {} ({}) 同步失败: {}", alias, base, e);
                 }
             }
+            emit_finished(&app_for_sync, &device_id, result.is_ok(), result.as_ref().err().map(|s| s.as_str()));
+            let mut set = lock_set(syncing_set());
+            set.remove(&device_id);
         });
     }
 }
 
+fn lock_set<'a>(m: &'a std::sync::Mutex<HashSet<String>>) -> std::sync::MutexGuard<'a, HashSet<String>> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn lock_map<'a>(m: &'a std::sync::Mutex<HashMap<String, Instant>>) -> std::sync::MutexGuard<'a, HashMap<String, Instant>> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 /// 发现回调用：multicast 看到一台 device_id 时调一下，命中已链接就静默拉一轮。
-pub async fn maybe_sync_on_discover(db: Arc<Database>, device_id: &str, base: &str) {
+///
+/// 防护：
+/// 1. 同 device_id 已在同步中 → 直接返回（防多播洪水）
+/// 2. 上次成功 < 10 秒 → 跳过（避免同一对端反复 ping 触发风暴）
+pub async fn maybe_sync_on_discover(db: Arc<Database>, app: AppHandle, device_id: &str, base: &str) {
     let links = match db.list_linked_devices().await {
         Ok(l) => l,
         Err(_) => return,
     };
-    let Some(_link) = links.into_iter().find(|l| l.device_id == device_id) else {
+    if !links.iter().any(|l| l.device_id == device_id) {
         return;
-    };
+    }
+
+    // 冷却检查
+    {
+        let map = lock_map(last_synced());
+        if let Some(at) = map.get(device_id) {
+            if at.elapsed() < DISCOVER_COOLDOWN {
+                return;
+            }
+        }
+    }
+
+    // 去重：占位失败说明已经在跑
+    {
+        let mut set = lock_set(syncing_set());
+        if !set.insert(device_id.to_string()) {
+            return;
+        }
+    }
+
     let base_owned = base.to_string();
     let device_id_owned = device_id.to_string();
     tokio::spawn(async move {
-        if let Ok(_) = bidirectional_sync(db.clone(), &base_owned).await {
-            let _ = db.touch_link_synced(&device_id_owned, &base_owned).await;
+        emit_started(&app, &device_id_owned);
+        let result = bidirectional_sync(db.clone(), &base_owned).await;
+        match &result {
+            Ok(_) => {
+                let _ = db.touch_link_synced(&device_id_owned, &base_owned).await;
+                let mut map = lock_map(last_synced());
+                map.insert(device_id_owned.clone(), Instant::now());
+            }
+            Err(e) => {
+                log::warn!("[SyncEngine] discover-triggered 同步 {} 失败: {}", device_id_owned, e);
+            }
         }
+        emit_finished(&app, &device_id_owned, result.is_ok(), result.as_ref().err().map(|s| s.as_str()));
+        let mut set = lock_set(syncing_set());
+        set.remove(&device_id_owned);
     });
 }

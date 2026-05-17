@@ -579,12 +579,20 @@ async fn sync_link_add(
     match state.db.add_linked_device(body.device_id, body.alias, body.last_base.clone()).await {
         Ok(link) => {
             let db_for_sync = state.db.clone();
+            let app_for_sync = state.app_handle.clone();
             let base = link.last_base.clone();
             let device_id = link.device_id.clone();
             tokio::spawn(async move {
-                if let Ok(_) = sync_engine::bidirectional_sync(db_for_sync.clone(), &base).await {
+                let _ = app_for_sync.emit("sync:started", serde_json::json!({ "device_id": &device_id }));
+                let result = sync_engine::bidirectional_sync(db_for_sync.clone(), &base).await;
+                if result.is_ok() {
                     let _ = db_for_sync.touch_link_synced(&device_id, &base).await;
                 }
+                let _ = app_for_sync.emit("sync:finished", serde_json::json!({
+                    "device_id": &device_id,
+                    "ok": result.is_ok(),
+                    "error": result.as_ref().err().map(|s| s.as_str()),
+                }));
             });
             Json(ApiResponse::ok(link))
         }
@@ -615,10 +623,17 @@ async fn sync_link_run(
     let Some(link) = links.into_iter().find(|l| l.device_id == device_id) else {
         return Json(ApiResponse::error("设备未链接"));
     };
-    match sync_engine::bidirectional_sync(state.db.clone(), &link.last_base).await {
-        Ok(result) => {
+    let _ = state.app_handle.emit("sync:started", serde_json::json!({ "device_id": &device_id }));
+    let result = sync_engine::bidirectional_sync(state.db.clone(), &link.last_base).await;
+    let _ = state.app_handle.emit("sync:finished", serde_json::json!({
+        "device_id": &device_id,
+        "ok": result.is_ok(),
+        "error": result.as_ref().err().map(|s| s.as_str()),
+    }));
+    match result {
+        Ok(round) => {
             let _ = state.db.touch_link_synced(&device_id, &link.last_base).await;
-            Json(ApiResponse::ok(result))
+            Json(ApiResponse::ok(round))
         }
         Err(e) => Json(ApiResponse::error(&e)),
     }
@@ -1334,7 +1349,7 @@ pub async fn start_server(
     app_handle: AppHandle,
     port: u16,
 ) {
-    let sync_discovery = crate::sync_discovery::start(db.clone(), port).await;
+    let sync_discovery = crate::sync_discovery::start(db.clone(), app_handle.clone(), port).await;
     let app = create_router(db, bili, bailian, bili_dl, sync_discovery, app_handle);
     let addr = format!("0.0.0.0:{}", port);
 
