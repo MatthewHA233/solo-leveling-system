@@ -346,6 +346,7 @@ export default function App() {
 
   // 预热 mic 权限：防止首次长按 Alt 时弹出权限弹窗导致无反应
   useEffect(() => {
+    if (!navigator.mediaDevices?.getUserMedia) return
     navigator.mediaDevices.getUserMedia({ audio: true })
       .then(stream => stream.getTracks().forEach(t => t.stop()))
       .catch(() => {})

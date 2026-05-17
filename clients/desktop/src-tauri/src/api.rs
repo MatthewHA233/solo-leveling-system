@@ -23,9 +23,10 @@ use crate::db::{
     ActivityCategory, ActivityTag, ActivityBlock, ActivityPalette, PlanNode, PlannedBlock,
     AddCategoryRequest, AddTagRequest, PaintBlocksRequest, EraseBlocksRequest,
     AddPlanNodeRequest, UpdatePlanNodeRequest, PaintPlannedBlocksRequest,
-    UpdateCategoryRequest, RenamePathRequest, PerceptionSpan,
+    UpdateCategoryRequest, RenamePathRequest, PerceptionSpan, SyncExport, SyncImportResult,
 };
 use crate::bili_download::{BiliDownloadState, PlayUrlMeta, QualityProbe, deliver_playurl_result, deliver_probe_result};
+use crate::sync_discovery::{SyncDiscoveryState, SyncPeer};
 
 // ── Bilibili 回调状态 ──
 
@@ -67,6 +68,7 @@ pub struct ApiState {
     pub bili: Arc<BiliState>,
     pub bailian: Arc<BailianState>,
     pub bili_dl: Arc<BiliDownloadState>,
+    pub sync_discovery: Arc<SyncDiscoveryState>,
 }
 
 // ── Response Types ──
@@ -160,6 +162,20 @@ struct BiliHistoryPageResult {
 struct LinkBiliPayload {
     bvids: Vec<String>,
     event_id: String,
+}
+
+#[derive(Deserialize)]
+struct SyncExportQuery {
+    since: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SyncHello {
+    device_id: String,
+    pair_code: String,
+    server_time: String,
+    protocol_version: i32,
+    tables: Vec<&'static str>,
 }
 
 // ── Handlers ──
@@ -443,6 +459,62 @@ async fn erase_planned_blocks(
         Ok(n) => Json(ApiResponse::ok(n)),
         Err(e) => Json(ApiResponse::error(&e)),
     }
+}
+
+/// GET /api/sync/hello
+async fn sync_hello(State(state): State<ApiState>) -> Json<ApiResponse<SyncHello>> {
+    match state.db.sync_device_id().await {
+        Ok(device_id) => Json(ApiResponse::ok(SyncHello {
+            pair_code: crate::db::sync_pair_code(&device_id),
+            device_id,
+            server_time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            protocol_version: 1,
+            tables: vec![
+                "activity_categories",
+                "activity_tags",
+                "activity_blocks",
+                "plan_nodes",
+                "planned_blocks",
+            ],
+        })),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// GET /api/sync/export?since=YYYY-MM-DD%20HH:MM:SS
+async fn sync_export(
+    State(state): State<ApiState>,
+    Query(query): Query<SyncExportQuery>,
+) -> Json<ApiResponse<SyncExport>> {
+    match state.db.export_sync(query.since).await {
+        Ok(snapshot) => Json(ApiResponse::ok(snapshot)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/sync/import
+async fn sync_import(
+    State(state): State<ApiState>,
+    Json(payload): Json<SyncExport>,
+) -> Json<ApiResponse<SyncImportResult>> {
+    match state.db.import_sync(payload).await {
+        Ok(result) => Json(ApiResponse::ok(result)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// GET /api/sync/peers
+async fn sync_peers(State(state): State<ApiState>) -> Json<ApiResponse<Vec<SyncPeer>>> {
+    Json(ApiResponse::ok(state.sync_discovery.peers().await))
+}
+
+/// POST /api/sync/discover
+async fn sync_discover(State(state): State<ApiState>) -> Json<ApiResponse<Vec<SyncPeer>>> {
+    if let Err(e) = state.sync_discovery.send_announcement().await {
+        return Json(ApiResponse::error(&e));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    Json(ApiResponse::ok(state.sync_discovery.peers().await))
 }
 
 /// GET /api/sessions?limit=N
@@ -1067,8 +1139,9 @@ pub fn create_router(
     bili: Arc<BiliState>,
     bailian: Arc<BailianState>,
     bili_dl: Arc<BiliDownloadState>,
+    sync_discovery: Arc<SyncDiscoveryState>,
 ) -> Router {
-    let state = ApiState { db, bili, bailian, bili_dl };
+    let state = ApiState { db, bili, bailian, bili_dl, sync_discovery };
 
     Router::new()
         .route("/api/health", get(health))
@@ -1087,6 +1160,11 @@ pub fn create_router(
         .route("/api/plans/blocks", get(get_planned_blocks))
         .route("/api/plans/blocks/paint", post(paint_planned_blocks))
         .route("/api/plans/blocks/erase", post(erase_planned_blocks))
+        .route("/api/sync/hello", get(sync_hello))
+        .route("/api/sync/export", get(sync_export))
+        .route("/api/sync/import", post(sync_import))
+        .route("/api/sync/peers", get(sync_peers))
+        .route("/api/sync/discover", post(sync_discover))
         .route("/api/sessions", get(list_chat_sessions).post(create_chat_session))
         .route("/api/sessions/search", get(search_chat_sessions))
         .route("/api/sessions/cleanup_empty", post(cleanup_empty_chat_sessions))
@@ -1129,7 +1207,8 @@ pub async fn start_server(
     bili_dl: Arc<BiliDownloadState>,
     port: u16,
 ) {
-    let app = create_router(db, bili, bailian, bili_dl);
+    let sync_discovery = crate::sync_discovery::start(db.clone(), port).await;
+    let app = create_router(db, bili, bailian, bili_dl, sync_discovery);
     let addr = format!("0.0.0.0:{}", port);
 
     log::info!("[API] HTTP 服务器启动: http://{}", addr);

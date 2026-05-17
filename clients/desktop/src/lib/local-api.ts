@@ -322,6 +322,174 @@ export async function erasePlannedBlocks(date: Date, minutes: number[]): Promise
   return json.data ?? 0
 }
 
+// ── LAN Sync: activity records + plan layer ──
+
+export interface SyncHello {
+  device_id: string
+  pair_code: string
+  server_time: string
+  protocol_version: number
+  tables: string[]
+}
+
+export interface SyncPeer {
+  device_id: string
+  pair_code: string
+  alias: string
+  ip: string
+  port: number
+  protocol: string
+  last_seen_at: string
+  source: string
+}
+
+export interface SyncActivityCategory {
+  sync_id: string
+  name: string
+  color: string
+  sort_order: number
+  created_at: string
+  last_used_at: string
+  updated_at: string
+  deleted_at: string | null
+}
+
+export interface SyncActivityTag {
+  sync_id: string
+  category_sync_id: string
+  full_path: string
+  leaf_name: string
+  depth: number
+  created_at: string
+  last_used_at: string
+  updated_at: string
+  deleted_at: string | null
+}
+
+export interface SyncActivityBlock {
+  sync_id: string
+  date: string
+  minute: number
+  tag_sync_id: string
+  note: string | null
+  created_at: string
+  updated_at: string
+  deleted_at: string | null
+}
+
+export interface SyncPlanNode {
+  sync_id: string
+  project_tag_sync_id: string
+  parent_sync_id: string | null
+  title: string
+  status: 'active' | 'done' | 'archived'
+  sort_order: number
+  created_at: string
+  updated_at: string
+  deleted_at: string | null
+}
+
+export interface SyncPlannedBlock {
+  sync_id: string
+  date: string
+  minute: number
+  plan_node_sync_id: string
+  note: string | null
+  created_at: string
+  updated_at: string
+  deleted_at: string | null
+}
+
+export interface SyncExport {
+  device_id: string
+  exported_at: string
+  cursor: string
+  activity_categories: SyncActivityCategory[]
+  activity_tags: SyncActivityTag[]
+  activity_blocks: SyncActivityBlock[]
+  plan_nodes: SyncPlanNode[]
+  planned_blocks: SyncPlannedBlock[]
+}
+
+export interface SyncImportResult {
+  activity_categories: number
+  activity_tags: number
+  activity_blocks: number
+  plan_nodes: number
+  planned_blocks: number
+  skipped: number
+}
+
+export interface SyncTransferResult {
+  snapshot: SyncExport
+  importResult: SyncImportResult
+}
+
+function normalizeSyncBase(base: string): string {
+  const trimmed = base.trim().replace(/\/+$/, '')
+  if (!trimmed) return API_BASE
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+  try {
+    const url = new URL(withProtocol)
+    if (!url.port) url.port = '49733'
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return withProtocol
+  }
+}
+
+export async function fetchSyncHello(base = API_BASE): Promise<SyncHello> {
+  const res = await fetch(`${normalizeSyncBase(base)}/api/sync/hello`)
+  const json: ApiResponse<SyncHello> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '同步握手失败')
+  return json.data
+}
+
+export async function fetchSyncPeers(): Promise<SyncPeer[]> {
+  const res = await fetch(`${API_BASE}/api/sync/peers`)
+  const json: ApiResponse<SyncPeer[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '获取同步设备失败')
+  return json.data
+}
+
+export async function discoverSyncPeers(): Promise<SyncPeer[]> {
+  const res = await fetch(`${API_BASE}/api/sync/discover`, { method: 'POST' })
+  const json: ApiResponse<SyncPeer[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '发现同步设备失败')
+  return json.data
+}
+
+export async function exportSync(since?: string | null, base = API_BASE): Promise<SyncExport> {
+  const query = since ? `?since=${encodeURIComponent(since)}` : ''
+  const res = await fetch(`${normalizeSyncBase(base)}/api/sync/export${query}`)
+  const json: ApiResponse<SyncExport> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '同步导出失败')
+  return json.data
+}
+
+export async function importSync(payload: SyncExport, base = API_BASE): Promise<SyncImportResult> {
+  const res = await fetch(`${normalizeSyncBase(base)}/api/sync/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const json: ApiResponse<SyncImportResult> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '同步导入失败')
+  return json.data
+}
+
+export async function pullSyncFromPeer(peerBase: string, since?: string | null): Promise<SyncTransferResult> {
+  const snapshot = await exportSync(since, peerBase)
+  const importResult = await importSync(snapshot)
+  return { snapshot, importResult }
+}
+
+export async function pushSyncToPeer(peerBase: string, since?: string | null): Promise<SyncTransferResult> {
+  const snapshot = await exportSync(since)
+  const importResult = await importSync(snapshot, peerBase)
+  return { snapshot, importResult }
+}
+
 // ── Perception Timeline API（保留 PerceptionSpan 数据结构） ──
 
 export interface PerceptionSpan {

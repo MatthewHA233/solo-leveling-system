@@ -6,6 +6,7 @@ use tauri::Emitter;
 
 mod db;
 mod api;
+mod sync_discovery;
 mod fish_tts;
 mod perception;
 mod qwen_asr;

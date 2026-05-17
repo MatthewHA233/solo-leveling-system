@@ -5,12 +5,13 @@
 
 import { useState, useCallback, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { X, ChevronRight, ChevronUp, ChevronDown, Mic, Lock, Database, Bot, Eye, EyeOff, Copy, Check, Cpu, Camera, FolderOpen, RefreshCw, Trash2, Settings as SettingsIcon, Ban, Activity } from 'lucide-react'
+import { X, ChevronRight, ChevronUp, ChevronDown, Mic, Lock, Database, Bot, Eye, EyeOff, Copy, Check, Cpu, Camera, FolderOpen, RefreshCw, Trash2, Settings as SettingsIcon, Ban, Activity, Network, DownloadCloud, UploadCloud, Wifi, ShieldCheck, KeyRound } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { theme, hud } from '../theme'
 import type { AgentConfig } from '../lib/agent/agent-config'
-import type { GpuPrefStatus } from '../lib/local-api'
+import { discoverSyncPeers, fetchSyncHello, fetchSyncPeers, pullSyncFromPeer, pushSyncToPeer } from '../lib/local-api'
+import type { GpuPrefStatus, SyncHello, SyncImportResult, SyncPeer } from '../lib/local-api'
 import { MagneticButton } from './NeonUI'
 import Tooltip from './Tooltip'
 import HudSelect from './HudSelect'
@@ -62,6 +63,15 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
+function formatSyncImportResult(result: SyncImportResult): string {
+  const changed = result.activity_categories
+    + result.activity_tags
+    + result.activity_blocks
+    + result.plan_nodes
+    + result.planned_blocks
+  return `${changed} 条变更（跳过 ${result.skipped}）`
 }
 
 export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose }: Props) {
@@ -119,8 +129,31 @@ export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose 
   const [trackingSaving, setTrackingSaving] = useState(false)
   const [trackingSaved, setTrackingSaved] = useState(false)
 
+  // ── 局域网同步 ──
+  const [localSyncHello, setLocalSyncHello] = useState<SyncHello | null>(null)
+  const [peerSyncHello, setPeerSyncHello] = useState<SyncHello | null>(null)
+  const [syncPeerUrl, setSyncPeerUrl] = useState(() => {
+    if (typeof localStorage === 'undefined') return ''
+    return localStorage.getItem('sls.sync.peerUrl') ?? ''
+  })
+  const [pairedPeerId, setPairedPeerId] = useState(() => {
+    if (typeof localStorage === 'undefined') return ''
+    return localStorage.getItem('sls.sync.pairedPeerId') ?? ''
+  })
+  const [pairedPairCode, setPairedPairCode] = useState(() => {
+    if (typeof localStorage === 'undefined') return ''
+    return localStorage.getItem('sls.sync.pairedPairCode') ?? ''
+  })
+  const [syncPeers, setSyncPeers] = useState<SyncPeer[]>([])
+  const [syncDiscovering, setSyncDiscovering] = useState(false)
+  const [manualSyncOpen, setManualSyncOpen] = useState(false)
+  const [syncBusy, setSyncBusy] = useState(false)
+  const [syncMessage, setSyncMessage] = useState<string | null>(null)
+  const [syncError, setSyncError] = useState<string | null>(null)
+
   // ── 左侧栏当前选中分组 ──
   const [activeSection, setActiveSection] = useState<string>('persona')
+  const peerMatched = Boolean(peerSyncHello && pairedPeerId === peerSyncHello.device_id)
 
   useEffect(() => {
     if (!isOpen) return
@@ -130,7 +163,136 @@ export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose 
     invoke<ScreenshotStorageInfo>('get_screenshot_storage_info').then(setScreenshotInfo).catch(console.error)
     invoke<WindowBlacklistEntry[]>('get_window_blacklist').then(setWindowBlacklist).catch(console.error)
     invoke<TrackingSettings>('get_tracking_settings').then(setTrackingDraft).catch(console.error)
+    fetchSyncHello().then(setLocalSyncHello).catch(console.error)
+    fetchSyncPeers().then(setSyncPeers).catch(() => {})
   }, [isOpen])
+
+  const updateSyncPeerUrl = useCallback((value: string) => {
+    setSyncPeerUrl(value)
+    setPeerSyncHello(null)
+    setSyncMessage(null)
+    setSyncError(null)
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('sls.sync.peerUrl', value)
+    }
+  }, [])
+
+  const checkPeerSync = useCallback(async () => {
+    if (!syncPeerUrl.trim()) {
+      setSyncError('请先选择一台设备，或展开“手动连接”输入电脑地址')
+      return
+    }
+    setSyncBusy(true)
+    setSyncError(null)
+    setSyncMessage(null)
+    try {
+      const hello = await fetchSyncHello(syncPeerUrl)
+      setPeerSyncHello(hello)
+      setSyncMessage(`已连接对端 ${hello.device_id.slice(0, 8)}，协议 v${hello.protocol_version}`)
+    } catch (e) {
+      setPeerSyncHello(null)
+      setSyncError(`连接失败: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setSyncBusy(false)
+    }
+  }, [syncPeerUrl])
+
+  const discoverPeers = useCallback(async () => {
+    setSyncDiscovering(true)
+    setSyncError(null)
+    setSyncMessage(null)
+    try {
+      const peers = await discoverSyncPeers()
+      setSyncPeers(peers)
+      setSyncMessage(peers.length > 0 ? `发现 ${peers.length} 台设备` : '没有发现设备，可以展开“手动连接”')
+    } catch (e) {
+      setSyncError(`发现失败: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setSyncDiscovering(false)
+    }
+  }, [])
+
+  const useDiscoveredPeer = useCallback((peer: SyncPeer) => {
+    const base = `${peer.protocol || 'http'}://${peer.ip}:${peer.port}`
+    updateSyncPeerUrl(base)
+    setPeerSyncHello({
+      device_id: peer.device_id,
+      pair_code: peer.pair_code,
+      protocol_version: 1,
+      server_time: peer.last_seen_at,
+      tables: ['activity_categories', 'activity_tags', 'activity_blocks', 'plan_nodes', 'planned_blocks'],
+    })
+    setSyncError(null)
+    setSyncMessage(`已选择 ${peer.alias}，确认匹配码后再同步`)
+  }, [updateSyncPeerUrl])
+
+  const matchPeerSync = useCallback(() => {
+    if (!peerSyncHello) {
+      setSyncError('请先选择或连接一台设备')
+      return
+    }
+    setPairedPeerId(peerSyncHello.device_id)
+    setPairedPairCode(peerSyncHello.pair_code)
+    setSyncError(null)
+    setSyncMessage(`已匹配 ${peerSyncHello.pair_code}，后续同步会校验这个设备`)
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('sls.sync.pairedPeerId', peerSyncHello.device_id)
+      localStorage.setItem('sls.sync.pairedPairCode', peerSyncHello.pair_code)
+    }
+  }, [peerSyncHello])
+
+  const pullFromPeer = useCallback(async () => {
+    if (!syncPeerUrl.trim()) {
+      setSyncError('请先选择并匹配一台设备')
+      return
+    }
+    setSyncBusy(true)
+    setSyncError(null)
+    setSyncMessage(null)
+    try {
+      const hello = peerSyncHello ?? await fetchSyncHello(syncPeerUrl)
+      setPeerSyncHello(hello)
+      if (pairedPeerId !== hello.device_id) {
+        setSyncError('这个对端还没有匹配，先点“匹配此设备”再同步')
+        return
+      }
+      const cursorKey = `sls.sync.cursor.${hello.device_id}`
+      const cursor = typeof localStorage !== 'undefined' ? localStorage.getItem(cursorKey) : null
+      const result = await pullSyncFromPeer(syncPeerUrl, cursor)
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(cursorKey, result.snapshot.cursor)
+      }
+      setSyncMessage(`已拉取 ${formatSyncImportResult(result.importResult)}，游标 ${result.snapshot.cursor}`)
+    } catch (e) {
+      setSyncError(`拉取失败: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setSyncBusy(false)
+    }
+  }, [pairedPeerId, peerSyncHello, syncPeerUrl])
+
+  const pushToPeer = useCallback(async () => {
+    if (!syncPeerUrl.trim()) {
+      setSyncError('请先选择并匹配一台设备')
+      return
+    }
+    setSyncBusy(true)
+    setSyncError(null)
+    setSyncMessage(null)
+    try {
+      const hello = peerSyncHello ?? await fetchSyncHello(syncPeerUrl)
+      setPeerSyncHello(hello)
+      if (pairedPeerId !== hello.device_id) {
+        setSyncError('这个对端还没有匹配，先点“匹配此设备”再同步')
+        return
+      }
+      const result = await pushSyncToPeer(syncPeerUrl)
+      setSyncMessage(`已推送 ${formatSyncImportResult(result.importResult)} 到对端`)
+    } catch (e) {
+      setSyncError(`推送失败: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setSyncBusy(false)
+    }
+  }, [pairedPeerId, peerSyncHello, syncPeerUrl])
 
   const updateTrackingDraft = useCallback((field: keyof TrackingSettings, value: number) => {
     setTrackingDraft((prev) => prev ? { ...prev, [field]: value } : prev)
@@ -853,6 +1015,293 @@ export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose 
         </Section>
         )}
 
+        {activeSection === 'sync' && (
+        <Section title="局域网同步" icon={Network}>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{
+              background: 'rgba(255,255,255,0.03)',
+              border: `1px solid ${theme.glassBorder}`,
+              borderRadius: 4,
+              padding: '8px 12px',
+              display: 'grid',
+              gap: 4,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <Wifi size={13} color={theme.electricBlue} />
+                <span style={{ fontSize: 12, color: theme.textSecondary }}>本机</span>
+                <span style={{ marginLeft: 'auto', fontSize: 10, color: theme.expGreen, letterSpacing: 0.6 }}>ONLINE</span>
+              </div>
+              <div style={{
+                fontFamily: theme.fontMono,
+                fontSize: 11,
+                color: theme.textPrimary,
+                wordBreak: 'break-all',
+              }}>
+                {localSyncHello?.device_id ?? '读取中...'}
+              </div>
+              <div style={{ fontSize: 10.5, color: theme.textMuted }}>
+                {localSyncHello ? `协议 v${localSyncHello.protocol_version} · ${localSyncHello.server_time}` : '—'}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                <KeyRound size={12} color={theme.electricBlue} />
+                <span style={{ fontSize: 10.5, color: theme.textMuted }}>本机匹配码</span>
+                <span style={{
+                  fontFamily: theme.fontMono,
+                  fontSize: 12,
+                  color: theme.electricBlue,
+                  letterSpacing: 0.8,
+                }}>
+                  {localSyncHello?.pair_code ?? '----'}
+                </span>
+              </div>
+            </div>
+
+            <div style={{
+              border: `1px solid ${theme.glassBorder}`,
+              borderRadius: 4,
+              background: 'rgba(255,255,255,0.025)',
+              padding: '8px 10px',
+              display: 'grid',
+              gap: 8,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Network size={13} color={theme.electricBlue} />
+                <span style={{ fontSize: 12, color: theme.textSecondary }}>可连接设备</span>
+                <button
+                  type="button"
+                  onClick={discoverPeers}
+                  disabled={syncDiscovering}
+                  style={{
+                    marginLeft: 'auto',
+                    height: 22,
+                    padding: '0 8px',
+                    border: `1px solid ${theme.hudFrameSoft}`,
+                    background: 'rgba(0,229,255,0.06)',
+                    color: syncDiscovering ? theme.textMuted : theme.electricBlue,
+                    borderRadius: 3,
+                    cursor: syncDiscovering ? 'not-allowed' : 'pointer',
+                    fontSize: 11,
+                  }}
+                >
+                  {syncDiscovering ? '搜索中...' : '搜索'}
+                </button>
+              </div>
+              {syncPeers.length === 0 ? (
+                <div style={{ fontSize: 11, color: theme.textMuted, padding: '3px 0' }}>
+                  暂无设备
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {syncPeers.map((peer) => {
+                    const selected = peerSyncHello?.device_id === peer.device_id
+                    const matched = pairedPeerId === peer.device_id
+                    return (
+                      <button
+                        key={peer.device_id}
+                        type="button"
+                        onClick={() => useDiscoveredPeer(peer)}
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '1fr auto',
+                          gap: 8,
+                          alignItems: 'center',
+                          textAlign: 'left',
+                          padding: '7px 8px',
+                          border: `1px solid ${selected ? theme.electricBlue : theme.glassBorder}`,
+                          background: selected ? 'rgba(0,229,255,0.08)' : 'rgba(255,255,255,0.025)',
+                          color: theme.textPrimary,
+                          borderRadius: 4,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <span style={{ minWidth: 0 }}>
+                          <span style={{ display: 'block', fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {peer.alias}
+                          </span>
+                          <span style={{ display: 'block', fontSize: 10.5, color: theme.textMuted, marginTop: 2 }}>
+                            {peer.protocol}://{peer.ip}:{peer.port} · {peer.source}
+                          </span>
+                        </span>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 5,
+                          fontFamily: theme.fontMono,
+                          fontSize: 11,
+                          color: matched ? theme.expGreen : theme.warningOrange,
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {matched ? <ShieldCheck size={12} /> : <KeyRound size={12} />}
+                          {peer.pair_code}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div style={{
+              border: `1px solid ${manualSyncOpen ? theme.hudFrameSoft : theme.glassBorder}`,
+              borderRadius: 4,
+              background: manualSyncOpen ? 'rgba(0,229,255,0.035)' : 'rgba(255,255,255,0.02)',
+              overflow: 'hidden',
+            }}>
+              <button
+                type="button"
+                onClick={() => setManualSyncOpen((v) => !v)}
+                style={{
+                  width: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 10px',
+                  border: 'none',
+                  background: 'transparent',
+                  color: theme.textSecondary,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontSize: 12,
+                }}
+              >
+                <ChevronRight
+                  size={13}
+                  style={{
+                    color: theme.electricBlue,
+                    transform: manualSyncOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+                    transition: 'transform 0.15s ease',
+                  }}
+                />
+                <span>手动连接</span>
+              </button>
+              {manualSyncOpen && (
+                <div style={{ padding: '0 10px 10px', display: 'grid', gap: 8 }}>
+                  <input
+                    value={syncPeerUrl}
+                    onChange={(e) => updateSyncPeerUrl(e.target.value)}
+                    placeholder="输入电脑名或 IP 地址"
+                    style={inputStyle}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <MagneticButton
+                      onClick={checkPeerSync}
+                      disabled={syncBusy}
+                      color={theme.electricBlue}
+                    >
+                      {syncBusy ? '连接中...' : '连接'}
+                    </MagneticButton>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {peerSyncHello && (
+              <div style={{
+                background: 'rgba(0,229,255,0.04)',
+                border: `1px solid ${theme.hudFrameSoft}`,
+                borderRadius: 4,
+                padding: '8px 12px',
+                display: 'grid',
+                gap: 4,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 12, color: theme.textSecondary }}>对端</span>
+                  {peerMatched && (
+                    <span style={{
+                      marginLeft: 'auto',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      fontSize: 10,
+                      color: theme.expGreen,
+                      letterSpacing: 0.5,
+                    }}>
+                      <ShieldCheck size={12} />
+                      已匹配
+                    </span>
+                  )}
+                </div>
+                <div style={{
+                  fontFamily: theme.fontMono,
+                  fontSize: 11,
+                  color: theme.textPrimary,
+                  wordBreak: 'break-all',
+                }}>
+                  {peerSyncHello.device_id}
+                </div>
+                <div style={{ fontSize: 10.5, color: theme.textMuted }}>
+                  协议 v{peerSyncHello.protocol_version} · {peerSyncHello.server_time}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                  <KeyRound size={12} color={peerMatched ? theme.expGreen : theme.warningOrange} />
+                  <span style={{ fontSize: 10.5, color: theme.textMuted }}>对端匹配码</span>
+                  <span style={{
+                    fontFamily: theme.fontMono,
+                    fontSize: 12,
+                    color: peerMatched ? theme.expGreen : theme.warningOrange,
+                    letterSpacing: 0.8,
+                  }}>
+                    {peerSyncHello.pair_code}
+                  </span>
+                  {!peerMatched && pairedPeerId && (
+                    <span style={{ marginLeft: 'auto', fontSize: 10, color: theme.warningOrange }}>
+                      当前已匹配 {pairedPairCode}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <MagneticButton
+                onClick={matchPeerSync}
+                disabled={syncBusy || !peerSyncHello || peerMatched}
+                color={peerMatched ? theme.expGreen : theme.electricBlue}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <ShieldCheck size={13} />
+                  {peerMatched ? '已匹配' : '匹配此设备'}
+                </span>
+              </MagneticButton>
+              <MagneticButton
+                onClick={pullFromPeer}
+                disabled={syncBusy || !peerMatched}
+                color={theme.expGreen}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <DownloadCloud size={13} />
+                  从对端拉取
+                </span>
+              </MagneticButton>
+              <MagneticButton
+                onClick={pushToPeer}
+                disabled={syncBusy || !peerMatched}
+                color={theme.warningOrange}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <UploadCloud size={13} />
+                  推送到对端
+                </span>
+              </MagneticButton>
+            </div>
+
+            {(syncMessage || syncError) && (
+              <div style={{
+                border: `1px solid ${syncError ? 'rgba(255,80,80,0.35)' : 'rgba(70,255,170,0.28)'}`,
+                background: syncError ? 'rgba(255,80,80,0.06)' : 'rgba(70,255,170,0.05)',
+                color: syncError ? '#ff9b9b' : theme.expGreen,
+                borderRadius: 4,
+                padding: '8px 10px',
+                fontSize: 11.5,
+                lineHeight: 1.45,
+              }}>
+                {syncError ?? syncMessage}
+              </div>
+            )}
+          </div>
+        </Section>
+        )}
+
         {activeSection === 'database' && (
         <Section title="数据库" icon={Database}>
           <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 8 }}>
@@ -914,6 +1363,7 @@ const SECTION_LIST: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'screenshot', label: '屏幕截图', icon: Camera },
   { id: 'ignore',     label: '忽略窗口', icon: Ban },
   ...(IS_WINDOWS ? [{ id: 'gpu', label: '图形性能', icon: Cpu }] : []),
+  { id: 'sync',       label: '同步',     icon: Network },
   { id: 'database',   label: '数据库',   icon: Database },
 ]
 

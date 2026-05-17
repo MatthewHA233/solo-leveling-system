@@ -1,14 +1,23 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import {
+  BookOpen,
+  Brain,
   Check,
   ChevronDown,
   ChevronRight,
+  Code2,
+  Dumbbell,
+  FileText,
   Folder,
+  MessageCircle,
+  Palette,
   Pencil,
   Plus,
   Search,
+  Sparkles,
   Tag as TagIcon,
+  Target,
   Trash2,
   X,
 } from 'lucide-react'
@@ -42,6 +51,34 @@ type DraftTarget = {
 }
 
 const EMPTY_PATH_SET: ReadonlySet<string> = new Set()
+
+interface PlanVisualMeta {
+  label: string
+  color: string
+  icon: ReactNode
+}
+
+const PLAN_VISUAL_RULES: Array<{ pattern: RegExp; label: string; color: string; icon: (color: string) => ReactNode }> = [
+  { pattern: /代码|开发|编程|实现|修复|debug|bug|code|dev|fix/i, label: 'DEV', color: '#00E5FF', icon: (color) => <Code2 size={15} color={color} /> },
+  { pattern: /写|论文|文档|文章|稿|总结|复盘|draft|write|doc/i, label: 'WRITE', color: '#B47CFF', icon: (color) => <FileText size={15} color={color} /> },
+  { pattern: /学|读|阅读|课程|复习|研究|study|learn|read/i, label: 'STUDY', color: '#00FF88', icon: (color) => <BookOpen size={15} color={color} /> },
+  { pattern: /设计|交互|动画|动效|视觉|ui|ux|design/i, label: 'DESIGN', color: '#2ECC71', icon: (color) => <Palette size={15} color={color} /> },
+  { pattern: /会|沟通|同步|消息|回复|邮件|meeting|sync|mail|email/i, label: 'COMM', color: '#7DD3FC', icon: (color) => <MessageCircle size={15} color={color} /> },
+  { pattern: /运动|健身|跑|训练|workout|run|gym/i, label: 'BODY', color: '#F59E0B', icon: (color) => <Dumbbell size={15} color={color} /> },
+  { pattern: /想|规划|拆解|决策|整理|plan|think/i, label: 'THINK', color: '#F472B6', icon: (color) => <Brain size={15} color={color} /> },
+]
+
+function getPlanVisualMeta(title: string, fallbackColor: string): PlanVisualMeta {
+  const trimmed = title.trim()
+  const rule = PLAN_VISUAL_RULES.find((item) => item.pattern.test(trimmed))
+  const color = rule?.color ?? fallbackColor
+  if (rule) return { label: rule.label, color, icon: rule.icon(color) }
+  return {
+    label: 'TASK',
+    color,
+    icon: trimmed ? <Target size={15} color={color} /> : <Sparkles size={15} color={color} />,
+  }
+}
 
 function buildTree(category: ActivityCategory, tags: ActivityTag[]): PathNode {
   const root: PathNode = {
@@ -192,6 +229,14 @@ export default function PlanNodePalette({
 
   const startDraft = useCallback((projectTagId: number, parentId: number | null) => {
     selectProject(projectTagId)
+    if (parentId != null) {
+      setCollapsedTasks((prev) => {
+        if (!prev.has(parentId)) return prev
+        const next = new Set(prev)
+        next.delete(parentId)
+        return next
+      })
+    }
     setDraftTarget({ projectTagId, parentId })
     setDraftTitle('')
     setEditingTaskId(null)
@@ -207,11 +252,12 @@ export default function PlanNodePalette({
     if (!draftTarget) return
     const title = draftTitle.trim()
     if (!title) return
-    await addPlanNode(draftTarget.projectTagId, title, draftTarget.parentId)
+    const created = await addPlanNode(draftTarget.projectTagId, title, draftTarget.parentId)
     setDraftTarget(null)
     setDraftTitle('')
+    onSelectNode(created.id)
     onNodesChange(draftTarget.projectTagId)
-  }, [draftTarget, draftTitle, onNodesChange])
+  }, [draftTarget, draftTitle, onNodesChange, onSelectNode])
 
   const startEditTask = useCallback((node: PlanNode) => {
     onSelectNode(null)
@@ -720,6 +766,7 @@ function TaskNode({
   const done = node.status === 'done'
   const isEditing = editingTaskId === node.id
   const isDraftingChild = draftTarget?.projectTagId === projectTagId && draftTarget.parentId === node.id
+  const meta = getPlanVisualMeta(node.title, color)
 
   return (
     <div>
@@ -727,14 +774,18 @@ function TaskNode({
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 3,
+          gap: 6,
           marginLeft: depth * 12,
-          padding: '4px 5px',
-          background: selected ? 'rgba(245,158,11,0.16)' : 'rgba(255,255,255,0.025)',
-          border: `1px solid ${selected ? theme.warningOrange : 'rgba(255,255,255,0.06)'}`,
-          boxShadow: selected ? `0 0 8px ${theme.warningOrange}44, inset 0 0 6px ${color}22` : undefined,
+          padding: '5px 6px',
+          minHeight: 34,
+          background: selected
+            ? `linear-gradient(90deg, ${meta.color}20 0%, rgba(255,255,255,0.035) 100%)`
+            : 'rgba(255,255,255,0.025)',
+          border: `1px solid ${selected ? meta.color : 'rgba(255,255,255,0.06)'}`,
+          boxShadow: selected ? `0 0 12px ${meta.color}55, inset 0 0 10px ${meta.color}1A` : undefined,
           color: done ? theme.textMuted : theme.textPrimary,
           cursor: isEditing ? 'default' : 'pointer',
+          transition: 'background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease',
         }}
         onClick={(event) => {
           event.stopPropagation()
@@ -755,6 +806,12 @@ function TaskNode({
           <span style={{ width: 11, display: 'inline-block' }} />
         )}
 
+        {!isEditing && (
+          <span style={taskMetaBadgeStyle(meta.color, selected, done)}>
+            {meta.icon}
+          </span>
+        )}
+
         {isEditing ? (
           <InlineTaskEdit
             value={editingTitle}
@@ -771,6 +828,7 @@ function TaskNode({
             whiteSpace: 'nowrap',
             fontSize: 11.5,
             textDecoration: done ? 'line-through' : undefined,
+            lineHeight: 1.25,
           }}>
             <Highlight text={node.title} keyword={highlight} />
           </span>
@@ -778,6 +836,7 @@ function TaskNode({
 
         {!isEditing && (
           <>
+            <span style={taskKindPillStyle(meta.color, selected)}>{meta.label}</span>
             <Tooltip content="重命名任务">
               <button
                 onClick={(event) => {
@@ -945,28 +1004,44 @@ function InlineTaskDraft({
   depth: number
   color: string
 }) {
+  const meta = getPlanVisualMeta(value, color)
+  const canConfirm = value.trim().length > 0
+
   return (
     <div style={{
       display: 'flex',
       alignItems: 'center',
-      gap: 4,
+      gap: 8,
       marginLeft: depth * 12,
-      padding: '4px 6px',
-      border: `1px dashed ${theme.warningOrange}66`,
-      background: 'rgba(245,158,11,0.07)',
+      padding: '7px 8px',
+      minHeight: 44,
+      border: `1px solid ${meta.color}88`,
+      background: `linear-gradient(90deg, ${meta.color}18 0%, rgba(4,10,26,0.72) 100%)`,
+      boxShadow: `0 0 16px ${meta.color}24, inset 0 0 12px ${meta.color}10`,
+      clipPath: 'polygon(6px 0, calc(100% - 6px) 0, 100% 6px, 100% calc(100% - 6px), calc(100% - 6px) 100%, 6px 100%, 0 calc(100% - 6px), 0 6px)',
+      WebkitClipPath: 'polygon(6px 0, calc(100% - 6px) 0, 100% 6px, 100% calc(100% - 6px), calc(100% - 6px) 100%, 6px 100%, 0 calc(100% - 6px), 0 6px)',
+      transition: 'border-color 160ms ease, background 160ms ease, box-shadow 160ms ease',
     }}>
+      <span style={taskMetaBadgeStyle(meta.color, true, false)}>
+        {meta.icon}
+      </span>
+      <span style={draftKindStyle(meta.color)}>{meta.label}</span>
       <input
         autoFocus
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder="输入目标 / 任务 / 子步骤"
+        placeholder={depth === 0 ? '输入一个可以安排到今天的任务' : '输入下一步'}
         onKeyDown={(event) => {
           if (event.key === 'Enter') onConfirm()
           else if (event.key === 'Escape') onCancel()
         }}
-        style={{ ...inputStyle, borderColor: `${color}55` }}
+        style={{ ...inputStyle, borderColor: `${meta.color}55`, background: 'rgba(0,0,0,0.22)' }}
       />
-      <button onClick={onConfirm} style={{ ...iconBtn, color: theme.expGreen }}>
+      <button
+        onClick={onConfirm}
+        disabled={!canConfirm}
+        style={{ ...iconBtn, color: canConfirm ? theme.expGreen : theme.textMuted, opacity: canConfirm ? 1 : 0.45 }}
+      >
         <Check size={11} />
       </button>
       <button onClick={onCancel} style={iconBtn}>
@@ -1043,6 +1118,55 @@ function Highlight({ text, keyword }: { text: string; keyword: string }) {
 
   if (cursor < text.length) parts.push(text.slice(cursor))
   return <>{parts}</>
+}
+
+function taskMetaBadgeStyle(color: string, active: boolean, muted: boolean): CSSProperties {
+  return {
+    width: 25,
+    height: 25,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    color,
+    border: `1px solid ${color}${active ? 'CC' : '66'}`,
+    background: active ? `${color}1F` : `${color}10`,
+    boxShadow: active ? `0 0 10px ${color}44` : undefined,
+    opacity: muted ? 0.45 : 1,
+    clipPath: 'polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px)',
+    WebkitClipPath: 'polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px)',
+    transition: 'border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, opacity 140ms ease',
+  }
+}
+
+function taskKindPillStyle(color: string, active: boolean): CSSProperties {
+  return {
+    flexShrink: 0,
+    minWidth: 42,
+    padding: '2px 5px',
+    textAlign: 'center',
+    color: active ? color : theme.textMuted,
+    border: `1px solid ${active ? `${color}66` : 'transparent'}`,
+    background: active ? `${color}12` : 'transparent',
+    fontFamily: theme.fontMono,
+    fontSize: 8.5,
+    fontWeight: 900,
+    letterSpacing: 0.8,
+  }
+}
+
+function draftKindStyle(color: string): CSSProperties {
+  return {
+    flexShrink: 0,
+    width: 52,
+    color,
+    fontFamily: theme.fontMono,
+    fontSize: 9,
+    fontWeight: 900,
+    letterSpacing: 1,
+    textAlign: 'center',
+    textShadow: `0 0 8px ${color}88`,
+  }
 }
 
 const iconBtn: CSSProperties = {

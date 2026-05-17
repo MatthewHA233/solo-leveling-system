@@ -1449,6 +1449,71 @@ function EditModeToggle({ on, onClick, layer }: { on: boolean; onClick: () => vo
   )
 }
 
+function BrushStatusBadge({
+  layer,
+  label,
+  color,
+  empty,
+}: {
+  layer: RecordLayer
+  label: string
+  color: string
+  empty: boolean
+}) {
+  return (
+    <div style={{
+      position: 'absolute',
+      top: 10,
+      right: 12,
+      zIndex: 72,
+      pointerEvents: 'none',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      maxWidth: 320,
+      padding: '7px 10px',
+      color: empty ? theme.textMuted : theme.textPrimary,
+      background: `linear-gradient(90deg, ${hexToRgba(color, empty ? 0.06 : 0.18)} 0%, rgba(3,8,20,0.82) 100%)`,
+      border: `1px solid ${hexToRgba(color, empty ? 0.32 : 0.78)}`,
+      boxShadow: empty ? undefined : `0 0 18px ${hexToRgba(color, 0.28)}, inset 0 0 16px ${hexToRgba(color, 0.08)}`,
+      clipPath: 'polygon(7px 0, calc(100% - 7px) 0, 100% 7px, 100% calc(100% - 7px), calc(100% - 7px) 100%, 7px 100%, 0 calc(100% - 7px), 0 7px)',
+      WebkitClipPath: 'polygon(7px 0, calc(100% - 7px) 0, 100% 7px, 100% calc(100% - 7px), calc(100% - 7px) 100%, 7px 100%, 0 calc(100% - 7px), 0 7px)',
+      transition: 'border-color 140ms ease, background 140ms ease, box-shadow 140ms ease',
+    }}>
+      <span style={{
+        width: 8,
+        height: 8,
+        flexShrink: 0,
+        background: empty ? 'transparent' : color,
+        border: `1px solid ${color}`,
+        boxShadow: empty ? undefined : `0 0 8px ${color}`,
+        transform: 'rotate(45deg)',
+      }} />
+      <span style={{
+        flexShrink: 0,
+        color,
+        fontFamily: theme.fontMono,
+        fontSize: 9,
+        fontWeight: 900,
+        letterSpacing: 1.5,
+        textShadow: empty ? undefined : `0 0 8px ${hexToRgba(color, 0.72)}`,
+      }}>
+        {layer === 'plan' ? 'PLAN BRUSH' : 'TAG BRUSH'}
+      </span>
+      <span style={{
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        fontSize: 11.5,
+        fontWeight: 700,
+      }}>
+        {label}
+      </span>
+    </div>
+  )
+}
+
 function drawDragPreview(
   ctx: CanvasRenderingContext2D,
   p: ReturnType<typeof getGridParams>,
@@ -2486,7 +2551,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
 
   /** 查 selectedTagId 对应的颜色（找不到走默认绿） */
   const brushColorRef = useRef('#22C55E')
-  brushColorRef.current = useMemo(() => {
+  const brushColor = useMemo(() => {
     if (selectedBrushId == null) return recordLayer === 'plan' ? theme.warningOrange : theme.expGreen
     const node = recordLayer === 'plan' ? planNodeById.get(selectedBrushId) : null
     const tagId = node ? node.projectTagId : selectedBrushId
@@ -2495,6 +2560,17 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     const cat = catById.get(tag.categoryId)
     return cat?.color ?? (recordLayer === 'plan' ? theme.warningOrange : theme.expGreen)
   }, [selectedBrushId, recordLayer, planNodeById, tagById, catById])
+  brushColorRef.current = brushColor
+
+  const brushLabel = useMemo(() => {
+    if (selectedBrushId == null) return recordLayer === 'plan' ? '未选择任务' : '未选择标签'
+    if (recordLayer === 'plan') {
+      const node = planNodeById.get(selectedBrushId)
+      return node ? (planTitleById.get(node.id) ?? node.title) : '未选择任务'
+    }
+    const tag = tagById.get(selectedBrushId)
+    return tag?.fullPath ?? '未选择标签'
+  }, [selectedBrushId, recordLayer, planNodeById, planTitleById, tagById])
 
   function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
     e.preventDefault()
@@ -2924,6 +3000,15 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
           zIndex: 65,
           pointerEvents: 'none',
         }} />
+
+        {editMode && (
+          <BrushStatusBadge
+            layer={recordLayer}
+            label={brushLabel}
+            color={brushColor}
+            empty={selectedBrushId == null}
+          />
+        )}
 
         {/* 右上 frame 切角遮罩三角（18×18，frame cornerCut 范围）*/}
         <div style={{

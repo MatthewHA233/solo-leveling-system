@@ -3,7 +3,7 @@
 // 支持自定义存储路径 + 数据迁移
 // ══════════════════════════════════════════════
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::Arc;
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
@@ -85,6 +85,90 @@ pub struct PlannedBlock {
     pub plan_node_id: i64,
     pub note: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncActivityCategory {
+    pub sync_id: String,
+    pub name: String,
+    pub color: String,
+    pub sort_order: i32,
+    pub created_at: String,
+    pub last_used_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncActivityTag {
+    pub sync_id: String,
+    pub category_sync_id: String,
+    pub full_path: String,
+    pub leaf_name: String,
+    pub depth: i32,
+    pub created_at: String,
+    pub last_used_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncActivityBlock {
+    pub sync_id: String,
+    pub date: String,
+    pub minute: i32,
+    pub tag_sync_id: String,
+    pub note: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncPlanNode {
+    pub sync_id: String,
+    pub project_tag_sync_id: String,
+    pub parent_sync_id: Option<String>,
+    pub title: String,
+    pub status: String,
+    pub sort_order: i32,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncPlannedBlock {
+    pub sync_id: String,
+    pub date: String,
+    pub minute: i32,
+    pub plan_node_sync_id: String,
+    pub note: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncExport {
+    pub device_id: String,
+    pub exported_at: String,
+    pub cursor: String,
+    pub activity_categories: Vec<SyncActivityCategory>,
+    pub activity_tags: Vec<SyncActivityTag>,
+    pub activity_blocks: Vec<SyncActivityBlock>,
+    pub plan_nodes: Vec<SyncPlanNode>,
+    pub planned_blocks: Vec<SyncPlannedBlock>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncImportResult {
+    pub activity_categories: usize,
+    pub activity_tags: usize,
+    pub activity_blocks: usize,
+    pub plan_nodes: usize,
+    pub planned_blocks: usize,
+    pub skipped: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -643,6 +727,8 @@ impl Database {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_planned_blocks_node ON planned_blocks(plan_node_id);")
             .map_err(|e| format!("创建 planned_blocks 索引失败: {}", e))?;
 
+        ensure_sync_metadata(&conn)?;
+
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN audio_path TEXT");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN usage_json TEXT");
@@ -942,6 +1028,7 @@ impl Database {
         let mut cat_stmt = conn.prepare(
             "SELECT id, name, color, sort_order, created_at, last_used_at
              FROM activity_categories
+             WHERE deleted_at IS NULL
              ORDER BY sort_order ASC, last_used_at DESC"
         ).map_err(|e| e.to_string())?;
         let categories: Vec<ActivityCategory> = cat_stmt.query_map([], |row| {
@@ -960,6 +1047,7 @@ impl Database {
         let mut tag_stmt = conn.prepare(
             "SELECT id, category_id, full_path, leaf_name, depth, created_at, last_used_at
              FROM activity_tags
+             WHERE deleted_at IS NULL
              ORDER BY full_path ASC"
         ).map_err(|e| e.to_string())?;
         let tags: Vec<ActivityTag> = tag_stmt.query_map([], |row| {
@@ -990,9 +1078,9 @@ impl Database {
         let conn = self.conn.lock().await;
         let now = local_now_string();
         conn.execute(
-            "INSERT INTO activity_categories (name, color, sort_order, created_at, last_used_at)
-             VALUES (?, ?, COALESCE((SELECT MAX(sort_order)+1 FROM activity_categories), 0), ?, ?)",
-            params![&name, &req.color, &now, &now],
+            "INSERT INTO activity_categories (sync_id, name, color, sort_order, created_at, last_used_at, updated_at)
+             VALUES (?, ?, ?, COALESCE((SELECT MAX(sort_order)+1 FROM activity_categories WHERE deleted_at IS NULL), 0), ?, ?, ?)",
+            params![Uuid::new_v4().to_string(), &name, &req.color, &now, &now, &now],
         ).map_err(|e| format!("添加分类失败: {}", e))?;
         let id = conn.last_insert_rowid();
         Ok(ActivityCategory {
@@ -1007,8 +1095,33 @@ impl Database {
 
     pub async fn delete_activity_category(&self, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        conn.execute("DELETE FROM activity_categories WHERE id = ?", params![id])
+        let now = local_now_string();
+        conn.execute("UPDATE activity_categories SET deleted_at = ?, updated_at = ? WHERE id = ?", params![&now, &now, id])
             .map_err(|e| e.to_string())?;
+        conn.execute("UPDATE activity_tags SET deleted_at = ?, updated_at = ? WHERE category_id = ?", params![&now, &now, id])
+            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE activity_blocks
+             SET deleted_at = ?, updated_at = ?
+             WHERE tag_id IN (SELECT id FROM activity_tags WHERE category_id = ?)",
+            params![&now, &now, id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE plan_nodes
+             SET deleted_at = ?, updated_at = ?
+             WHERE project_tag_id IN (SELECT id FROM activity_tags WHERE category_id = ?)",
+            params![&now, &now, id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE planned_blocks
+             SET deleted_at = ?, updated_at = ?
+             WHERE plan_node_id IN (
+                 SELECT pn.id FROM plan_nodes pn
+                 JOIN activity_tags t ON t.id = pn.project_tag_id
+                 WHERE t.category_id = ?
+             )",
+            params![&now, &now, id],
+        ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -1022,9 +1135,10 @@ impl Database {
         ).map_err(|_| "分类不存在".to_string())?;
 
         if let Some(color) = req.color.as_deref() {
+            let now = local_now_string();
             conn.execute(
-                "UPDATE activity_categories SET color = ? WHERE id = ?",
-                params![color, req.id],
+                "UPDATE activity_categories SET color = ?, updated_at = ? WHERE id = ?",
+                params![color, &now, req.id],
             ).map_err(|e| e.to_string())?;
         }
 
@@ -1040,8 +1154,8 @@ impl Database {
                 return Ok(());
             }
             conn.execute(
-                "UPDATE activity_categories SET name = ? WHERE id = ?",
-                params![new_name, req.id],
+                "UPDATE activity_categories SET name = ?, updated_at = ? WHERE id = ?",
+                params![new_name, local_now_string(), req.id],
             ).map_err(|e| format!("更新分类名失败: {}", e))?;
 
             // 级联更新 tag.full_path 与 leaf_name
@@ -1053,19 +1167,20 @@ impl Database {
             // 1) 顶层叶子（full_path 恰等于旧 category 名）
             conn.execute(
                 "UPDATE activity_tags
-                 SET full_path = ?, leaf_name = ?
+                 SET full_path = ?, leaf_name = ?, updated_at = ?
                  WHERE category_id = ? AND full_path = ?",
-                params![&new_prefix, &new_prefix, req.id, &old_prefix],
+                params![&new_prefix, &new_prefix, local_now_string(), req.id, &old_prefix],
             ).map_err(|e| e.to_string())?;
 
             // 2) 子层标签
             conn.execute(
                 "UPDATE activity_tags
-                 SET full_path = ? || SUBSTR(full_path, ?)
+                 SET full_path = ? || SUBSTR(full_path, ?), updated_at = ?
                  WHERE category_id = ? AND full_path LIKE ? || '%'",
                 params![
                     &new_prefix_with_comma,
                     (old_prefix_with_comma.chars().count() as i64) + 1,
+                    local_now_string(),
                     req.id,
                     &old_prefix_with_comma,
                 ],
@@ -1104,9 +1219,9 @@ impl Database {
         let normalized = segments.join(",");
         let now = local_now_string();
         conn.execute(
-            "INSERT INTO activity_tags (category_id, full_path, leaf_name, depth, created_at, last_used_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
-            params![req.category_id, &normalized, &leaf, depth, &now, &now],
+            "INSERT INTO activity_tags (sync_id, category_id, full_path, leaf_name, depth, created_at, last_used_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![Uuid::new_v4().to_string(), req.category_id, &normalized, &leaf, depth, &now, &now, &now],
         ).map_err(|e| format!("添加标签失败: {}", e))?;
         let id = conn.last_insert_rowid();
         Ok(ActivityTag {
@@ -1122,8 +1237,19 @@ impl Database {
 
     pub async fn delete_activity_tag(&self, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        conn.execute("DELETE FROM activity_tags WHERE id = ?", params![id])
+        let now = local_now_string();
+        conn.execute("UPDATE activity_tags SET deleted_at = ?, updated_at = ? WHERE id = ?", params![&now, &now, id])
             .map_err(|e| e.to_string())?;
+        conn.execute("UPDATE activity_blocks SET deleted_at = ?, updated_at = ? WHERE tag_id = ?", params![&now, &now, id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("UPDATE plan_nodes SET deleted_at = ?, updated_at = ? WHERE project_tag_id = ?", params![&now, &now, id])
+            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE planned_blocks
+             SET deleted_at = ?, updated_at = ?
+             WHERE plan_node_id IN (SELECT id FROM plan_nodes WHERE project_tag_id = ?)",
+            params![&now, &now, id],
+        ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -1212,12 +1338,14 @@ impl Database {
                 continue;
             }
             conn.execute(
-                "INSERT INTO activity_blocks (date, minute, tag_id, created_at)
-                 VALUES (?, ?, ?, ?)
+                "INSERT INTO activity_blocks (sync_id, date, minute, tag_id, created_at, updated_at, deleted_at)
+                 VALUES (?, ?, ?, ?, ?, ?, NULL)
                  ON CONFLICT(date, minute) DO UPDATE SET
                      tag_id = excluded.tag_id,
-                     created_at = excluded.created_at",
-                params![&req.date, minute, req.tag_id, &now],
+                     created_at = excluded.created_at,
+                     updated_at = excluded.updated_at,
+                     deleted_at = NULL",
+                params![Uuid::new_v4().to_string(), &req.date, minute, req.tag_id, &now, &now],
             ).map_err(|e| e.to_string())?;
             affected += 1;
         }
@@ -1238,12 +1366,13 @@ impl Database {
             return Ok(0);
         }
         let conn = self.conn.lock().await;
+        let now = local_now_string();
         let placeholders = req.minutes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "DELETE FROM activity_blocks WHERE date = ? AND minute IN ({})",
+            "UPDATE activity_blocks SET deleted_at = ?, updated_at = ? WHERE date = ? AND minute IN ({})",
             placeholders
         );
-        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(req.date.clone())];
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(now.clone()), Box::new(now), Box::new(req.date.clone())];
         for m in &req.minutes {
             params_vec.push(Box::new(*m));
         }
@@ -1259,7 +1388,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT date, minute, tag_id, note, created_at
              FROM activity_blocks
-             WHERE date = ?
+             WHERE date = ? AND deleted_at IS NULL
              ORDER BY minute ASC"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(params![date], |row| {
@@ -1280,7 +1409,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, project_tag_id, parent_id, title, status, sort_order, created_at, updated_at
              FROM plan_nodes
-             WHERE project_tag_id = ?
+             WHERE project_tag_id = ? AND deleted_at IS NULL
              ORDER BY COALESCE(parent_id, 0), sort_order ASC, id ASC"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(params![project_tag_id], |row| {
@@ -1332,9 +1461,9 @@ impl Database {
         ).unwrap_or(0);
 
         conn.execute(
-            "INSERT INTO plan_nodes (project_tag_id, parent_id, title, status, sort_order, created_at, updated_at)
-             VALUES (?, ?, ?, 'active', ?, ?, ?)",
-            params![req.project_tag_id, req.parent_id, title, sort_order, &now, &now],
+            "INSERT INTO plan_nodes (sync_id, project_tag_id, parent_id, title, status, sort_order, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
+            params![Uuid::new_v4().to_string(), req.project_tag_id, req.parent_id, title, sort_order, &now, &now],
         ).map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         Ok(PlanNode {
@@ -1376,8 +1505,29 @@ impl Database {
 
     pub async fn delete_plan_node(&self, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        conn.execute("DELETE FROM plan_nodes WHERE id = ?", params![id])
-            .map_err(|e| e.to_string())?;
+        let now = local_now_string();
+        conn.execute(
+            "WITH RECURSIVE subtree(id) AS (
+                SELECT id FROM plan_nodes WHERE id = ?
+                UNION ALL
+                SELECT n.id FROM plan_nodes n JOIN subtree s ON n.parent_id = s.id
+             )
+             UPDATE plan_nodes
+             SET deleted_at = ?, updated_at = ?
+             WHERE id IN (SELECT id FROM subtree)",
+            params![id, &now, &now],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "WITH RECURSIVE subtree(id) AS (
+                SELECT id FROM plan_nodes WHERE id = ?
+                UNION ALL
+                SELECT n.id FROM plan_nodes n JOIN subtree s ON n.parent_id = s.id
+             )
+             UPDATE planned_blocks
+             SET deleted_at = ?, updated_at = ?
+             WHERE plan_node_id IN (SELECT id FROM subtree)",
+            params![id, &now, &now],
+        ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -1406,12 +1556,14 @@ impl Database {
                 continue;
             }
             conn.execute(
-                "INSERT INTO planned_blocks (date, minute, plan_node_id, created_at)
-                 VALUES (?, ?, ?, ?)
+                "INSERT INTO planned_blocks (sync_id, date, minute, plan_node_id, created_at, updated_at, deleted_at)
+                 VALUES (?, ?, ?, ?, ?, ?, NULL)
                  ON CONFLICT(date, minute) DO UPDATE SET
                      plan_node_id = excluded.plan_node_id,
-                     created_at = excluded.created_at",
-                params![&req.date, minute, req.plan_node_id, &now],
+                     created_at = excluded.created_at,
+                     updated_at = excluded.updated_at,
+                     deleted_at = NULL",
+                params![Uuid::new_v4().to_string(), &req.date, minute, req.plan_node_id, &now, &now],
             ).map_err(|e| e.to_string())?;
             affected += 1;
         }
@@ -1432,12 +1584,13 @@ impl Database {
             return Ok(0);
         }
         let conn = self.conn.lock().await;
+        let now = local_now_string();
         let placeholders = req.minutes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "DELETE FROM planned_blocks WHERE date = ? AND minute IN ({})",
+            "UPDATE planned_blocks SET deleted_at = ?, updated_at = ? WHERE date = ? AND minute IN ({})",
             placeholders
         );
-        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(req.date.clone())];
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(now.clone()), Box::new(now), Box::new(req.date.clone())];
         for m in &req.minutes {
             params_vec.push(Box::new(*m));
         }
@@ -1453,7 +1606,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT date, minute, plan_node_id, note, created_at
              FROM planned_blocks
-             WHERE date = ?
+             WHERE date = ? AND deleted_at IS NULL
              ORDER BY minute ASC"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(params![date], |row| {
@@ -1466,6 +1619,306 @@ impl Database {
             })
         }).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    // ── LAN Sync: activity records + plan layer ──
+
+    pub async fn sync_device_id(&self) -> Result<String, String> {
+        let conn = self.conn.lock().await;
+        get_or_create_device_id(&conn)
+    }
+
+    pub async fn export_sync(&self, since: Option<String>) -> Result<SyncExport, String> {
+        let conn = self.conn.lock().await;
+        let exported_at = local_now_string();
+        let device_id = get_or_create_device_id(&conn)?;
+
+        let changed = |updated_at: &str, deleted_at: Option<&str>| -> bool {
+            match since.as_deref() {
+                Some(cursor) => updated_at > cursor || deleted_at.is_some_and(|d| d > cursor),
+                None => true,
+            }
+        };
+
+        let mut stmt = conn.prepare(
+            "SELECT sync_id, name, color, sort_order, created_at, last_used_at, updated_at, deleted_at
+             FROM activity_categories"
+        ).map_err(|e| e.to_string())?;
+        let activity_categories = stmt.query_map([], |row| {
+            Ok(SyncActivityCategory {
+                sync_id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                sort_order: row.get(3)?,
+                created_at: row.get(4)?,
+                last_used_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                deleted_at: row.get(7)?,
+            })
+        }).map_err(|e| e.to_string())?
+          .filter_map(|r| r.ok())
+          .filter(|r| changed(&r.updated_at, r.deleted_at.as_deref()))
+          .collect::<Vec<_>>();
+
+        let mut stmt = conn.prepare(
+            "SELECT t.sync_id, c.sync_id, t.full_path, t.leaf_name, t.depth, t.created_at, t.last_used_at, t.updated_at, t.deleted_at
+             FROM activity_tags t
+             JOIN activity_categories c ON c.id = t.category_id"
+        ).map_err(|e| e.to_string())?;
+        let activity_tags = stmt.query_map([], |row| {
+            Ok(SyncActivityTag {
+                sync_id: row.get(0)?,
+                category_sync_id: row.get(1)?,
+                full_path: row.get(2)?,
+                leaf_name: row.get(3)?,
+                depth: row.get(4)?,
+                created_at: row.get(5)?,
+                last_used_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                deleted_at: row.get(8)?,
+            })
+        }).map_err(|e| e.to_string())?
+          .filter_map(|r| r.ok())
+          .filter(|r| changed(&r.updated_at, r.deleted_at.as_deref()))
+          .collect::<Vec<_>>();
+
+        let mut stmt = conn.prepare(
+            "SELECT b.sync_id, b.date, b.minute, t.sync_id, b.note, b.created_at, b.updated_at, b.deleted_at
+             FROM activity_blocks b
+             JOIN activity_tags t ON t.id = b.tag_id"
+        ).map_err(|e| e.to_string())?;
+        let activity_blocks = stmt.query_map([], |row| {
+            Ok(SyncActivityBlock {
+                sync_id: row.get(0)?,
+                date: row.get(1)?,
+                minute: row.get(2)?,
+                tag_sync_id: row.get(3)?,
+                note: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                deleted_at: row.get(7)?,
+            })
+        }).map_err(|e| e.to_string())?
+          .filter_map(|r| r.ok())
+          .filter(|r| changed(&r.updated_at, r.deleted_at.as_deref()))
+          .collect::<Vec<_>>();
+
+        let mut stmt = conn.prepare(
+            "SELECT n.sync_id, t.sync_id, p.sync_id, n.title, n.status, n.sort_order, n.created_at, n.updated_at, n.deleted_at
+             FROM plan_nodes n
+             JOIN activity_tags t ON t.id = n.project_tag_id
+             LEFT JOIN plan_nodes p ON p.id = n.parent_id
+             ORDER BY n.project_tag_id, COALESCE(n.parent_id, 0), n.sort_order, n.id"
+        ).map_err(|e| e.to_string())?;
+        let plan_nodes = stmt.query_map([], |row| {
+            Ok(SyncPlanNode {
+                sync_id: row.get(0)?,
+                project_tag_sync_id: row.get(1)?,
+                parent_sync_id: row.get(2)?,
+                title: row.get(3)?,
+                status: row.get(4)?,
+                sort_order: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                deleted_at: row.get(8)?,
+            })
+        }).map_err(|e| e.to_string())?
+          .filter_map(|r| r.ok())
+          .filter(|r| changed(&r.updated_at, r.deleted_at.as_deref()))
+          .collect::<Vec<_>>();
+
+        let mut stmt = conn.prepare(
+            "SELECT b.sync_id, b.date, b.minute, n.sync_id, b.note, b.created_at, b.updated_at, b.deleted_at
+             FROM planned_blocks b
+             JOIN plan_nodes n ON n.id = b.plan_node_id"
+        ).map_err(|e| e.to_string())?;
+        let planned_blocks = stmt.query_map([], |row| {
+            Ok(SyncPlannedBlock {
+                sync_id: row.get(0)?,
+                date: row.get(1)?,
+                minute: row.get(2)?,
+                plan_node_sync_id: row.get(3)?,
+                note: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                deleted_at: row.get(7)?,
+            })
+        }).map_err(|e| e.to_string())?
+          .filter_map(|r| r.ok())
+          .filter(|r| changed(&r.updated_at, r.deleted_at.as_deref()))
+          .collect::<Vec<_>>();
+
+        Ok(SyncExport {
+            device_id,
+            exported_at: exported_at.clone(),
+            cursor: exported_at,
+            activity_categories,
+            activity_tags,
+            activity_blocks,
+            plan_nodes,
+            planned_blocks,
+        })
+    }
+
+    pub async fn import_sync(&self, payload: SyncExport) -> Result<SyncImportResult, String> {
+        let conn = self.conn.lock().await;
+        let mut result = SyncImportResult {
+            activity_categories: 0,
+            activity_tags: 0,
+            activity_blocks: 0,
+            plan_nodes: 0,
+            planned_blocks: 0,
+            skipped: 0,
+        };
+
+        for row in payload.activity_categories {
+            if !should_apply_sync_row(&conn, "activity_categories", &row.sync_id, &row.updated_at)? {
+                result.skipped += 1;
+                continue;
+            }
+            let existing_by_name: Option<i64> = conn.query_row(
+                "SELECT id FROM activity_categories WHERE name = ?",
+                params![&row.name],
+                |r| r.get(0),
+            ).optional().map_err(|e| e.to_string())?;
+            if let Some(id) = existing_by_name {
+                if !should_apply_existing_id(&conn, "activity_categories", id, &row.updated_at)? {
+                    result.skipped += 1;
+                    continue;
+                }
+                conn.execute(
+                    "UPDATE activity_categories
+                     SET sync_id=?, color=?, sort_order=?, created_at=?, last_used_at=?, updated_at=?, deleted_at=?
+                     WHERE id=?",
+                    params![&row.sync_id, &row.color, row.sort_order, &row.created_at, &row.last_used_at, &row.updated_at, &row.deleted_at, id],
+                ).map_err(|e| e.to_string())?;
+            } else {
+                conn.execute(
+                    "INSERT INTO activity_categories (sync_id, name, color, sort_order, created_at, last_used_at, updated_at, deleted_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(sync_id) DO UPDATE SET
+                       name=excluded.name, color=excluded.color, sort_order=excluded.sort_order,
+                       created_at=excluded.created_at, last_used_at=excluded.last_used_at,
+                       updated_at=excluded.updated_at, deleted_at=excluded.deleted_at",
+                    params![&row.sync_id, &row.name, &row.color, row.sort_order, &row.created_at, &row.last_used_at, &row.updated_at, &row.deleted_at],
+                ).map_err(|e| e.to_string())?;
+            }
+            result.activity_categories += 1;
+        }
+
+        for row in payload.activity_tags {
+            if !should_apply_sync_row(&conn, "activity_tags", &row.sync_id, &row.updated_at)? {
+                result.skipped += 1;
+                continue;
+            }
+            let Some(category_id) = lookup_id_by_sync(&conn, "activity_categories", &row.category_sync_id)? else {
+                result.skipped += 1;
+                continue;
+            };
+            let existing_by_path: Option<i64> = conn.query_row(
+                "SELECT id FROM activity_tags WHERE category_id = ? AND full_path = ?",
+                params![category_id, &row.full_path],
+                |r| r.get(0),
+            ).optional().map_err(|e| e.to_string())?;
+            if let Some(id) = existing_by_path {
+                if !should_apply_existing_id(&conn, "activity_tags", id, &row.updated_at)? {
+                    result.skipped += 1;
+                    continue;
+                }
+                conn.execute(
+                    "UPDATE activity_tags
+                     SET sync_id=?, leaf_name=?, depth=?, created_at=?, last_used_at=?, updated_at=?, deleted_at=?
+                     WHERE id=?",
+                    params![&row.sync_id, &row.leaf_name, row.depth, &row.created_at, &row.last_used_at, &row.updated_at, &row.deleted_at, id],
+                ).map_err(|e| e.to_string())?;
+            } else {
+                conn.execute(
+                    "INSERT INTO activity_tags (sync_id, category_id, full_path, leaf_name, depth, created_at, last_used_at, updated_at, deleted_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(sync_id) DO UPDATE SET
+                       category_id=excluded.category_id, full_path=excluded.full_path, leaf_name=excluded.leaf_name,
+                       depth=excluded.depth, created_at=excluded.created_at, last_used_at=excluded.last_used_at,
+                       updated_at=excluded.updated_at, deleted_at=excluded.deleted_at",
+                    params![&row.sync_id, category_id, &row.full_path, &row.leaf_name, row.depth, &row.created_at, &row.last_used_at, &row.updated_at, &row.deleted_at],
+                ).map_err(|e| e.to_string())?;
+            }
+            result.activity_tags += 1;
+        }
+
+        for row in payload.plan_nodes {
+            if !should_apply_sync_row(&conn, "plan_nodes", &row.sync_id, &row.updated_at)? {
+                result.skipped += 1;
+                continue;
+            }
+            let Some(project_tag_id) = lookup_id_by_sync(&conn, "activity_tags", &row.project_tag_sync_id)? else {
+                result.skipped += 1;
+                continue;
+            };
+            let parent_id = match row.parent_sync_id.as_deref() {
+                Some(sync_id) => lookup_id_by_sync(&conn, "plan_nodes", sync_id)?,
+                None => None,
+            };
+            conn.execute(
+                "INSERT INTO plan_nodes (sync_id, project_tag_id, parent_id, title, status, sort_order, created_at, updated_at, deleted_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(sync_id) DO UPDATE SET
+                   project_tag_id=excluded.project_tag_id, parent_id=excluded.parent_id,
+                   title=excluded.title, status=excluded.status, sort_order=excluded.sort_order,
+                   created_at=excluded.created_at, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at",
+                params![&row.sync_id, project_tag_id, parent_id, &row.title, &row.status, row.sort_order, &row.created_at, &row.updated_at, &row.deleted_at],
+            ).map_err(|e| e.to_string())?;
+            result.plan_nodes += 1;
+        }
+
+        for row in payload.activity_blocks {
+            if !should_apply_sync_row(&conn, "activity_blocks", &row.sync_id, &row.updated_at)? {
+                result.skipped += 1;
+                continue;
+            }
+            if !should_apply_slot_row(&conn, "activity_blocks", &row.date, row.minute, &row.sync_id, &row.updated_at)? {
+                result.skipped += 1;
+                continue;
+            }
+            let Some(tag_id) = lookup_id_by_sync(&conn, "activity_tags", &row.tag_sync_id)? else {
+                result.skipped += 1;
+                continue;
+            };
+            conn.execute(
+                "INSERT INTO activity_blocks (sync_id, date, minute, tag_id, note, created_at, updated_at, deleted_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(date, minute) DO UPDATE SET
+                   sync_id=excluded.sync_id, tag_id=excluded.tag_id, note=excluded.note,
+                   created_at=excluded.created_at, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at",
+                params![&row.sync_id, &row.date, row.minute, tag_id, &row.note, &row.created_at, &row.updated_at, &row.deleted_at],
+            ).map_err(|e| e.to_string())?;
+            result.activity_blocks += 1;
+        }
+
+        for row in payload.planned_blocks {
+            if !should_apply_sync_row(&conn, "planned_blocks", &row.sync_id, &row.updated_at)? {
+                result.skipped += 1;
+                continue;
+            }
+            if !should_apply_slot_row(&conn, "planned_blocks", &row.date, row.minute, &row.sync_id, &row.updated_at)? {
+                result.skipped += 1;
+                continue;
+            }
+            let Some(plan_node_id) = lookup_id_by_sync(&conn, "plan_nodes", &row.plan_node_sync_id)? else {
+                result.skipped += 1;
+                continue;
+            };
+            conn.execute(
+                "INSERT INTO planned_blocks (sync_id, date, minute, plan_node_id, note, created_at, updated_at, deleted_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(date, minute) DO UPDATE SET
+                   sync_id=excluded.sync_id, plan_node_id=excluded.plan_node_id, note=excluded.note,
+                   created_at=excluded.created_at, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at",
+                params![&row.sync_id, &row.date, row.minute, plan_node_id, &row.note, &row.created_at, &row.updated_at, &row.deleted_at],
+            ).map_err(|e| e.to_string())?;
+            result.planned_blocks += 1;
+        }
+
+        Ok(result)
     }
 
     #[allow(dead_code)]
@@ -2575,6 +3028,144 @@ fn migrate_legacy_perception_tables(conn: &Connection) -> Result<(), String> {
 
 fn local_now_string() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<(), String> {
+    let columns = table_columns(conn, table)?;
+    if columns.iter().any(|c| c == column) {
+        return Ok(());
+    }
+    conn.execute_batch(&format!("ALTER TABLE {} ADD COLUMN {}", table, definition))
+        .map_err(|e| format!("为 {} 添加列 {} 失败: {}", table, column, e))
+}
+
+fn backfill_sync_ids(conn: &Connection, table: &str) -> Result<(), String> {
+    let sql = format!("SELECT rowid FROM {} WHERE sync_id IS NULL OR sync_id = ''", table);
+    let rowids = {
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| row.get::<_, i64>(0)).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect::<Vec<_>>()
+    };
+    let update = format!("UPDATE {} SET sync_id = ? WHERE rowid = ?", table);
+    for rowid in rowids {
+        conn.execute(&update, params![Uuid::new_v4().to_string(), rowid])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn ensure_sync_metadata(conn: &Connection) -> Result<(), String> {
+    for table in ["activity_categories", "activity_tags", "activity_blocks", "plan_nodes", "planned_blocks"] {
+        ensure_column(conn, table, "sync_id", "sync_id TEXT")?;
+        ensure_column(conn, table, "deleted_at", "deleted_at TEXT")?;
+    }
+    for table in ["activity_categories", "activity_tags", "activity_blocks", "planned_blocks"] {
+        ensure_column(conn, table, "updated_at", "updated_at TEXT")?;
+    }
+
+    conn.execute("UPDATE activity_categories SET updated_at = COALESCE(updated_at, last_used_at, created_at, datetime('now','localtime')) WHERE updated_at IS NULL", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute("UPDATE activity_tags SET updated_at = COALESCE(updated_at, last_used_at, created_at, datetime('now','localtime')) WHERE updated_at IS NULL", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute("UPDATE activity_blocks SET updated_at = COALESCE(updated_at, created_at, datetime('now','localtime')) WHERE updated_at IS NULL", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute("UPDATE planned_blocks SET updated_at = COALESCE(updated_at, created_at, datetime('now','localtime')) WHERE updated_at IS NULL", [])
+        .map_err(|e| e.to_string())?;
+
+    for table in ["activity_categories", "activity_tags", "activity_blocks", "plan_nodes", "planned_blocks"] {
+        backfill_sync_ids(conn, table)?;
+        conn.execute_batch(&format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_sync_id ON {}(sync_id);",
+            table, table,
+        )).map_err(|e| e.to_string())?;
+        conn.execute_batch(&format!(
+            "CREATE INDEX IF NOT EXISTS idx_{}_sync_updated ON {}(updated_at);",
+            table, table,
+        )).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn get_or_create_device_id(conn: &Connection) -> Result<String, String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );"
+    ).map_err(|e| e.to_string())?;
+    let existing: Option<String> = conn.query_row(
+        "SELECT value FROM sync_meta WHERE key = 'device_id'",
+        [],
+        |row| row.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO sync_meta (key, value, updated_at) VALUES ('device_id', ?, ?)",
+        params![&id, local_now_string()],
+    ).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+pub fn sync_pair_code(device_id: &str) -> String {
+    let hash = stable_hash_hex(&format!("solo-leveling-system:sync:v1:{device_id}"));
+    format!("{}-{}", &hash[0..4], &hash[4..8]).to_uppercase()
+}
+
+fn should_apply_sync_row(conn: &Connection, table: &str, sync_id: &str, incoming_updated_at: &str) -> Result<bool, String> {
+    let sql = format!("SELECT updated_at FROM {} WHERE sync_id = ?", table);
+    let local: Option<String> = conn.query_row(&sql, params![sync_id], |row| row.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(local.as_deref().map(|ts| incoming_updated_at > ts).unwrap_or(true))
+}
+
+fn should_apply_existing_id(conn: &Connection, table: &str, id: i64, incoming_updated_at: &str) -> Result<bool, String> {
+    let sql = format!("SELECT updated_at FROM {} WHERE id = ?", table);
+    let local: Option<String> = conn.query_row(&sql, params![id], |row| row.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(local.as_deref().map(|ts| incoming_updated_at > ts).unwrap_or(true))
+}
+
+fn should_apply_slot_row(
+    conn: &Connection,
+    table: &str,
+    date: &str,
+    minute: i32,
+    incoming_sync_id: &str,
+    incoming_updated_at: &str,
+) -> Result<bool, String> {
+    let sql = format!("SELECT sync_id, updated_at FROM {} WHERE date = ? AND minute = ?", table);
+    let local: Option<(String, String)> = conn.query_row(&sql, params![date, minute], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    }).optional().map_err(|e| e.to_string())?;
+
+    let Some((local_sync_id, local_updated_at)) = local else {
+        return Ok(true);
+    };
+    if local_sync_id == incoming_sync_id {
+        return Ok(true);
+    }
+    Ok(incoming_updated_at > local_updated_at.as_str())
+}
+
+fn lookup_id_by_sync(conn: &Connection, table: &str, sync_id: &str) -> Result<Option<i64>, String> {
+    let sql = format!("SELECT id FROM {} WHERE sync_id = ?", table);
+    conn.query_row(&sql, params![sync_id], |row| row.get(0))
+        .optional()
+        .map_err(|e| e.to_string())
 }
 
 fn stable_hash_hex(input: &str) -> String {
