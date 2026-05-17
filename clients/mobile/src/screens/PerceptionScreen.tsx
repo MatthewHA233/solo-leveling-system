@@ -7,10 +7,14 @@ import { useEffect, useState } from 'react'
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { theme } from '../theme'
 import {
+  collectUsageStats,
   fetchDbStats,
+  hasUsageAccess,
   insertDbProbe,
   isPerceptionAvailable,
+  openUsageAccessSettings,
   pingPerception,
+  type CollectUsageResult,
   type DbStats,
 } from '../lib/perception'
 
@@ -23,10 +27,42 @@ export default function PerceptionScreen() {
   const [dbLoading, setDbLoading] = useState(false)
   const [lastProbe, setLastProbe] = useState<string | null>(null)
 
+  const [usageGranted, setUsageGranted] = useState<boolean | null>(null)
+  const [collecting, setCollecting] = useState(false)
+  const [lastCollect, setLastCollect] = useState<CollectUsageResult | null>(null)
+  const [collectError, setCollectError] = useState<string | null>(null)
+
   useEffect(() => {
     void runPing()
     void refreshDb()
+    void refreshUsageAccess()
   }, [])
+
+  async function refreshUsageAccess() {
+    try {
+      setUsageGranted(await hasUsageAccess())
+    } catch {
+      setUsageGranted(false)
+    }
+  }
+
+  async function runCollect() {
+    setCollecting(true)
+    setCollectError(null)
+    try {
+      const r = await collectUsageStats()
+      setLastCollect(r)
+      await refreshDb()
+    } catch (e: any) {
+      setCollectError(e?.message ?? String(e))
+    } finally {
+      setCollecting(false)
+    }
+  }
+
+  async function openSettings() {
+    await openUsageAccessSettings()
+  }
 
   async function runPing() {
     setPinging(true)
@@ -124,9 +160,48 @@ export default function PerceptionScreen() {
         </View>
       </View>
 
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>使用情况访问 (PACKAGE_USAGE_STATS)</Text>
+        <Text style={styles.cardValue}>
+          {usageGranted == null ? '检测中…' : usageGranted ? '已授权' : '未授权'}
+        </Text>
+        <View style={styles.btnRow}>
+          <Pressable style={styles.btn} onPress={openSettings}>
+            <Text style={styles.btnText}>打开系统设置</Text>
+          </Pressable>
+          <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshUsageAccess}>
+            <Text style={[styles.btnText, styles.btnGhostText]}>重检</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>采集最近 24h 使用统计</Text>
+        {collecting ? (
+          <Text style={styles.cardValue}>采集中…</Text>
+        ) : lastCollect ? (
+          <>
+            <Text style={styles.cardValue}>
+              event #{lastCollect.rowId}  app_count={lastCollect.appCount}
+            </Text>
+            <Text style={styles.cardSub}>
+              前台总计 {Math.round(lastCollect.totalForegroundMs / 1000)} 秒 @ {lastCollect.intervalEnd}
+            </Text>
+          </>
+        ) : (
+          <Text style={styles.cardValue}>未采集</Text>
+        )}
+        {collectError && (
+          <Text style={[styles.cardSub, { color: '#C0392B' }]}>{collectError}</Text>
+        )}
+        <Pressable style={styles.btn} onPress={runCollect} disabled={collecting}>
+          <Text style={styles.btnText}>{collecting ? '采集中…' : '采集一次'}</Text>
+        </Pressable>
+      </View>
+
       <Text style={styles.note}>
-        Phase 1 块 3：AndroidManifest 加 PACKAGE_USAGE_STATS + UsageStatsCollector，
-        把 app 使用时长写进 perception_events_android。
+        Phase 1 块 3：调 UsageStatsManager.queryUsageStats 把 app 前台使用时长聚合写入
+        perception_events_android (bucket=sls-watcher-usage_android)。
       </Text>
     </ScrollView>
   )

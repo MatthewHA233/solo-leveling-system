@@ -52,6 +52,45 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
    * 复用一个固定 bucket：`probe`，事件类型 `probe.heartbeat`。
    */
   @ReactMethod
+  fun hasUsageAccess(promise: Promise) {
+    try {
+      promise.resolve(UsageStatsCollector.hasUsageAccess(reactContext))
+    } catch (e: Throwable) {
+      promise.reject("USAGE_ACCESS_CHECK_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun openUsageAccessSettings(promise: Promise) {
+    try {
+      promise.resolve(UsageStatsCollector.openUsageAccessSettings(reactContext))
+    } catch (e: Throwable) {
+      promise.reject("OPEN_USAGE_SETTINGS_FAILED", e.message, e)
+    }
+  }
+
+  /** 采集 [now - rangeMs, now] 的 app 使用统计写一条 summary 事件。 */
+  @ReactMethod
+  fun collectUsageStats(rangeMs: Double, promise: Promise) {
+    try {
+      val sinceMs = System.currentTimeMillis() - rangeMs.toLong()
+      val r = UsageStatsCollector.collectRecent(reactContext, db, sinceMs)
+      val map = Arguments.createMap().apply {
+        putDouble("rowId", r.rowId.toDouble())
+        putString("intervalStart", r.intervalStart)
+        putString("intervalEnd", r.intervalEnd)
+        putInt("appCount", r.appCount)
+        putDouble("totalForegroundMs", r.totalForegroundMs.toDouble())
+      }
+      promise.resolve(map)
+    } catch (_: UsageAccessNotGranted) {
+      promise.reject("USAGE_ACCESS_DENIED", "PACKAGE_USAGE_STATS not granted")
+    } catch (e: Throwable) {
+      promise.reject("COLLECT_USAGE_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
   fun dbInsertProbe(promise: Promise) {
     try {
       val now = PerceptionDb.nowIso()

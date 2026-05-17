@@ -23,10 +23,21 @@ export type ProbeInsertResult = {
   at: string
 }
 
+export type CollectUsageResult = {
+  rowId: number
+  intervalStart: string
+  intervalEnd: string
+  appCount: number
+  totalForegroundMs: number
+}
+
 interface PerceptionNative {
   ping(): Promise<PingResult>
   dbStats(): Promise<DbStats>
   dbInsertProbe(): Promise<ProbeInsertResult>
+  hasUsageAccess(): Promise<boolean>
+  openUsageAccessSettings(): Promise<boolean>
+  collectUsageStats(rangeMs: number): Promise<CollectUsageResult>
 }
 
 const Native: PerceptionNative | null =
@@ -49,4 +60,21 @@ export async function fetchDbStats(): Promise<DbStats | null> {
 export async function insertDbProbe(): Promise<ProbeInsertResult | null> {
   if (!Native) return null
   return Native.dbInsertProbe()
+}
+
+export async function hasUsageAccess(): Promise<boolean> {
+  if (!Native) return false
+  return Native.hasUsageAccess()
+}
+
+export async function openUsageAccessSettings(): Promise<boolean> {
+  if (!Native) return false
+  return Native.openUsageAccessSettings()
+}
+
+export async function collectUsageStats(
+  rangeMs: number = 24 * 60 * 60 * 1000,
+): Promise<CollectUsageResult | null> {
+  if (!Native) return null
+  return Native.collectUsageStats(rangeMs)
 }
