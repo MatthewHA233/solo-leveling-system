@@ -3,7 +3,7 @@
 ## 仓库结构
 
 - `clients/desktop/` — Tauri 桌面端（Windows + macOS 跨平台），主开发目标
-- `clients/mobile/` — React Native 0.85（Android + iOS），待开发
+- `clients/mobile/` — React Native 0.85（Android 主，iOS 后续），开发分支 `feat/mobile`，预留 LAN/HTTP 接入 desktop 共享 DB
 - `clients/mac_old/` — 早期纯 Swift / MenuBarExtra 原型，已归档不再维护
 
 ## 构建
@@ -133,7 +133,115 @@ http://127.0.0.1:9222/json/version
 
 ### Mobile 客户端
 
-位于 `clients/mobile/`。React Native 0.85 脚手架（`SoloLevelingSystemMobile`），Android + iOS 同一套 TS 代码。待开发。
+位于 `clients/mobile/`。React Native 0.85，纯 RN（零原生依赖），Android + iOS 共享 TS 代码。开发分支 `feat/mobile`，主开发目标先做 Android，iOS 后续补。
+
+**包名：** `com.sololevelingsystemmobile`（入口 `MainActivity`）
+
+#### 开发环境
+
+- Node ≥ 20，JDK 17，Android SDK + emulator
+- 调试用 **MuMu 模拟器**（用户本机已装，adb 自动检测）— `adb devices` 应能看到一台 `127.0.0.1:xxxx`
+- 屏幕已锁竖屏：`android/app/src/main/AndroidManifest.xml` 的 `MainActivity` 加了 `android:screenOrientation="portrait"`，改了要重新 `assembleDebug`
+
+#### 启动开发（Claude 自己管 Metro + APK 安装）
+
+跟 desktop 不一样，mobile 这边 Metro 由 **Claude 后台跑**比较方便，用户只需要让模拟器开着即可。
+
+```bash
+# Metro：后台启动（Bash 工具 run_in_background:true）
+cd clients/mobile && npm start
+# 如果端口 8081 被占，先：lsof -ti:8081 | xargs kill -9
+
+# 装 debug APK 到模拟器并启动（首次 / native 改动后）
+cd clients/mobile && npx react-native run-android
+```
+
+之后改 RN/TS 代码靠 Fast Refresh 或 reload（见下），不用再跑 `run-android`。
+
+只有这些情况要重跑 `run-android`：
+- 改了 `android/` 下的 native 配置（AndroidManifest、build.gradle、icons）
+- 加了带 native module 的 npm 包
+- 重启了模拟器或 app 卸载后
+
+如果 `run-android` 报 `Permission denied: gradlew`：
+```bash
+chmod +x clients/mobile/android/gradlew
+```
+
+启动 Metro 后用户开模拟器即可看到 app；Claude 通过 adb 截图验证 UI。
+
+#### Fast Refresh / Reload
+
+- 改 RN 组件 / 样式 → Metro Fast Refresh 自动生效，不用 reload
+- 改 `useRef(PanResponder.create(...))` 这种闭包捕获的内部 ref → Fast Refresh 不会重建 ref，**必须 reload** 才能看到新逻辑
+- 改 `mock.ts` module-level state（如 `overrides` Map）→ reload 会清空
+
+**Reload 命令：**
+```bash
+# 弹出 RN Dev Menu（在 MuMu 上等同于摇晃手机）
+adb shell input keyevent 82
+
+# 在 MuMu 默认分辨率 1440x2560 下，Reload 菜单项约在 (720, 1031)
+adb shell input tap 720 1031
+```
+
+或者用户在 Metro 终端按 `r`。
+
+#### adb 调试套路
+
+MuMu 默认 1440×2560，density 360。调试 UI 主要靠截图回看（uiautomator 在 MuMu 上没有，dump 不出 view tree）。
+
+```bash
+# 屏幕分辨率
+adb shell wm size && adb shell wm density
+
+# 截图（推荐流程：先截到设备，再 pull 到本地 /tmp）
+adb shell screencap -p /sdcard/shot.png
+adb pull /sdcard/shot.png /tmp/shot.png
+# 然后用 Read 工具读 /tmp/shot.png 看图
+
+# 点击 / 滑动
+adb shell input tap <x> <y>
+adb shell input swipe <x1> <y1> <x2> <y2> <duration_ms>
+# 注意 swipe 偶尔会报 SecurityException INJECT_EVENTS，
+# 一般是模拟器临时状态，过会儿就好
+
+# 看 JS console.log 输出
+adb logcat -c                      # 先清掉旧日志
+# 触发要观察的操作
+adb logcat -d -s ReactNativeJS:V   # 倒出本次日志
+
+# 重启 app（保留模拟器，不清前端 Metro）
+adb shell am force-stop com.sololevelingsystemmobile
+adb shell am start -n com.sololevelingsystemmobile/.MainActivity
+
+# 查看包名
+adb shell pm list packages | grep solo
+```
+
+#### MuMu / RN Fabric 已知渲染瑕疵
+
+新架构 `newArchEnabled=true`（Fabric）下，MuMu 模拟器偶尔会把 absolute Text 在屏幕另一处复绘出"ghost"灰字，位置稳定但和实际渲染元素无关。
+
+**诊断方法：** 把怀疑 Text 的 `color` 临时改成 `#FF0000`。如果 ghost 仍是深色（不是红），说明它不是该 Text 元素 → MuMu 渲染 bug，真机不会出现，可以忽略。
+
+#### LSP 误报
+
+`Cannot find name 'Map' / 'Set'` 之类是 false positive（`node_modules` 没装 TS lib types 时），实际 Metro 编译 + 运行都正常。已用 `tsc --noEmit` 验证过。看到这类 diagnostics 直接忽略。
+
+#### 打包 APK
+
+```bash
+cd clients/mobile/android
+./gradlew assembleRelease
+# 产物：app/build/outputs/apk/release/app-release.apk
+```
+
+iOS 打包待补（需要 macOS + Xcode 真机签名）。
+
+#### LAN 数据层（已预留，未启用）
+
+`src/lib/api.ts` 已写成"先打局域网 HTTP，失败 fallback 到 mock"的形态，端口对齐 desktop 的 `49733`（详见 `clients/desktop/src-tauri/src/api.rs`）。当前手机端总是走 mock —— `setLanHost(null)`。后续 LAN 共享数据库框架定下来后，调用 `setLanHost('192.168.x.x:49733')` 即可切到真实数据。
 
 ### 归档：早期 macOS 原型
 
@@ -180,3 +288,25 @@ python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
 - `lib/qwen-omni/` — Omni 多模态转录（音视频合并）
 - `lib/voice/` — Fish TTS + 录音
 - `lib/game/` — 游戏逻辑（经验、任务、事件总线、规则分类器）
+
+## Mobile 架构概览
+
+`clients/mobile/`（RN + TS，纯 RN 零原生依赖）
+
+- `App.tsx` — SafeAreaProvider + StatusBar + TabBar，切换 `DayNightScreen` / `ChatScreen`
+- `src/theme.ts` — 浅色克制主题；`categoryColors` 给活动分类配色；`alpha()` 助手
+- `src/types.ts` — `ActivityBlock` / `ActivityTag` / `ChatMessage` 等共享类型
+- `src/components/TabBar.tsx` — 底部 Tab 极简栏
+- `src/screens/DayNightScreen.tsx` — 鱼眼焦点网格：18 完整行（12×5min）+ 上下缩进行；编辑模式 PanResponder 区间拖拽涂色；色块按 horizontal run 绝对定位渲染（解决凹凸 / 列对齐）
+- `src/screens/ChatScreen.tsx` — 暗影聊天：图片附件 modal、录音覆盖层、omni/regular 模式切换
+- `src/lib/time.ts` — 日期/分钟格式化
+- `src/lib/mock.ts` — 本地 mock 数据：按日期 hash 稳定生成 `BASE_SPANS` + 内存 overrides 编辑覆盖层
+- `src/lib/api.ts` — LAN HTTP 优先（`/api/activities/*` 对齐 desktop 49733 端口），失败 fallback 到 mock；`setLanHost(host|null)` 切换源
+
+### 昼夜表设计要点
+
+- 网格按"鱼眼"折叠：focusStart..+18 是 1 cell = 5min 的完整行；上下是 1 cell = 1hr 的缩进行（按每分钟段比例铺色 + 文字标签 + 不响应编辑）
+- 拖拽涂色用"快照 + 区间"语义（PC Excel 式）：grant 时 snapshot 当前 blocks 并记起点 minute，move 每次基于 snapshot 重算 `[start, curr]` 区间，反向拖能自然回退
+- 同色起点判定 erase 模式，异色/空格判定 paint 模式（覆盖）
+- 色块按 horizontal run 绝对定位（不按 per-cell），整段一个 rect，标签在段中央居中、不省略
+- 跨行段每行独立显示标签（避免 stair-step 凸起），同色相同 → 视觉理解为同事件
