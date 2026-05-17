@@ -8,6 +8,8 @@ import type {
   ActivityCategory,
   ActivityPalette,
   ActivityTag,
+  PlanNode,
+  PlannedBlock,
 } from '../types'
 
 const API_BASE = 'http://localhost:49733'
@@ -51,6 +53,25 @@ interface RawBlock {
   created_at: string
 }
 
+interface RawPlanNode {
+  id: number
+  project_tag_id: number
+  parent_id: number | null
+  title: string
+  status: 'active' | 'done' | 'archived'
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+interface RawPlannedBlock {
+  date: string
+  minute: number
+  plan_node_id: number
+  note: string | null
+  created_at: string
+}
+
 function mapCategory(r: RawCategory): ActivityCategory {
   return {
     id: r.id,
@@ -79,6 +100,29 @@ function mapBlock(r: RawBlock): ActivityBlock {
     date: r.date,
     minute: r.minute,
     tagId: r.tag_id,
+    note: r.note,
+    createdAt: r.created_at,
+  }
+}
+
+function mapPlanNode(r: RawPlanNode): PlanNode {
+  return {
+    id: r.id,
+    projectTagId: r.project_tag_id,
+    parentId: r.parent_id,
+    title: r.title,
+    status: r.status,
+    sortOrder: r.sort_order,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }
+}
+
+function mapPlannedBlock(r: RawPlannedBlock): PlannedBlock {
+  return {
+    date: r.date,
+    minute: r.minute,
+    planNodeId: r.plan_node_id,
     note: r.note,
     createdAt: r.created_at,
   }
@@ -193,6 +237,88 @@ export async function eraseActivityBlocks(date: Date, minutes: number[]): Promis
   })
   const json: ApiResponse<number> = await res.json()
   if (!json.success) throw new Error(json.error || '擦块失败')
+  return json.data ?? 0
+}
+
+// ── Plan nodes: project-tag anchored task tree ──
+
+export async function fetchPlanNodes(projectTagId: number): Promise<PlanNode[]> {
+  const res = await fetch(`${API_BASE}/api/plans/nodes?project_tag_id=${projectTagId}`)
+  const json: ApiResponse<RawPlanNode[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '获取计划节点失败')
+  return json.data.map(mapPlanNode)
+}
+
+export async function addPlanNode(
+  projectTagId: number,
+  title: string,
+  parentId: number | null = null,
+): Promise<PlanNode> {
+  const res = await fetch(`${API_BASE}/api/plans/nodes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_tag_id: projectTagId, parent_id: parentId, title }),
+  })
+  const json: ApiResponse<RawPlanNode> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '新增计划节点失败')
+  return mapPlanNode(json.data)
+}
+
+export async function updatePlanNode(
+  id: number,
+  patch: { title?: string; status?: PlanNode['status']; parentId?: number | null },
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/plans/nodes/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id,
+      title: patch.title ?? null,
+      status: patch.status ?? null,
+      parent_id: patch.parentId ?? null,
+    }),
+  })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '更新计划节点失败')
+}
+
+export async function deletePlanNode(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/plans/nodes/${id}`, { method: 'DELETE' })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '删除计划节点失败')
+}
+
+// ── Planned Timeline Blocks: same 5-minute model, separate storage table ──
+
+export async function fetchPlannedBlocks(date: Date): Promise<PlannedBlock[]> {
+  const dateStr = toLocalDateStr(date)
+  const res = await fetch(`${API_BASE}/api/plans/blocks?date=${dateStr}`)
+  const json: ApiResponse<RawPlannedBlock[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '获取计划块失败')
+  return json.data.map(mapPlannedBlock)
+}
+
+export async function paintPlannedBlocks(date: Date, minutes: number[], planNodeId: number): Promise<number> {
+  const dateStr = toLocalDateStr(date)
+  const res = await fetch(`${API_BASE}/api/plans/blocks/paint`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: dateStr, minutes, plan_node_id: planNodeId }),
+  })
+  const json: ApiResponse<number> = await res.json()
+  if (!json.success) throw new Error(json.error || '计划涂块失败')
+  return json.data ?? 0
+}
+
+export async function erasePlannedBlocks(date: Date, minutes: number[]): Promise<number> {
+  const dateStr = toLocalDateStr(date)
+  const res = await fetch(`${API_BASE}/api/plans/blocks/erase`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: dateStr, minutes }),
+  })
+  const json: ApiResponse<number> = await res.json()
+  if (!json.success) throw new Error(json.error || '计划擦块失败')
   return json.data ?? 0
 }
 

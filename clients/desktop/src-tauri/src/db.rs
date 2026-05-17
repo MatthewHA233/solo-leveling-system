@@ -67,6 +67,27 @@ pub struct ActivityBlock {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PlanNode {
+    pub id: i64,
+    pub project_tag_id: i64,
+    pub parent_id: Option<i64>,
+    pub title: String,
+    pub status: String,
+    pub sort_order: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PlannedBlock {
+    pub date: String,
+    pub minute: i32,
+    pub plan_node_id: i64,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ActivityPalette {
     pub categories: Vec<ActivityCategory>,
     pub tags: Vec<ActivityTag>,
@@ -111,6 +132,27 @@ pub struct PaintBlocksRequest {
 pub struct EraseBlocksRequest {
     pub date: String,
     pub minutes: Vec<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddPlanNodeRequest {
+    pub project_tag_id: i64,
+    pub parent_id: Option<i64>,
+    pub title: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdatePlanNodeRequest {
+    pub id: i64,
+    pub title: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PaintPlannedBlocksRequest {
+    pub date: String,
+    pub minutes: Vec<i32>,
+    pub plan_node_id: i64,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -502,6 +544,30 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_activity_blocks_tag ON activity_blocks(tag_id);
 
+            -- Plan nodes: project-tag anchored task tree
+            CREATE TABLE IF NOT EXISTS plan_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_tag_id INTEGER NOT NULL REFERENCES activity_tags(id) ON DELETE CASCADE,
+                parent_id INTEGER REFERENCES plan_nodes(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_plan_nodes_project ON plan_nodes(project_tag_id);
+            CREATE INDEX IF NOT EXISTS idx_plan_nodes_parent ON plan_nodes(parent_id);
+
+            -- Planned timeline blocks: same 5min sparse model, references concrete plan nodes
+            CREATE TABLE IF NOT EXISTS planned_blocks (
+                date TEXT NOT NULL,
+                minute INTEGER NOT NULL,
+                plan_node_id INTEGER NOT NULL REFERENCES plan_nodes(id) ON DELETE CASCADE,
+                note TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                PRIMARY KEY (date, minute)
+            );
+
             -- 对话会话表
             CREATE TABLE IF NOT EXISTS chat_sessions (
                 id TEXT PRIMARY KEY,
@@ -528,6 +594,55 @@ impl Database {
         "#).map_err(|e| format!("创建表失败: {}", e))?;
 
         // 渐进式迁移：audio_path / duration_ms / usage_json（旧数据库无此列时自动追加）
+        let planned_columns = {
+            let mut stmt = conn.prepare("PRAGMA table_info(planned_blocks)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect::<Vec<_>>()
+        };
+        if planned_columns.iter().any(|c| c == "tag_id")
+            && !planned_columns.iter().any(|c| c == "plan_node_id") {
+            conn.execute_batch(r#"
+                PRAGMA foreign_keys = OFF;
+
+                INSERT INTO plan_nodes (project_tag_id, parent_id, title, status, sort_order, created_at, updated_at)
+                SELECT old.tag_id, NULL, COALESCE(t.leaf_name, '计划'), 'active', 0,
+                       datetime('now','localtime'), datetime('now','localtime')
+                FROM (SELECT DISTINCT tag_id FROM planned_blocks) old
+                JOIN activity_tags t ON t.id = old.tag_id;
+
+                CREATE TEMP TABLE planned_block_node_map AS
+                SELECT project_tag_id AS tag_id, MAX(id) AS plan_node_id
+                FROM plan_nodes
+                GROUP BY project_tag_id;
+
+                CREATE TABLE planned_blocks_new (
+                    date TEXT NOT NULL,
+                    minute INTEGER NOT NULL,
+                    plan_node_id INTEGER NOT NULL REFERENCES plan_nodes(id) ON DELETE CASCADE,
+                    note TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                    PRIMARY KEY (date, minute)
+                );
+
+                INSERT OR REPLACE INTO planned_blocks_new (date, minute, plan_node_id, note, created_at)
+                SELECT b.date, b.minute, m.plan_node_id, b.note, b.created_at
+                FROM planned_blocks b
+                JOIN planned_block_node_map m ON m.tag_id = b.tag_id;
+
+                DROP TABLE planned_blocks;
+                ALTER TABLE planned_blocks_new RENAME TO planned_blocks;
+                CREATE INDEX IF NOT EXISTS idx_planned_blocks_node ON planned_blocks(plan_node_id);
+                DROP TABLE planned_block_node_map;
+
+                PRAGMA foreign_keys = ON;
+            "#).map_err(|e| format!("迁移 planned_blocks 到 plan_node_id 失败: {}", e))?;
+        }
+
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_planned_blocks_node ON planned_blocks(plan_node_id);")
+            .map_err(|e| format!("创建 planned_blocks 索引失败: {}", e))?;
+
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN audio_path TEXT");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN usage_json TEXT");
@@ -1159,6 +1274,284 @@ impl Database {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    // ── Planned Timeline Blocks ──
+    pub async fn get_plan_nodes_by_project(&self, project_tag_id: i64) -> Result<Vec<PlanNode>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT id, project_tag_id, parent_id, title, status, sort_order, created_at, updated_at
+             FROM plan_nodes
+             WHERE project_tag_id = ?
+             ORDER BY COALESCE(parent_id, 0), sort_order ASC, id ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![project_tag_id], |row| {
+            Ok(PlanNode {
+                id: row.get(0)?,
+                project_tag_id: row.get(1)?,
+                parent_id: row.get(2)?,
+                title: row.get(3)?,
+                status: row.get(4)?,
+                sort_order: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub async fn add_plan_node(&self, req: AddPlanNodeRequest) -> Result<PlanNode, String> {
+        let title = req.title.trim();
+        if title.is_empty() {
+            return Err("计划节点标题不能为空".to_string());
+        }
+
+        let conn = self.conn.lock().await;
+        conn.query_row(
+            "SELECT id FROM activity_tags WHERE id = ?",
+            params![req.project_tag_id],
+            |row| row.get::<_, i64>(0),
+        ).map_err(|_| "项目标签不存在".to_string())?;
+
+        if let Some(parent_id) = req.parent_id {
+            let parent_project: i64 = conn.query_row(
+                "SELECT project_tag_id FROM plan_nodes WHERE id = ?",
+                params![parent_id],
+                |row| row.get(0),
+            ).map_err(|_| "父计划节点不存在".to_string())?;
+            if parent_project != req.project_tag_id {
+                return Err("父计划节点不属于当前项目".to_string());
+            }
+        }
+
+        let now = local_now_string();
+        let sort_order: i32 = conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1
+             FROM plan_nodes
+             WHERE project_tag_id = ? AND parent_id IS ?",
+            params![req.project_tag_id, req.parent_id],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        conn.execute(
+            "INSERT INTO plan_nodes (project_tag_id, parent_id, title, status, sort_order, created_at, updated_at)
+             VALUES (?, ?, ?, 'active', ?, ?, ?)",
+            params![req.project_tag_id, req.parent_id, title, sort_order, &now, &now],
+        ).map_err(|e| e.to_string())?;
+        let id = conn.last_insert_rowid();
+        Ok(PlanNode {
+            id,
+            project_tag_id: req.project_tag_id,
+            parent_id: req.parent_id,
+            title: title.to_string(),
+            status: "active".to_string(),
+            sort_order,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub async fn update_plan_node(&self, req: UpdatePlanNodeRequest) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        let now = local_now_string();
+        if let Some(title) = req.title {
+            let title = title.trim();
+            if title.is_empty() {
+                return Err("计划节点标题不能为空".to_string());
+            }
+            conn.execute(
+                "UPDATE plan_nodes SET title = ?, updated_at = ? WHERE id = ?",
+                params![title, &now, req.id],
+            ).map_err(|e| e.to_string())?;
+        }
+        if let Some(status) = req.status {
+            if !matches!(status.as_str(), "active" | "done" | "archived") {
+                return Err("计划状态不合法".to_string());
+            }
+            conn.execute(
+                "UPDATE plan_nodes SET status = ?, updated_at = ? WHERE id = ?",
+                params![status, &now, req.id],
+            ).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub async fn delete_plan_node(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute("DELETE FROM plan_nodes WHERE id = ?", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn paint_planned_blocks(&self, req: PaintPlannedBlocksRequest) -> Result<i64, String> {
+        if req.minutes.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().await;
+        let now = local_now_string();
+
+        let project_tag_id: i64 = conn.query_row(
+            "SELECT project_tag_id FROM plan_nodes WHERE id = ?",
+            params![req.plan_node_id],
+            |row| row.get(0),
+        ).map_err(|_| "计划节点不存在".to_string())?;
+
+        let category_id: i64 = conn.query_row(
+            "SELECT category_id FROM activity_tags WHERE id = ?",
+            params![project_tag_id],
+            |row| row.get(0),
+        ).map_err(|_| "项目标签不存在".to_string())?;
+
+        let mut affected = 0i64;
+        for minute in &req.minutes {
+            if *minute < 0 || *minute >= 1440 || minute % 5 != 0 {
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO planned_blocks (date, minute, plan_node_id, created_at)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(date, minute) DO UPDATE SET
+                     plan_node_id = excluded.plan_node_id,
+                     created_at = excluded.created_at",
+                params![&req.date, minute, req.plan_node_id, &now],
+            ).map_err(|e| e.to_string())?;
+            affected += 1;
+        }
+
+        conn.execute(
+            "UPDATE activity_tags SET last_used_at = ? WHERE id = ?",
+            params![&now, project_tag_id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE activity_categories SET last_used_at = ? WHERE id = ?",
+            params![&now, category_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(affected)
+    }
+
+    pub async fn erase_planned_blocks(&self, req: EraseBlocksRequest) -> Result<i64, String> {
+        if req.minutes.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().await;
+        let placeholders = req.minutes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "DELETE FROM planned_blocks WHERE date = ? AND minute IN ({})",
+            placeholders
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(req.date.clone())];
+        for m in &req.minutes {
+            params_vec.push(Box::new(*m));
+        }
+        let affected = conn.execute(
+            &sql,
+            rusqlite::params_from_iter(params_vec.iter().map(|b| b.as_ref())),
+        ).map_err(|e| e.to_string())?;
+        Ok(affected as i64)
+    }
+
+    pub async fn get_planned_blocks_by_date(&self, date: &str) -> Result<Vec<PlannedBlock>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT date, minute, plan_node_id, note, created_at
+             FROM planned_blocks
+             WHERE date = ?
+             ORDER BY minute ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![date], |row| {
+            Ok(PlannedBlock {
+                date: row.get(0)?,
+                minute: row.get(1)?,
+                plan_node_id: row.get(2)?,
+                note: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    #[allow(dead_code)]
+    pub async fn paint_planned_blocks_legacy_tag(&self, req: PaintBlocksRequest) -> Result<i64, String> {
+        if req.minutes.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().await;
+        let now = local_now_string();
+
+        let category_id: i64 = conn.query_row(
+            "SELECT category_id FROM activity_tags WHERE id = ?",
+            params![req.tag_id],
+            |row| row.get(0),
+        ).map_err(|_| "标签不存在".to_string())?;
+
+        let mut affected = 0i64;
+        for minute in &req.minutes {
+            if *minute < 0 || *minute >= 1440 || minute % 5 != 0 {
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO planned_blocks (date, minute, tag_id, created_at)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(date, minute) DO UPDATE SET
+                     tag_id = excluded.tag_id,
+                     created_at = excluded.created_at",
+                params![&req.date, minute, req.tag_id, &now],
+            ).map_err(|e| e.to_string())?;
+            affected += 1;
+        }
+
+        conn.execute(
+            "UPDATE activity_tags SET last_used_at = ? WHERE id = ?",
+            params![&now, req.tag_id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE activity_categories SET last_used_at = ? WHERE id = ?",
+            params![&now, category_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(affected)
+    }
+
+    #[allow(dead_code)]
+    pub async fn erase_planned_blocks_legacy_tag(&self, req: EraseBlocksRequest) -> Result<i64, String> {
+        if req.minutes.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().await;
+        let placeholders = req.minutes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "DELETE FROM planned_blocks WHERE date = ? AND minute IN ({})",
+            placeholders
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(req.date.clone())];
+        for m in &req.minutes {
+            params_vec.push(Box::new(*m));
+        }
+        let affected = conn.execute(
+            &sql,
+            rusqlite::params_from_iter(params_vec.iter().map(|b| b.as_ref())),
+        ).map_err(|e| e.to_string())?;
+        Ok(affected as i64)
+    }
+
+    #[allow(dead_code)]
+    pub async fn get_planned_blocks_by_date_legacy_tag(&self, date: &str) -> Result<Vec<ActivityBlock>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT date, minute, tag_id, note, created_at
+             FROM planned_blocks
+             WHERE date = ?
+             ORDER BY minute ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![date], |row| {
+            Ok(ActivityBlock {
+                date: row.get(0)?,
+                minute: row.get(1)?,
+                tag_id: row.get(2)?,
+                note: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     // ── Chat Sessions ──
 
     /// 创建新会话
@@ -1563,6 +1956,10 @@ impl Database {
             SELECT day FROM (
                 SELECT DISTINCT date AS day
                 FROM activity_blocks
+                WHERE date BETWEEN ?1 AND ?2
+                UNION
+                SELECT DISTINCT date AS day
+                FROM planned_blocks
                 WHERE date BETWEEN ?1 AND ?2
                 UNION
                 SELECT DISTINCT date(view_at, 'unixepoch', 'localtime') AS day

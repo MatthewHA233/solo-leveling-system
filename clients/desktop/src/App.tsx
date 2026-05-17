@@ -9,9 +9,10 @@ import BiliIcon from './components/icons/BiliIcon'
 import {
   fetchPerceptionSpans, fetchBiliSpans, fetchGoals, parseGoalTags,
   fetchActivityPalette, fetchActivityBlocks, paintActivityBlocks, eraseActivityBlocks,
+  fetchPlanNodes, fetchPlannedBlocks, paintPlannedBlocks, erasePlannedBlocks,
 } from './lib/local-api'
 import type { PerceptionSpan, BiliSpan, ModelCallLog } from './lib/local-api'
-import type { ActivityBlock, ActivityPalette } from './types'
+import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from './types'
 import { theme, hud } from './theme'
 
 // Agent
@@ -70,6 +71,7 @@ import BiliHistoryDialog from './components/BiliHistoryDialog'
 import ModelDialog from './components/ModelDialog'
 import { useBiliHistory } from './lib/bilibili/useHistory'
 import ActivityTagPalette from './components/ActivityTagPalette'
+import PlanNodePalette from './components/PlanNodePalette'
 import ActivityToast from './components/ActivityToast'
 import type { FairyState } from './components/FairyHUD'
 import { HudFrame, NeonRule } from './components/hud'
@@ -251,12 +253,19 @@ export default function App() {
   const dateAnchorRef = useRef<HTMLButtonElement | null>(null)
   const [activityPalette, setActivityPalette] = useState<ActivityPalette>({ categories: [], tags: [] })
   const [activityBlocks, setActivityBlocks] = useState<ActivityBlock[]>([])
+  const [plannedBlocks, setPlannedBlocks] = useState<PlannedBlock[]>([])
+  const [planNodes, setPlanNodes] = useState<PlanNode[]>([])
+  const [recordLayer, setRecordLayer] = useState<RecordLayer>('actual')
   const [editMode, setEditMode] = useState(false)
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null)
+  const [selectedProjectTagId, setSelectedProjectTagId] = useState<number | null>(null)
+  const [selectedPlanNodeId, setSelectedPlanNodeId] = useState<number | null>(null)
   const [paintToast, setPaintToast] = useState<{ id: number; startMin: number; endMin: number; path: string; color: string; mode: 'paint' | 'erase' } | null>(null)
   // 撤回 / 恢复 — 栈深 5
   const [undoStack, setUndoStack] = useState<readonly ActivityBlock[][]>([])
   const [redoStack, setRedoStack] = useState<readonly ActivityBlock[][]>([])
+  const [planUndoStack, setPlanUndoStack] = useState<readonly PlannedBlock[][]>([])
+  const [planRedoStack, setPlanRedoStack] = useState<readonly PlannedBlock[][]>([])
   const [perceptionSpans, setPerceptionSpans] = useState<PerceptionSpan[]>([])
   const [biliSpans, setBiliSpans] = useState<BiliSpan[]>([])
   // 悬浮预览（hover 触发）
@@ -554,10 +563,39 @@ export default function App() {
     refreshPerceptionSpans()
   }, [selectedDate])
 
+  // 日期切换时同步计划层块；实际记录沿用上面的主数据加载流程
+  useEffect(() => {
+    fetchPlannedBlocks(selectedDate)
+      .then(setPlannedBlocks)
+      .catch((err) => { console.error('[Plans] 获取计划块失败:', err); setPlannedBlocks([]) })
+  }, [selectedDate])
+
   // 启动时拉一次标签库
   useEffect(() => {
     fetchActivityPalette().then(setActivityPalette).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (selectedProjectTagId != null || activityPalette.tags.length === 0) return
+    setSelectedProjectTagId(activityPalette.tags[0].id)
+  }, [selectedProjectTagId, activityPalette.tags])
+
+  const refreshPlanNodes = useCallback((projectTagId = selectedProjectTagId) => {
+    if (projectTagId == null) {
+      setPlanNodes([])
+      return
+    }
+    fetchPlanNodes(projectTagId)
+      .then((nodes) => {
+        setPlanNodes(nodes)
+        setSelectedPlanNodeId((id) => id != null && nodes.some((node) => node.id === id) ? id : null)
+      })
+      .catch((err) => { console.error('[Plans] 获取计划节点失败:', err); setPlanNodes([]) })
+  }, [selectedProjectTagId])
+
+  useEffect(() => {
+    refreshPlanNodes()
+  }, [refreshPlanNodes])
 
   // Ctrl+E 切换编辑模式
   useEffect(() => {
@@ -579,11 +617,16 @@ export default function App() {
       setPinnedPos(null)
     } else {
       setSelectedTagId(null)
+      setSelectedPlanNodeId(null)
     }
   }, [editMode])
 
   const refreshActivityBlocks = useCallback(() => {
     fetchActivityBlocks(selectedDate).then(setActivityBlocks).catch(() => {})
+  }, [selectedDate])
+
+  const refreshPlannedBlocks = useCallback(() => {
+    fetchPlannedBlocks(selectedDate).then(setPlannedBlocks).catch(() => {})
   }, [selectedDate])
 
   const refreshActivityPalette = useCallback(() => {
@@ -594,6 +637,8 @@ export default function App() {
   useEffect(() => {
     setUndoStack([])
     setRedoStack([])
+    setPlanUndoStack([])
+    setPlanRedoStack([])
   }, [selectedDate, editMode])
 
   /** 计算从 from 状态变到 to 状态需要的 paint/erase 操作 */
@@ -634,7 +679,57 @@ export default function App() {
     invalidateActivityRangeCache(selectedDate)
   }, [selectedDate, computeBlocksDelta])
 
+  const applyPlannedBlocksDelta = useCallback(async (
+    fromBlocks: PlannedBlock[],
+    toBlocks: PlannedBlock[],
+  ) => {
+    const fromMap = new Map(fromBlocks.map((b) => [b.minute, b.planNodeId]))
+    const toMap = new Map(toBlocks.map((b) => [b.minute, b.planNodeId]))
+    const paintByNode = new Map<number, number[]>()
+    const eraseMinutes: number[] = []
+    for (const [m, fromNode] of fromMap) {
+      const toNode = toMap.get(m)
+      if (toNode === undefined) {
+        eraseMinutes.push(m)
+      } else if (toNode !== fromNode) {
+        if (!paintByNode.has(toNode)) paintByNode.set(toNode, [])
+        paintByNode.get(toNode)!.push(m)
+      }
+    }
+    for (const [m, toNode] of toMap) {
+      if (!fromMap.has(m)) {
+        if (!paintByNode.has(toNode)) paintByNode.set(toNode, [])
+        paintByNode.get(toNode)!.push(m)
+      }
+    }
+    const tasks: Promise<unknown>[] = []
+    if (eraseMinutes.length > 0) tasks.push(erasePlannedBlocks(selectedDate, eraseMinutes))
+    for (const [planNodeId, mins] of paintByNode) {
+      if (mins.length > 0) tasks.push(paintPlannedBlocks(selectedDate, mins, planNodeId))
+    }
+    await Promise.all(tasks)
+    invalidateActivityRangeCache(selectedDate)
+  }, [selectedDate])
+
   const handleUndo = useCallback(() => {
+    if (recordLayer === 'plan') {
+      setPlanUndoStack((undoPrev) => {
+        if (undoPrev.length === 0) return undoPrev
+        const popped = undoPrev[undoPrev.length - 1]
+        const current = plannedBlocks
+        setPlanRedoStack((redoPrev) => [...redoPrev.slice(-4), current])
+        setPlannedBlocks(popped)
+        applyPlannedBlocksDelta(current, popped)
+          .then(() => refreshActivityPalette())
+          .catch((e) => {
+            console.error('[PlanUndo] 后端失败:', e)
+            refreshPlannedBlocks()
+          })
+        return undoPrev.slice(0, -1)
+      })
+      return
+    }
+
     setUndoStack((undoPrev) => {
       if (undoPrev.length === 0) return undoPrev
       const popped = undoPrev[undoPrev.length - 1]
@@ -649,9 +744,27 @@ export default function App() {
         })
       return undoPrev.slice(0, -1)
     })
-  }, [activityBlocks, applyBlocksDelta, refreshActivityBlocks, refreshActivityPalette])
+  }, [recordLayer, plannedBlocks, activityBlocks, applyPlannedBlocksDelta, applyBlocksDelta, refreshPlannedBlocks, refreshActivityBlocks, refreshActivityPalette])
 
   const handleRedo = useCallback(() => {
+    if (recordLayer === 'plan') {
+      setPlanRedoStack((redoPrev) => {
+        if (redoPrev.length === 0) return redoPrev
+        const popped = redoPrev[redoPrev.length - 1]
+        const current = plannedBlocks
+        setPlanUndoStack((undoPrev) => [...undoPrev.slice(-4), current])
+        setPlannedBlocks(popped)
+        applyPlannedBlocksDelta(current, popped)
+          .then(() => refreshActivityPalette())
+          .catch((e) => {
+            console.error('[PlanRedo] 后端失败:', e)
+            refreshPlannedBlocks()
+          })
+        return redoPrev.slice(0, -1)
+      })
+      return
+    }
+
     setRedoStack((redoPrev) => {
       if (redoPrev.length === 0) return redoPrev
       const popped = redoPrev[redoPrev.length - 1]
@@ -666,7 +779,7 @@ export default function App() {
         })
       return redoPrev.slice(0, -1)
     })
-  }, [activityBlocks, applyBlocksDelta, refreshActivityBlocks, refreshActivityPalette])
+  }, [recordLayer, plannedBlocks, activityBlocks, applyPlannedBlocksDelta, applyBlocksDelta, refreshPlannedBlocks, refreshActivityBlocks, refreshActivityPalette])
 
   // 编辑模式下监听 Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z
   useEffect(() => {
@@ -702,6 +815,66 @@ export default function App() {
 
     const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`
     const nowIso = new Date().toISOString()
+
+    if (recordLayer === 'plan') {
+      const snapshot = plannedBlocks
+      setPlanUndoStack((prev) => [...prev.slice(-4), snapshot])
+      setPlanRedoStack([])
+      setPlannedBlocks((prev) => {
+        const eraseSet = new Set(spec.eraseMinutes)
+        const paintSet = new Set(spec.paintMinutes)
+        const filtered = prev.filter((b) => !eraseSet.has(b.minute) && !paintSet.has(b.minute))
+        const added = spec.paintTagId != null
+          ? spec.paintMinutes.map((m) => ({
+              date: dateStr,
+              minute: m,
+              planNodeId: spec.paintTagId!,
+              note: null,
+              createdAt: nowIso,
+            }))
+          : []
+        return [...filtered, ...added].sort((a, b) => a.minute - b.minute)
+      })
+
+      let toastPath = '已清除计划'
+      let toastColor = theme.textMuted
+      let toastMode: 'paint' | 'erase' = 'erase'
+      if (spec.paintTagId != null && spec.paintMinutes.length > 0) {
+        const node = planNodes.find((n) => n.id === spec.paintTagId)
+        const tag = node ? activityPalette.tags.find((t) => t.id === node.projectTagId) : null
+        const cat = tag ? activityPalette.categories.find((c) => c.id === tag.categoryId) : null
+        toastPath = `计划：${tag?.fullPath ?? ''}`
+        toastColor = cat?.color ?? theme.warningOrange
+        toastMode = 'paint'
+      }
+      setPaintToast({
+        id: Date.now(),
+        startMin: spec.rangeStartMin,
+        endMin: spec.rangeEndMin,
+        path: toastPath,
+        color: toastColor,
+        mode: toastMode,
+      })
+
+      const tasks: Promise<unknown>[] = []
+      if (spec.paintMinutes.length > 0 && spec.paintTagId != null) {
+        tasks.push(paintPlannedBlocks(selectedDate, spec.paintMinutes, spec.paintTagId))
+      }
+      if (spec.eraseMinutes.length > 0) {
+        tasks.push(erasePlannedBlocks(selectedDate, spec.eraseMinutes))
+      }
+      Promise.all(tasks)
+        .then(() => {
+          invalidateActivityRangeCache(selectedDate)
+          if (spec.paintTagId != null) refreshActivityPalette()
+        })
+        .catch((e) => {
+          console.error('[ApplyPlanDrag] 后端失败，回滚:', e)
+          setPlannedBlocks(snapshot)
+          refreshPlannedBlocks()
+        })
+      return
+    }
 
     // 1) 乐观更新本地块；同时把"操作前快照"推入 undo 栈（保留最近 5 步），并清空 redo 栈
     const snapshot = activityBlocks
@@ -762,7 +935,7 @@ export default function App() {
         setActivityBlocks(snapshot)
         refreshActivityBlocks()
       })
-  }, [selectedDate, activityBlocks, activityPalette, refreshActivityBlocks, refreshActivityPalette])
+  }, [selectedDate, recordLayer, activityBlocks, plannedBlocks, planNodes, activityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshActivityPalette])
 
   // 今天的数据实时轮询（15 秒）
   useEffect(() => {
@@ -2046,12 +2219,17 @@ export default function App() {
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <DayNightChart
             activityBlocks={activityBlocks}
+            plannedBlocks={plannedBlocks}
+            planNodes={planNodes}
             activityPalette={activityPalette}
+            recordLayer={recordLayer}
+            onRecordLayerChange={setRecordLayer}
             editMode={editMode}
             selectedTagId={selectedTagId}
+            selectedPlanNodeId={selectedPlanNodeId}
             onEditModeToggle={() => setEditMode((m) => !m)}
-            canUndo={undoStack.length > 0}
-            canRedo={redoStack.length > 0}
+            canUndo={recordLayer === 'actual' ? undoStack.length > 0 : planUndoStack.length > 0}
+            canRedo={recordLayer === 'actual' ? redoStack.length > 0 : planRedoStack.length > 0}
             onUndo={handleUndo}
             onRedo={handleRedo}
             onApplyDrag={handleApplyDrag}
@@ -2111,12 +2289,24 @@ export default function App() {
                   overflow: 'hidden',
                   position: 'relative',
                 }}>
-                  <ActivityTagPalette
-                    palette={activityPalette}
-                    selectedTagId={selectedTagId}
-                    onSelectTag={setSelectedTagId}
-                    onPaletteChange={refreshActivityPalette}
-                  />
+                  {recordLayer === 'plan' ? (
+                    <PlanNodePalette
+                      palette={activityPalette}
+                      nodes={planNodes}
+                      selectedProjectTagId={selectedProjectTagId}
+                      selectedPlanNodeId={selectedPlanNodeId}
+                      onSelectProject={(id) => { setSelectedProjectTagId(id); setSelectedPlanNodeId(null) }}
+                      onSelectNode={setSelectedPlanNodeId}
+                      onNodesChange={refreshPlanNodes}
+                    />
+                  ) : (
+                    <ActivityTagPalette
+                      palette={activityPalette}
+                      selectedTagId={selectedTagId}
+                      onSelectTag={setSelectedTagId}
+                      onPaletteChange={refreshActivityPalette}
+                    />
+                  )}
                 </div>
                 {/* 下半：当前光标处轨道详情（apps → 应用截图 / bili → 视频面板） */}
                 {detail && (

@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import { Pencil, Undo2, Redo2 } from 'lucide-react'
-import type { ActivityBlock, ActivityPalette } from '../types'
+import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from '../types'
 import type { PerceptionSpan, BiliSpan } from '../lib/local-api'
 import { theme } from '../theme'
 import { HudFrameSkeleton, HudTabButton } from './hud'
@@ -10,12 +10,21 @@ import Tooltip from './Tooltip'
 interface Props {
   /** 活动记录：5min 离散块 */
   activityBlocks: ActivityBlock[]
+  /** 计划安排：5min 离散块 */
+  plannedBlocks: PlannedBlock[]
+  /** 当前项目下的计划节点树 */
+  planNodes: PlanNode[]
   /** 标签库（颜色 / 路径查找） */
   activityPalette: ActivityPalette
+  /** 当前正在查看/编辑的记录层 */
+  recordLayer: RecordLayer
+  onRecordLayerChange: (layer: RecordLayer) => void
   /** 编辑模式：可点击/拖刷涂块 */
   editMode: boolean
   /** 当前选中的画笔 tag id（叶子节点） */
   selectedTagId: number | null
+  /** 当前选中的计划节点 id */
+  selectedPlanNodeId: number | null
   onEditModeToggle: () => void
   canUndo?: boolean
   canRedo?: boolean
@@ -380,6 +389,7 @@ function drawTagFills(
   p: ReturnType<typeof getGridParams>,
   spans: PerceptionSpan[],
   hoveredSpanId: number | null,
+  layer: RecordLayer,
 ) {
   const fillOffsetX = p.traceBaseX + traceWidth + TRACE_GAP
 
@@ -391,6 +401,7 @@ function drawTagFills(
 
     const color   = span.color ?? '#4488ff'
     const hovered = hoveredSpanId === span.id
+    const alphaScale = layer === 'plan' ? 0.72 : 1
 
     const startCol = Math.floor(startMin / p.minutesPerCol)
     const endCol   = Math.floor((endMin - 1) / p.minutesPerCol)
@@ -413,9 +424,9 @@ function drawTagFills(
 
       // 1) 填充：弱化半透渐变（参考图风格，整体更"透气"）
       const grad = ctx.createLinearGradient(x, 0, x + w, 0)
-      grad.addColorStop(0, hexToRgba(color, hovered ? 0.42 : 0.28))
-      grad.addColorStop(0.75, hexToRgba(color, hovered ? 0.36 : 0.22))
-      grad.addColorStop(1, hexToRgba(color, hovered ? 0.26 : 0.16))
+      grad.addColorStop(0, hexToRgba(color, (hovered ? 0.42 : 0.28) * alphaScale))
+      grad.addColorStop(0.75, hexToRgba(color, (hovered ? 0.36 : 0.22) * alphaScale))
+      grad.addColorStop(1, hexToRgba(color, (hovered ? 0.26 : 0.16) * alphaScale))
       ctx.fillStyle = grad
       ctx.fillRect(x, y0, w, h)
 
@@ -436,12 +447,14 @@ function drawTagFills(
         ctx.shadowColor = hexToRgba(color, 0.9)
         ctx.shadowBlur = 6
       }
-      ctx.strokeStyle = hexToRgba(color, hovered ? 1.0 : 0.9)
+      ctx.strokeStyle = hexToRgba(color, (hovered ? 1.0 : 0.9) * alphaScale)
       ctx.lineWidth = hovered ? 2.2 : 1.8
+      if (layer === 'plan') ctx.setLineDash([4, 3])
       ctx.beginPath()
       ctx.moveTo(x + 0.5, y0)
       ctx.lineTo(x + 0.5, y1)
       ctx.stroke()
+      ctx.setLineDash([])
       ctx.restore()
 
       // 4) 首/末列 L 形端盖（HUD 收口）
@@ -1365,12 +1378,14 @@ function historyBtnStyle(enabled: boolean): React.CSSProperties {
 
 // 编辑模式开关：与 ChatPanel 的 HistoryToggle 同款断裂 HUD 边框（4 角 L + 上下刻度段 +
 // 右侧信号插头），绿色调对应"编辑"语义。
-function EditModeToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
-  const c = theme.expGreen
+function EditModeToggle({ on, onClick, layer }: { on: boolean; onClick: () => void; layer: RecordLayer }) {
+  const c = layer === 'plan' ? theme.warningOrange : theme.expGreen
   const dim = on ? 1 : 0.5
+  const targetLabel = layer === 'plan' ? '计划安排' : '实际记录'
+  const shortLabel = layer === 'plan' ? '规划' : '记录'
   return (
     <Tooltip
-      content={on ? '退出编辑 (Ctrl+E)' : '编辑活动记录 (Ctrl+E)'}
+      content={on ? `退出${targetLabel}编辑 (Ctrl+E)` : `编辑${targetLabel} (Ctrl+E)`}
       wrapStyle={{ alignSelf: 'center' }}
     >
     <button
@@ -1417,7 +1432,7 @@ function EditModeToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
       </svg>
 
       <Pencil size={11} style={{ position: 'relative' }} />
-      <span style={{ position: 'relative' }}>{on ? '编辑中' : '编辑'}</span>
+      <span style={{ position: 'relative' }}>{on ? `${shortLabel}中` : shortLabel}</span>
 
       {on && (
         <span style={{
@@ -2028,7 +2043,7 @@ function ScrollingZoneLabels({ params }: { params: ReturnType<typeof getGridPara
 
 // ── 主组件 ──
 
-export default function DayNightChart({ activityBlocks, activityPalette, editMode, selectedTagId, onEditModeToggle, canUndo = false, canRedo = false, onUndo, onRedo, onApplyDrag, perceptionSpans: rawPerceptionSpans = [], biliSpans = [], selectedDate, onSpanClick, onSpanHover, onAppSpanHover, onBiliSpanHover, trackMode = 'apps', onTrackModeChange, pinnedPos, onPinPos }: Props) {
+export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes, activityPalette, recordLayer, onRecordLayerChange, editMode, selectedTagId, selectedPlanNodeId, onEditModeToggle, canUndo = false, canRedo = false, onUndo, onRedo, onApplyDrag, perceptionSpans: rawPerceptionSpans = [], biliSpans = [], selectedDate, onSpanClick, onSpanHover, onAppSpanHover, onBiliSpanHover, trackMode = 'apps', onTrackModeChange, pinnedPos, onPinPos }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const hoveredIdRef = useRef<string | null>(null)
@@ -2111,12 +2126,37 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     return `${y}-${m}-${d}`
   }, [selectedDate])
 
+  const selectedBrushId = recordLayer === 'actual' ? selectedTagId : selectedPlanNodeId
+  const tagById = useMemo(() => new Map(activityPalette.tags.map((t) => [t.id, t])), [activityPalette.tags])
+  const catById = useMemo(() => new Map(activityPalette.categories.map((c) => [c.id, c])), [activityPalette.categories])
+  const planNodeById = useMemo(() => new Map(planNodes.map((n) => [n.id, n])), [planNodes])
+  const planTitleById = useMemo(() => {
+    const cache = new Map<number, string>()
+    const build = (node: PlanNode): string => {
+      const cached = cache.get(node.id)
+      if (cached) return cached
+      const parent = node.parentId != null ? planNodeById.get(node.parentId) : null
+      const title = parent ? `${build(parent)},${node.title}` : node.title
+      cache.set(node.id, title)
+      return title
+    }
+    for (const node of planNodes) build(node)
+    return cache
+  }, [planNodes, planNodeById])
+
+  const visibleBlocks = useMemo(() => {
+    if (recordLayer === 'actual') {
+      return activityBlocks.map((b) => ({ minute: b.minute, tagId: b.tagId }))
+    }
+    return plannedBlocks.map((b) => ({ minute: b.minute, tagId: b.planNodeId }))
+  }, [recordLayer, activityBlocks, plannedBlocks])
+
   // ── 活动记录块 → 合并连续同 tag 的虚拟 PerceptionSpan（track='tags'），喂给现有渲染 ──
   const blockSpans = useMemo<PerceptionSpan[]>(() => {
-    if (activityBlocks.length === 0) return []
+    if (visibleBlocks.length === 0) return []
     const tagById = new Map(activityPalette.tags.map((t) => [t.id, t]))
     const catById = new Map(activityPalette.categories.map((c) => [c.id, c]))
-    const sorted = [...activityBlocks].sort((a, b) => a.minute - b.minute)
+    const sorted = [...visibleBlocks].sort((a, b) => a.minute - b.minute)
     const fmt = (min: number) => {
       const h = Math.floor(min / 60)
       const m = min % 60
@@ -2158,10 +2198,50 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
       })
     }
     return out
-  }, [activityBlocks, activityPalette, selectedDateStr])
+  }, [visibleBlocks, activityPalette, selectedDateStr])
+
+  const planBlockSpans = useMemo<PerceptionSpan[]>(() => {
+    if (plannedBlocks.length === 0) return []
+    const sorted = [...plannedBlocks].sort((a, b) => a.minute - b.minute)
+    const fmt = (min: number) => {
+      const h = Math.floor(min / 60)
+      const m = min % 60
+      return `${selectedDateStr} ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`
+    }
+    const out: PerceptionSpan[] = []
+    let cur: { nodeId: number; startMin: number; endMin: number } | null = null
+    const push = (group: { nodeId: number; startMin: number; endMin: number }) => {
+      const node = planNodeById.get(group.nodeId)
+      const tag = node ? tagById.get(node.projectTagId) : undefined
+      const cat = tag ? catById.get(tag.categoryId) : undefined
+      out.push({
+        id: -(out.length + 1) * 1000 - group.nodeId,
+        track: 'tags',
+        start_at: fmt(group.startMin),
+        end_at: fmt(group.endMin),
+        title: node ? `${tag?.fullPath ?? '计划'},${planTitleById.get(node.id) ?? node.title}` : '计划',
+        group_name: cat?.name ?? null,
+        color: cat?.color ?? theme.warningOrange,
+      })
+    }
+    for (const block of sorted) {
+      if (cur && cur.nodeId === block.planNodeId && cur.endMin === block.minute) {
+        cur.endMin = block.minute + 5
+      } else {
+        if (cur) push(cur)
+        cur = { nodeId: block.planNodeId, startMin: block.minute, endMin: block.minute + 5 }
+      }
+    }
+    if (cur) push(cur)
+    return out
+  }, [plannedBlocks, planNodeById, tagById, catById, planTitleById, selectedDateStr])
 
   // 合并：自研活动块（tags 轨）+ perception spans
-  const perceptionSpans = useMemo<PerceptionSpan[]>(() => [...blockSpans, ...rawPerceptionSpans], [blockSpans, rawPerceptionSpans])
+  const perceptionSpans = useMemo<PerceptionSpan[]>(() => [
+    ...(recordLayer === 'plan' ? planBlockSpans : blockSpans),
+    ...rawPerceptionSpans,
+  ], [recordLayer, blockSpans, planBlockSpans, rawPerceptionSpans])
+
 
   // Bili span 时间重叠修正 + 跨天裁剪：
   // 一段 23:30 → 次日 00:30 的 span 在"前一天"被裁成 23:30→24:00，
@@ -2243,7 +2323,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     ctx.fillRect(0, 0, p.totalW, p.totalH)
 
     drawZoneBands(ctx, p)
-    drawTagFills(ctx, p, perceptionSpans, hoveredSpanId)
+    drawTagFills(ctx, p, perceptionSpans, hoveredSpanId, recordLayer)
     drawGrid(ctx, p)
     drawTimeLabels(ctx, p)
 
@@ -2309,7 +2389,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     }
 
     ctx.restore()
-  }, [p, perceptionSpans, adjustedBiliSpans, trackMode, isToday, dpr, pinnedPos]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [p, perceptionSpans, adjustedBiliSpans, trackMode, recordLayer, isToday, dpr, pinnedPos]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     draw()
@@ -2382,9 +2462,18 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
   } | null>(null)
   const blockByMinute = useMemo(() => {
     const m = new Map<number, number>()
-    for (const b of activityBlocks) m.set(b.minute, b.tagId)
+    for (const b of visibleBlocks) m.set(b.minute, b.tagId)
     return m
-  }, [activityBlocks])
+  }, [visibleBlocks])
+
+  useEffect(() => {
+    dragRef.current = null
+    hoveredSpanIdRef.current = null
+    hoveredTagSpanRef.current = null
+    onSpanHover?.(null)
+    scheduleRedraw()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recordLayer])
 
   /** 起点终点的 5min 块全集（含两端）。endMin < startMin 时反向 */
   const getDragMinutes = (startMin: number, endMin: number): number[] => {
@@ -2398,12 +2487,14 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
   /** 查 selectedTagId 对应的颜色（找不到走默认绿） */
   const brushColorRef = useRef('#22C55E')
   brushColorRef.current = useMemo(() => {
-    if (selectedTagId == null) return theme.expGreen
-    const tag = activityPalette.tags.find((t) => t.id === selectedTagId)
-    if (!tag) return theme.expGreen
-    const cat = activityPalette.categories.find((c) => c.id === tag.categoryId)
-    return cat?.color ?? theme.expGreen
-  }, [selectedTagId, activityPalette])
+    if (selectedBrushId == null) return recordLayer === 'plan' ? theme.warningOrange : theme.expGreen
+    const node = recordLayer === 'plan' ? planNodeById.get(selectedBrushId) : null
+    const tagId = node ? node.projectTagId : selectedBrushId
+    const tag = tagById.get(tagId)
+    if (!tag) return recordLayer === 'plan' ? theme.warningOrange : theme.expGreen
+    const cat = catById.get(tag.categoryId)
+    return cat?.color ?? (recordLayer === 'plan' ? theme.warningOrange : theme.expGreen)
+  }, [selectedBrushId, recordLayer, planNodeById, tagById, catById])
 
   function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
     e.preventDefault()
@@ -2412,9 +2503,9 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     if (min == null) return
     // 起点是空格且没有画笔 → 干脆不开始（避免无意义的空拖拽）
     const startEmpty = !blockByMinute.has(min)
-    if (startEmpty && selectedTagId == null) return
+    if (startEmpty && selectedBrushId == null) return
     dragRef.current = {
-      tagId: selectedTagId,
+      tagId: selectedBrushId,
       color: brushColorRef.current,
       startMin: min,
       currentMin: min,
@@ -2664,7 +2755,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
   // 只在日期切换时触发，不随活动增删重置位置
   const scrollKeyRef = useRef('')
   useEffect(() => {
-    const key = selectedDate.toDateString()
+    const key = `${selectedDate.toDateString()}:${recordLayer}`
     if (scrollKeyRef.current === key) return
     scrollKeyRef.current = key
 
@@ -2676,8 +2767,8 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
       targetMin = now.getHours() * 60 + now.getMinutes()
     } else {
       // 非今天：滚到最早的活动块（如果有），否则 0 点
-      const earliest = activityBlocks.length > 0
-        ? Math.min(...activityBlocks.map((b) => b.minute))
+      const earliest = visibleBlocks.length > 0
+        ? Math.min(...visibleBlocks.map((b) => b.minute))
         : 0
       targetMin = Math.max(0, earliest - p.minutesPerCol)
     }
@@ -2685,7 +2776,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
     const scrollX = targetCol * p.colStride
     setTimeout(() => { container.scrollLeft = scrollX }, 100)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDate, isToday, p.minutesPerCol, p.colStride])
+  }, [selectedDate, recordLayer, isToday, p.minutesPerCol, p.colStride])
 
   // 图例：从感知 tags 提取一级标签
   const tagLegend = useMemo(() => {
@@ -2755,6 +2846,31 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
           )
         })}
 
+        <span style={{
+          alignSelf: 'center',
+          fontFamily: theme.fontMono, fontSize: 10.5, fontWeight: 700,
+          letterSpacing: 2, color: theme.textMuted,
+          paddingLeft: 10,
+          marginLeft: 6,
+          borderLeft: `1px solid ${hexToRgba(theme.textMuted, 0.32)}`,
+        }}>
+          记录类型
+        </span>
+        {([
+          { layer: 'actual' as const, label: '实际记录', color: theme.expGreen },
+          { layer: 'plan' as const, label: '计划安排', color: theme.warningOrange },
+        ] satisfies Array<{ layer: RecordLayer; label: string; color: string }>).map((item) => (
+          <HudTabButton
+            key={item.layer}
+            label={item.label}
+            active={recordLayer === item.layer}
+            color={item.color}
+            width={106}
+            height={30}
+            onClick={() => onRecordLayerChange(item.layer)}
+          />
+        ))}
+
         <div style={{ flex: 1 }} />
 
         {/* 编辑模式专用：撤回 / 恢复 */}
@@ -2784,7 +2900,7 @@ export default function DayNightChart({ activityBlocks, activityPalette, editMod
         )}
 
         {/* 编辑模式按钮（最右侧）—— 与 ChatPanel 的"历史"按钮同款断裂 HUD 边框，绿色调 */}
-        <EditModeToggle on={editMode} onClick={onEditModeToggle} />
+        <EditModeToggle on={editMode} onClick={onEditModeToggle} layer={recordLayer} />
       </div>
 
       {/* 图表区：滚动 wrapper 占整片，sticky 时段层 + canvas；左半固定 axis 浮在上层 */}
