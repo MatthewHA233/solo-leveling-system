@@ -1000,6 +1000,8 @@ export default function App() {
     paintMinutes: number[]
     paintTagId: number | null
     eraseMinutes: number[]
+    /** 来自 dragRef 的 layer 戳；优先用它，避免拖拽中途切层时写到错层 */
+    layer: RecordLayer
     rangeStartMin: number
     rangeEndMin: number
   }) => {
@@ -1008,7 +1010,7 @@ export default function App() {
     const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`
     const nowIso = new Date().toISOString()
 
-    if (recordLayer === 'plan') {
+    if (spec.layer === 'plan') {
       const snapshot = plannedBlocks
       setPlanUndoStack((prev) => [...prev.slice(-4), snapshot])
       setPlanRedoStack([])
@@ -1127,7 +1129,7 @@ export default function App() {
         setActivityBlocks(snapshot)
         refreshActivityBlocks()
       })
-  }, [selectedDate, recordLayer, activityBlocks, plannedBlocks, planNodes, activityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshActivityPalette])
+  }, [selectedDate, activityBlocks, plannedBlocks, planNodes, activityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshActivityPalette])
 
   // 今天的数据实时轮询（15 秒）
   useEffect(() => {

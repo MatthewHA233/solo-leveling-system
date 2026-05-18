@@ -35,6 +35,8 @@ interface Props {
     paintMinutes: number[]
     paintTagId: number | null
     eraseMinutes: number[]
+    /** 从 dragRef 透传过来的当时所在层，handleApplyDrag 应优先用它而不是当前 recordLayer */
+    layer: RecordLayer
     rangeStartMin: number
     rangeEndMin: number
   }) => void
@@ -1449,70 +1451,6 @@ function EditModeToggle({ on, onClick, layer }: { on: boolean; onClick: () => vo
   )
 }
 
-function BrushStatusBadge({
-  layer,
-  label,
-  color,
-  empty,
-}: {
-  layer: RecordLayer
-  label: string
-  color: string
-  empty: boolean
-}) {
-  return (
-    <div style={{
-      position: 'absolute',
-      top: 10,
-      right: 12,
-      zIndex: 72,
-      pointerEvents: 'none',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 8,
-      maxWidth: 320,
-      padding: '7px 10px',
-      color: empty ? theme.textMuted : theme.textPrimary,
-      background: `linear-gradient(90deg, ${hexToRgba(color, empty ? 0.06 : 0.18)} 0%, rgba(3,8,20,0.82) 100%)`,
-      border: `1px solid ${hexToRgba(color, empty ? 0.32 : 0.78)}`,
-      boxShadow: empty ? undefined : `0 0 18px ${hexToRgba(color, 0.28)}, inset 0 0 16px ${hexToRgba(color, 0.08)}`,
-      clipPath: 'polygon(7px 0, calc(100% - 7px) 0, 100% 7px, 100% calc(100% - 7px), calc(100% - 7px) 100%, 7px 100%, 0 calc(100% - 7px), 0 7px)',
-      WebkitClipPath: 'polygon(7px 0, calc(100% - 7px) 0, 100% 7px, 100% calc(100% - 7px), calc(100% - 7px) 100%, 7px 100%, 0 calc(100% - 7px), 0 7px)',
-      transition: 'border-color 140ms ease, background 140ms ease, box-shadow 140ms ease',
-    }}>
-      <span style={{
-        width: 8,
-        height: 8,
-        flexShrink: 0,
-        background: empty ? 'transparent' : color,
-        border: `1px solid ${color}`,
-        boxShadow: empty ? undefined : `0 0 8px ${color}`,
-        transform: 'rotate(45deg)',
-      }} />
-      <span style={{
-        flexShrink: 0,
-        color,
-        fontFamily: theme.fontMono,
-        fontSize: 9,
-        fontWeight: 900,
-        letterSpacing: 1.5,
-        textShadow: empty ? undefined : `0 0 8px ${hexToRgba(color, 0.72)}`,
-      }}>
-        {layer === 'plan' ? 'PLAN BRUSH' : 'TAG BRUSH'}
-      </span>
-      <span style={{
-        minWidth: 0,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-        fontSize: 11.5,
-        fontWeight: 700,
-      }}>
-        {label}
-      </span>
-    </div>
-  )
-}
 
 function drawDragPreview(
   ctx: CanvasRenderingContext2D,
@@ -1520,12 +1458,13 @@ function drawDragPreview(
   startMin: number,
   endMin: number,
   brushColor: string,
-  hasBrush: boolean,
+  brushTagId: number | null,
   initial: Map<number, number>,
 ) {
   const lo = Math.min(startMin, endMin)
   const hi = Math.max(startMin, endMin)
   const fillOffsetX = p.traceBaseX + traceWidth + TRACE_GAP
+  const hasBrush = brushTagId != null
 
   ctx.save()
   for (let m = lo; m <= hi; m += 5) {
@@ -1539,8 +1478,20 @@ function drawDragPreview(
     const h  = y1 - y0
     if (h <= 0 || w <= 0) continue
 
-    const wasOccupied = initial.has(m)
-    if (wasOccupied) {
+    const existing = initial.get(m)
+
+    // 状态分类：
+    //   existing 不存在 → 空格
+    //   无画笔 + existing 存在 → 擦（清除模式）
+    //   有画笔 + 同色 → 擦（取消）
+    //   有画笔 + 异色 → 替换
+    //   有画笔 + 空格 → 涂
+    //   无画笔 + 空格 → 经过不动
+    const isErase = existing !== undefined && (!hasBrush || existing === brushTagId)
+    const isReplace = existing !== undefined && hasBrush && existing !== brushTagId
+    const isPaint = existing === undefined && hasBrush
+
+    if (isErase) {
       // 擦：暗罩 + 红色虚线 + 中划线
       ctx.fillStyle = 'rgba(20, 4, 8, 0.55)'
       ctx.fillRect(x, y0, w, h)
@@ -1553,7 +1504,24 @@ function drawDragPreview(
       ctx.lineTo(x + w - 2, y0 + h / 2)
       ctx.stroke()
       ctx.setLineDash([])
-    } else if (hasBrush) {
+    } else if (isReplace) {
+      // 替换：画笔色更实 + 双层描边 + 右上角小三角提示"覆盖"
+      ctx.fillStyle = hexToRgba(brushColor, 0.7)
+      ctx.fillRect(x, y0, w, h)
+      ctx.strokeStyle = brushColor
+      ctx.lineWidth = 1.5
+      ctx.shadowColor = brushColor
+      ctx.shadowBlur = 8
+      ctx.strokeRect(x + 0.75, y0 + 0.75, w - 1.5, h - 1.5)
+      ctx.shadowBlur = 0
+      ctx.fillStyle = brushColor
+      ctx.beginPath()
+      ctx.moveTo(x + w - 5, y0 + 1)
+      ctx.lineTo(x + w - 1, y0 + 1)
+      ctx.lineTo(x + w - 1, y0 + 5)
+      ctx.closePath()
+      ctx.fill()
+    } else if (isPaint) {
       // 涂：半透明画笔色 + 发光边框
       ctx.fillStyle = hexToRgba(brushColor, 0.55)
       ctx.fillRect(x, y0, w, h)
@@ -1564,7 +1532,7 @@ function drawDragPreview(
       ctx.strokeRect(x + 0.75, y0 + 0.75, w - 1.5, h - 1.5)
       ctx.shadowBlur = 0
     } else {
-      // 空格 + 无画笔：浅灰描边表示"经过但不动"
+      // 空格 + 无画笔：经过但不动
       ctx.strokeStyle = 'rgba(255,255,255,0.18)'
       ctx.lineWidth = 1
       ctx.setLineDash([2, 3])
@@ -2434,7 +2402,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     // 拖刷预览（覆盖在 tag 填充之上）
     const drag = dragRef.current
     if (drag) {
-      drawDragPreview(ctx, p, drag.startMin, drag.currentMin, drag.color, drag.tagId != null, drag.initial)
+      drawDragPreview(ctx, p, drag.startMin, drag.currentMin, drag.color, drag.tagId, drag.initial)
     }
 
     drawNowTick(ctx, p, isToday)
@@ -2516,10 +2484,15 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
 
   // ── 编辑模式：拖刷状态 ──
   // 时间范围语义：[start, current] 之间所有 5min 块（跨列时对应"先填满起列下半 + 中间整列 + 末列上半"）
-  // 取反语义：每格按拖拽起始时刻的原状态决定 — 有记录就擦、空格用画笔涂
+  // 三态语义（按起始快照逐格判定）：
+  //   空格            → 用当前画笔涂
+  //   已是当前画笔色 → 擦（同色覆盖 = 取消）
+  //   是其它色       → 用当前画笔替换（覆盖原标签）
   const dragRef = useRef<{
     tagId: number | null
     color: string
+    /** mousedown 时所在的层 —— commit 时如果当前 layer 已变，丢弃避免写到错层 */
+    layer: RecordLayer
     startMin: number
     currentMin: number
     /** 拖拽起点时刻该日的 minute → tagId 快照（用于逐格判定取反） */
@@ -2562,16 +2535,6 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
   }, [selectedBrushId, recordLayer, planNodeById, tagById, catById])
   brushColorRef.current = brushColor
 
-  const brushLabel = useMemo(() => {
-    if (selectedBrushId == null) return recordLayer === 'plan' ? '未选择任务' : '未选择标签'
-    if (recordLayer === 'plan') {
-      const node = planNodeById.get(selectedBrushId)
-      return node ? (planTitleById.get(node.id) ?? node.title) : '未选择任务'
-    }
-    const tag = tagById.get(selectedBrushId)
-    return tag?.fullPath ?? '未选择标签'
-  }, [selectedBrushId, recordLayer, planNodeById, planTitleById, tagById])
-
   function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
     e.preventDefault()
     if (!editMode) return
@@ -2583,6 +2546,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     dragRef.current = {
       tagId: selectedBrushId,
       color: brushColorRef.current,
+      layer: recordLayer,
       startMin: min,
       currentMin: min,
       initial: new Map(blockByMinute),  // 浅拷贝固定快照
@@ -2594,16 +2558,28 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     const drag = dragRef.current
     dragRef.current = null
     if (!drag) return
+    // 双保险：理论上切换 layer 时 useEffect 会清 dragRef，这里再校验一次
+    // 防止任何边角时序窗口把变更写到错的层
+    if (drag.layer !== recordLayer) return
     const minutes = getDragMinutes(drag.startMin, drag.currentMin)
     if (minutes.length === 0) return
 
     const paintMinutes: number[] = []
     const eraseMinutes: number[] = []
     for (const m of minutes) {
-      if (drag.initial.has(m)) {
+      const existing = drag.initial.get(m)
+      if (existing === undefined) {
+        // 空格 → 涂（需有画笔）
+        if (drag.tagId != null) paintMinutes.push(m)
+      } else if (existing === drag.tagId) {
+        // 同画笔 → 擦
         eraseMinutes.push(m)
       } else if (drag.tagId != null) {
+        // 异色 + 有画笔 → 替换（paint 后端 UPSERT，覆盖原 tag_id）
         paintMinutes.push(m)
+      } else {
+        // 异色 + 无画笔 → 退化为擦（保留"无画笔清除"便捷功能）
+        eraseMinutes.push(m)
       }
     }
 
@@ -2613,6 +2589,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
       paintMinutes,
       paintTagId: drag.tagId,
       eraseMinutes,
+      layer: drag.layer,
       rangeStartMin: Math.min(drag.startMin, drag.currentMin),
       rangeEndMin: Math.max(drag.startMin, drag.currentMin) + 5,
     })
@@ -3000,15 +2977,6 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
           zIndex: 65,
           pointerEvents: 'none',
         }} />
-
-        {editMode && (
-          <BrushStatusBadge
-            layer={recordLayer}
-            label={brushLabel}
-            color={brushColor}
-            empty={selectedBrushId == null}
-          />
-        )}
 
         {/* 右上 frame 切角遮罩三角（18×18，frame cornerCut 范围）*/}
         <div style={{
