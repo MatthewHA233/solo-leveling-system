@@ -169,22 +169,19 @@ export async function updateActivityCategory(
 }
 
 /**
- * 重命名标签路径中的任意一段（叶子或中间节点）
- * fullOldPath: 完整旧路径（含分类首段），如 "工作,毕业论文"
- * newSegment: 末段的新名字
+ * 改单个标签的完整路径（含首段分类名）。
+ * 首段必须是已存在分类的名字；扁平模式下不级联到其它共享前缀的 tag。
  */
 export async function renameActivityPath(
-  categoryId: number,
-  fullOldPath: string,
-  newSegment: string,
+  tagId: number,
+  newFullPath: string,
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/activities/tags/rename`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      category_id: categoryId,
-      full_old_path: fullOldPath,
-      new_segment: newSegment,
+      tag_id: tagId,
+      new_full_path: newFullPath,
     }),
   })
   const json: ApiResponse<void> = await res.json()

@@ -277,11 +277,11 @@ pub struct UpdateCategoryRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct RenamePathRequest {
-    pub category_id: i64,
-    /// 完整旧路径（含分类首段），如 "工作,毕业论文" 表示重命名 "毕业论文" 这一段
-    pub full_old_path: String,
-    /// 新的末段名（不含逗号）
-    pub new_segment: String,
+    /// 要改的 tag id
+    pub tag_id: i64,
+    /// 新的完整路径，含首段分类名（如 "学习,英语,新概念3"）。
+    /// 首段必须等于某个已有分类的 name；不级联到其它共享前缀的 tag。
+    pub new_full_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1346,63 +1346,61 @@ impl Database {
     /// 重命名标签路径中的某一段（叶子或中间节点）：
     /// full_old_path = "工作,毕业论文"，new_segment = "毕业论文-2024"
     /// → 把所有以 "工作,毕业论文" 开头的 tag 的对应段都换掉
+    /// 改单个 tag 的完整路径（含首段分类名）。扁平模式下不级联：每个 tag 独立。
+    /// 首段如果换成别的已有分类名，会顺带更新 category_id。
     pub async fn rename_activity_path(&self, req: RenamePathRequest) -> Result<(), String> {
-        let new_seg = req.new_segment.trim();
-        if new_seg.is_empty() {
-            return Err("段名不能为空".into());
+        let new_full = req.new_full_path.trim().trim_matches(',').to_string();
+        if new_full.is_empty() {
+            return Err("路径不能为空".into());
         }
-        if new_seg.contains(',') {
-            return Err("段名不能包含逗号".into());
-        }
-        let segments: Vec<&str> = req.full_old_path.split(',').map(|s| s.trim()).collect();
+        let segments: Vec<&str> = new_full.split(',').map(|s| s.trim()).collect();
         if segments.iter().any(|s| s.is_empty()) {
             return Err("路径段不能为空".into());
+        }
+        if segments.len() < 2 {
+            return Err("路径至少要 2 段（分类名 + 子段）".into());
         }
 
         let conn = self.conn.lock().await;
 
-        // 校验分类存在
-        let cat_name: String = conn.query_row(
-            "SELECT name FROM activity_categories WHERE id = ?",
-            params![req.category_id],
-            |row| row.get(0),
-        ).map_err(|_| "分类不存在".to_string())?;
-        if segments.first().map(|s| *s) != Some(cat_name.as_str()) {
-            return Err("路径首段必须等于分类名".into());
-        }
-
-        // 构造新前缀（替换最后一段）
-        let mut new_segments: Vec<String> = segments.iter().map(|s| s.to_string()).collect();
-        let depth = new_segments.len();
-        new_segments[depth - 1] = new_seg.to_string();
-        let new_prefix = new_segments.join(",");
-        if new_prefix == req.full_old_path {
+        // 查 tag 现状
+        let old: (i64, String) = conn.query_row(
+            "SELECT category_id, full_path FROM activity_tags WHERE id = ?",
+            params![req.tag_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).map_err(|_| "标签不存在".to_string())?;
+        let (_old_category_id, old_full_path) = old;
+        if new_full == old_full_path {
             return Ok(());
         }
 
-        let old_prefix = req.full_old_path.clone();
-        let old_prefix_with_comma = format!("{},", old_prefix);
-        let new_prefix_with_comma = format!("{},", new_prefix);
+        // 首段必须是已存在分类
+        let cat_name = segments[0];
+        let new_category_id: i64 = conn.query_row(
+            "SELECT id FROM activity_categories WHERE name = ?",
+            params![cat_name],
+            |row| row.get(0),
+        ).map_err(|_| format!("找不到分类「{}」", cat_name))?;
 
-        // 1) 该段恰为叶子：full_path 完全等于 old_prefix
+        // 同分类下重名（排除自己）
+        let dup: Option<i64> = conn.query_row(
+            "SELECT id FROM activity_tags WHERE category_id = ? AND full_path = ? AND id != ?",
+            params![new_category_id, &new_full, req.tag_id],
+            |row| row.get(0),
+        ).optional().map_err(|e| e.to_string())?;
+        if dup.is_some() {
+            return Err(format!("已存在同名标签「{}」", new_full));
+        }
+
+        let new_leaf = segments.last().unwrap().to_string();
+        let new_depth = segments.len() as i64;
+        let now = local_now_string();
+
         conn.execute(
             "UPDATE activity_tags
-             SET full_path = ?, leaf_name = ?
-             WHERE category_id = ? AND full_path = ?",
-            params![&new_prefix, new_seg, req.category_id, &old_prefix],
-        ).map_err(|e| e.to_string())?;
-
-        // 2) 该段为中间节点：full_path 以 old_prefix+',' 开头
-        conn.execute(
-            "UPDATE activity_tags
-             SET full_path = ? || SUBSTR(full_path, ?)
-             WHERE category_id = ? AND full_path LIKE ? || '%'",
-            params![
-                &new_prefix_with_comma,
-                (old_prefix_with_comma.chars().count() as i64) + 1,
-                req.category_id,
-                &old_prefix_with_comma,
-            ],
+             SET category_id = ?, full_path = ?, leaf_name = ?, depth = ?, updated_at = ?
+             WHERE id = ?",
+            params![new_category_id, &new_full, &new_leaf, new_depth, &now, req.tag_id],
         ).map_err(|e| e.to_string())?;
 
         Ok(())
@@ -1441,12 +1439,12 @@ impl Database {
         }
 
         conn.execute(
-            "UPDATE activity_tags SET last_used_at = ? WHERE id = ?",
-            params![&now, req.tag_id],
+            "UPDATE activity_tags SET last_used_at = ?, updated_at = ? WHERE id = ?",
+            params![&now, &now, req.tag_id],
         ).map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE activity_categories SET last_used_at = ? WHERE id = ?",
-            params![&now, category_id],
+            "UPDATE activity_categories SET last_used_at = ?, updated_at = ? WHERE id = ?",
+            params![&now, &now, category_id],
         ).map_err(|e| e.to_string())?;
         Ok(affected)
     }
@@ -1659,12 +1657,12 @@ impl Database {
         }
 
         conn.execute(
-            "UPDATE activity_tags SET last_used_at = ? WHERE id = ?",
-            params![&now, project_tag_id],
+            "UPDATE activity_tags SET last_used_at = ?, updated_at = ? WHERE id = ?",
+            params![&now, &now, project_tag_id],
         ).map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE activity_categories SET last_used_at = ? WHERE id = ?",
-            params![&now, category_id],
+            "UPDATE activity_categories SET last_used_at = ?, updated_at = ? WHERE id = ?",
+            params![&now, &now, category_id],
         ).map_err(|e| e.to_string())?;
         Ok(affected)
     }
@@ -2341,12 +2339,12 @@ impl Database {
         }
 
         conn.execute(
-            "UPDATE activity_tags SET last_used_at = ? WHERE id = ?",
-            params![&now, req.tag_id],
+            "UPDATE activity_tags SET last_used_at = ?, updated_at = ? WHERE id = ?",
+            params![&now, &now, req.tag_id],
         ).map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE activity_categories SET last_used_at = ? WHERE id = ?",
-            params![&now, category_id],
+            "UPDATE activity_categories SET last_used_at = ?, updated_at = ? WHERE id = ?",
+            params![&now, &now, category_id],
         ).map_err(|e| e.to_string())?;
         Ok(affected)
     }

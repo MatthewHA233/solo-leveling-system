@@ -1,10 +1,17 @@
 // ══════════════════════════════════════════════
-// ActivityTagPalette — 活动记录标签库（编辑模式右栏）
-// 树形折叠展开 + 叶子可选 = 画笔；任意节点支持重命名 + 颜色编辑（仅分类）
+// ActivityTagPalette — 活动记录标签库（扁平版 v2）
+//   · 不再树形；tag 一行一个，按 last_used_at 倒序
+//   · 顶部 category 色块条 = 过滤（点击切换；右键 = 编辑分类）
+//   · 每行尾部 「…」按钮 / 右键 = 菜单 [改颜色 / 改名 / 删除]
+//   · 改色作用于整个分类（同分类下所有 tag 共享色）
+//   · 改名拒绝同分类下重名
+//   · 新建 tag：在搜索栏里输完整路径（如 "工作,论文,DPO"），
+//     如果不存在就出现「+ 新建」按钮直接创建（首段必须是已有分类）
 // ══════════════════════════════════════════════
 
-import { useMemo, useState, useCallback, useRef, useEffect } from 'react'
-import { Plus, Trash2, ChevronRight, ChevronDown, Folder, Tag as TagIcon, X, Pencil, Check, Search } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
+import { Check, MoreHorizontal, Palette, Pencil, Plus, Search, Tag as TagIcon, Trash2, X } from 'lucide-react'
 import type { ActivityCategory, ActivityTag, ActivityPalette } from '../types'
 import {
   addActivityCategory, deleteActivityCategory, updateActivityCategory,
@@ -21,432 +28,592 @@ interface Props {
   onPaletteChange: () => void
 }
 
-interface PathNode {
-  segment: string
-  children: Map<string, PathNode>
-  tag?: ActivityTag       // 仅叶子节点持有
-  fullPath: string        // 当前累计路径
-  depth: number
-}
-
 const COLOR_PALETTE = [
   '#22C55E', '#38BDF8', '#F97316', '#E879F9', '#FACC15', '#14B8A6',
   '#FB7185', '#A78BFA', '#84CC16', '#60A5FA', '#F472B6', '#2DD4BF',
 ] as const
 
-// 搜索时复用的稳定空集,避免每次渲染都新建 Set 触发下游 memo 失效
-const EMPTY_SET: ReadonlySet<string> = new Set()
+// 一键初始化的默认分类 + 标签（偏向通用，编程作为特色保留）
+const DEFAULT_PALETTE: ReadonlyArray<{ name: string; color: string; tags: ReadonlyArray<string> }> = [
+  { name: '工作', color: '#38BDF8', tags: ['会议', '写文档', '日报周报', '沟通协调'] },
+  { name: '学习', color: '#22C55E', tags: ['看书', '看视频课', '做笔记', '复盘'] },
+  { name: '编程', color: '#A78BFA', tags: ['写代码', '调试', '看文档', '设计架构'] },
+  { name: '生活', color: '#F97316', tags: ['做饭', '吃饭', '洗漱', '采购', '通勤'] },
+  { name: '运动健康', color: '#14B8A6', tags: ['跑步', '健身', '散步', '冥想'] },
+  { name: '休息娱乐', color: '#FB7185', tags: ['睡觉', '看视频', '玩游戏', '刷手机'] },
+]
 
-function buildTree(category: ActivityCategory, tags: ActivityTag[]): PathNode {
-  const root: PathNode = {
-    segment: category.name,
-    children: new Map(),
-    fullPath: category.name,
-    depth: 1,
-  }
-  for (const tag of tags) {
-    if (tag.categoryId !== category.id) continue
-    const segments = tag.fullPath.split(',')
-    if (segments[0] !== category.name) continue
-    let node = root
-    for (let i = 1; i < segments.length; i++) {
-      const seg = segments[i]
-      let child = node.children.get(seg)
-      if (!child) {
-        child = {
-          segment: seg,
-          children: new Map(),
-          fullPath: segments.slice(0, i + 1).join(','),
-          depth: i + 1,
-        }
-        node.children.set(seg, child)
-      }
-      node = child
-    }
-    node.tag = tag
-  }
-  return root
-}
+type TagMenu = { tag: ActivityTag; x: number; y: number; mode: 'menu' | 'color' }
 
 export default function ActivityTagPalette({
   palette, selectedTagId, onSelectTag, onPaletteChange,
 }: Props) {
-  // 反向状态：默认全部展开，只记录用户主动折叠的路径
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  const [addingCat, setAddingCat] = useState(false)
-  const [newCatName, setNewCatName] = useState('')
-  const [newCatColor, setNewCatColor] = useState<string>(COLOR_PALETTE[0])
-  const [addingTagFor, setAddingTagFor] = useState<{ categoryId: number; parentPath: string } | null>(null)
-  const [newTagSegment, setNewTagSegment] = useState('')
-  // 编辑某个节点 / 分类（旧路径作为 key）
-  const [editingPath, setEditingPath] = useState<{ categoryId: number; fullPath: string; isCategory: boolean } | null>(null)
-  const [editingValue, setEditingValue] = useState('')
-  // 搜索过滤：query 命中 segment / category 名时,保留节点 + 祖先链;搜索时强制展开
   const [searchQuery, setSearchQuery] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState<number | null>(null)
+  // 新建标签模式：复用 searchQuery 作为输入；下面的 tag 列表作为模糊匹配提示
+  const [addMode, setAddMode] = useState(false)
+  // 行内重命名（只改末段）
+  const [editingTagId, setEditingTagId] = useState<number | null>(null)
+  const [editingTagSeg, setEditingTagSeg] = useState('')
+  // 右键 / "…" 菜单
+  const [tagMenu, setTagMenu] = useState<TagMenu | null>(null)
+  // 分类编辑（右键 chip 触发）
+  const [editingCatId, setEditingCatId] = useState<number | null>(null)
+  const [editingCatName, setEditingCatName] = useState('')
+  const [editingCatColor, setEditingCatColor] = useState<string>(COLOR_PALETTE[0])
 
-  const trees = useMemo(() => {
-    const sorted = [...palette.categories].sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt))
-    return sorted.map((cat) => ({ category: cat, root: buildTree(cat, palette.tags) }))
-  }, [palette])
+  const catById = useMemo(() => new Map(palette.categories.map((c) => [c.id, c])), [palette.categories])
+  const catByName = useMemo(() => new Map(palette.categories.map((c) => [c.name, c])), [palette.categories])
 
-  const query = searchQuery.trim().toLowerCase()
-  const isSearching = query.length > 0
+  const query = searchQuery.trim()
+  const queryLower = query.toLowerCase()
 
-  const visibleTrees = useMemo(() => {
-    if (!isSearching) return trees
-    function filterSubtree(node: PathNode): PathNode | null {
-      if (node.segment.toLowerCase().includes(query)) return node
-      const kids = new Map<string, PathNode>()
-      for (const [k, child] of node.children) {
-        const f = filterSubtree(child)
-        if (f) kids.set(k, f)
-      }
-      if (kids.size === 0) return null
-      return { ...node, children: kids }
+  const visibleTags = useMemo(() => {
+    let arr = [...palette.tags]
+    if (categoryFilter != null) arr = arr.filter((t) => t.categoryId === categoryFilter)
+    if (!queryLower) {
+      return arr.sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt))
     }
-    return trees
-      .map(({ category, root }) => {
-        if (category.name.toLowerCase().includes(query)) return { category, root }
-        const filtered = filterSubtree(root)
-        return filtered ? { category, root: filtered } : null
-      })
-      .filter((x): x is { category: ActivityCategory; root: PathNode } => x !== null)
-  }, [trees, isSearching, query])
+    // 模糊匹配 + 相关度排序：
+    //   100 精确等于 query        80 query 是某段       60 子串
+    //   40 分类名匹配（路径本身不含）    其它丢弃
+    const scored = arr.map((t) => {
+      const path = t.fullPath.toLowerCase()
+      const cat = catById.get(t.categoryId)
+      const catName = (cat?.name ?? '').toLowerCase()
+      let score = 0
+      if (path === queryLower) score = 100
+      else if (path.split(',').some((s) => s.trim() === queryLower)) score = 80
+      else if (path.includes(queryLower)) score = 60
+      else if (catName.includes(queryLower)) score = 40
+      return { tag: t, score }
+    }).filter((s) => s.score > 0)
+    scored.sort((a, b) => b.score - a.score
+      || b.tag.lastUsedAt.localeCompare(a.tag.lastUsedAt))
+    return scored.map((s) => s.tag)
+  }, [palette.tags, categoryFilter, queryLower, catById])
 
-  // 搜索时强制展开:把已收起的路径暂时忽略,让命中链路全部可见
-  const effectiveCollapsed = isSearching ? EMPTY_SET : collapsed
 
-  const toggle = useCallback((path: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
+  const closeAllMenus = useCallback(() => setTagMenu(null), [])
+
+  // 点空白关闭菜单
+  useEffect(() => {
+    if (tagMenu == null) return
+    const onDown = () => setTagMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTagMenu(null) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [tagMenu])
+
+  // ── tag 改名（允许改整条 full_path，包括前面的分类段） ──
+  const startRenameTag = useCallback((tag: ActivityTag) => {
+    onSelectTag(null)
+    setEditingTagId(tag.id)
+    setEditingTagSeg(tag.fullPath)
+    closeAllMenus()
+  }, [onSelectTag, closeAllMenus])
+
+  const cancelRename = useCallback(() => {
+    setEditingTagId(null)
+    setEditingTagSeg('')
   }, [])
 
-  const expandPath = useCallback((path: string) => {
-    setCollapsed((prev) => {
-      if (!prev.has(path)) return prev
-      const next = new Set(prev)
-      next.delete(path)
-      return next
-    })
-  }, [])
-
-  // 任何右栏管理动作（编辑/添加/删除/改色/启动新建）都先清除画笔高亮
-  const clearSelection = useCallback(() => onSelectTag(null), [onSelectTag])
-
-  const startAddTag = useCallback((categoryId: number, parentPath: string) => {
-    clearSelection()
-    setAddingTagFor({ categoryId, parentPath })
-    setNewTagSegment('')
-    expandPath(parentPath)
-  }, [expandPath, clearSelection])
-
-  const cancelAddTag = useCallback(() => {
-    setAddingTagFor(null)
-    setNewTagSegment('')
-  }, [])
-
-  const startAddCategory = useCallback(() => {
-    clearSelection()
-    setAddingCat(true)
-  }, [clearSelection])
-
-  const handleAddCategory = useCallback(async () => {
-    const name = newCatName.trim()
-    if (!name) return
-    try {
-      await addActivityCategory(name, newCatColor)
-      setNewCatName('')
-      setAddingCat(false)
-      clearSelection()
-      onPaletteChange()
-    } catch (e) {
-      alert(`添加分类失败: ${e}`)
-    }
-  }, [newCatName, newCatColor, onPaletteChange, clearSelection])
-
-  const handleDeleteCategory = useCallback(async (id: number, name: string) => {
-    clearSelection()
-    if (!window.confirm(`删除分类「${name}」及其所有标签？已涂的时间块也会一并清除。`)) return
-    try {
-      await deleteActivityCategory(id)
-      onPaletteChange()
-    } catch (e) {
-      alert(`删除失败: ${e}`)
-    }
-  }, [onPaletteChange, clearSelection])
-
-  const handleAddTag = useCallback(async () => {
-    if (!addingTagFor) return
-    const seg = newTagSegment.trim()
-    if (!seg) return
-    if (seg.includes(',')) {
-      alert('段名不能包含逗号')
+  const confirmRenameTag = useCallback(async (tag: ActivityTag) => {
+    const v = editingTagSeg.trim().replace(/^,+|,+$/g, '')
+    if (!v) return
+    if (v === tag.fullPath) { cancelRename(); return }
+    const segs = v.split(',').map((s) => s.trim()).filter(Boolean)
+    if (segs.length < 2) { alert('路径至少要 2 段（分类名 + 子段）'); return }
+    // 首段必须是已有分类
+    const newCat = catByName.get(segs[0])
+    if (!newCat) {
+      alert(`首段「${segs[0]}」不是已有分类。可用分类：${[...catByName.keys()].join(' / ')}`)
       return
     }
-    const fullPath = `${addingTagFor.parentPath},${seg}`
+    const newFullPath = segs.join(',')
+    // 同分类下查重（前端先拦一道，后端也会查）
+    const dup = palette.tags.some((t) => t.id !== tag.id
+      && t.categoryId === newCat.id
+      && t.fullPath === newFullPath)
+    if (dup) {
+      alert(`已存在同名标签「${newFullPath}」`)
+      return
+    }
     try {
-      await addActivityTag(addingTagFor.categoryId, fullPath)
-      setNewTagSegment('')
-      setCollapsed((prev) => {
-        if (!prev.has(addingTagFor.parentPath) && !prev.has(fullPath)) return prev
-        const next = new Set(prev)
-        next.delete(addingTagFor.parentPath)
-        next.delete(fullPath)
-        return next
-      })
-      setAddingTagFor(null)
-      clearSelection()
+      await renameActivityPath(tag.id, newFullPath)
+      cancelRename()
       onPaletteChange()
     } catch (e) {
-      alert(`添加标签失败: ${e}`)
+      alert(`改名失败: ${e}`)
     }
-  }, [addingTagFor, newTagSegment, onPaletteChange, clearSelection])
+  }, [editingTagSeg, palette.tags, catByName, cancelRename, onPaletteChange])
 
+  // ── tag 删除 ──
   const handleDeleteTag = useCallback(async (tag: ActivityTag) => {
-    clearSelection()
-    if (!window.confirm(`删除标签「${tag.fullPath}」？已涂的时间块会一并清除。`)) return
+    closeAllMenus()
+    if (!window.confirm(`确定删除标签「${tag.fullPath}」？\n已涂的时间块会一并清除。`)) return
+    onSelectTag(null)
     try {
       await deleteActivityTag(tag.id)
       onPaletteChange()
     } catch (e) {
       alert(`删除失败: ${e}`)
     }
-  }, [onPaletteChange, clearSelection])
+  }, [onSelectTag, onPaletteChange, closeAllMenus])
 
-  const startEdit = useCallback((categoryId: number, fullPath: string, currentSegment: string, isCategory: boolean) => {
-    clearSelection()
-    setEditingPath({ categoryId, fullPath, isCategory })
-    setEditingValue(currentSegment)
-  }, [clearSelection])
-
-  const cancelEdit = useCallback(() => {
-    setEditingPath(null)
-    setEditingValue('')
-  }, [])
-
-  const handleConfirmEdit = useCallback(async () => {
-    if (!editingPath) return
-    const v = editingValue.trim()
-    if (!v) return
-    if (v.includes(',')) {
-      alert('段名不能包含逗号')
-      return
-    }
+  // ── 通过 tag 菜单改分类颜色 ──
+  const applyCategoryColor = useCallback(async (catId: number, color: string) => {
     try {
-      if (editingPath.isCategory) {
-        await updateActivityCategory(editingPath.categoryId, { name: v })
-      } else {
-        await renameActivityPath(editingPath.categoryId, editingPath.fullPath, v)
-      }
-      setEditingPath(null)
-      setEditingValue('')
-      clearSelection()
-      onPaletteChange()
-    } catch (e) {
-      alert(`重命名失败: ${e}`)
-    }
-  }, [editingPath, editingValue, onPaletteChange, clearSelection])
-
-  const handleChangeCategoryColor = useCallback(async (categoryId: number, color: string) => {
-    clearSelection()
-    try {
-      await updateActivityCategory(categoryId, { color })
+      await updateActivityCategory(catId, { color })
+      closeAllMenus()
       onPaletteChange()
     } catch (e) {
       alert(`改颜色失败: ${e}`)
     }
-  }, [onPaletteChange, clearSelection])
+  }, [closeAllMenus, onPaletteChange])
+
+  // ── 一键初始化默认分类 + 常用标签（空状态时使用） ──
+  const [seeding, setSeeding] = useState(false)
+  const handleSeedDefaults = useCallback(async () => {
+    if (seeding) return
+    setSeeding(true)
+    try {
+      for (const c of DEFAULT_PALETTE) {
+        const cat = await addActivityCategory(c.name, c.color)
+        for (const t of c.tags) {
+          await addActivityTag(cat.id, `${c.name},${t}`)
+        }
+      }
+      onPaletteChange()
+    } catch (e) {
+      alert(`初始化默认分类失败：${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setSeeding(false)
+    }
+  }, [seeding, onPaletteChange])
+
+  // ── 显式新建模式：「+」按钮开/关 ──
+  // 新建模式下复用 searchQuery 作为新标签路径输入；同一输入框，下面 tag 列表
+  // 仍按 searchQuery 模糊过滤，方便参考已有标签起名（点 tag 会回填）
+  const enterAddMode = useCallback(() => {
+    onSelectTag(null)
+    setAddMode(true)
+    setSearchQuery('')
+  }, [onSelectTag])
+
+  const exitAddMode = useCallback(() => {
+    setAddMode(false)
+    setSearchQuery('')
+  }, [])
+
+  const handleCreateTag = useCallback(async () => {
+    const raw = searchQuery.trim().replace(/^,+|,+$/g, '')
+    if (!raw) return
+    const segs = raw.split(',').map((s) => s.trim()).filter(Boolean)
+    if (segs.length < 2) {
+      alert('新标签格式：分类名,子段[,子段...]（如 "工作,论文,DPO"）')
+      return
+    }
+    const cat = catByName.get(segs[0])
+    if (!cat) {
+      alert(`首段「${segs[0]}」不是已有分类。可用分类：${[...catByName.keys()].join(' / ')}`)
+      return
+    }
+    const fullPath = segs.join(',')
+    if (palette.tags.some((t) => t.categoryId === cat.id && t.fullPath === fullPath)) {
+      alert(`已存在同名标签「${fullPath}」`)
+      return
+    }
+    try {
+      await addActivityTag(cat.id, fullPath)
+      exitAddMode()
+      onPaletteChange()
+    } catch (e) {
+      alert(`创建失败: ${e}`)
+    }
+  }, [searchQuery, catByName, palette.tags, onPaletteChange, exitAddMode])
+
+  // ── 分类管理 ──
+  const startEditCategory = useCallback((cat: ActivityCategory) => {
+    onSelectTag(null)
+    setEditingCatId(cat.id)
+    setEditingCatName(cat.name)
+    setEditingCatColor(cat.color)
+  }, [onSelectTag])
+
+  const cancelEditCategory = useCallback(() => {
+    setEditingCatId(null)
+    setEditingCatName('')
+  }, [])
+
+  const handleSaveCategory = useCallback(async () => {
+    if (editingCatId == null) return
+    const cat = catById.get(editingCatId)
+    if (!cat) return
+    const newName = editingCatName.trim()
+    if (!newName) return
+    // 同名分类查重
+    if (newName !== cat.name && palette.categories.some((c) => c.id !== cat.id && c.name === newName)) {
+      alert(`已存在同名分类「${newName}」`)
+      return
+    }
+    const patch: { name?: string; color?: string } = {}
+    if (newName !== cat.name) patch.name = newName
+    if (editingCatColor !== cat.color) patch.color = editingCatColor
+    if (Object.keys(patch).length === 0) {
+      cancelEditCategory()
+      return
+    }
+    try {
+      await updateActivityCategory(editingCatId, patch)
+      cancelEditCategory()
+      onPaletteChange()
+    } catch (e) {
+      alert(`改分类失败: ${e}`)
+    }
+  }, [editingCatId, editingCatName, editingCatColor, catById, palette.categories, onPaletteChange, cancelEditCategory])
+
+  const handleDeleteCategory = useCallback(async (cat: ActivityCategory) => {
+    if (!window.confirm(`确定删除分类「${cat.name}」？\n它下面所有标签和已涂时间块都会被一起清掉。`)) return
+    onSelectTag(null)
+    try {
+      await deleteActivityCategory(cat.id)
+      if (categoryFilter === cat.id) setCategoryFilter(null)
+      cancelEditCategory()
+      onPaletteChange()
+    } catch (e) {
+      alert(`删除失败: ${e}`)
+    }
+  }, [onSelectTag, categoryFilter, cancelEditCategory, onPaletteChange])
 
   return (
     <div style={{
-      height: '100%', position: 'relative',
+      height: '100%',
+      position: 'relative',
       padding: '4px 4px',
       fontFamily: theme.fontBody,
     }}>
       <HudFrame
-        color={theme.expGreen}
-        accent={theme.warningOrange}
-        topLabel="ACTIVITY · PALETTE"
+        topLabel="ACTIVITY · 标签库"
         showNotchTop
         showNotchBottom={false}
-        notchWidth={84}
+        notchWidth={112}
         notchDepth={7}
         cornerSize={16}
       />
 
       <div style={{
-        height: '100%', overflow: 'auto',
-        display: 'flex', flexDirection: 'column',
+        height: '100%',
+        overflow: 'auto',
+        display: 'flex',
+        flexDirection: 'column',
         padding: '24px 8px 8px 8px',
         gap: 6,
       }}>
-        {/* 顶部：搜索框 + 右侧小图标按钮"新建分类" */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{
-            flex: 1, minWidth: 0,
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '5px 9px',
-            border: `1px solid ${theme.hudFrameSoft}`,
-            background: 'rgba(34,197,94,0.04)',
-            clipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
-            WebkitClipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
-          }}>
-            <Search size={11} style={{ color: theme.textPrimary, flexShrink: 0 }} />
-            <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索分类、标签..."
-              style={{
-                flex: 1, background: 'transparent', border: 'none',
-                color: theme.textPrimary, fontFamily: theme.fontBody,
-                fontSize: 12, outline: 'none', minWidth: 0,
-              }}
-            />
-            {searchQuery && (
-              <Tooltip content="清空">
-                <button
-                  onClick={() => setSearchQuery('')}
-                  aria-label="清空搜索"
-                  style={{
-                    flexShrink: 0,
-                    width: 16, height: 16,
-                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    borderRadius: '50%',
-                    background: `${theme.textMuted}28`,
-                    border: 'none',
-                    color: theme.textPrimary,
-                    cursor: 'pointer',
-                    padding: 0,
-                  }}
-                >
-                  <X size={10} />
-                </button>
-              </Tooltip>
-            )}
-          </div>
-          <Tooltip content={addingCat ? '收起新建分类' : '新建分类'}>
+        {/* 搜索栏 + "+" 按钮（左侧）= 新建模式入口；同一个输入框两种用途 */}
+        <div style={{ display: 'flex', alignItems: 'stretch', gap: 4 }}>
+          <Tooltip content={addMode ? '取消新建' : '新建标签'}>
             <button
-              onClick={() => { if (addingCat) { setAddingCat(false); setNewCatName('') } else startAddCategory() }}
-              aria-label="新建分类"
+              type="button"
+              onClick={addMode ? exitAddMode : enterAddMode}
               style={{
-                flexShrink: 0,
-                width: 28, height: 28,
                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                background: addingCat
-                  ? `${theme.expGreen}28`
-                  : `${theme.expGreen}10`,
-                border: `1px solid ${theme.expGreen}${addingCat ? '88' : '55'}`,
-                color: theme.expGreen,
+                width: 28, flexShrink: 0,
+                background: addMode ? `${theme.electricBlue}1A` : 'rgba(0,229,255,0.045)',
+                border: `1px solid ${addMode ? theme.electricBlue + '88' : theme.hudFrameSoft}`,
+                color: addMode ? theme.electricBlue : theme.textPrimary,
                 cursor: 'pointer',
-                clipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
-                WebkitClipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
-                textShadow: addingCat ? `0 0 5px ${theme.expGreen}` : undefined,
-                transition: 'background 0.15s, border-color 0.15s',
               }}
             >
-              <Plus size={13} />
+              {addMode ? <X size={12} /> : <Plus size={12} />}
             </button>
           </Tooltip>
+          <SearchBox
+            query={searchQuery}
+            onChange={setSearchQuery}
+            addMode={addMode}
+            onSubmitAdd={handleCreateTag}
+            onCancelAdd={exitAddMode}
+          />
         </div>
 
-        {/* 展开后的新建分类输入面板（搜索框下方） */}
-        {addingCat && (
-          <div style={{
-            border: `1px solid ${theme.expGreen}66`,
-            background: 'rgba(34,197,94,0.06)',
-            padding: '8px',
-            display: 'flex', flexDirection: 'column', gap: 6,
-          }}>
-            <input
-              autoFocus
-              value={newCatName}
-              onChange={(e) => setNewCatName(e.target.value)}
-              placeholder="分类名（如 工作、学习）"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleAddCategory()
-                else if (e.key === 'Escape') { setAddingCat(false); setNewCatName('') }
+        {/* 分类色块条：点击 = 过滤；右键 = 编辑分类 */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap',
+          padding: '2px 0',
+        }}>
+          {palette.categories.map((cat) => (
+            <CategoryChip
+              key={cat.id}
+              cat={cat}
+              active={categoryFilter === cat.id}
+              onToggle={() => setCategoryFilter((prev) => prev === cat.id ? null : cat.id)}
+              onEdit={() => startEditCategory(cat)}
+            />
+          ))}
+          {categoryFilter != null && (
+            <button
+              type="button"
+              onClick={() => setCategoryFilter(null)}
+              style={{
+                marginLeft: 'auto',
+                fontFamily: theme.fontMono,
+                fontSize: 9.5,
+                color: theme.textMuted,
+                background: 'transparent', border: 'none',
+                cursor: 'pointer',
+                padding: '2px 4px',
               }}
-              style={inputStyle}
+            >
+              清除筛选 ✕
+            </button>
+          )}
+        </div>
+
+        {/* 分类编辑（右键 chip 触发） */}
+        {editingCatId != null && (() => {
+          const cat = catById.get(editingCatId)
+          if (!cat) return null
+          return (
+            <CategoryEditor
+              name={editingCatName}
+              color={editingCatColor}
+              onNameChange={setEditingCatName}
+              onColorChange={setEditingCatColor}
+              onSave={handleSaveCategory}
+              onCancel={cancelEditCategory}
+              onDelete={() => handleDeleteCategory(cat)}
+              deletable
             />
-            <ColorSwatchRow
-              colors={COLOR_PALETTE as unknown as readonly string[]}
-              value={newCatColor}
-              onChange={setNewCatColor}
-            />
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button
-                onClick={handleAddCategory}
-                disabled={!newCatName.trim()}
-                style={{
-                  flex: 1,
-                  background: theme.expGreen,
-                  color: '#071216',
-                  border: 'none', padding: '4px 0',
-                  cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                  opacity: newCatName.trim() ? 1 : 0.4,
-                }}
-              >确定</button>
-              <button
-                onClick={() => { setAddingCat(false); setNewCatName('') }}
-                style={{
-                  background: 'transparent',
-                  color: theme.textSecondary,
-                  border: `1px solid ${theme.glassBorder}`,
-                  padding: '4px 8px',
-                  cursor: 'pointer', fontSize: 11,
-                }}
-              >取消</button>
-            </div>
+          )
+        })()}
+
+        {/* 列表标题 */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          padding: '4px 2px 2px',
+          color: theme.textMuted,
+          fontFamily: theme.fontMono,
+          fontSize: 9.5,
+          letterSpacing: 1.5,
+          fontWeight: 700,
+        }}>
+          <TagIcon size={10} />
+          <span>TAGS · {visibleTags.length}</span>
+          <span style={{ opacity: 0.6 }}>· 最近用的在上</span>
+        </div>
+
+        {visibleTags.length === 0 ? (
+          <EmptyHint
+            hasAny={palette.tags.length > 0}
+            hasCategories={palette.categories.length > 0}
+            hasFilter={categoryFilter != null || queryLower.length > 0}
+            seeding={seeding}
+            onSeed={handleSeedDefaults}
+            onEnterAddMode={enterAddMode}
+          />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {visibleTags.map((tag) => {
+              const cat = catById.get(tag.categoryId)
+              const isSelected = selectedTagId === tag.id
+              const isEditing = editingTagId === tag.id
+              return (
+                <TagRow
+                  key={tag.id}
+                  tag={tag}
+                  color={cat?.color ?? theme.textMuted}
+                  selected={isSelected}
+                  editing={isEditing}
+                  editValue={editingTagSeg}
+                  highlight={queryLower}
+                  onClick={() => {
+                    // 新建模式下：点击 tag = 回填路径到输入框（便于基于已有标签起名）
+                    // 普通模式下：点击 tag = 选作画笔
+                    if (addMode) {
+                      setSearchQuery(tag.fullPath)
+                    } else {
+                      onSelectTag(isSelected ? null : tag.id)
+                    }
+                  }}
+                  onConfirmRename={() => confirmRenameTag(tag)}
+                  onCancelRename={cancelRename}
+                  onEditChange={setEditingTagSeg}
+                  onOpenMenu={(x, y) => setTagMenu({ tag, x, y, mode: 'menu' })}
+                />
+              )
+            })}
           </div>
         )}
+      </div>
 
-        {trees.length === 0 && !addingCat && (
-          <div style={{
-            color: theme.textMuted, fontSize: 11, textAlign: 'center',
-            marginTop: 18, lineHeight: 1.6,
-          }}>
-            还没有分类。<br />点右上 + 新建一个开始记录。
-          </div>
+      {/* 右键/… 菜单 */}
+      {tagMenu && (
+        <TagContextMenu
+          menu={tagMenu}
+          categoryName={catById.get(tagMenu.tag.categoryId)?.name ?? ''}
+          currentColor={catById.get(tagMenu.tag.categoryId)?.color ?? theme.textMuted}
+          onPickColor={(c) => applyCategoryColor(tagMenu.tag.categoryId, c)}
+          onSwitchMode={(mode) => setTagMenu({ ...tagMenu, mode })}
+          onRename={() => startRenameTag(tagMenu.tag)}
+          onDelete={() => handleDeleteTag(tagMenu.tag)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── SearchBox（兼新建入口） ──
+function SearchBox({
+  query, onChange, addMode, onSubmitAdd, onCancelAdd,
+}: {
+  query: string
+  onChange: (v: string) => void
+  addMode: boolean
+  onSubmitAdd: () => void
+  onCancelAdd: () => void
+}) {
+  return (
+    <div style={{
+      flex: 1,
+      display: 'flex', alignItems: 'center', gap: 6,
+      padding: '5px 9px',
+      border: addMode
+        ? `1px dashed ${theme.electricBlue}88`
+        : `1px solid ${theme.hudFrameSoft}`,
+      background: addMode
+        ? 'rgba(0,229,255,0.07)'
+        : 'rgba(0,229,255,0.045)',
+    }}>
+      {addMode
+        ? <Plus size={11} style={{ color: theme.electricBlue, flexShrink: 0 }} />
+        : <Search size={11} style={{ color: theme.textPrimary, flexShrink: 0 }} />}
+      <input
+        // 切到 addMode 时让输入框自动 focus
+        key={addMode ? 'add' : 'search'}
+        autoFocus={addMode}
+        value={query}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={addMode ? '新标签完整路径（工作,论文,DPO）' : '搜索...'}
+        onKeyDown={(e) => {
+          if (addMode) {
+            if (e.key === 'Enter') onSubmitAdd()
+            else if (e.key === 'Escape') onCancelAdd()
+          }
+        }}
+        style={{
+          flex: 1, minWidth: 0,
+          background: 'transparent', border: 'none', outline: 'none',
+          color: theme.textPrimary, fontFamily: theme.fontBody, fontSize: 12,
+        }}
+      />
+      {addMode ? (
+        query && (
+          <button
+            type="button"
+            onClick={onSubmitAdd}
+            style={{ ...iconBtnSmall, color: theme.expGreen }}
+            title="新建（Enter）"
+          >
+            <Check size={12} />
+          </button>
+        )
+      ) : (
+        query && (
+          <button
+            onClick={() => onChange('')}
+            aria-label="清空"
+            style={tinyIconBtn}
+          >
+            <X size={10} />
+          </button>
+        )
+      )}
+    </div>
+  )
+}
+
+// ── CategoryChip ──
+function CategoryChip({ cat, active, onToggle, onEdit }: {
+  cat: ActivityCategory
+  active: boolean
+  onToggle: () => void
+  onEdit: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      onContextMenu={(e) => { e.preventDefault(); onEdit() }}
+      title="点击过滤 · 右键编辑分类"
+      style={{
+        ...chipBaseStyle(cat.color),
+        opacity: active ? 1 : 0.78,
+        boxShadow: active ? `0 0 6px ${cat.color}55, inset 0 0 6px ${cat.color}22` : undefined,
+        outline: active ? `1px solid ${cat.color}` : 'none',
+      }}
+    >
+      <span style={{
+        width: 7, height: 7, background: cat.color, flexShrink: 0,
+      }} />
+      <span style={{
+        fontSize: 10.5, color: theme.textPrimary, whiteSpace: 'nowrap',
+      }}>
+        {cat.name}
+      </span>
+    </button>
+  )
+}
+
+function CategoryEditor({
+  name, color, onNameChange, onColorChange, onSave, onCancel, onDelete, deletable,
+}: {
+  name: string; color: string
+  onNameChange: (v: string) => void
+  onColorChange: (v: string) => void
+  onSave: () => void
+  onCancel: () => void
+  onDelete?: () => void
+  deletable?: boolean
+}) {
+  return (
+    <div style={{
+      border: `1px solid ${color}55`,
+      background: `${color}10`,
+      padding: '6px 8px',
+      display: 'flex', flexDirection: 'column', gap: 6,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => onNameChange(e.target.value)}
+          placeholder="分类名"
+          onKeyDown={(e) => { if (e.key === 'Enter') onSave(); else if (e.key === 'Escape') onCancel() }}
+          style={inputStyle}
+        />
+        <button onClick={onSave} style={{ ...iconBtnSmall, color: theme.expGreen }}><Check size={12} /></button>
+        <button onClick={onCancel} style={iconBtnSmall}><X size={12} /></button>
+        {deletable && onDelete && (
+          <button onClick={onDelete} style={{ ...iconBtnSmall, color: theme.dangerRed }} title="删除分类">
+            <Trash2 size={12} />
+          </button>
         )}
-
-        {trees.length > 0 && visibleTrees.length === 0 && (
-          <div style={{
-            color: theme.textMuted, fontSize: 11, textAlign: 'center',
-            marginTop: 18, lineHeight: 1.6,
-          }}>
-            没有匹配「{searchQuery}」的分类或标签
-          </div>
-        )}
-
-        {visibleTrees.map(({ category, root }) => (
-          <CategoryBlock
-            key={category.id}
-            category={category}
-            root={root}
-            collapsed={effectiveCollapsed}
-            onToggle={toggle}
-            selectedTagId={selectedTagId}
-            onSelectTag={onSelectTag}
-            onDeleteCategory={() => handleDeleteCategory(category.id, category.name)}
-            onAddTag={(parentPath) => startAddTag(category.id, parentPath)}
-            onDeleteTag={handleDeleteTag}
-            addingTagFor={addingTagFor}
-            newTagSegment={newTagSegment}
-            setNewTagSegment={setNewTagSegment}
-            onConfirmAddTag={handleAddTag}
-            onCancelAddTag={cancelAddTag}
-            editingPath={editingPath}
-            editingValue={editingValue}
-            setEditingValue={setEditingValue}
-            onStartEdit={startEdit}
-            onCancelEdit={cancelEdit}
-            onConfirmEdit={handleConfirmEdit}
-            onChangeCategoryColor={handleChangeCategoryColor}
-            highlight={isSearching ? query : ''}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+        {COLOR_PALETTE.map((c) => (
+          <button
+            key={c}
+            onClick={() => onColorChange(c)}
+            style={{
+              width: 18, height: 18, background: c,
+              border: `1px solid ${color === c ? theme.textPrimary : 'transparent'}`,
+              cursor: 'pointer',
+            }}
           />
         ))}
       </div>
@@ -454,454 +621,376 @@ export default function ActivityTagPalette({
   )
 }
 
-// ── 分类块 ──
-
-interface SharedNodeHandlers {
-  collapsed: ReadonlySet<string>
-  onToggle: (path: string) => void
-  selectedTagId: number | null
-  onSelectTag: (id: number | null) => void
-  onAddTag: (parentPath: string) => void
-  onDeleteTag: (tag: ActivityTag) => void
-  addingTagFor: { categoryId: number; parentPath: string } | null
-  newTagSegment: string
-  setNewTagSegment: (v: string) => void
-  onConfirmAddTag: () => void
-  onCancelAddTag: () => void
-  editingPath: { categoryId: number; fullPath: string; isCategory: boolean } | null
-  editingValue: string
-  setEditingValue: (v: string) => void
-  onStartEdit: (categoryId: number, fullPath: string, currentSegment: string, isCategory: boolean) => void
-  onCancelEdit: () => void
-  onConfirmEdit: () => void
-  /** 搜索关键字（小写）。非空时会在 segment 上做黄色高亮 */
-  highlight: string
+// ── TagRow ──
+function TagRow({
+  tag, color, selected, editing, editValue, highlight,
+  onClick, onConfirmRename, onCancelRename, onEditChange, onOpenMenu,
+}: {
+  tag: ActivityTag; color: string; selected: boolean; editing: boolean
+  editValue: string; highlight: string
+  onClick: () => void
+  onConfirmRename: () => void
+  onCancelRename: () => void
+  onEditChange: (v: string) => void
+  onOpenMenu: (x: number, y: number) => void
+}) {
+  const [hover, setHover] = useState(false)
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      onClick={editing ? undefined : onClick}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        onOpenMenu(e.clientX, e.clientY)
+      }}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '4px 6px',
+        background: selected ? `${color}22` : (hover ? 'rgba(255,255,255,0.03)' : 'transparent'),
+        border: `1px solid ${selected ? color : 'transparent'}`,
+        boxShadow: selected ? `0 0 6px ${color}55, inset 0 0 6px ${color}22` : undefined,
+        cursor: editing ? 'default' : 'pointer',
+      }}
+    >
+      <span style={{
+        width: 8, height: 8, flexShrink: 0,
+        background: color,
+      }} />
+      {editing ? (
+        <>
+          <input
+            autoFocus
+            value={editValue}
+            onChange={(e) => onEditChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onConfirmRename()
+              else if (e.key === 'Escape') onCancelRename()
+            }}
+            onClick={(e) => e.stopPropagation()}
+            placeholder="完整路径，如 工作,论文,DPO"
+            style={{ ...inputStyle, flex: 1, padding: '2px 4px' }}
+          />
+          <button onClick={(e) => { e.stopPropagation(); onConfirmRename() }} style={{ ...iconBtnSmall, color: theme.expGreen }}>
+            <Check size={11} />
+          </button>
+          <button onClick={(e) => { e.stopPropagation(); onCancelRename() }} style={iconBtnSmall}>
+            <X size={11} />
+          </button>
+        </>
+      ) : (
+        <>
+          <span style={{
+            flex: 1, minWidth: 0,
+            fontSize: 11.5, color: theme.textPrimary,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            fontWeight: selected ? 700 : 500,
+          }}>
+            <Highlight text={tag.fullPath} keyword={highlight} />
+          </span>
+          {/* "…" 按钮：hover 时显示 */}
+          {(hover || selected) && (
+            <Tooltip content="更多操作">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                  onOpenMenu(rect.right, rect.bottom)
+                }}
+                style={iconBtnSmall}
+              >
+                <MoreHorizontal size={12} />
+              </button>
+            </Tooltip>
+          )}
+        </>
+      )}
+    </div>
+  )
 }
 
-function CategoryBlock({
-  category, root, onDeleteCategory, onChangeCategoryColor, ...rest
+// ── 右键 / "…" 菜单（支持二级"改色"色板） ──
+function TagContextMenu({
+  menu, categoryName, currentColor, onPickColor, onSwitchMode, onRename, onDelete,
 }: {
-  category: ActivityCategory
-  root: PathNode
-  onDeleteCategory: () => void
-  onChangeCategoryColor: (categoryId: number, color: string) => void
-} & SharedNodeHandlers) {
-  const isOpen = !rest.collapsed.has(root.fullPath)
-  const isEditingCategory = rest.editingPath?.isCategory && rest.editingPath?.categoryId === category.id
-  const [showColorMenu, setShowColorMenu] = useState(false)
-  const colorBtnRef = useRef<HTMLButtonElement | null>(null)
-
-  // 关菜单：点击外面
+  menu: TagMenu
+  categoryName: string
+  currentColor: string
+  onPickColor: (color: string) => void
+  onSwitchMode: (mode: 'menu' | 'color') => void
+  onRename: () => void
+  onDelete: () => void
+}) {
+  // 防止菜单超出视口右下边界
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState({ x: menu.x, y: menu.y })
   useEffect(() => {
-    if (!showColorMenu) return
-    const onDoc = (e: MouseEvent) => {
-      if (!colorBtnRef.current?.contains(e.target as Node)) setShowColorMenu(false)
-    }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [showColorMenu])
+    if (!ref.current) return
+    const rect = ref.current.getBoundingClientRect()
+    const vw = window.innerWidth, vh = window.innerHeight
+    let x = menu.x, y = menu.y
+    if (x + rect.width > vw - 4) x = vw - rect.width - 4
+    if (y + rect.height > vh - 4) y = vh - rect.height - 4
+    setPos({ x, y })
+  }, [menu.x, menu.y, menu.mode])
 
   return (
-    <div style={{
-      border: `1px solid ${category.color}55`,
-      background: `${category.color}0D`,
-      padding: '4px 6px',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-        <button
-          onClick={() => rest.onToggle(root.fullPath)}
-          style={chevronBtn}
-        >
-          {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        </button>
-
-        {/* 颜色按钮 = 文件夹图标 */}
-        <button
-          ref={colorBtnRef}
-          onClick={(e) => { e.stopPropagation(); setShowColorMenu((v) => !v) }}
-          style={{
-            display: 'flex', alignItems: 'center',
-            background: 'transparent', border: 'none',
-            cursor: 'pointer', padding: 0,
-            position: 'relative',
-          }}
-          title="改颜色"
-        >
-          <Folder size={12} color={category.color} />
-          {showColorMenu && (
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                position: 'absolute', top: '100%', left: 0,
-                marginTop: 4, zIndex: 50,
-                background: 'rgba(2,8,20,0.96)',
-                border: `1px solid ${theme.glassBorder}`,
-                padding: 6,
-                boxShadow: '0 6px 20px rgba(0,0,0,0.5)',
-              }}
-            >
-              <ColorSwatchRow
-                colors={COLOR_PALETTE as unknown as readonly string[]}
-                value={category.color}
-                onChange={(c) => { onChangeCategoryColor(category.id, c); setShowColorMenu(false) }}
-              />
-            </div>
-          )}
-        </button>
-
-        {isEditingCategory ? (
-          <InlineRenameInput
-            value={rest.editingValue}
-            onChange={rest.setEditingValue}
-            onConfirm={rest.onConfirmEdit}
-            onCancel={rest.onCancelEdit}
-          />
-        ) : (
-          <span style={{
-            fontSize: 12, fontWeight: 600, color: theme.textPrimary,
-            flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    <div
+      ref={ref}
+      onMouseDown={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+      style={{
+        position: 'fixed',
+        left: pos.x, top: pos.y,
+        zIndex: 9999,
+        minWidth: 156,
+        background: 'rgba(8,14,24,0.96)',
+        border: `1px solid ${theme.hudFrameSoft}`,
+        boxShadow: '0 6px 22px rgba(0,0,0,0.55)',
+        padding: 4,
+        fontFamily: theme.fontBody,
+        fontSize: 11.5,
+        color: theme.textPrimary,
+      }}
+    >
+      {menu.mode === 'menu' ? (
+        <>
+          <MenuItem icon={<Palette size={12} />} label={`改颜色 (${categoryName})`} onClick={() => onSwitchMode('color')} />
+          <MenuItem icon={<Pencil size={12} />} label="更改标签名" onClick={onRename} />
+          <MenuItem icon={<Trash2 size={12} />} label="删除标签" onClick={onDelete} danger />
+        </>
+      ) : (
+        <div>
+          <div style={{
+            padding: '4px 6px',
+            color: theme.textMuted,
+            fontSize: 10,
+            fontFamily: theme.fontMono,
+            letterSpacing: 1.2,
           }}>
-            <Highlight text={category.name} keyword={rest.highlight} />
-          </span>
-        )}
-
-        {!isEditingCategory && (
-          <>
-            <Tooltip content="重命名">
-            <button onClick={(e) => { e.stopPropagation(); rest.onStartEdit(category.id, root.fullPath, category.name, true) }} style={iconBtn}>
-              <Pencil size={10} />
-            </button>
-            </Tooltip>
-            <Tooltip content="添加子标签">
-            <button onClick={(e) => { e.stopPropagation(); rest.onAddTag(root.fullPath) }} style={iconBtn}>
-              <Plus size={11} />
-            </button>
-            </Tooltip>
-            <Tooltip content="删除分类">
-            <button onClick={onDeleteCategory} style={{ ...iconBtn, color: theme.dangerRed }}>
-              <Trash2 size={11} />
-            </button>
-            </Tooltip>
-          </>
-        )}
-      </div>
-
-      {isOpen && (
-        <div style={{ marginTop: 4, paddingLeft: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <TreeChildren
-            node={root}
-            color={category.color}
-            categoryId={category.id}
-            {...rest}
-          />
-          {/* 在分类层加子标签的输入条 */}
-          {rest.addingTagFor && rest.addingTagFor.parentPath === root.fullPath && (
-            <InlineAddTag
-              parentPath={root.fullPath}
-              value={rest.newTagSegment}
-              onChange={rest.setNewTagSegment}
-              onConfirm={rest.onConfirmAddTag}
-              onCancel={rest.onCancelAddTag}
-            />
-          )}
+            分类 {categoryName} · 共享色
+          </div>
+          <div style={{
+            display: 'flex', flexWrap: 'wrap', gap: 4,
+            padding: '4px 6px',
+            maxWidth: 168,
+          }}>
+            {COLOR_PALETTE.map((c) => (
+              <button
+                key={c}
+                onClick={() => onPickColor(c)}
+                style={{
+                  width: 22, height: 22, background: c,
+                  border: `1px solid ${currentColor === c ? theme.textPrimary : 'transparent'}`,
+                  cursor: 'pointer',
+                }}
+              />
+            ))}
+          </div>
+          <MenuItem icon={<X size={12} />} label="返回" onClick={() => onSwitchMode('menu')} />
         </div>
       )}
     </div>
   )
 }
 
-function TreeChildren({
-  node, color, categoryId, ...rest
-}: {
-  node: PathNode
-  color: string
-  categoryId: number
-} & SharedNodeHandlers) {
-  const sortedChildren = useMemo(() => {
-    return [...node.children.values()].sort((a, b) => {
-      // 叶子按 last_used_at 倒序，非叶子按 segment
-      if (a.tag && b.tag) return b.tag.lastUsedAt.localeCompare(a.tag.lastUsedAt)
-      return a.segment.localeCompare(b.segment)
-    })
-  }, [node])
-
+function MenuItem({
+  icon, label, onClick, danger,
+}: { icon: React.ReactNode; label: string; onClick: () => void; danger?: boolean }) {
+  const [hover, setHover] = useState(false)
   return (
-    <>
-      {sortedChildren.map((child) => (
-        <TreeNode
-          key={child.fullPath}
-          node={child}
-          color={color}
-          categoryId={categoryId}
-          {...rest}
-        />
-      ))}
-    </>
-  )
-}
-
-function TreeNode({
-  node, color, categoryId, ...rest
-}: {
-  node: PathNode
-  color: string
-  categoryId: number
-} & SharedNodeHandlers) {
-  const hasChildren = node.children.size > 0
-  const isOpen = !rest.collapsed.has(node.fullPath)
-  const isLeafSelectable = !!node.tag
-  const selected = isLeafSelectable && rest.selectedTagId === node.tag!.id
-  const canAddDeeper = node.depth < 4
-  const isEditingThisNode =
-    !rest.editingPath?.isCategory &&
-    rest.editingPath?.categoryId === categoryId &&
-    rest.editingPath?.fullPath === node.fullPath
-
-  const isAddingHere = rest.addingTagFor?.parentPath === node.fullPath
-
-  return (
-    <div>
-      <div
-        style={{
-          display: 'flex', alignItems: 'center', gap: 3,
-          padding: '3px 4px',
-          background: selected ? `${color}33` : 'transparent',
-          border: `1px solid ${selected ? color : 'transparent'}`,
-          cursor: isLeafSelectable && !isEditingThisNode ? 'pointer' : 'default',
-          boxShadow: selected ? `0 0 8px ${color}55, inset 0 0 6px ${color}22` : undefined,
-        }}
-        onClick={(e) => {
-          e.stopPropagation()
-          if (isEditingThisNode) return
-          if (isLeafSelectable) {
-            rest.onSelectTag(selected ? null : node.tag!.id)
-          }
-        }}
-      >
-        {hasChildren ? (
-          <button
-            onClick={(e) => { e.stopPropagation(); rest.onToggle(node.fullPath) }}
-            style={chevronBtn}
-          >
-            {isOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-          </button>
-        ) : (
-          <span style={{ width: 11, display: 'inline-block' }} />
-        )}
-        <TagIcon size={10} color={color} />
-
-        {isEditingThisNode ? (
-          <InlineRenameInput
-            value={rest.editingValue}
-            onChange={rest.setEditingValue}
-            onConfirm={rest.onConfirmEdit}
-            onCancel={rest.onCancelEdit}
-          />
-        ) : (
-          <span style={{
-            fontSize: 11.5, color: theme.textPrimary,
-            flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            <Highlight text={node.segment} keyword={rest.highlight} />
-          </span>
-        )}
-
-        {!isEditingThisNode && (
-          <>
-            <Tooltip content="重命名">
-            <button onClick={(e) => { e.stopPropagation(); rest.onStartEdit(categoryId, node.fullPath, node.segment, false) }} style={iconBtn}>
-              <Pencil size={10} />
-            </button>
-            </Tooltip>
-            {canAddDeeper && (
-              <Tooltip content="添加更深层标签">
-              <button onClick={(e) => { e.stopPropagation(); rest.onAddTag(node.fullPath) }} style={iconBtn}>
-                <Plus size={10} />
-              </button>
-              </Tooltip>
-            )}
-            {isLeafSelectable && (
-              <Tooltip content="删除标签">
-              <button onClick={(e) => { e.stopPropagation(); rest.onDeleteTag(node.tag!) }} style={{ ...iconBtn, color: theme.dangerRed }}>
-                <Trash2 size={10} />
-              </button>
-              </Tooltip>
-            )}
-          </>
-        )}
-      </div>
-
-      {(hasChildren && isOpen) || isAddingHere ? (
-        <div style={{ marginLeft: 10, borderLeft: `1px dashed ${color}33`, paddingLeft: 4, marginTop: 2 }}>
-          {hasChildren && isOpen && (
-            <TreeChildren
-              node={node}
-              color={color}
-              categoryId={categoryId}
-              {...rest}
-            />
-          )}
-          {isAddingHere && (
-            <InlineAddTag
-              parentPath={node.fullPath}
-              value={rest.newTagSegment}
-              onChange={rest.setNewTagSegment}
-              onConfirm={rest.onConfirmAddTag}
-              onCancel={rest.onCancelAddTag}
-            />
-          )}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-// ── 子组件：内联输入条 ──
-
-function InlineRenameInput({
-  value, onChange, onConfirm, onCancel,
-}: {
-  value: string
-  onChange: (v: string) => void
-  onConfirm: () => void
-  onCancel: () => void
-}) {
-  return (
-    <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }} onClick={(e) => e.stopPropagation()}>
-      <input
-        autoFocus
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') onConfirm()
-          else if (e.key === 'Escape') onCancel()
-        }}
-        style={{ ...inputStyle, padding: '2px 5px', fontSize: 11 }}
-      />
-      <button onClick={onConfirm} style={{ ...iconBtn, color: theme.expGreen }}>
-        <Check size={11} />
-      </button>
-      <button onClick={onCancel} style={iconBtn}>
-        <X size={11} />
-      </button>
-    </span>
-  )
-}
-
-function InlineAddTag({
-  parentPath, value, onChange, onConfirm, onCancel,
-}: {
-  parentPath: string
-  value: string
-  onChange: (v: string) => void
-  onConfirm: () => void
-  onCancel: () => void
-}) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 4,
-      padding: '4px 6px', marginTop: 2,
-      border: `1px dashed ${theme.electricBlue}66`,
-      background: 'rgba(0,229,255,0.06)',
-    }}>
-      <span style={{ fontSize: 10, color: theme.textMuted, whiteSpace: 'nowrap', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {parentPath} /
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        width: '100%',
+        padding: '6px 8px',
+        background: hover ? (danger ? 'rgba(255,68,68,0.12)' : `${theme.electricBlue}14`) : 'transparent',
+        border: 'none',
+        color: danger ? theme.dangerRed : theme.textPrimary,
+        cursor: 'pointer',
+        fontSize: 11.5,
+        textAlign: 'left',
+      }}
+    >
+      <span style={{ color: danger ? theme.dangerRed : theme.textSecondary, display: 'inline-flex' }}>
+        {icon}
       </span>
-      <input
-        autoFocus
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="子标签名"
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') onConfirm()
-          else if (e.key === 'Escape') onCancel()
-        }}
-        style={{ ...inputStyle, flex: 1, padding: '3px 5px', fontSize: 11 }}
-      />
-      <button onClick={onConfirm} style={{ ...iconBtn, color: theme.expGreen }}>
-        <Check size={11} />
-      </button>
-      <button onClick={onCancel} style={iconBtn}>
-        <X size={11} />
-      </button>
-    </div>
+      {label}
+    </button>
   )
 }
 
-// 搜索高亮:把命中片段包成 <mark>。keyword 已统一为小写;原文片段保持原样输出。
 function Highlight({ text, keyword }: { text: string; keyword: string }) {
   if (!keyword) return <>{text}</>
-  const lowerText = text.toLowerCase()
-  const parts: React.ReactNode[] = []
+  const lower = text.toLowerCase()
+  const out: React.ReactNode[] = []
   let cursor = 0
-  let i = lowerText.indexOf(keyword)
-  let n = 0
-  while (i >= 0) {
-    if (i > cursor) parts.push(text.slice(cursor, i))
-    parts.push(
-      <mark
-        key={`m-${n++}`}
-        style={{
-          background: `${theme.warningOrange}40`,
-          color: theme.warningOrange,
-          padding: '0 1px',
-          borderRadius: 2,
-          fontWeight: 700,
-        }}
-      >
-        {text.slice(i, i + keyword.length)}
-      </mark>,
+  let idx = lower.indexOf(keyword)
+  let k = 0
+  while (idx >= 0) {
+    if (idx > cursor) out.push(text.slice(cursor, idx))
+    out.push(
+      <mark key={`m-${k++}`} style={{
+        background: `${theme.electricBlue}40`, color: theme.electricBlue,
+        padding: 0, fontWeight: 800,
+      }}>
+        {text.slice(idx, idx + keyword.length)}
+      </mark>
     )
-    cursor = i + keyword.length
-    i = lowerText.indexOf(keyword, cursor)
+    cursor = idx + keyword.length
+    idx = lower.indexOf(keyword, cursor)
   }
-  if (cursor < text.length) parts.push(text.slice(cursor))
-  return <>{parts}</>
+  if (cursor < text.length) out.push(text.slice(cursor))
+  return <>{out}</>
 }
 
-function ColorSwatchRow({
-  colors, value, onChange,
+function EmptyHint({
+  hasAny, hasCategories, hasFilter, seeding, onSeed, onEnterAddMode,
 }: {
-  colors: readonly string[]
-  value: string
-  onChange: (color: string) => void
+  hasAny: boolean
+  hasCategories: boolean
+  hasFilter: boolean
+  seeding: boolean
+  onSeed: () => void
+  onEnterAddMode: () => void
 }) {
+  if (hasFilter) {
+    return <div style={emptyHintStyle}>没有匹配的标签</div>
+  }
+  if (!hasCategories || !hasAny) {
+    return (
+      <div style={{
+        width: '100%',
+        padding: '52px 8px 28px',
+        fontFamily: theme.fontBody,
+        fontSize: 12,
+        color: theme.textSecondary,
+        lineHeight: 1.9,
+        textAlign: 'center',
+      }}>
+        <div>
+          点击 <InlinePlusButton onClick={onEnterAddMode} /> 按钮添加标签
+        </div>
+        {!hasCategories && (
+          <div style={{ marginTop: 4 }}>
+            或{' '}
+            <InlineAction onClick={onSeed} disabled={seeding}>
+              {seeding ? '载入中…' : '载入预置'}
+            </InlineAction>
+          </div>
+        )}
+      </div>
+    )
+  }
+  return null
+}
+
+// 复用顶栏「+」按钮同款样式（缩小一档以贴合行内）
+function InlinePlusButton({ onClick }: { onClick: () => void }) {
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-      {colors.map((c) => (
-        <button
-          key={c}
-          onClick={() => onChange(c)}
-          style={{
-            width: 18, height: 18,
-            background: c,
-            border: `1.5px solid ${value === c ? theme.textPrimary : 'transparent'}`,
-            cursor: 'pointer',
-            boxShadow: value === c ? `0 0 6px ${c}` : undefined,
-          }}
-        />
-      ))}
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: 22, height: 18,
+        verticalAlign: '-4px',
+        background: 'rgba(0,229,255,0.045)',
+        border: `1px solid ${theme.hudFrameSoft}`,
+        color: theme.textPrimary,
+        cursor: 'pointer',
+        margin: '0 3px',
+      }}
+    >
+      <Plus size={11} />
+    </button>
   )
 }
 
-const iconBtn: React.CSSProperties = {
-  display: 'flex', alignItems: 'center',
-  background: 'transparent', border: 'none',
-  color: theme.textSecondary, cursor: 'pointer', padding: 2,
+function InlineAction({ onClick, disabled, children }: {
+  onClick: () => void
+  disabled?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        display: 'inline',
+        background: 'transparent',
+        border: 'none',
+        padding: 0,
+        margin: 0,
+        font: 'inherit',
+        color: disabled ? theme.textMuted : theme.electricBlue,
+        textDecoration: 'underline',
+        textDecorationStyle: 'dotted',
+        textUnderlineOffset: 3,
+        cursor: disabled ? 'wait' : 'pointer',
+      }}
+    >
+      {children}
+    </button>
+  )
 }
 
-const chevronBtn: React.CSSProperties = {
-  display: 'flex', alignItems: 'center',
-  background: 'transparent', border: 'none',
-  color: theme.textSecondary, cursor: 'pointer', padding: 0,
-}
+// ── 样式常量 ──
 
-const inputStyle: React.CSSProperties = {
+const inputStyle: CSSProperties = {
+  flex: 1, minWidth: 0,
   background: 'rgba(0,0,0,0.4)',
   border: `1px solid ${theme.glassBorder}`,
   color: theme.textPrimary,
-  padding: '5px 7px',
-  fontSize: 12,
+  padding: '3px 6px',
+  fontSize: 11.5,
+  fontFamily: theme.fontBody,
   outline: 'none',
 }
+
+const iconBtnSmall: CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  background: 'transparent', border: 'none',
+  color: theme.textSecondary,
+  cursor: 'pointer',
+  padding: 2, flexShrink: 0,
+}
+
+const tinyIconBtn: CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  width: 16, height: 16, padding: 0,
+  borderRadius: '50%',
+  background: `${theme.textMuted}28`,
+  border: 'none',
+  color: theme.textPrimary,
+  cursor: 'pointer',
+  flexShrink: 0,
+}
+
+function chipBaseStyle(color: string): CSSProperties {
+  return {
+    display: 'inline-flex', alignItems: 'center', gap: 4,
+    padding: '2px 6px',
+    background: `${color}1A`,
+    border: `1px solid ${color}66`,
+    color: theme.textPrimary,
+    fontFamily: theme.fontBody,
+    fontSize: 10.5,
+    cursor: 'pointer',
+  }
+}
+
+const emptyHintStyle: CSSProperties = {
+  color: theme.textMuted,
+  fontSize: 11,
+  textAlign: 'center',
+  padding: '12px 8px',
+  lineHeight: 1.5,
+}
+
