@@ -53,8 +53,11 @@ struct ApiEnvelope<T> {
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
+    // LAN 同步永远不走系统代理：开发环境里 reqwest 会读 http_proxy / https_proxy
+    // env，把 192.168.x.x 内网 IP 也丢给代理，导致 "error sending request for url"。
     reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
+        .no_proxy()
         .build()
         .map_err(|e| e.to_string())
 }
