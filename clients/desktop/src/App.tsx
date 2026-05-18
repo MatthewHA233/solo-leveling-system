@@ -2366,20 +2366,27 @@ export default function App() {
                   }}>+{overflow}</span>
                 )}
 
-                {/* 流动波形：anySyncing 时强烈滚动，平时静态心跳，未链接时灰且暗 */}
+                {/* 三态波形：
+                    - 同步中：完整波浪 + 快滚 + 加粗 + 强光
+                    - 在线 idle：完整波浪 + 慢滚（呼吸）
+                    - 未链接 / 全离线：几乎平直，中间一小段小起伏 */}
                 <svg width={52} height={18} viewBox="0 0 52 18" style={{ overflow: 'visible', marginLeft: 2 }}>
                   <polyline
-                    className={anySyncing ? 'sync-flow' : undefined}
-                    points="0,9 8,9 12,4 16,14 20,2 24,16 28,9 36,9 40,5 44,13 48,9 52,9"
+                    className={anySyncing ? 'sync-flow' : anyOnline ? 'sync-flow-slow' : undefined}
+                    points={
+                      anyOnline || anySyncing
+                        ? '0,9 8,9 12,4 16,14 20,2 24,16 28,9 36,9 40,5 44,13 48,9 52,9'
+                        : '0,9 19,9 22,8 25,10 28,8 31,9 52,9'
+                    }
                     fill="none"
                     stroke={tintColor}
                     strokeWidth={anySyncing ? 1.8 : 1.3}
-                    strokeDasharray={anySyncing ? '4 3' : undefined}
+                    strokeDasharray={anySyncing || anyOnline ? '4 3' : undefined}
                     style={{
                       filter: anySyncing
                         ? `drop-shadow(0 0 6px ${tintColor}) drop-shadow(0 0 2px ${tintColor})`
                         : `drop-shadow(0 0 3px ${tintColor}AA)`,
-                      opacity: anySyncing ? 1 : hasLinks ? 0.85 : 0.35,
+                      opacity: anySyncing ? 1 : anyOnline ? 0.85 : hasLinks ? 0.45 : 0.35,
                     }}
                   />
                 </svg>

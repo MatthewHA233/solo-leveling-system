@@ -159,6 +159,10 @@ input[type="time"]::-webkit-calendar-picker-indicator {
 .sync-flow {
   animation: syncFlow 0.6s linear infinite;
 }
+/* 在线但未在同步：慢速流动，给"还在呼吸"的暗示 */
+.sync-flow-slow {
+  animation: syncFlow 2.2s linear infinite;
+}
 /* HUD：数据跳动文本（低频，仅用于 flicker 状态） */
 @keyframes hudFlicker {
   0%, 92%, 100% { opacity: 1; }

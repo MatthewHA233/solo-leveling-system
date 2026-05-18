@@ -460,6 +460,47 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
           </Tooltip>
         </div>
 
+        {logOpen && (
+          <div style={{
+            border: `1px solid ${theme.hudFrameSoft}`,
+            background: 'rgba(0,229,255,0.03)',
+            padding: '7px 10px',
+            display: 'flex', flexDirection: 'column', gap: 4,
+            maxHeight: 200, overflow: 'auto',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+              <ScrollText size={11} color={theme.electricBlue} />
+              <span style={sectionTitleStyle}>SYNC LOG · 最近 {Math.min(syncLog?.length ?? 0, 20)} 条</span>
+            </div>
+            {(syncLog?.length ?? 0) === 0 ? (
+              <span style={{ fontSize: 11, color: theme.textMuted, padding: '4px 2px' }}>
+                还没有日志记录
+              </span>
+            ) : (
+              syncLog!.map((entry, idx) => (
+                <div key={`${entry.ts}-${idx}`} style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'auto 1fr',
+                  gap: 6,
+                  fontSize: 11,
+                  lineHeight: 1.4,
+                  color: entry.kind === 'error' ? '#ff9b9b' : entry.kind === 'sync' ? theme.expGreen : theme.textPrimary,
+                  padding: '2px 0',
+                  borderBottom: idx < syncLog!.length - 1 ? `1px solid ${theme.glassBorder}` : undefined,
+                }}>
+                  <span style={{
+                    fontFamily: theme.fontMono, fontSize: 9.5, color: theme.textMuted, opacity: 0.8,
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {new Date(entry.ts).toLocaleTimeString('zh-CN', { hour12: false })}
+                  </span>
+                  <span style={{ minWidth: 0, wordBreak: 'break-all' }}>{entry.text}</span>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
         {/* 已链接 */}
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
@@ -600,46 +641,6 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
           )}
         </div>
 
-        {logOpen && (
-          <div style={{
-            border: `1px solid ${theme.hudFrameSoft}`,
-            background: 'rgba(0,229,255,0.03)',
-            padding: '7px 10px',
-            display: 'flex', flexDirection: 'column', gap: 4,
-            maxHeight: 200, overflow: 'auto',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-              <ScrollText size={11} color={theme.electricBlue} />
-              <span style={sectionTitleStyle}>SYNC LOG · 最近 {Math.min(syncLog?.length ?? 0, 20)} 条</span>
-            </div>
-            {(syncLog?.length ?? 0) === 0 ? (
-              <span style={{ fontSize: 11, color: theme.textMuted, padding: '4px 2px' }}>
-                还没有日志记录
-              </span>
-            ) : (
-              syncLog!.map((entry, idx) => (
-                <div key={`${entry.ts}-${idx}`} style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'auto 1fr',
-                  gap: 6,
-                  fontSize: 11,
-                  lineHeight: 1.4,
-                  color: entry.kind === 'error' ? '#ff9b9b' : entry.kind === 'sync' ? theme.expGreen : theme.textPrimary,
-                  padding: '2px 0',
-                  borderBottom: idx < syncLog!.length - 1 ? `1px solid ${theme.glassBorder}` : undefined,
-                }}>
-                  <span style={{
-                    fontFamily: theme.fontMono, fontSize: 9.5, color: theme.textMuted, opacity: 0.8,
-                    whiteSpace: 'nowrap',
-                  }}>
-                    {new Date(entry.ts).toLocaleTimeString('zh-CN', { hour12: false })}
-                  </span>
-                  <span style={{ minWidth: 0, wordBreak: 'break-all' }}>{entry.text}</span>
-                </div>
-              ))
-            )}
-          </div>
-        )}
       </div>
 
       <style>{`
