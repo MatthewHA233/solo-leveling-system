@@ -387,12 +387,16 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
                     }}
                     style={inputStyle}
                   />
-                  <button onClick={confirmAliasEdit} title="保存" style={iconBtnTiny(theme.expGreen)}>
-                    <Check size={11} />
-                  </button>
-                  <button onClick={() => setEditingAlias(false)} title="取消" style={iconBtnTiny(theme.textSecondary)}>
-                    <X size={11} />
-                  </button>
+                  <Tooltip content="保存">
+                    <button onClick={confirmAliasEdit} style={iconBtnTiny(theme.expGreen)}>
+                      <Check size={11} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content="取消">
+                    <button onClick={() => setEditingAlias(false)} style={iconBtnTiny(theme.textSecondary)}>
+                      <X size={11} />
+                    </button>
+                  </Tooltip>
                 </span>
               ) : (
                 <>
@@ -408,9 +412,11 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
                   }}>
                     {localHello?.alias ?? '读取中…'}
                   </span>
-                  <button onClick={startAliasEdit} title="改名" style={iconBtnTiny(theme.textMuted)}>
-                    <Pencil size={11} />
-                  </button>
+                  <Tooltip content="改名">
+                    <button onClick={startAliasEdit} style={iconBtnTiny(theme.textMuted)}>
+                      <Pencil size={11} />
+                    </button>
+                  </Tooltip>
                 </>
               )}
             </div>

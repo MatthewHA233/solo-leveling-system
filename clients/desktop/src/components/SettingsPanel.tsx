@@ -783,23 +783,24 @@ export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose 
                       </div>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => removeBlacklistEntry(entry)}
-                    style={{
-                      flexShrink: 0,
-                      width: 22, height: 22,
-                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                      background: 'transparent',
-                      border: `1px solid ${theme.glassBorder}`,
-                      color: theme.textSecondary,
-                      cursor: 'pointer',
-                      borderRadius: 2,
-                    }}
-                    title="移除"
-                  >
-                    <Trash2 size={12} />
-                  </button>
+                  <Tooltip content="移除">
+                    <button
+                      type="button"
+                      onClick={() => removeBlacklistEntry(entry)}
+                      style={{
+                        flexShrink: 0,
+                        width: 22, height: 22,
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        background: 'transparent',
+                        border: `1px solid ${theme.glassBorder}`,
+                        color: theme.textSecondary,
+                        cursor: 'pointer',
+                        borderRadius: 2,
+                      }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </Tooltip>
                 </div>
               ))}
             </div>

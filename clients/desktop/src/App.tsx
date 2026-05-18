@@ -2597,7 +2597,6 @@ export default function App() {
               document.body.style.userSelect = 'none'
             }}
             onDoubleClick={() => setRightPanelWidth(340)}
-            title="拖拽调整宽度 / 双击复位"
             style={{
               position: 'absolute',
               left: -3, top: 0, bottom: 0,

@@ -513,14 +513,15 @@ function SearchBox({
       />
       {addMode ? (
         query && (
-          <button
-            type="button"
-            onClick={onSubmitAdd}
-            style={{ ...iconBtnSmall, color: theme.expGreen }}
-            title="新建（Enter）"
-          >
-            <Check size={12} />
-          </button>
+          <Tooltip content="新建（Enter）">
+            <button
+              type="button"
+              onClick={onSubmitAdd}
+              style={{ ...iconBtnSmall, color: theme.expGreen }}
+            >
+              <Check size={12} />
+            </button>
+          </Tooltip>
         )
       ) : (
         query && (
@@ -545,27 +546,28 @@ function CategoryChip({ cat, active, onToggle, onEdit }: {
   onEdit: () => void
 }) {
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      onContextMenu={(e) => { e.preventDefault(); onEdit() }}
-      title="点击过滤 · 右键编辑分类"
-      style={{
-        ...chipBaseStyle(cat.color),
-        opacity: active ? 1 : 0.78,
-        boxShadow: active ? `0 0 6px ${cat.color}55, inset 0 0 6px ${cat.color}22` : undefined,
-        outline: active ? `1px solid ${cat.color}` : 'none',
-      }}
-    >
-      <span style={{
-        width: 7, height: 7, background: cat.color, flexShrink: 0,
-      }} />
-      <span style={{
-        fontSize: 10.5, color: theme.textPrimary, whiteSpace: 'nowrap',
-      }}>
-        {cat.name}
-      </span>
-    </button>
+    <Tooltip content="点击过滤 · 右键编辑分类">
+      <button
+        type="button"
+        onClick={onToggle}
+        onContextMenu={(e) => { e.preventDefault(); onEdit() }}
+        style={{
+          ...chipBaseStyle(cat.color),
+          opacity: active ? 1 : 0.78,
+          boxShadow: active ? `0 0 6px ${cat.color}55, inset 0 0 6px ${cat.color}22` : undefined,
+          outline: active ? `1px solid ${cat.color}` : 'none',
+        }}
+      >
+        <span style={{
+          width: 7, height: 7, background: cat.color, flexShrink: 0,
+        }} />
+        <span style={{
+          fontSize: 10.5, color: theme.textPrimary, whiteSpace: 'nowrap',
+        }}>
+          {cat.name}
+        </span>
+      </button>
+    </Tooltip>
   )
 }
 
@@ -599,9 +601,11 @@ function CategoryEditor({
         <button onClick={onSave} style={{ ...iconBtnSmall, color: theme.expGreen }}><Check size={12} /></button>
         <button onClick={onCancel} style={iconBtnSmall}><X size={12} /></button>
         {deletable && onDelete && (
-          <button onClick={onDelete} style={{ ...iconBtnSmall, color: theme.dangerRed }} title="删除分类">
-            <Trash2 size={12} />
-          </button>
+          <Tooltip content="删除分类">
+            <button onClick={onDelete} style={{ ...iconBtnSmall, color: theme.dangerRed }}>
+              <Trash2 size={12} />
+            </button>
+          </Tooltip>
         )}
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
