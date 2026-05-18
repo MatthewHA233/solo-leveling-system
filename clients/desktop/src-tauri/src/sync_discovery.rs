@@ -51,7 +51,9 @@ pub struct SyncDiscoveryState {
     pub device_type: &'static str,
     pub device_model: &'static str,
     pub db: Arc<Database>,
-    pub app_handle: AppHandle,
+    // ⚠️ Arc 包一层避免 AppHandle::clone 触发 Rc<tao::EventLoopRunner>::clone
+    // 在非主线程上 UB —— 详见 api.rs::ApiState 注释 / Tauri issue #15408
+    pub app_handle: Arc<AppHandle>,
 }
 
 impl SyncDiscoveryState {
@@ -137,7 +139,7 @@ impl SyncDiscoveryState {
     }
 }
 
-pub async fn start(db: Arc<Database>, app_handle: AppHandle, port: u16) -> Arc<SyncDiscoveryState> {
+pub async fn start(db: Arc<Database>, app_handle: Arc<AppHandle>, port: u16) -> Arc<SyncDiscoveryState> {
     let device_id = db.sync_device_id().await.unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
     let alias = db.sync_alias().await.unwrap_or_else(|_| crate::db::generate_alias(&device_id));
     let state = Arc::new(SyncDiscoveryState {

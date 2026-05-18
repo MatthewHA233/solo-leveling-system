@@ -72,7 +72,13 @@ pub struct ApiState {
     pub bailian: Arc<BailianState>,
     pub bili_dl: Arc<BiliDownloadState>,
     pub sync_discovery: Arc<SyncDiscoveryState>,
-    pub app_handle: AppHandle,
+    // ⚠️ 必须包 Arc：AppHandle::clone 会透传到内部 Rc<tao::EventLoopRunner>，
+    // axum 每收一个 HTTP 请求都会 Clone 整个 ApiState，落在 tokio-rt-worker
+    // 上 → 非主线程 Rc::clone = UB → CPU illegal instruction abort。
+    // Arc<AppHandle>::clone 是原子计数，永远不触发内层 Rc::clone。
+    // emit 通过 Deref 拿 &AppHandle，不需要 clone。
+    // 详见 tauri issue #15408。
+    pub app_handle: Arc<AppHandle>,
 }
 
 // ── Response Types ──
@@ -1280,7 +1286,7 @@ pub fn create_router(
     bailian: Arc<BailianState>,
     bili_dl: Arc<BiliDownloadState>,
     sync_discovery: Arc<SyncDiscoveryState>,
-    app_handle: AppHandle,
+    app_handle: Arc<AppHandle>,
 ) -> Router {
     let state = ApiState { db, bili, bailian, bili_dl, sync_discovery, app_handle };
 
@@ -1350,7 +1356,7 @@ pub async fn start_server(
     bili: Arc<BiliState>,
     bailian: Arc<BailianState>,
     bili_dl: Arc<BiliDownloadState>,
-    app_handle: AppHandle,
+    app_handle: Arc<AppHandle>,
     port: u16,
 ) {
     let sync_discovery = crate::sync_discovery::start(db.clone(), app_handle.clone(), port).await;

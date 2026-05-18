@@ -11,6 +11,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
+// 注意：参数永远是 &AppHandle（从 Arc<AppHandle> Deref 而来），不 clone。
+// AppHandle::clone 会触发 Tauri 内部 Rc<EventLoopRunner>::clone，非主线程上是 UB。
 fn emit_started(app: &AppHandle, device_id: &str) {
     let _ = app.emit("sync:started", serde_json::json!({ "device_id": device_id }));
 }
@@ -109,7 +111,7 @@ pub async fn bidirectional_sync(
 }
 
 /// 启动时遍历 linked_devices 做一轮，失败只记日志不打扰用户。
-pub async fn run_startup_sync(db: Arc<Database>, app: AppHandle) {
+pub async fn run_startup_sync(db: Arc<Database>, app: Arc<AppHandle>) {
     let links = match db.list_linked_devices().await {
         Ok(l) => l,
         Err(e) => {
@@ -186,7 +188,7 @@ fn lock_map<'a>(m: &'a std::sync::Mutex<HashMap<String, Instant>>) -> std::sync:
 /// 防护：
 /// 1. 同 device_id 已在同步中 → 直接返回（防多播洪水）
 /// 2. 上次成功 < 10 秒 → 跳过（避免同一对端反复 ping 触发风暴）
-pub async fn maybe_sync_on_discover(db: Arc<Database>, app: AppHandle, device_id: &str, base: &str) {
+pub async fn maybe_sync_on_discover(db: Arc<Database>, app: Arc<AppHandle>, device_id: &str, base: &str) {
     let links = match db.list_linked_devices().await {
         Ok(l) => l,
         Err(_) => return,

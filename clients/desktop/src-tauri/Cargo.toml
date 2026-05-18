@@ -67,3 +67,17 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 winreg = "0.55"
+
+# ── Profile：dev 模式关 debug-assertions 防上游 race 把我们崩掉 ──
+# 上游 Tauri/wry 有一条 Rc<tao::EventLoopRunner> 在 WebView2 的
+# WebResourceRequested custom_protocol_handler 里非主线程 clone 的 race
+# （详见 tauri issue #15408，截至 2026-05-18 未修）。
+# release 模式因为不开 stdlib UB checks 所以无声穿过；dev 模式 stdlib 的
+# `hint::assert_unchecked(strong != 0)` 命中后 panic_nounwind_fmt 直接
+# abort（catch_unwind 救不了），导致频繁闪退。
+# 本仓自己的高频触发路径（ApiState::clone → AppHandle::clone）已通过
+# 把 app_handle 改成 Arc<AppHandle> 拆掉了，但 wry 这条路径还在，
+# 暂留这个 override 防回归。等上游修了删掉本段。
+# overflow-checks 保持默认（dev 启用），跟 Tauri race 无关，关它纯亏。
+[profile.dev]
+debug-assertions = false

@@ -1549,17 +1549,20 @@ pub fn run() {
                 let bailian_clone = bailian_state.clone();
                 let bili_dl_clone = bili_dl_state.clone();
                 let db_for_api = db_clone.clone();
-                let app_handle_for_api = app.handle().clone();
+                // 关键：包 Arc 后整个项目共享同一份 AppHandle，避免 AppHandle::clone
+                // 透传到内部 Rc<EventLoopRunner>::clone 在非主线程上 UB（Tauri #15408）
+                let app_handle_for_api: std::sync::Arc<tauri::AppHandle> =
+                    std::sync::Arc::new(app.handle().clone());
+                let app_handle_for_startup = app_handle_for_api.clone();
                 tauri::async_runtime::spawn(async move {
                     api::start_server(db_for_api, bili_clone, bailian_clone, bili_dl_clone, app_handle_for_api, 49733).await;
                 });
 
                 // 启动后台同步：等 HTTP server 起来 + 多播广播完成，再扫一遍已链接设备
                 let db_for_startup_sync = db_clone.clone();
-                let app_for_startup_sync = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    sync_engine::run_startup_sync(db_for_startup_sync, app_for_startup_sync).await;
+                    sync_engine::run_startup_sync(db_for_startup_sync, app_handle_for_startup).await;
                 });
 
                 #[cfg(windows)]
