@@ -17,11 +17,12 @@ fn emit_started(app: &AppHandle, device_id: &str) {
     let _ = app.emit("sync:started", serde_json::json!({ "device_id": device_id }));
 }
 
-fn emit_finished(app: &AppHandle, device_id: &str, ok: bool, error: Option<&str>) {
+fn emit_finished(app: &AppHandle, device_id: &str, ok: bool, error: Option<&str>, result: Option<&SyncRoundResult>) {
     let _ = app.emit("sync:finished", serde_json::json!({
         "device_id": device_id,
         "ok": ok,
         "error": error,
+        "result": result,
     }));
 }
 
@@ -148,24 +149,31 @@ pub async fn run_startup_sync(db: Arc<Database>, app: Arc<AppHandle>) {
             let result = bidirectional_sync(db_for_sync.clone(), &base).await;
             match &result {
                 Ok(round) => {
-                    let total = round.pulled.activity_categories + round.pulled.activity_tags
-                        + round.pulled.activity_blocks + round.pulled.plan_nodes
-                        + round.pulled.planned_blocks
-                        + round.pushed.activity_categories + round.pushed.activity_tags
-                        + round.pushed.activity_blocks + round.pushed.plan_nodes
-                        + round.pushed.planned_blocks;
                     if let Err(e) = db_for_sync.touch_link_synced(&device_id, &base).await {
                         log::warn!("[SyncEngine] 更新 {} 同步时间失败: {}", alias, e);
                     }
                     let mut map = lock_map(last_synced());
                     map.insert(device_id.clone(), Instant::now());
-                    log::info!("[SyncEngine] 已同步 {} ({}): {} 条变更", alias, base, total);
+                    log::info!(
+                        "[SyncEngine] {} startup-sync done | pull cat={} tag={} blk={} pn={} pblk={} | push cat={} tag={} blk={} pn={} pblk={}",
+                        alias,
+                        round.pulled.activity_categories, round.pulled.activity_tags, round.pulled.activity_blocks,
+                        round.pulled.plan_nodes, round.pulled.planned_blocks,
+                        round.pushed.activity_categories, round.pushed.activity_tags, round.pushed.activity_blocks,
+                        round.pushed.plan_nodes, round.pushed.planned_blocks,
+                    );
                 }
                 Err(e) => {
                     log::warn!("[SyncEngine] {} ({}) 同步失败: {}", alias, base, e);
                 }
             }
-            emit_finished(&app_for_sync, &device_id, result.is_ok(), result.as_ref().err().map(|s| s.as_str()));
+            emit_finished(
+                &app_for_sync,
+                &device_id,
+                result.is_ok(),
+                result.as_ref().err().map(|s| s.as_str()),
+                result.as_ref().ok(),
+            );
             let mut set = lock_set(syncing_set());
             set.remove(&device_id);
         });
@@ -224,16 +232,28 @@ pub async fn maybe_sync_on_discover(db: Arc<Database>, app: Arc<AppHandle>, devi
         emit_started(&app, &device_id_owned);
         let result = bidirectional_sync(db.clone(), &base_owned).await;
         match &result {
-            Ok(_) => {
+            Ok(round) => {
                 let _ = db.touch_link_synced(&device_id_owned, &base_owned).await;
                 let mut map = lock_map(last_synced());
                 map.insert(device_id_owned.clone(), Instant::now());
+                log::info!(
+                    "[SyncEngine] {} discover-sync done | pull blk={} pn={} pblk={} tag={} | push blk={} pn={} pblk={} tag={}",
+                    device_id_owned,
+                    round.pulled.activity_blocks, round.pulled.plan_nodes, round.pulled.planned_blocks, round.pulled.activity_tags,
+                    round.pushed.activity_blocks, round.pushed.plan_nodes, round.pushed.planned_blocks, round.pushed.activity_tags,
+                );
             }
             Err(e) => {
                 log::warn!("[SyncEngine] discover-triggered 同步 {} 失败: {}", device_id_owned, e);
             }
         }
-        emit_finished(&app, &device_id_owned, result.is_ok(), result.as_ref().err().map(|s| s.as_str()));
+        emit_finished(
+            &app,
+            &device_id_owned,
+            result.is_ok(),
+            result.as_ref().err().map(|s| s.as_str()),
+            result.as_ref().ok(),
+        );
         let mut set = lock_set(syncing_set());
         set.remove(&device_id_owned);
     });

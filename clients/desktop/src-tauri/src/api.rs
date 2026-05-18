@@ -602,6 +602,7 @@ async fn sync_link_add(
                     "device_id": &device_id,
                     "ok": result.is_ok(),
                     "error": result.as_ref().err().map(|s| s.as_str()),
+                    "result": result.as_ref().ok(),
                 }));
             });
             Json(ApiResponse::ok(link))
@@ -639,6 +640,7 @@ async fn sync_link_run(
         "device_id": &device_id,
         "ok": result.is_ok(),
         "error": result.as_ref().err().map(|s| s.as_str()),
+        "result": result.as_ref().ok(),
     }));
     match result {
         Ok(round) => {

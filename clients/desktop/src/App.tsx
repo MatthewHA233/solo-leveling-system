@@ -679,21 +679,57 @@ export default function App() {
     ;(async () => {
       const { listen } = await import('@tauri-apps/api/event')
       if (cancelled) return
+      // 拆解 SyncImportResult / SyncRoundResult 成简洁中文行
+      const fmtImport = (r: { activity_categories?: number; activity_tags?: number; activity_blocks?: number; plan_nodes?: number; planned_blocks?: number; model_call_log?: number; model_api_keys?: number; model_free_quota?: number; feature_bindings?: number; skipped?: number } | null | undefined): string => {
+        if (!r) return '0 条'
+        const parts: string[] = []
+        if (r.activity_categories) parts.push(`分类×${r.activity_categories}`)
+        if (r.activity_tags) parts.push(`标签×${r.activity_tags}`)
+        if (r.activity_blocks) parts.push(`实际块×${r.activity_blocks}`)
+        if (r.plan_nodes) parts.push(`计划节点×${r.plan_nodes}`)
+        if (r.planned_blocks) parts.push(`计划块×${r.planned_blocks}`)
+        if (r.model_call_log) parts.push(`用量日志×${r.model_call_log}`)
+        if (r.model_api_keys) parts.push(`API key×${r.model_api_keys}`)
+        if (r.model_free_quota) parts.push(`免费额度×${r.model_free_quota}`)
+        if (r.feature_bindings) parts.push(`功能绑定×${r.feature_bindings}`)
+        if (parts.length === 0) return r.skipped ? `0 条（跳过 ${r.skipped}）` : '0 条'
+        const skipNote = r.skipped ? ` · 跳过 ${r.skipped}` : ''
+        return parts.join(' + ') + skipNote
+      }
       const us = await Promise.all([
-        listen<{ device_id?: string; changed?: number }>('sync:imported', (e) => {
-          refreshActivityPalette()
-          refreshActivityBlocks()
-          refreshPlannedBlocks()
-          refreshPlanNodes()
-          invalidateActivityRangeCache(selectedDate)
-          fetchSyncLinks().then(setLinkedDevices).catch(() => {})
-          const changed = e.payload?.changed ?? 0
+        listen<{ device_id?: string; changed?: number; result?: any }>('sync:imported', (e) => {
           const alias = linkAliasOf(e.payload?.device_id) ?? '对端'
+          const detail = fmtImport(e.payload?.result)
           pushSyncLog({
             kind: 'sync',
             alias,
-            text: `${alias} 推送 ${changed} 条变更到本机`,
+            text: `← ${alias} 推过来 ${detail}`,
           })
+          // 触发刷新；每个 fetch 完成后再各打一行确认本地真实落库行数
+          const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`
+          Promise.all([
+            fetchActivityPalette().then((p) => {
+              setActivityPalette(p)
+              return `标签库 ${p.categories.length} 分类 / ${p.tags.length} 标签`
+            }),
+            fetchActivityBlocks(selectedDate).then((b) => {
+              setActivityBlocks(b)
+              return `${dateStr} 实际块 ${b.length}`
+            }),
+            fetchPlannedBlocks(selectedDate).then((b) => {
+              setPlannedBlocks(b)
+              return `计划块 ${b.length}`
+            }),
+            selectedProjectTagId != null
+              ? fetchPlanNodes(selectedProjectTagId).then((nodes) => `计划节点 ${nodes.length}`)
+              : Promise.resolve('计划节点 -'),
+          ]).then((lines) => {
+            invalidateActivityRangeCache(selectedDate)
+            pushSyncLog({ kind: 'info', alias, text: `🔄 已重渲染: ${lines.join(' · ')}` })
+          }).catch((err) => {
+            pushSyncLog({ kind: 'error', alias, text: `🔄 重渲染失败: ${err}` })
+          })
+          fetchSyncLinks().then(setLinkedDevices).catch(() => {})
         }),
         listen<{ device_id: string }>('sync:started', (e) => {
           const id = e.payload?.device_id
@@ -703,8 +739,15 @@ export default function App() {
             next.add(id)
             return next
           })
+          const alias = linkAliasOf(id) ?? id
+          pushSyncLog({ kind: 'info', alias, text: `→ 开始与 ${alias} 同步` })
         }),
-        listen<{ device_id: string; ok?: boolean; error?: string | null }>('sync:finished', (e) => {
+        listen<{
+          device_id: string
+          ok?: boolean
+          error?: string | null
+          result?: { pulled?: any; pushed?: any } | null
+        }>('sync:finished', (e) => {
           const id = e.payload?.device_id
           if (id) {
             setSyncingDeviceIds((prev) => {
@@ -716,9 +759,16 @@ export default function App() {
           fetchSyncLinks().then(setLinkedDevices).catch(() => {})
           const alias = linkAliasOf(id) ?? id ?? '设备'
           if (e.payload?.ok) {
-            pushSyncLog({ kind: 'sync', alias, text: `与 ${alias} 同步完成` })
+            const r = e.payload?.result
+            const pullDetail = fmtImport(r?.pulled)
+            const pushDetail = fmtImport(r?.pushed)
+            pushSyncLog({
+              kind: 'sync',
+              alias,
+              text: `✓ ${alias} 同步完成 · 拉 [${pullDetail}] / 推 [${pushDetail}]`,
+            })
           } else {
-            pushSyncLog({ kind: 'error', alias, text: `与 ${alias} 同步失败: ${e.payload?.error ?? '未知错误'}` })
+            pushSyncLog({ kind: 'error', alias, text: `✗ ${alias} 同步失败: ${e.payload?.error ?? '未知错误'}` })
           }
         }),
       ])
