@@ -16,9 +16,10 @@ interface Props {
     mode: 'paint' | 'erase'
   } | null
   onDismiss: () => void
+  /** 右栏当前宽度（用于居中算偏移）— 不传走 340 默认 */
+  rightPanelWidth?: number
 }
 
-const RIGHT_PANEL_WIDTH = 340  // 与 App.tsx 右栏宽度保持一致
 const DURATION_MS = 5_000
 
 function fmtTime(min: number): string {
@@ -27,7 +28,7 @@ function fmtTime(min: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
 }
 
-export default function ActivityToast({ toast, onDismiss }: Props) {
+export default function ActivityToast({ toast, onDismiss, rightPanelWidth = 340 }: Props) {
   const [visible, setVisible] = useState(false)
   // 用 ref 持有最新 onDismiss，避免父组件每次 render 都重置定时器
   const dismissRef = useRef(onDismiss)
@@ -59,7 +60,7 @@ export default function ActivityToast({ toast, onDismiss }: Props) {
       style={{
         position: 'fixed',
         // 居中于"主区域 = 视口 - 右面板"：左侧偏移正好让 toast 落在主区中线
-        left: `calc(50% - ${RIGHT_PANEL_WIDTH / 2}px)`,
+        left: `calc(50% - ${rightPanelWidth / 2}px)`,
         bottom: 14,
         transform: `translate(-50%, ${visible ? '0' : '14px'})`,
         opacity: visible ? 1 : 0,
@@ -98,7 +99,7 @@ export default function ActivityToast({ toast, onDismiss }: Props) {
         fontSize: 12, color: theme.textPrimary,
         maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }}>
-        {toast.path.replace(/,/g, ' / ')}
+        {toast.path}
       </span>
     </div>
   )

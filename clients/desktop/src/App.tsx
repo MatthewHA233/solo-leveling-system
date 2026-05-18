@@ -287,6 +287,40 @@ export default function App() {
   const [showBili, setShowBili] = useState(false)
   const [showModels, setShowModels] = useState(false)
   const [showSync, setShowSync] = useState(false)
+
+  // 右侧栏可拖拽宽度（持久化到 localStorage）
+  const RIGHT_PANEL_MIN = 260
+  const RIGHT_PANEL_MAX = 820
+  const [rightPanelWidth, setRightPanelWidth] = useState<number>(() => {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('sls.rightPanelWidth') : null
+    const n = stored ? Number(stored) : NaN
+    return Number.isFinite(n) && n >= RIGHT_PANEL_MIN && n <= RIGHT_PANEL_MAX ? n : 340
+  })
+  useEffect(() => {
+    try { localStorage.setItem('sls.rightPanelWidth', String(rightPanelWidth)) } catch {}
+  }, [rightPanelWidth])
+  const resizingRef = useRef(false)
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!resizingRef.current) return
+      const w = window.innerWidth - e.clientX
+      const clamped = Math.max(RIGHT_PANEL_MIN, Math.min(RIGHT_PANEL_MAX, w))
+      setRightPanelWidth(clamped)
+    }
+    const onUp = () => {
+      if (resizingRef.current) {
+        resizingRef.current = false
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+      }
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    return () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+  }, [])
   const [syncAnchorRect, setSyncAnchorRect] = useState<DOMRect | null>(null)
   const syncTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [linkedDevices, setLinkedDevices] = useState<LinkedDevice[]>([])
@@ -2546,13 +2580,42 @@ export default function App() {
 
         {/* Right Panel: Chat or Settings */}
         <div style={{
-          width: 340,
+          width: rightPanelWidth,
+          flexShrink: 0,
           borderLeft: `1px solid ${theme.hudFrameSoft}`,
           display: 'flex', flexDirection: 'column',
           background: `linear-gradient(180deg, rgba(4,10,26,0.72) 0%, rgba(2,6,14,0.82) 100%)`,
           boxShadow: `inset 1px 0 0 ${theme.electricBlue}18, inset 0 0 40px rgba(0,229,255,0.03)`,
           position: 'relative',
         }}>
+          {/* 拖拽手柄：贴在左边框上的不可见 6px 竖条；hover 时左 1px 边线高亮 */}
+          <div
+            onMouseDown={(e) => {
+              e.preventDefault()
+              resizingRef.current = true
+              document.body.style.cursor = 'ew-resize'
+              document.body.style.userSelect = 'none'
+            }}
+            onDoubleClick={() => setRightPanelWidth(340)}
+            title="拖拽调整宽度 / 双击复位"
+            style={{
+              position: 'absolute',
+              left: -3, top: 0, bottom: 0,
+              width: 6,
+              cursor: 'ew-resize',
+              zIndex: 80,
+              background: 'transparent',
+              // hover 通过自定义 group：放一根 1px 内嵌线，给个视觉提示
+            }}
+            onMouseEnter={(e) => {
+              const el = e.currentTarget as HTMLDivElement
+              el.style.background = `${theme.electricBlue}22`
+            }}
+            onMouseLeave={(e) => {
+              const el = e.currentTarget as HTMLDivElement
+              el.style.background = 'transparent'
+            }}
+          />
           {/* 右侧栏内容：编辑模式 → 标签库（+ 当前轨道详情）；非编辑模式 → 聊天 / 详情 */}
           {editMode ? (() => {
             const pm = pinnedPos?.minute ?? null
@@ -2834,7 +2897,7 @@ export default function App() {
       />
 
       {/* 活动记录涂块 toast（10s 自动消失） */}
-      <ActivityToast toast={paintToast} onDismiss={() => setPaintToast(null)} />
+      <ActivityToast toast={paintToast} onDismiss={() => setPaintToast(null)} rightPanelWidth={rightPanelWidth} />
 
       {/* 首次启用独显高性能 → 右上角橙色 toast，常驻直到用户选择"立即重启"或"稍后" */}
       {gpuToastVisible && (
