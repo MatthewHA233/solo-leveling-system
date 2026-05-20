@@ -303,7 +303,7 @@ export default function PlanNodePalette({
       <HudFrame
         color={theme.warningOrange}
         accent={theme.expGreen}
-        topLabel="PLAN · PROJECT TASKS"
+        topLabel="PLAN · 计划项目"
         showNotchTop
         showNotchBottom={false}
         notchWidth={112}

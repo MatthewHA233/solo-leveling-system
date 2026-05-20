@@ -298,7 +298,9 @@ export default function ActivityTagPalette({
       fontFamily: theme.fontBody,
     }}>
       <HudFrame
-        topLabel="ACTIVITY · 标签库"
+        color={theme.expGreen}
+        accent={theme.warningOrange}
+        topLabel="ACTIVITY · 活动标签"
         showNotchTop
         showNotchBottom={false}
         notchWidth={112}
