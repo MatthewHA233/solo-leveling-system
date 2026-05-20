@@ -4,7 +4,8 @@ import { Pencil, Undo2, Redo2 } from 'lucide-react'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from '../types'
 import type { PerceptionSpan, BiliSpan } from '../lib/local-api'
 import { theme } from '../theme'
-import { HudFrameSkeleton, HudTabButton } from './hud'
+import { HudFrameSkeleton, HudTabButton, CornerArt, ChartHeaderFrame, ChartHeaderButtons } from './hud'
+import type { CornerPos } from './hud'
 import Tooltip from './Tooltip'
 
 interface Props {
@@ -1589,66 +1590,7 @@ function ChartTopAxisRow() {
   )
 }
 
-// ── 4 角折角艺术装饰：双层折角（亮条）+ 内 L 描线 + 端点延伸断续 ──
-//   设计移植自 HudFrame.tsx CornerTL，用 CSS transform 镜像到其他 3 角
-
-type CornerPos = 'tl' | 'tr' | 'bl' | 'br'
-
-function CornerArt({ position }: { position: CornerPos }) {
-  const cyan = theme.electricBlue
-  const cornerCut = 18
-  const cornerArm = 18
-  const totalSize = cornerCut + cornerArm
-  const innerOff = 4
-  const lightOff = 1.8
-  const tipGap = 3
-
-  // 4 角用 CSS transform 镜像 TL 几何
-  const transformMap: Record<CornerPos, string> = {
-    tl: 'none',
-    tr: 'scaleX(-1)',
-    bl: 'scaleY(-1)',
-    br: 'scale(-1, -1)',
-  }
-
-  const positionStyle: CSSProperties = {
-    position: 'absolute',
-    width: totalSize, height: totalSize,
-    pointerEvents: 'none',
-    zIndex: 78,
-    transform: transformMap[position],
-    transformOrigin: 'center',
-    [position.includes('l') ? 'left' : 'right']: 0,
-    [position.startsWith('t') ? 'top' : 'bottom']: 0,
-  } as CSSProperties
-
-  return (
-    <div style={positionStyle}>
-      <svg width={totalSize} height={totalSize} style={{ overflow: 'visible' }}>
-        {/* 双层折角亮条：跟主斜切平行，内层 offset 1.8 */}
-        <line
-          x1={lightOff} y1={cornerCut + lightOff}
-          x2={cornerCut + lightOff} y2={lightOff}
-          stroke={cyan} strokeOpacity="0.95" strokeWidth="1.3"
-          strokeLinecap="butt"
-          style={{ filter: `drop-shadow(0 0 3px ${cyan}CC)` }}
-        />
-
-        {/* 内 L 描线（3 段 polyline，offset 4 内缩） */}
-        <polyline
-          points={`${innerOff},${totalSize - 2} ${innerOff},${cornerCut + innerOff} ${cornerCut + innerOff},${innerOff} ${totalSize - 2},${innerOff}`}
-          fill="none"
-          stroke={cyan} strokeOpacity="0.55" strokeWidth="0.8"
-          strokeLinejoin="miter"
-        />
-
-        {/* 端点小口（2 个 2×2 黑矩形，紧贴 polyline 端点 ~3px 处） */}
-        <rect x={-1} y={totalSize - tipGap - 1} width={2} height={2} fill={theme.background} />
-        <rect x={totalSize - tipGap - 1} y={-1} width={2} height={2} fill={theme.background} />
-      </svg>
-    </div>
-  )
-}
+// CornerArt 抽到 components/hud/CornerArt.tsx，统一供主舞台外壳使用
 
 // ── 左侧 TIME AXIS 区 ──
 //   关键设计：frame 左边线在文字 y 范围内"断开"（黑色遮罩覆盖），顶部装饰朝左上凸出折角；
@@ -2862,29 +2804,48 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
         display: 'flex', flexDirection: 'column', height: '100%',
         background: theme.background, position: 'relative',
         paddingLeft: 24,  // 左外边距：给 axis 溢出文本/装饰留空间（双层线 + TIME AXIS 文字）
+        paddingRight: 24.5,  // 右外边距：给 ChartHeaderFrame 长竖线显示空间（= rightOffset + 0.5）
       }}
     >
-      {/* 管线模式切换：tab 区紧贴顶部，tab 之间无 gap；tab 整体贴底,标签/按钮单独居中 */}
+      {/* 管线模式切换：tab 区紧贴顶部，tab 之间无 gap；tab 整体贴底,标签/按钮单独居中
+          paddingRight: 24 给 ChartHeaderFrame 右侧装饰让出空间，避免按钮跟装饰挤在一起 */}
       <div style={{
         display: 'flex', alignItems: 'flex-end', gap: 0,
-        padding: '0 0 0 12px',
+        padding: '0 24px 0 12px',
         flexShrink: 0,
         height: tabsHeight,
       }}>
+        {/* 面板标题（与 TaskScheduleBoard 顶部"任务调度"对称） */}
         <span style={{
           alignSelf: 'center',
-          fontFamily: theme.fontMono, fontSize: 10.5, fontWeight: 700,
-          letterSpacing: 2, color: theme.electricBlue,
-          textShadow: `0 0 6px ${hexToRgba(theme.electricBlue, 0.55)}`,
-          paddingRight: 6,
-          borderRight: `1px solid ${hexToRgba(theme.electricBlue, 0.45)}`,
-          marginRight: 2,
+          fontFamily: theme.fontBody,
+          fontSize: 12,
+          fontWeight: 600,
+          color: theme.textPrimary,
+          letterSpacing: 0.4,
+          paddingLeft: 12,
+          paddingRight: 10,
+          marginRight: 4,
+          marginTop: 6,
         }}>
-          左侧管道数据源
+          昼夜表
+        </span>
+        <span style={{
+          alignSelf: 'center',
+          fontFamily: theme.fontBody,
+          fontSize: 10,
+          fontWeight: 500,
+          letterSpacing: 0.2,
+          color: theme.textMuted,
+          paddingRight: 6,
+          marginRight: 2,
+          marginTop: 6,
+        }}>
+          数据源
         </span>
         {(['apps', 'bili'] as const).map((mode) => {
           const active = trackMode === mode
-          const label = mode === 'apps' ? '应用程序' : '哔哩哔哩'
+          const label = mode === 'apps' ? '应用' : '哔哩哔哩'
           const color = mode === 'apps' ? theme.electricBlue : BILI_COLOR
           return (
             <HudTabButton
@@ -2892,68 +2853,15 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
               label={label}
               active={active}
               color={color}
-              width={110}
-              height={30}
+              width={82}
+              height={24}
               onClick={() => onTrackModeChange?.(mode)}
             />
           )
         })}
 
-        <span style={{
-          alignSelf: 'center',
-          fontFamily: theme.fontMono, fontSize: 10.5, fontWeight: 700,
-          letterSpacing: 2, color: theme.textMuted,
-          paddingLeft: 10,
-          marginLeft: 6,
-          borderLeft: `1px solid ${hexToRgba(theme.textMuted, 0.32)}`,
-        }}>
-          记录类型
-        </span>
-        {([
-          { layer: 'actual' as const, label: '实际记录', color: theme.expGreen },
-          { layer: 'plan' as const, label: '计划安排', color: theme.warningOrange },
-        ] satisfies Array<{ layer: RecordLayer; label: string; color: string }>).map((item) => (
-          <HudTabButton
-            key={item.layer}
-            label={item.label}
-            active={recordLayer === item.layer}
-            color={item.color}
-            width={106}
-            height={30}
-            onClick={() => onRecordLayerChange(item.layer)}
-          />
-        ))}
-
-        <div style={{ flex: 1 }} />
-
-        {/* 编辑模式专用：撤回 / 恢复 */}
-        {editMode && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginRight: 6, alignSelf: 'center' }}>
-            <Tooltip content="撤回 (Ctrl+Z)">
-              <button
-                type="button"
-                onClick={() => onUndo?.()}
-                disabled={!canUndo}
-                style={historyBtnStyle(canUndo)}
-              >
-                <Undo2 size={12} />
-              </button>
-            </Tooltip>
-            <Tooltip content="恢复 (Ctrl+Y)">
-              <button
-                type="button"
-                onClick={() => onRedo?.()}
-                disabled={!canRedo}
-                style={historyBtnStyle(canRedo)}
-              >
-                <Redo2 size={12} />
-              </button>
-            </Tooltip>
-          </div>
-        )}
-
-        {/* 编辑模式按钮（最右侧）—— 与 ChatPanel 的"历史"按钮同款断裂 HUD 边框，绿色调 */}
-        <EditModeToggle on={editMode} onClick={onEditModeToggle} layer={recordLayer} />
+        {/* "层 / 实际记录 / 计划安排" 已下放到 ChartHeaderButtons（右侧夹缝垂直图标按钮）
+            编辑模式 + 撤回 + 恢复 也在 ChartHeaderButtons 里 */}
       </div>
 
       {/* 图表区：滚动 wrapper 占整片，sticky 时段层 + canvas；左半固定 axis 浮在上层 */}
@@ -3031,6 +2939,30 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
 
         {/* 左侧 TIME AXIS 区（双层竖线 + 顶/底折角 + 跟随 rowsPerCol 的 5 分钟刻度） */}
         <LeftAxis params={p} />
+
+        {/* 顶部 HUD 装饰带：叠加在标题栏 tab 区上层，右端凸塔接 chart pane 右上切角 */}
+        <ChartHeaderFrame mainHeight={tabsHeight} rightOffset={24} paddingRightFull={24.5} topOffsetLeft={24} topOffsetRight={24} slopeLen={14} rightSegLen={90} notchWidth={150} />
+
+        {/* 嵌在双层 svg 夹缝中的三个按钮：① 记录 ② 撤回 ③ 恢复 */}
+        <ChartHeaderButtons
+          mainHeight={tabsHeight}
+          rightOffset={24}
+          paddingRightFull={24.5}
+          topOffsetRight={24}
+          slopeLen={14}
+          rightSegLen={90}
+          notchWidth={150}
+          editMode={editMode}
+          recordLayerColor={recordLayer === 'plan' ? theme.warningOrange : theme.expGreen}
+          recordLayerLabel={recordLayer === 'plan' ? '计划安排' : '实际记录'}
+          recordLayer={recordLayer}
+          onRecordLayerChange={onRecordLayerChange}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          onToggleEdit={onEditModeToggle}
+          onUndo={() => onUndo?.()}
+          onRedo={() => onRedo?.()}
+        />
       </div>
 
       {/* 图例（HUD 风格） */}
