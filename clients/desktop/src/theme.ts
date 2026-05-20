@@ -60,12 +60,9 @@ export const hud = {
     transparent 0px, transparent 2px,
     rgba(0,229,255,0.035) 2px, rgba(0,229,255,0.035) 3px
   )`,
-  // 主 HUD 背景（深紫→黑渐变 + 点阵）
-  backdrop: `
-    radial-gradient(ellipse at 20% 0%, rgba(112, 0, 255, 0.18) 0%, transparent 55%),
-    radial-gradient(ellipse at 80% 100%, rgba(0, 229, 255, 0.10) 0%, transparent 60%),
-    linear-gradient(180deg, #070312 0%, #04060E 55%, #020307 100%)
-  `,
+  // 主 HUD 背景：去掉了原本的紫色/cyan 径向光晕，纯中性深黑底
+  //   科学仪器极简主义 — 让 HUD 描线主导视觉，背景不喧宾夺主
+  backdrop: `linear-gradient(180deg, #060606 0%, #080808 55%, #030303 100%)`,
   // 栅格点阵（低透明，仅背景用）
   grid: `
     linear-gradient(rgba(0,229,255,0.035) 1px, transparent 1px) 0 0 / 32px 32px,
