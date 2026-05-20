@@ -130,6 +130,43 @@ class PerceptionDb(context: Context) :
     return writableDatabase.insertOrThrow("perception_events_android", null, cv)
   }
 
+  /** 读最近一条 sls-watcher-usage_android summary 事件，parse data_json 为 apps 列表。 */
+  fun latestUsageSummary(): UsageSummarySnapshot? {
+    val db = readableDatabase
+    return db.rawQuery(
+      """
+      SELECT id, data_json FROM perception_events_android
+      WHERE bucket_id = 'sls-watcher-usage_android'
+      ORDER BY id DESC LIMIT 1
+      """.trimIndent(),
+      null,
+    ).use { c ->
+      if (!c.moveToFirst()) return@use null
+      val rowId = c.getLong(0)
+      val raw = c.getString(1) ?: return@use null
+      try {
+        val obj = org.json.JSONObject(raw)
+        val intervalEndMs = obj.optLong("interval_end_ms", 0L)
+        val appsArr = obj.optJSONArray("apps") ?: org.json.JSONArray()
+        val apps = ArrayList<UsageAppEntry>(appsArr.length())
+        for (i in 0 until appsArr.length()) {
+          val a = appsArr.getJSONObject(i)
+          apps.add(
+            UsageAppEntry(
+              packageName = a.optString("package_name"),
+              appLabel = a.optString("app_label"),
+              totalTimeMs = a.optLong("total_time_ms", 0L),
+              lastTimeUsed = a.optLong("last_time_used", 0L),
+            )
+          )
+        }
+        UsageSummarySnapshot(rowId, intervalEndMs, apps)
+      } catch (_: Throwable) {
+        null
+      }
+    }
+  }
+
   /** 返回 (bucketCount, eventCount, dbAbsolutePath)。 */
   fun stats(): Triple<Long, Long, String> {
     val db = readableDatabase
@@ -139,6 +176,19 @@ class PerceptionDb(context: Context) :
       .use { c -> if (c.moveToFirst()) c.getLong(0) else 0L }
     return Triple(bucketCount, eventCount, db.path ?: "")
   }
+
+  data class UsageAppEntry(
+    val packageName: String,
+    val appLabel: String,
+    val totalTimeMs: Long,
+    val lastTimeUsed: Long,
+  )
+
+  data class UsageSummarySnapshot(
+    val rowId: Long,
+    val intervalEndMs: Long,
+    val apps: List<UsageAppEntry>,
+  )
 
   companion object {
     private const val DB_NAME = "perception.db"

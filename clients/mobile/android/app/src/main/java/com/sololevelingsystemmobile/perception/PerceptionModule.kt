@@ -90,6 +90,36 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  /** 读最近一条 app.usage_summary 事件并展开为 apps 列表，方便 UI 直接渲染。 */
+  @ReactMethod
+  fun getLatestUsageSummary(promise: Promise) {
+    try {
+      val s = db.latestUsageSummary()
+      if (s == null) {
+        promise.resolve(null)
+        return
+      }
+      val appsArr = Arguments.createArray()
+      for (app in s.apps) {
+        val m = Arguments.createMap().apply {
+          putString("packageName", app.packageName)
+          putString("appLabel", app.appLabel)
+          putDouble("totalTimeMs", app.totalTimeMs.toDouble())
+          putDouble("lastTimeUsed", app.lastTimeUsed.toDouble())
+        }
+        appsArr.pushMap(m)
+      }
+      val out = Arguments.createMap().apply {
+        putDouble("rowId", s.rowId.toDouble())
+        putDouble("intervalEndMs", s.intervalEndMs.toDouble())
+        putArray("apps", appsArr)
+      }
+      promise.resolve(out)
+    } catch (e: Throwable) {
+      promise.reject("GET_LATEST_USAGE_FAILED", e.message, e)
+    }
+  }
+
   @ReactMethod
   fun dbInsertProbe(promise: Promise) {
     try {

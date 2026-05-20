@@ -31,6 +31,19 @@ export type CollectUsageResult = {
   totalForegroundMs: number
 }
 
+export type UsageApp = {
+  packageName: string
+  appLabel: string
+  totalTimeMs: number
+  lastTimeUsed: number
+}
+
+export type UsageSummary = {
+  rowId: number
+  intervalEndMs: number
+  apps: UsageApp[]
+}
+
 interface PerceptionNative {
   ping(): Promise<PingResult>
   dbStats(): Promise<DbStats>
@@ -38,6 +51,7 @@ interface PerceptionNative {
   hasUsageAccess(): Promise<boolean>
   openUsageAccessSettings(): Promise<boolean>
   collectUsageStats(rangeMs: number): Promise<CollectUsageResult>
+  getLatestUsageSummary(): Promise<UsageSummary | null>
 }
 
 const Native: PerceptionNative | null =
@@ -77,4 +91,9 @@ export async function collectUsageStats(
 ): Promise<CollectUsageResult | null> {
   if (!Native) return null
   return Native.collectUsageStats(rangeMs)
+}
+
+export async function getLatestUsageSummary(): Promise<UsageSummary | null> {
+  if (!Native) return null
+  return Native.getLatestUsageSummary()
 }

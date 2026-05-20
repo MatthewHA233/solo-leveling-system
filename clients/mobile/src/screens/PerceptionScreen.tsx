@@ -9,6 +9,7 @@ import { theme } from '../theme'
 import {
   collectUsageStats,
   fetchDbStats,
+  getLatestUsageSummary,
   hasUsageAccess,
   insertDbProbe,
   isPerceptionAvailable,
@@ -16,6 +17,7 @@ import {
   pingPerception,
   type CollectUsageResult,
   type DbStats,
+  type UsageSummary,
 } from '../lib/perception'
 
 export default function PerceptionScreen() {
@@ -32,11 +34,22 @@ export default function PerceptionScreen() {
   const [lastCollect, setLastCollect] = useState<CollectUsageResult | null>(null)
   const [collectError, setCollectError] = useState<string | null>(null)
 
+  const [summary, setSummary] = useState<UsageSummary | null>(null)
+
   useEffect(() => {
     void runPing()
     void refreshDb()
     void refreshUsageAccess()
+    void refreshSummary()
   }, [])
+
+  async function refreshSummary() {
+    try {
+      setSummary(await getLatestUsageSummary())
+    } catch {
+      setSummary(null)
+    }
+  }
 
   async function refreshUsageAccess() {
     try {
@@ -53,6 +66,7 @@ export default function PerceptionScreen() {
       const r = await collectUsageStats()
       setLastCollect(r)
       await refreshDb()
+      await refreshSummary()
     } catch (e: any) {
       setCollectError(e?.message ?? String(e))
     } finally {
@@ -199,12 +213,56 @@ export default function PerceptionScreen() {
         </Pressable>
       </View>
 
+      {summary && summary.apps.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.cardLabel}>
+            Top Apps · 最新采集 #{summary.rowId} @ {fmtClock(summary.intervalEndMs)}
+          </Text>
+          {summary.apps.slice(0, 10).map((app) => (
+            <View key={app.packageName} style={styles.appRow}>
+              <View style={styles.appLeft}>
+                <Text style={styles.appLabel} numberOfLines={1}>
+                  {app.appLabel || app.packageName}
+                </Text>
+                <Text style={styles.appPkg} numberOfLines={1}>
+                  {app.packageName}
+                </Text>
+              </View>
+              <View style={styles.appRight}>
+                <Text style={styles.appDur}>{fmtDuration(app.totalTimeMs)}</Text>
+                <Text style={styles.appPkg}>最近 {fmtClock(app.lastTimeUsed)}</Text>
+              </View>
+            </View>
+          ))}
+          {summary.apps.length > 10 && (
+            <Text style={styles.cardSub}>… 还有 {summary.apps.length - 10} 个</Text>
+          )}
+        </View>
+      )}
+
       <Text style={styles.note}>
-        Phase 1 块 3：调 UsageStatsManager.queryUsageStats 把 app 前台使用时长聚合写入
-        perception_events_android (bucket=sls-watcher-usage_android)。
+        Phase 1 块 4：从 perception_events_android 读最新一条 app.usage_summary，
+        UI 渲染 Top Apps + 时长 + 最近使用时刻。
       </Text>
     </ScrollView>
   )
+}
+
+function fmtDuration(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}秒`
+  const totalMin = Math.round(ms / 60_000)
+  if (totalMin < 60) return `${totalMin}分`
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  return m === 0 ? `${h}小时` : `${h}小时${m}分`
+}
+
+function fmtClock(ms: number): string {
+  if (!ms || ms <= 0) return '—'
+  const d = new Date(ms)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${hh}:${mm}`
 }
 
 const styles = StyleSheet.create({
@@ -291,5 +349,34 @@ const styles = StyleSheet.create({
   placeholderSub: {
     fontSize: 13,
     color: theme.inkSoft,
+  },
+  appRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: theme.line,
+  },
+  appLeft: {
+    flex: 1,
+    paddingRight: 8,
+  },
+  appLabel: {
+    fontSize: 14,
+    color: theme.ink,
+    fontWeight: '600',
+  },
+  appPkg: {
+    fontSize: 11,
+    color: theme.inkSoft,
+    marginTop: 2,
+  },
+  appRight: {
+    alignItems: 'flex-end',
+  },
+  appDur: {
+    fontSize: 14,
+    color: theme.ink,
+    fontWeight: '600',
   },
 })
