@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Boxes, ChevronLeft, ChevronRight, Globe, Laptop, Link2, Monitor, Server, Settings, Smartphone } from 'lucide-react'
+import { Boxes, ChevronLeft, ChevronRight, Globe, Laptop, Link2, Monitor, Server, Settings, Smartphone, X } from 'lucide-react'
 import BiliIcon from './components/icons/BiliIcon'
 import {
   fetchPerceptionSpans, fetchBiliSpans, fetchGoals, parseGoalTags,
@@ -61,6 +61,8 @@ import { pcm16ChunksToWavBlob } from './lib/voice/voice-recorder'
 
 // UI
 import DayNightChart from './components/DayNightChart'
+import MotivationDashboard from './components/MotivationDashboard'
+import ViewSwitcher, { type MainViewMode } from './components/ViewSwitcher'
 import ChatPanel from './components/ChatPanel'
 import SessionPicker from './components/SessionPicker'
 import SettingsPanel from './components/SettingsPanel'
@@ -287,6 +289,25 @@ export default function App() {
   const [showBili, setShowBili] = useState(false)
   const [showModels, setShowModels] = useState(false)
   const [showSync, setShowSync] = useState(false)
+
+  // 主舞台视图模式：动机仪表盘（默认首屏）/ 昼夜表
+  const [mainView, setMainView] = useState<MainViewMode>('motivation')
+  // tab 行 hover 状态 — 平时两卡完全重叠；hover 时背后卡向上滑出露顶（Aceternity tabs 行为）
+  const [tabsHovering, setTabsHovering] = useState(false)
+
+  // 离开昼夜表时，把昼夜表的本地交互状态都退掉（编辑画笔 / 选中 / hover / pin 详情）
+  // 避免切走后还残留"我在编辑那个标签"或"在 hover 某段"的鬼魂状态
+  useEffect(() => {
+    if (mainView === 'daynight') return
+    setEditMode(false)
+    setSelectedTagId(null)
+    setSelectedPlanNodeId(null)
+    setPinnedPos(null)
+    setHoveredTagSpan(null)
+    setHoveredAppSpan(null)
+    setHoveredAppMinute(null)
+    setHoveredBiliSpan(null)
+  }, [mainView])
 
   // 右侧栏可拖拽宽度（持久化到 localStorage）
   const RIGHT_PANEL_MIN = 260
@@ -2546,48 +2567,147 @@ export default function App() {
 
       {/* ── Main: Chart + Right Panel ── */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Chart */}
-        <div style={{ flex: 1, overflow: 'hidden' }}>
-          <DayNightChart
-            activityBlocks={activityBlocks}
-            plannedBlocks={plannedBlocks}
-            planNodes={planNodes}
-            activityPalette={activityPalette}
-            recordLayer={recordLayer}
-            onRecordLayerChange={setRecordLayer}
-            editMode={editMode}
-            selectedTagId={selectedTagId}
-            selectedPlanNodeId={selectedPlanNodeId}
-            onEditModeToggle={() => setEditMode((m) => !m)}
-            canUndo={recordLayer === 'actual' ? undoStack.length > 0 : planUndoStack.length > 0}
-            canRedo={recordLayer === 'actual' ? redoStack.length > 0 : planRedoStack.length > 0}
-            onUndo={handleUndo}
-            onRedo={handleRedo}
-            onApplyDrag={handleApplyDrag}
-            perceptionSpans={perceptionSpans}
-            biliSpans={biliSpans}
-            selectedDate={selectedDate}
-            onSpanClick={() => {}}
-            onSpanHover={setHoveredTagSpan}
-            onAppSpanHover={(span, minute) => { setHoveredAppSpan(span); setHoveredAppMinute(minute ?? null) }}
-            onBiliSpanHover={setHoveredBiliSpan}
-            trackMode={trackMode}
-            onTrackModeChange={setTrackMode}
-            pinnedPos={pinnedPos}
-            onPinPos={setPinnedPos}
-          />
+        {/* Chart 区：顶部水平 ViewSwitcher tab + 下方主面板 */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div
+            onMouseEnter={() => setTabsHovering(true)}
+            onMouseLeave={() => setTabsHovering(false)}
+            style={{
+              flexShrink: 0,
+              padding: '2px 24px 0',
+              display: 'flex', alignItems: 'flex-end',
+            }}
+          >
+            <ViewSwitcher viewMode={mainView} onChange={setMainView} />
+          </div>
+          {/* 卡片堆叠：两个面板 absolute 重叠；hover tab 时背后卡向上滑出露顶。
+              paddingTop 留出"露出空间"，overflow:hidden 把超出顶部的部分裁掉，
+              避免卡片跑进 ViewSwitcher tab 行遮挡标签。 */}
+          <div style={{
+            flex: 1,
+            position: 'relative',
+            paddingTop: 0,
+            overflow: 'hidden',
+            perspective: '1400px',
+            perspectiveOrigin: 'top center',
+          }}>
+            <div style={{
+              position: 'absolute',
+              top: 0, left: 0, right: 0, bottom: 0,
+              transformOrigin: 'top center',
+              transform: mainView === 'daynight'
+                ? tabsHovering
+                  ? 'translateY(24px) scale(1)'
+                  : 'translateY(0) scale(1)'
+                : tabsHovering
+                  ? 'translateY(0) scale(0.97)'
+                  : 'translateY(0) scale(1)',
+              opacity: mainView === 'daynight' ? 1 : tabsHovering ? 0.45 : 0,
+              filter: mainView === 'daynight' ? 'none' : 'brightness(0.7) saturate(0.7)',
+              zIndex: mainView === 'daynight' ? 2 : 1,
+              pointerEvents: mainView === 'daynight' ? 'auto' : 'none',
+              transition: 'transform 0.55s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease, filter 0.4s ease',
+            }}>
+              <DayNightChart
+                activityBlocks={activityBlocks}
+                plannedBlocks={plannedBlocks}
+                planNodes={planNodes}
+                activityPalette={activityPalette}
+                recordLayer={recordLayer}
+                onRecordLayerChange={setRecordLayer}
+                editMode={editMode}
+                selectedTagId={selectedTagId}
+                selectedPlanNodeId={selectedPlanNodeId}
+                onEditModeToggle={() => setEditMode((m) => !m)}
+                canUndo={recordLayer === 'actual' ? undoStack.length > 0 : planUndoStack.length > 0}
+                canRedo={recordLayer === 'actual' ? redoStack.length > 0 : planRedoStack.length > 0}
+                onUndo={handleUndo}
+                onRedo={handleRedo}
+                onApplyDrag={handleApplyDrag}
+                perceptionSpans={perceptionSpans}
+                biliSpans={biliSpans}
+                selectedDate={selectedDate}
+                onSpanClick={() => {}}
+                onSpanHover={setHoveredTagSpan}
+                onAppSpanHover={(span, minute) => { setHoveredAppSpan(span); setHoveredAppMinute(minute ?? null) }}
+                onBiliSpanHover={setHoveredBiliSpan}
+                trackMode={trackMode}
+                onTrackModeChange={setTrackMode}
+                pinnedPos={pinnedPos}
+                onPinPos={setPinnedPos}
+              />
+            </div>
+            <div style={{
+              position: 'absolute',
+              top: 0, left: 0, right: 0, bottom: 0,
+              transformOrigin: 'top center',
+              transform: mainView === 'motivation'
+                ? tabsHovering
+                  ? 'translateY(24px) scale(1)'
+                  : 'translateY(0) scale(1)'
+                : tabsHovering
+                  ? 'translateY(0) scale(0.97)'
+                  : 'translateY(0) scale(1)',
+              opacity: mainView === 'motivation' ? 1 : tabsHovering ? 0.45 : 0,
+              filter: mainView === 'motivation' ? 'none' : 'brightness(0.7) saturate(0.7)',
+              zIndex: mainView === 'motivation' ? 2 : 1,
+              pointerEvents: mainView === 'motivation' ? 'auto' : 'none',
+              transition: 'transform 0.55s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease, filter 0.4s ease',
+            }}>
+              <MotivationDashboard />
+            </div>
+          </div>
         </div>
 
-        {/* Right Panel: Chat or Settings */}
-        <div style={{
-          width: rightPanelWidth,
-          flexShrink: 0,
-          borderLeft: `1px solid ${theme.hudFrameSoft}`,
-          display: 'flex', flexDirection: 'column',
-          background: `linear-gradient(180deg, rgba(4,10,26,0.72) 0%, rgba(2,6,14,0.82) 100%)`,
-          boxShadow: `inset 1px 0 0 ${theme.electricBlue}18, inset 0 0 40px rgba(0,229,255,0.03)`,
-          position: 'relative',
-        }}>
+        {/* Right Panel: Chat or Settings；
+            编辑模式时左边框跟随 recordLayer 颜色（绿 / 橙），inset 发光也对应色 */}
+        {(() => {
+          const rightPanelAccent = editMode
+            ? (recordLayer === 'plan' ? theme.warningOrange : theme.expGreen)
+            : theme.electricBlue
+          return (
+        <div
+          className="right-panel-hud"
+          style={{
+            width: rightPanelWidth,
+            flexShrink: 0,
+            borderLeft: `1px solid ${editMode ? rightPanelAccent + '55' : theme.hudFrameSoft}`,
+            display: 'flex', flexDirection: 'column',
+            background: `linear-gradient(180deg, rgba(4,10,26,0.72) 0%, rgba(2,6,14,0.82) 100%)`,
+            boxShadow: `inset 1px 0 0 ${rightPanelAccent}28, inset 0 0 40px ${rightPanelAccent}08`,
+            position: 'relative',
+            transition: 'border-color 0.2s, box-shadow 0.2s',
+            // CSS 变量供子级滚动条引用（动态跟随 rightPanelAccent）
+            ['--rp-accent' as string]: rightPanelAccent,
+          } as React.CSSProperties}
+        >
+          {/* 注入右栏 HUD 滚动条样式：跟随 rightPanelAccent，半透明，细 */}
+          <style>{`
+            .right-panel-hud *::-webkit-scrollbar {
+              width: 6px;
+              height: 6px;
+            }
+            .right-panel-hud *::-webkit-scrollbar-track {
+              background: transparent;
+            }
+            .right-panel-hud *::-webkit-scrollbar-thumb {
+              background: ${rightPanelAccent}33;
+              border: 1px solid ${rightPanelAccent}22;
+              border-radius: 0;
+            }
+            .right-panel-hud *::-webkit-scrollbar-thumb:hover {
+              background: ${rightPanelAccent}77;
+              border-color: ${rightPanelAccent}AA;
+              box-shadow: 0 0 4px ${rightPanelAccent}88;
+            }
+            .right-panel-hud *::-webkit-scrollbar-corner {
+              background: transparent;
+            }
+            .right-panel-hud * {
+              scrollbar-color: ${rightPanelAccent}55 transparent;
+              scrollbar-width: thin;
+            }
+          `}</style>
           {/* 拖拽手柄：贴在左边框上的不可见 6px 竖条；hover 时左 1px 边线高亮 */}
           <div
             onMouseDown={(e) => {
@@ -2615,6 +2735,42 @@ export default function App() {
               el.style.background = 'transparent'
             }}
           />
+
+          {/* 编辑模式：右上角 X 关闭按钮（HUD 切角风格，= ① 主按钮再点击退出编辑模式） */}
+          {editMode && (
+            <button
+              type="button"
+              onClick={() => setEditMode(false)}
+              style={{
+                position: 'absolute',
+                top: 6, right: 16,
+                zIndex: 81,
+                width: 22, height: 20,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                background: `${rightPanelAccent}10`,
+                border: `1px solid ${rightPanelAccent}66`,
+                color: rightPanelAccent,
+                cursor: 'pointer',
+                padding: 0,
+                lineHeight: 1,
+                clipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
+                transition: 'background 0.15s, border-color 0.15s, color 0.15s',
+              }}
+              onMouseEnter={(e) => {
+                const el = e.currentTarget as HTMLButtonElement
+                el.style.background = `${rightPanelAccent}22`
+                el.style.borderColor = `${rightPanelAccent}AA`
+              }}
+              onMouseLeave={(e) => {
+                const el = e.currentTarget as HTMLButtonElement
+                el.style.background = `${rightPanelAccent}10`
+                el.style.borderColor = `${rightPanelAccent}66`
+              }}
+            >
+              <X size={11} />
+            </button>
+          )}
+
           {/* 右侧栏内容：编辑模式 → 标签库（+ 当前轨道详情）；非编辑模式 → 聊天 / 详情 */}
           {editMode ? (() => {
             const pm = pinnedPos?.minute ?? null
@@ -2808,6 +2964,8 @@ export default function App() {
             )
           })()}
         </div>
+        )
+        })()}
       </div>
 
       {/* ── Session Picker（侧栏，停靠在聊天面板左侧，不遮挡聊天窗口）── */}
