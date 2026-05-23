@@ -5,6 +5,7 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableArray
 
 /**
  * 感知层原生模块 (Android-only)。
@@ -153,6 +154,52 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
       promise.resolve(true)
     } catch (e: Throwable) {
       promise.reject("RESET_CLICK_COUNTS_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun purgeSelfWindowEvents(promise: Promise) {
+    try {
+      promise.resolve(db.purgeSelfWindowEvents())
+    } catch (e: Throwable) {
+      promise.reject("PURGE_SELF_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun getAppIcons(packageNames: ReadableArray, promise: Promise) {
+    try {
+      val out = Arguments.createMap()
+      for (i in 0 until packageNames.size()) {
+        val pkg = packageNames.getString(i) ?: continue
+        val b64 = AppIconResolver.base64Of(reactContext, pkg)
+        out.putString(pkg, b64)
+      }
+      promise.resolve(out)
+    } catch (e: Throwable) {
+      promise.reject("GET_APP_ICONS_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun getWindowEventsInRange(startMs: Double, endMs: Double, limit: Double, promise: Promise) {
+    try {
+      val items = db.windowEventsInRange(startMs.toLong(), endMs.toLong(), limit.toInt())
+      val arr = Arguments.createArray()
+      for (it in items) {
+        arr.pushMap(Arguments.createMap().apply {
+          putDouble("rowId", it.rowId.toDouble())
+          putString("startAt", it.startAt)
+          putString("packageName", it.packageName)
+          putString("className", it.className)
+          putString("appLabel", it.appLabel)
+          putString("windowTitle", it.windowTitle)
+          putDouble("eventTimeMs", it.eventTimeMs.toDouble())
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) {
+      promise.reject("GET_WINDOW_EVENTS_RANGE_FAILED", e.message, e)
     }
   }
 

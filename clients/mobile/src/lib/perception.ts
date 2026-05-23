@@ -76,8 +76,11 @@ interface PerceptionNative {
   isAccessibilityEnabled(): Promise<boolean>
   openAccessibilitySettings(): Promise<boolean>
   getRecentWindowEvents(limit: number): Promise<WindowEvent[]>
+  getWindowEventsInRange(startMs: number, endMs: number, limit: number): Promise<WindowEvent[]>
   getClickCounts(): Promise<ClickCountSnapshot>
   resetClickCounts(): Promise<boolean>
+  getAppIcons(packageNames: string[]): Promise<Record<string, string>>
+  purgeSelfWindowEvents(): Promise<number>
 }
 
 const Native: PerceptionNative | null =
@@ -139,6 +142,15 @@ export async function getRecentWindowEvents(limit: number = 20): Promise<WindowE
   return Native.getRecentWindowEvents(limit)
 }
 
+export async function getWindowEventsInRange(
+  startMs: number,
+  endMs: number,
+  limit: number = 200,
+): Promise<WindowEvent[]> {
+  if (!Native) return []
+  return Native.getWindowEventsInRange(startMs, endMs, limit)
+}
+
 export async function getClickCounts(): Promise<ClickCountSnapshot> {
   if (!Native) return { total: 0, entries: [] }
   return Native.getClickCounts()
@@ -147,4 +159,18 @@ export async function getClickCounts(): Promise<ClickCountSnapshot> {
 export async function resetClickCounts(): Promise<boolean> {
   if (!Native) return false
   return Native.resetClickCounts()
+}
+
+/**
+ * 批量取 app launcher 图标，返回 { pkg: base64PngStr }。空串表示解不出（系统服务等）。
+ * 上层用法：<Image source={{ uri: `data:image/png;base64,${base64}` }} />
+ */
+export async function getAppIcons(packageNames: string[]): Promise<Record<string, string>> {
+  if (!Native || packageNames.length === 0) return {}
+  return Native.getAppIcons(packageNames)
+}
+
+export async function purgeSelfWindowEvents(): Promise<number> {
+  if (!Native) return 0
+  return Native.purgeSelfWindowEvents()
 }

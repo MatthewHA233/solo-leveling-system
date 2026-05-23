@@ -167,6 +167,73 @@ class PerceptionDb(context: Context) :
     }
   }
 
+  /**
+   * 按 [startMs, endMs) 时间区间查窗口事件，按 id 升序（时间正序，方便 UI 渲染 timeline）。
+   * 时间字段比较走 `start_at`（UTC ISO 字符串），与 [nowIso] 同格式可直接 lex 比较。
+   */
+  fun windowEventsInRange(startMs: Long, endMs: Long, limit: Int): List<WindowEventSnapshot> {
+    val db = readableDatabase
+    val cap = limit.coerceIn(1, 500)
+    val out = ArrayList<WindowEventSnapshot>()
+    val startIso = isoFmt.format(Date(startMs))
+    val endIso = isoFmt.format(Date(endMs))
+    db.rawQuery(
+      """
+      SELECT id, start_at, data_json FROM perception_events_android
+      WHERE bucket_id = 'sls-watcher-window_android'
+        AND start_at >= ? AND start_at < ?
+      ORDER BY id ASC LIMIT ?
+      """.trimIndent(),
+      arrayOf(startIso, endIso, cap.toString()),
+    ).use { c ->
+      while (c.moveToNext()) {
+        val rowId = c.getLong(0)
+        val startAt = c.getString(1) ?: ""
+        val raw = c.getString(2) ?: continue
+        try {
+          val obj = org.json.JSONObject(raw)
+          val pkg = obj.optString("package_name")
+          // 查询端兜底过滤：旧版本 Service 没过滤自身的脏数据这里也挡掉
+          if (pkg == "com.sololevelingsystemmobile") continue
+          out.add(
+            WindowEventSnapshot(
+              rowId = rowId,
+              startAt = startAt,
+              packageName = pkg,
+              className = obj.optString("class_name"),
+              appLabel = obj.optString("app_label"),
+              windowTitle = obj.optString("window_title"),
+              eventTimeMs = obj.optLong("event_time_ms", 0L),
+            )
+          )
+        } catch (_: Throwable) {
+          // ignore
+        }
+      }
+    }
+    return out
+  }
+
+  /** 一次性清掉所有 sls 自身的窗口事件（迁移用，新代码不会再写）。 */
+  fun purgeSelfWindowEvents(): Int {
+    val db = writableDatabase
+    var deleted = 0
+    db.rawQuery(
+      """
+      SELECT id FROM perception_events_android
+      WHERE bucket_id = 'sls-watcher-window_android'
+        AND data_json LIKE '%"package_name":"com.sololevelingsystemmobile"%'
+      """.trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        val id = c.getLong(0)
+        deleted += db.delete("perception_events_android", "id = ?", arrayOf(id.toString()))
+      }
+    }
+    return deleted
+  }
+
   /** 读最近 N 条窗口切换事件，按 id 倒序（最新在前）。 */
   fun recentWindowEvents(limit: Int): List<WindowEventSnapshot> {
     val db = readableDatabase
