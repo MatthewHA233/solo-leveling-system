@@ -50,6 +50,7 @@ class SlsAccessibilityService : AccessibilityService() {
 
   private fun handleClick(e: AccessibilityEvent) {
     val pkg = e.packageName?.toString() ?: return
+    if (pkg == applicationContext.packageName) return
     clickCountsByPkg
       .computeIfAbsent(pkg) { AtomicLong(0L) }
       .incrementAndGet()
@@ -58,6 +59,8 @@ class SlsAccessibilityService : AccessibilityService() {
 
   private fun handleWindowState(e: AccessibilityEvent) {
     val pkg = e.packageName?.toString() ?: return
+    // 过滤自身：AccessibilityEvent.text 会把整个 modal 内可见文字拼进 title，污染严重
+    if (pkg == applicationContext.packageName) return
     val cls = e.className?.toString() ?: ""
     val now = System.currentTimeMillis()
     if (pkg == lastPkg && cls == lastClass && now - lastTs < DEDUP_WINDOW_MS) return
