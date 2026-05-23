@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Animated,
+  Image,
   Modal,
   PanResponder,
   Pressable,
@@ -27,6 +28,7 @@ import type {
 } from '../types'
 import { eraseBlocks, fetchBlocks, fetchPalette, paintBlocks } from '../lib/api'
 import { addDays, fmtDateLabel, fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
+import { getAppIcons, getWindowEventsInRange, type WindowEvent } from '../lib/perception'
 
 const FULL_ROWS = 18
 const FULL_COLS = 12
@@ -123,6 +125,12 @@ function snapMinute(minute: number): number {
   return clamp(Math.round(minute / 5) * 5, 0, 1435)
 }
 
+function fmtHHMMms(ms: number): string {
+  if (!ms || ms <= 0) return '--:--'
+  const d = new Date(ms)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 function inferPlanMeta(title: string): PlanMeta {
   const hit = PLAN_PRESETS.find((p) => p.pattern.test(title))
   return hit?.meta ?? DEFAULT_PLAN_META
@@ -160,6 +168,9 @@ export default function DayNightScreen() {
   const [editMode, setEditMode] = useState(false)
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null)
   const [detail, setDetail] = useState<Span | null>(null)
+  const [probeEvents, setProbeEvents] = useState<WindowEvent[]>([])
+  const [probeLoading, setProbeLoading] = useState(false)
+  const [iconCache, setIconCache] = useState<Record<string, string>>({})
   const [focusStart, setFocusStart] = useState(3)
   const [planOpen, setPlanOpen] = useState(false)
   const [composerOpen, setComposerOpen] = useState(false)
@@ -221,6 +232,42 @@ export default function DayNightScreen() {
       alive = false
     }
   }, [selectedDate])
+
+  // detail span 打开时，按时段拉对应窗口切换事件
+  useEffect(() => {
+    if (!detail) {
+      setProbeEvents([])
+      return
+    }
+    const midnight = new Date(selectedDate)
+    midnight.setHours(0, 0, 0, 0)
+    const startMs = midnight.getTime() + detail.startMin * 60_000
+    const endMs = midnight.getTime() + detail.endMin * 60_000
+    let alive = true
+    setProbeLoading(true)
+    getWindowEventsInRange(startMs, endMs, 200)
+      .then(async (evs) => {
+        if (!alive) return
+        setProbeEvents(evs)
+        // 异步把还没缓存的 pkg 图标拉过来
+        const needed = Array.from(new Set(evs.map((e) => e.packageName))).filter(
+          (p) => p && !(p in iconCache),
+        )
+        if (needed.length > 0) {
+          const fetched = await getAppIcons(needed)
+          if (alive) setIconCache((prev) => ({ ...prev, ...fetched }))
+        }
+      })
+      .catch(() => {
+        if (alive) setProbeEvents([])
+      })
+      .finally(() => {
+        if (alive) setProbeLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [detail, selectedDate])
 
   const categoryById = useMemo(() => {
     const m = new Map<number, ActivityCategory>()
@@ -939,6 +986,59 @@ export default function DayNightScreen() {
                   {detailTag ? ` · ${detailTag.fullPath}` : ''}
                 </Text>
                 {detail.note && <Text style={styles.sheetNote}>{detail.note}</Text>}
+
+                <View style={styles.sheetProbe}>
+                  <Text style={styles.sheetProbeLabel}>在这段时间手机</Text>
+                  {probeLoading ? (
+                    <Text style={styles.sheetProbeEmpty}>读取中…</Text>
+                  ) : probeEvents.length === 0 ? (
+                    <Text style={styles.sheetProbeEmpty}>
+                      没有窗口切换记录（可能 Service 未启用、或当时没切 app）
+                    </Text>
+                  ) : (
+                    <>
+                      {probeEvents.slice(0, 12).map((ev) => {
+                        const label = ev.appLabel || ev.packageName
+                        // 标题等于 app 名（或包名）就不重复显示
+                        const subtitle =
+                          ev.windowTitle && ev.windowTitle !== label && ev.windowTitle !== ev.packageName
+                            ? ev.windowTitle
+                            : ''
+                        const b64 = iconCache[ev.packageName]
+                        const initial = (label || '?').slice(0, 1).toUpperCase()
+                        return (
+                          <View key={ev.rowId} style={styles.sheetProbeRow}>
+                            <Text style={styles.sheetProbeTime}>{fmtHHMMms(ev.eventTimeMs)}</Text>
+                            {b64 ? (
+                              <Image
+                                style={styles.sheetProbeIcon}
+                                source={{ uri: `data:image/png;base64,${b64}` }}
+                              />
+                            ) : (
+                              <View style={styles.sheetProbeIconFallback}>
+                                <Text style={styles.sheetProbeIconText}>{initial}</Text>
+                              </View>
+                            )}
+                            <View style={styles.sheetProbeBody}>
+                              <Text style={styles.sheetProbeApp} numberOfLines={1}>{label}</Text>
+                              {!!subtitle && (
+                                <Text style={styles.sheetProbeSub} numberOfLines={1}>
+                                  {subtitle}
+                                </Text>
+                              )}
+                            </View>
+                          </View>
+                        )
+                      })}
+                      {probeEvents.length > 12 && (
+                        <Text style={styles.sheetProbeMore}>
+                          … 还有 {probeEvents.length - 12} 条
+                        </Text>
+                      )}
+                    </>
+                  )}
+                </View>
+
                 <Pressable
                   style={styles.sheetDelete}
                   onPress={() => {
@@ -1189,16 +1289,24 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(20,20,24,0.35)',
+    backgroundColor: 'rgba(20,20,24,0.18)',
     justifyContent: 'flex-end',
   },
   sheet: {
-    backgroundColor: theme.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.94)',
+    marginHorizontal: 10,
+    marginBottom: 14,
+    borderRadius: 22,
     paddingHorizontal: 22,
-    paddingBottom: 30,
-    paddingTop: 10,
+    paddingBottom: 24,
+    paddingTop: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.05)',
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 10,
   },
   sheetHandle: {
     alignSelf: 'center',
@@ -1256,5 +1364,72 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: theme.danger,
     fontWeight: '500',
+  },
+  sheetProbe: {
+    marginTop: 18,
+    paddingTop: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(0,0,0,0.08)',
+  },
+  sheetProbeLabel: {
+    fontSize: 11,
+    color: theme.inkSoft,
+    marginBottom: 10,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  sheetProbeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    gap: 10,
+  },
+  sheetProbeTime: {
+    fontSize: 12,
+    color: theme.inkSoft,
+    width: 44,
+    fontVariant: ['tabular-nums'],
+  },
+  sheetProbeIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.04)',
+  },
+  sheetProbeIconFallback: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetProbeIconText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: theme.inkSoft,
+  },
+  sheetProbeBody: {
+    flex: 1,
+  },
+  sheetProbeApp: {
+    fontSize: 14,
+    color: theme.ink,
+    fontWeight: '500',
+  },
+  sheetProbeSub: {
+    fontSize: 11,
+    color: theme.inkSoft,
+    marginTop: 1,
+  },
+  sheetProbeEmpty: {
+    fontSize: 12,
+    color: theme.inkSoft,
+    fontStyle: 'italic',
+  },
+  sheetProbeMore: {
+    fontSize: 11,
+    color: theme.inkSoft,
+    marginTop: 6,
   },
 })
