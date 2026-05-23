@@ -121,6 +121,28 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun getRecentWindowEvents(limit: Double, promise: Promise) {
+    try {
+      val items = db.recentWindowEvents(limit.toInt())
+      val arr = Arguments.createArray()
+      for (it in items) {
+        arr.pushMap(Arguments.createMap().apply {
+          putDouble("rowId", it.rowId.toDouble())
+          putString("startAt", it.startAt)
+          putString("packageName", it.packageName)
+          putString("className", it.className)
+          putString("appLabel", it.appLabel)
+          putString("windowTitle", it.windowTitle)
+          putDouble("eventTimeMs", it.eventTimeMs.toDouble())
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) {
+      promise.reject("GET_WINDOW_EVENTS_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
   fun isAccessibilityEnabled(promise: Promise) {
     try {
       promise.resolve(SlsAccessibilityService.isEnabled(reactContext))

@@ -44,6 +44,16 @@ export type UsageSummary = {
   apps: UsageApp[]
 }
 
+export type WindowEvent = {
+  rowId: number
+  startAt: string
+  packageName: string
+  className: string
+  appLabel: string
+  windowTitle: string
+  eventTimeMs: number
+}
+
 interface PerceptionNative {
   ping(): Promise<PingResult>
   dbStats(): Promise<DbStats>
@@ -54,6 +64,7 @@ interface PerceptionNative {
   getLatestUsageSummary(): Promise<UsageSummary | null>
   isAccessibilityEnabled(): Promise<boolean>
   openAccessibilitySettings(): Promise<boolean>
+  getRecentWindowEvents(limit: number): Promise<WindowEvent[]>
 }
 
 const Native: PerceptionNative | null =
@@ -108,4 +119,9 @@ export async function isAccessibilityEnabled(): Promise<boolean> {
 export async function openAccessibilitySettings(): Promise<boolean> {
   if (!Native) return false
   return Native.openAccessibilitySettings()
+}
+
+export async function getRecentWindowEvents(limit: number = 20): Promise<WindowEvent[]> {
+  if (!Native) return []
+  return Native.getRecentWindowEvents(limit)
 }

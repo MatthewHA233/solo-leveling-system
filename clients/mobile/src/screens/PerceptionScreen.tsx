@@ -10,6 +10,7 @@ import {
   collectUsageStats,
   fetchDbStats,
   getLatestUsageSummary,
+  getRecentWindowEvents,
   hasUsageAccess,
   insertDbProbe,
   isAccessibilityEnabled,
@@ -20,6 +21,7 @@ import {
   type CollectUsageResult,
   type DbStats,
   type UsageSummary,
+  type WindowEvent,
 } from '../lib/perception'
 
 export default function PerceptionScreen() {
@@ -39,6 +41,7 @@ export default function PerceptionScreen() {
   const [summary, setSummary] = useState<UsageSummary | null>(null)
 
   const [a11yEnabled, setA11yEnabled] = useState<boolean | null>(null)
+  const [windowEvents, setWindowEvents] = useState<WindowEvent[]>([])
 
   useEffect(() => {
     void runPing()
@@ -46,6 +49,7 @@ export default function PerceptionScreen() {
     void refreshUsageAccess()
     void refreshSummary()
     void refreshA11y()
+    void refreshWindowEvents()
   }, [])
 
   async function refreshA11y() {
@@ -58,6 +62,14 @@ export default function PerceptionScreen() {
 
   async function openA11ySettings() {
     await openAccessibilitySettings()
+  }
+
+  async function refreshWindowEvents() {
+    try {
+      setWindowEvents(await getRecentWindowEvents(20))
+    } catch {
+      setWindowEvents([])
+    }
   }
 
   async function refreshSummary() {
@@ -246,6 +258,36 @@ export default function PerceptionScreen() {
             <Text style={[styles.btnText, styles.btnGhostText]}>重检</Text>
           </Pressable>
         </View>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>
+          最近窗口切换 · {windowEvents.length} 条 (最多 20)
+        </Text>
+        {windowEvents.length === 0 ? (
+          <Text style={styles.cardValue}>未捕获 — 切换 app 或打开其他应用试试</Text>
+        ) : (
+          windowEvents.slice(0, 20).map((ev) => (
+            <View key={ev.rowId} style={styles.appRow}>
+              <View style={styles.appLeft}>
+                <Text style={styles.appLabel} numberOfLines={1}>
+                  {ev.appLabel || ev.packageName}
+                  {ev.windowTitle ? `  ·  ${ev.windowTitle}` : ''}
+                </Text>
+                <Text style={styles.appPkg} numberOfLines={1}>
+                  {ev.packageName} / {ev.className}
+                </Text>
+              </View>
+              <Text style={styles.appPkg}>{fmtClock(ev.eventTimeMs)}</Text>
+            </View>
+          ))
+        )}
+        <Pressable
+          style={[styles.btn, styles.btnGhost, { marginTop: 10 }]}
+          onPress={refreshWindowEvents}
+        >
+          <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
+        </Pressable>
       </View>
 
       {summary && summary.apps.length > 0 && (

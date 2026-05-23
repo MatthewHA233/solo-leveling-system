@@ -167,6 +167,44 @@ class PerceptionDb(context: Context) :
     }
   }
 
+  /** 读最近 N 条窗口切换事件，按 id 倒序（最新在前）。 */
+  fun recentWindowEvents(limit: Int): List<WindowEventSnapshot> {
+    val db = readableDatabase
+    val cap = limit.coerceIn(1, 200)
+    val out = ArrayList<WindowEventSnapshot>(cap)
+    db.rawQuery(
+      """
+      SELECT id, start_at, data_json FROM perception_events_android
+      WHERE bucket_id = 'sls-watcher-window_android'
+      ORDER BY id DESC LIMIT ?
+      """.trimIndent(),
+      arrayOf(cap.toString()),
+    ).use { c ->
+      while (c.moveToNext()) {
+        val rowId = c.getLong(0)
+        val startAt = c.getString(1) ?: ""
+        val raw = c.getString(2) ?: continue
+        try {
+          val obj = org.json.JSONObject(raw)
+          out.add(
+            WindowEventSnapshot(
+              rowId = rowId,
+              startAt = startAt,
+              packageName = obj.optString("package_name"),
+              className = obj.optString("class_name"),
+              appLabel = obj.optString("app_label"),
+              windowTitle = obj.optString("window_title"),
+              eventTimeMs = obj.optLong("event_time_ms", 0L),
+            )
+          )
+        } catch (_: Throwable) {
+          // ignore malformed row
+        }
+      }
+    }
+    return out
+  }
+
   /** 返回 (bucketCount, eventCount, dbAbsolutePath)。 */
   fun stats(): Triple<Long, Long, String> {
     val db = readableDatabase
@@ -188,6 +226,16 @@ class PerceptionDb(context: Context) :
     val rowId: Long,
     val intervalEndMs: Long,
     val apps: List<UsageAppEntry>,
+  )
+
+  data class WindowEventSnapshot(
+    val rowId: Long,
+    val startAt: String,
+    val packageName: String,
+    val className: String,
+    val appLabel: String,
+    val windowTitle: String,
+    val eventTimeMs: Long,
   )
 
   companion object {
