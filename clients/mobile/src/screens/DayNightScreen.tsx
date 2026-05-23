@@ -26,7 +26,7 @@ import type {
   ActivityPalette,
   ActivityTag,
 } from '../types'
-import { eraseBlocks, fetchBlocks, fetchPalette, paintBlocks } from '../lib/api'
+import { createTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks } from '../lib/api'
 import { addDays, fmtDateLabel, fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
 import { getAppIcons, getWindowEventsInRange, type WindowEvent } from '../lib/perception'
 
@@ -125,6 +125,300 @@ function snapMinute(minute: number): number {
   return clamp(Math.round(minute / 5) * 5, 0, 1435)
 }
 
+// 标签树节点：fullPath 按 "," 分层，category 名是 level0，逐层往下
+type TagTreeNode = {
+  segment: string
+  fullPath: string
+  tag: ActivityTag | null  // 自己是不是个实标签（branch + 自身都有可能命中）
+  children: TagTreeNode[]
+  catColor: string
+}
+
+function buildTagTree(
+  tags: ActivityTag[],
+  categories: ActivityCategory[],
+): TagTreeNode[] {
+  const catByName = new Map(categories.map((c) => [c.name, c]))
+  const roots: TagTreeNode[] = []
+  const rootByName = new Map<string, TagTreeNode>()
+  for (const cat of categories) {
+    const r: TagTreeNode = {
+      segment: cat.name,
+      fullPath: cat.name,
+      tag: null,
+      children: [],
+      catColor: cat.color,
+    }
+    roots.push(r)
+    rootByName.set(cat.name, r)
+  }
+  for (const tag of tags) {
+    const parts = tag.fullPath.split(',')
+    const cat = catByName.get(parts[0])
+    if (!cat) continue
+    let node = rootByName.get(parts[0])!
+    for (let i = 1; i < parts.length; i++) {
+      const seg = parts[i]
+      let child = node.children.find((c) => c.segment === seg)
+      if (!child) {
+        child = {
+          segment: seg,
+          fullPath: parts.slice(0, i + 1).join(','),
+          tag: null,
+          children: [],
+          catColor: cat.color,
+        }
+        node.children.push(child)
+      }
+      node = child
+    }
+    node.tag = tag
+  }
+  // 每层 children 按"新旧"排序：取自身或后代里最大的 lastUsedAt，倒序
+  const recencyOf = (n: TagTreeNode): string => {
+    let best = n.tag?.lastUsedAt ?? ''
+    for (const c of n.children) {
+      const r = recencyOf(c)
+      if (r > best) best = r
+    }
+    return best
+  }
+  const sortRec = (n: TagTreeNode) => {
+    n.children.sort((a, b) => recencyOf(b).localeCompare(recencyOf(a)))
+    for (const c of n.children) sortRec(c)
+  }
+  for (const r of roots) sortRec(r)
+  // 过滤空 root（无命中 tag 的 category），并按 root 的最新度排序
+  return roots
+    .filter((r) => r.children.length > 0)
+    .sort((a, b) => recencyOf(b).localeCompare(recencyOf(a)))
+}
+
+/** 递归渲染标签树节点。叶子 = chip；分支 = 嵌套 box；分支自身有 tag 时 box 头部可点击。 */
+function TagTreeView({
+  node,
+  depth,
+  selectedId,
+  onPick,
+}: {
+  node: TagTreeNode
+  depth: number
+  selectedId: number | null
+  onPick: (id: number) => void
+}) {
+  // 叶子：无 children 且有 tag → 单 chip
+  if (node.children.length === 0 && node.tag) {
+    const on = node.tag.id === selectedId
+    const c = node.catColor
+    return (
+      <Pressable
+        onPress={() => onPick(node.tag!.id)}
+        style={[
+          treeStyles.leafChip,
+          {
+            backgroundColor: on ? alpha(c, 0.38) : alpha(c, 0.22),
+            borderColor: on ? c : alpha(c, 0.55),
+          },
+          on && treeStyles.leafChipOn,
+        ]}
+      >
+        <Text style={[treeStyles.leafText, on && treeStyles.leafTextOn]}>
+          {node.segment}
+        </Text>
+      </Pressable>
+    )
+  }
+  // 分支：嵌套 box；先 leaf 子节点行内 chip，再 branch 子节点垂直堆叠
+  const leafKids = node.children.filter((c) => c.children.length === 0 && c.tag)
+  const branchKids = node.children.filter((c) => c.children.length > 0)
+  const onHeader = node.tag != null && node.tag.id === selectedId
+  return (
+    <View
+      style={[
+        treeStyles.box,
+        {
+          // 浅深底色 + 边框承担 category 识别，文字保持 ink
+          backgroundColor: alpha(node.catColor, depth === 0 ? 0.1 : 0.06),
+          borderColor: alpha(node.catColor, depth === 0 ? 0.55 : 0.35),
+          borderLeftWidth: depth === 0 ? 4 : 2,
+        },
+      ]}
+    >
+      <Pressable
+        disabled={node.tag == null}
+        onPress={() => node.tag && onPick(node.tag.id)}
+        style={treeStyles.headerRow}
+      >
+        <View
+          style={[
+            treeStyles.headerDot,
+            { backgroundColor: node.catColor },
+          ]}
+        />
+        <Text
+          style={[
+            depth === 0 ? treeStyles.catHeader : treeStyles.branchHeader,
+            onHeader && { fontWeight: '800', textDecorationLine: 'underline' },
+          ]}
+        >
+          {node.segment}
+        </Text>
+        {node.tag != null && <Text style={treeStyles.selfMark}>（可选）</Text>}
+      </Pressable>
+      {leafKids.length > 0 && (
+        <View style={treeStyles.leafRow}>
+          {leafKids.map((c) => (
+            <TagTreeView
+              key={c.fullPath}
+              node={c}
+              depth={depth + 1}
+              selectedId={selectedId}
+              onPick={onPick}
+            />
+          ))}
+        </View>
+      )}
+      {branchKids.map((c) => (
+        <TagTreeView
+          key={c.fullPath}
+          node={c}
+          depth={depth + 1}
+          selectedId={selectedId}
+          onPick={onPick}
+        />
+      ))}
+    </View>
+  )
+}
+
+const treeStyles = StyleSheet.create({
+  box: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 9,
+    marginBottom: 8,
+    gap: 6,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  headerDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+  },
+  catHeader: {
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    color: theme.ink,
+  },
+  branchHeader: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: theme.ink,
+  },
+  selfMark: {
+    fontSize: 10.5,
+    color: theme.inkSoft,
+  },
+  leafRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 5,
+  },
+  leafChip: {
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 13,
+    borderWidth: 1,
+  },
+  leafChipOn: {
+    borderWidth: 1.5,
+  },
+  leafText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.ink,
+  },
+  leafTextOn: {
+    fontWeight: '700',
+  },
+})
+
+/** 软件风调节器图标 —— 3 条水平滑条 + 圆形滑块，纯 RN 几何，无依赖。 */
+function SlidersGlyph({ color = '#FFF', size = 14 }: { color?: string; size?: number }) {
+  const knob = Math.max(3, Math.round(size * 0.22))
+  const lineH = Math.max(1, Math.round(size * 0.08))
+  const rowGap = (size - knob * 3) / 2
+  const knobPositions = [0.18, 0.62, 0.34] // 三条滑条上滑块的水平位置百分比
+  return (
+    <View style={{ width: size, height: size, justifyContent: 'space-between' }}>
+      {knobPositions.map((leftPct, i) => (
+        <View key={i} style={{ height: knob, justifyContent: 'center', marginTop: i === 0 ? 0 : rowGap }}>
+          <View
+            style={{
+              height: lineH,
+              backgroundColor: color,
+              opacity: 0.55,
+              borderRadius: lineH / 2,
+            }}
+          />
+          <View
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: `${leftPct * 100}%`,
+              width: knob,
+              height: knob,
+              borderRadius: knob / 2,
+              backgroundColor: color,
+              marginLeft: -knob / 2,
+            }}
+          />
+        </View>
+      ))}
+    </View>
+  )
+}
+
+/** 纯 RN 画的 search 图标（圆环 + 把手），无第三方 SVG 依赖。 */
+function SearchGlyph({ color = '#888', size = 14 }: { color?: string; size?: number }) {
+  const ringSize = Math.round(size * 0.78)
+  const handleLen = Math.round(size * 0.4)
+  const handleWidth = Math.max(1, Math.round(size * 0.13))
+  return (
+    <View style={{ width: size, height: size }}>
+      <View
+        style={{
+          width: ringSize,
+          height: ringSize,
+          borderRadius: ringSize / 2,
+          borderWidth: handleWidth,
+          borderColor: color,
+          position: 'absolute',
+          top: 0,
+          left: 0,
+        }}
+      />
+      <View
+        style={{
+          width: handleLen,
+          height: handleWidth,
+          backgroundColor: color,
+          borderRadius: handleWidth / 2,
+          position: 'absolute',
+          bottom: 0,
+          right: 0,
+          transform: [{ rotate: '45deg' }],
+        }}
+      />
+    </View>
+  )
+}
+
 function fmtHHMMms(ms: number): string {
   if (!ms || ms <= 0) return '--:--'
   const d = new Date(ms)
@@ -167,6 +461,9 @@ export default function DayNightScreen() {
   const [loading, setLoading] = useState(true)
   const [editMode, setEditMode] = useState(false)
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null)
+  const [recentTagIds, setRecentTagIds] = useState<number[]>([])
+  const [tagPickerOpen, setTagPickerOpen] = useState(false)
+  const [tagQuery, setTagQuery] = useState('')
   const [detail, setDetail] = useState<Span | null>(null)
   const [probeEvents, setProbeEvents] = useState<WindowEvent[]>([])
   const [probeLoading, setProbeLoading] = useState(false)
@@ -304,6 +601,63 @@ export default function DayNightScreen() {
     const cat = tag ? categoryById.get(tag.categoryId) : undefined
     return cat?.color ?? theme.inkSoft
   }
+
+  // 选标签 + LRU 推进 + 更新 lastUsedAt + 关闭 picker
+  const pickTag = (id: number) => {
+    setSelectedTagId(id)
+    setRecentTagIds((prev) => [id, ...prev.filter((x) => x !== id)].slice(0, 8))
+    if (palette) {
+      const now = new Date().toISOString()
+      let changed = false
+      const nextTags = palette.tags.map((t) => {
+        if (t.id === id) {
+          changed = true
+          return { ...t, lastUsedAt: now }
+        }
+        return t
+      })
+      if (changed) setPalette({ ...palette, tags: nextTags })
+    }
+    setTagPickerOpen(false)
+    setTagQuery('')
+  }
+
+  // 过滤后的标签列表 —— fuzzy 评分对齐 desktop ActivityTagPalette：
+  // 100 精确等 query / 80 路径某段精确等 / 60 子串 / 40 分类名子串
+  const filteredTags = useMemo(() => {
+    if (!palette) return []
+    const q = tagQuery.trim().toLowerCase()
+    if (!q) {
+      return [...palette.tags].sort((a, b) =>
+        (b.lastUsedAt ?? '').localeCompare(a.lastUsedAt ?? ''),
+      )
+    }
+    type Scored = { tag: typeof palette.tags[number]; score: number }
+    const scored: Scored[] = []
+    for (const t of palette.tags) {
+      const path = t.fullPath.toLowerCase()
+      const cat = categoryById.get(t.categoryId)
+      const catName = (cat?.name ?? '').toLowerCase()
+      let score = 0
+      if (path === q) score = 100
+      else if (path.split(',').some((s) => s.trim() === q)) score = 80
+      else if (path.includes(q)) score = 60
+      else if (catName.includes(q)) score = 40
+      if (score > 0) scored.push({ tag: t, score })
+    }
+    scored.sort((a, b) =>
+      b.score - a.score || (b.tag.lastUsedAt ?? '').localeCompare(a.tag.lastUsedAt ?? ''),
+    )
+    return scored.map((s) => s.tag)
+  }, [palette, tagQuery, categoryById])
+
+  const recentTags = useMemo(() => {
+    if (!palette) return []
+    return recentTagIds
+      .map((id) => palette.tags.find((t) => t.id === id))
+      .filter((t): t is NonNullable<typeof t> => !!t)
+      .slice(0, 5)
+  }, [palette, recentTagIds])
 
   const tagAt = (hour: number, col: number): number | null =>
     blockByMinute.get(hour * 60 + col * 5)?.tagId ?? null
@@ -572,16 +926,6 @@ export default function DayNightScreen() {
     <View style={styles.root}>
       {/* 日期行 */}
       <View style={styles.dateRow}>
-        <Pressable
-          hitSlop={8}
-          onPress={() => setPlanOpen((v) => !v)}
-          style={[styles.inboxBtn, planOpen && styles.inboxBtnOn]}
-        >
-          <Text style={[styles.inboxIcon, planOpen && { color: theme.accent }]}>□</Text>
-          <Text style={[styles.inboxText, planOpen && { color: theme.accent }]}>
-            {inboxTasks.length > 0 ? `收件箱 ${inboxTasks.length}` : '收件箱'}
-          </Text>
-        </Pressable>
         <Pressable hitSlop={10} onPress={() => setSelectedDate((d) => addDays(d, -1))} style={styles.arrow}>
           <Text style={styles.arrowText}>‹</Text>
         </Pressable>
@@ -592,11 +936,6 @@ export default function DayNightScreen() {
         <Pressable hitSlop={10} onPress={() => setSelectedDate((d) => addDays(d, 1))} style={styles.arrow}>
           <Text style={styles.arrowText}>›</Text>
         </Pressable>
-        <Pressable onPress={() => setEditMode((v) => !v)} hitSlop={8} style={styles.editBtn}>
-          <Text style={[styles.editText, editMode && { color: theme.accent }]}>
-            {editMode ? '完成' : '编辑'}
-          </Text>
-        </Pressable>
       </View>
 
       {/* 概览 */}
@@ -604,7 +943,6 @@ export default function DayNightScreen() {
         <Text style={styles.summaryText}>
           已记录 <Text style={styles.summaryStrong}>{fmtHM(summary.total)}</Text>
           {summary.rows.length > 0 ? ` · ${summary.rows.length} 类` : ''}
-          {scheduledTasks.length > 0 ? ` · 已计划 ${scheduledTasks.length} 项` : ''}
         </Text>
         <View style={styles.sumBar}>
           {summary.rows.map((r) => (
@@ -616,36 +954,59 @@ export default function DayNightScreen() {
         </View>
       </View>
 
-      {planOpen && (
-        <View style={styles.planDock}>
-          <View style={styles.planDockHead}>
-            <View>
-              <Text style={styles.planDockTitle}>计划收件箱</Text>
-              <Text style={styles.planDockSub}>拖到昼夜表，或点右侧按钮自动找空档</Text>
-            </View>
-            <Pressable onPress={() => openComposer()} style={styles.newPlanBtn}>
-              <Text style={styles.newPlanText}>新建</Text>
-            </Pressable>
-          </View>
-          {inboxTasks.length === 0 ? (
-            <Pressable onPress={() => openComposer()} style={styles.emptyInbox}>
-              <Text style={styles.emptyInboxTitle}>没有未安排任务</Text>
-              <Text style={styles.emptyInboxText}>先捕捉一个想法，再把它排进时间轴</Text>
+      {/* 整行按钮：idle 状态显示居中的"编辑"主按钮；编辑模式下同位置一组小按钮 */}
+      {palette && (
+        <View style={styles.actionSlot}>
+          {!editMode ? (
+            <Pressable onPress={() => setEditMode(true)} style={styles.editFullBtn}>
+              <SlidersGlyph color="#FFF" size={15} />
+              <Text style={styles.editFullText}>编辑昼夜表</Text>
             </Pressable>
           ) : (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {inboxTasks.map((task) => (
-                <PlanTaskCard
-                  key={task.id}
-                  task={task}
-                  onSchedule={() => scheduleTaskAt(task.id, null)}
-                  onDrop={(x, y) => scheduleTaskFromPoint(task.id, x, y)}
-                />
-              ))}
-            </ScrollView>
+            <View style={styles.editingChips}>
+              <Pressable
+                onPress={() => setTagPickerOpen(true)}
+                style={styles.searchPillBtn}
+              >
+                <SearchGlyph color={theme.inkSoft} size={13} />
+                <Text style={styles.searchPillText} numberOfLines={1}>
+                  {selectedTagId != null
+                    ? tagById.get(selectedTagId)?.leafName ?? '选标签'
+                    : '选标签'}
+                </Text>
+              </Pressable>
+              {recentTags.slice(0, 4).map((tag) => {
+                const on = tag.id === selectedTagId
+                const c = colorOf(tag.id)
+                return (
+                  <Pressable
+                    key={tag.id}
+                    onPress={() => pickTag(tag.id)}
+                    style={[
+                      styles.recentChip,
+                      {
+                        backgroundColor: on ? alpha(c, 0.38) : alpha(c, 0.22),
+                        borderColor: on ? c : alpha(c, 0.55),
+                      },
+                    ]}
+                  >
+                    <Text style={styles.recentChipText} numberOfLines={1}>
+                      {tag.leafName}
+                    </Text>
+                  </Pressable>
+                )
+              })}
+              <Pressable
+                onPress={() => setEditMode(false)}
+                style={[styles.donePillBtn, { marginLeft: 'auto' }]}
+              >
+                <Text style={styles.donePillText}>完成</Text>
+              </Pressable>
+            </View>
           )}
         </View>
       )}
+
 
       {loading ? (
         <View style={styles.loading}>
@@ -804,35 +1165,6 @@ export default function DayNightScreen() {
                       </View>
                     )
                   })}
-                  {planRuns.map(({ task, start, end }) => {
-                    const leftPct = ((start - row.hour * 60) / 60) * 100
-                    const widthPct = ((end - start) / 60) * 100
-                    const showTitle = end - start >= 10
-                    return (
-                      <View
-                        key={task.id}
-                        style={[
-                          styles.planOverlay,
-                          {
-                            left: `${leftPct}%`,
-                            width: `${widthPct}%`,
-                            borderColor: task.color,
-                            backgroundColor: alpha(task.color, 0.16),
-                          },
-                        ]}
-                        pointerEvents="none"
-                      >
-                        <Text style={[styles.planOverlayIcon, { color: task.color }]}>
-                          {task.icon}
-                        </Text>
-                        {showTitle ? (
-                          <Text style={styles.planOverlayText} numberOfLines={1}>
-                            {task.title}
-                          </Text>
-                        ) : null}
-                      </View>
-                    )
-                  })}
                 </View>
               )
             })}
@@ -840,31 +1172,10 @@ export default function DayNightScreen() {
         </View>
       )}
 
-      {/* 编辑画笔 */}
-      {editMode && palette && (
-        <View style={styles.brush}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            {palette.tags.map((tag) => {
-              const on = tag.id === selectedTagId
-              return (
-                <Pressable
-                  key={tag.id}
-                  onPress={() => setSelectedTagId(tag.id)}
-                  style={[styles.chip, on && { backgroundColor: theme.accentSoft }]}
-                >
-                  <View style={[styles.chipDot, { backgroundColor: colorOf(tag.id) }]} />
-                  <Text style={[styles.chipText, on && { color: theme.accent, fontWeight: '600' }]}>
-                    {tag.leafName}
-                  </Text>
-                </Pressable>
-              )
-            })}
-          </ScrollView>
-        </View>
-      )}
 
+      {/* composer Modal 已删除（收件箱机制弃用） */}
       <Modal
-        visible={composerOpen}
+        visible={false}
         transparent
         animationType="fade"
         onRequestClose={() => setComposerOpen(false)}
@@ -1053,6 +1364,94 @@ export default function DayNightScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* 编辑模式 · 标签云浮层（顶部展开 + 蒙版盖住下方昼夜表） */}
+      {editMode && tagPickerOpen && palette && (
+        <Pressable
+          style={styles.pickerBackdrop}
+          onPress={() => {
+            setTagPickerOpen(false)
+            setTagQuery('')
+          }}
+        >
+          <Pressable style={styles.pickerCloud} onPress={() => {}}>
+            {/* 标签云顶部内嵌搜索框 */}
+            <View style={styles.searchBoxInCloud}>
+              <SearchGlyph color={theme.inkSoft} />
+              <TextInput
+                value={tagQuery}
+                onChangeText={setTagQuery}
+                placeholder="搜索标签 / 分类..."
+                placeholderTextColor={theme.inkSoft}
+                autoFocus
+                style={styles.searchInput}
+              />
+              <Pressable
+                hitSlop={10}
+                onPress={() => {
+                  setTagPickerOpen(false)
+                  setTagQuery('')
+                }}
+                style={styles.searchClose}
+              >
+                <Text style={styles.searchCloseText}>×</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.pickerHint}>
+              {tagQuery
+                ? `匹配 ${filteredTags.length} / ${palette.tags.length} 个`
+                : `全部 ${palette.tags.length} 个标签 · 输入即过滤 · 含 , 可新建`}
+            </Text>
+            {(() => {
+              const trimmed = tagQuery.trim().replace(/^,+|,+$/g, '')
+              const segs = trimmed.split(',').map((s) => s.trim()).filter(Boolean)
+              if (segs.length < 2) return null
+              const normalized = segs.join(',')
+              const exists = palette.tags.some((t) => t.fullPath === normalized)
+              if (exists) return null
+              const isNewCat = !palette.categories.some((c) => c.name === segs[0])
+              return (
+                <Pressable
+                  style={styles.createRow}
+                  onPress={async () => {
+                    const updated = await createTag(normalized)
+                    setPalette(updated)
+                    const created = updated.tags.find((t) => t.fullPath === normalized)
+                    if (created) pickTag(created.id)
+                  }}
+                >
+                  <Text style={styles.createPlus}>+</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.createMain}>新建标签 「{segs[segs.length - 1]}」</Text>
+                    <Text style={styles.createPath}>
+                      {segs.slice(0, -1).join(' › ')}
+                      {isNewCat && <Text style={styles.createNewCat}>  · 含新分类「{segs[0]}」</Text>}
+                    </Text>
+                  </View>
+                </Pressable>
+              )
+            })()}
+            <ScrollView
+              contentContainerStyle={styles.treeScroll}
+              keyboardShouldPersistTaps="always"
+            >
+              {filteredTags.length === 0 ? (
+                <Text style={styles.pickerNoMatch}>没找到匹配的标签</Text>
+              ) : (
+                buildTagTree(filteredTags, palette.categories).map((root) => (
+                  <TagTreeView
+                    key={root.fullPath}
+                    node={root}
+                    depth={0}
+                    selectedId={selectedTagId}
+                    onPick={pickTag}
+                  />
+                ))
+              )}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      )}
     </View>
   )
 }
@@ -1262,30 +1661,225 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
     textAlign: 'center',
   },
-  brush: {
-    paddingVertical: 9,
-    paddingLeft: 12,
-    backgroundColor: theme.surface,
-    borderTopWidth: 1,
-    borderTopColor: theme.line,
+  // —— 顶部操作槽位：固定高度，idle = 整行居中编辑按钮，editing = 横排小按钮 ——
+  actionSlot: {
+    height: 56,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
   },
-  chip: {
+  // 主操作按钮（idle）—— 整行宽度，文字居中，深色 + 阴影
+  editFullBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: theme.accent,
+    shadowColor: theme.accent,
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  editFullText: {
+    fontSize: 14.5,
+    color: '#FFF',
+    fontWeight: '700',
+    letterSpacing: 0.6,
+  },
+  // 编辑模式下的小按钮们（横排）
+  editingChips: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  searchPillBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: 11,
     paddingVertical: 7,
     borderRadius: 16,
-    marginRight: 8,
+    backgroundColor: theme.bg,
+    borderWidth: 1,
+    borderColor: theme.line,
+    maxWidth: 160,
   },
-  chipDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 5,
+  searchPillText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: theme.ink,
   },
-  chipText: {
+  donePillBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 14,
+    backgroundColor: theme.accent,
+    shadowColor: theme.accent,
+    shadowOpacity: 0.22,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  donePillText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FFF',
+  },
+  pickerInline: {
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    maxWidth: 160,
+  },
+  pickerInlineText: {
+    fontSize: 13.5,
+    color: theme.ink,
+    fontWeight: '600',
+  },
+  searchBoxInCloud: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    height: 38,
+    paddingHorizontal: 12,
+    borderRadius: 19,
+    backgroundColor: theme.bg,
+    borderWidth: 1,
+    borderColor: theme.accent,
+    marginBottom: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 13,
+    color: theme.ink,
+    padding: 0,
+    margin: 0,
+  },
+  searchClose: {
+    width: 22,
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  searchCloseText: {
+    fontSize: 18,
+    color: theme.inkSoft,
+    lineHeight: 18,
+  },
+  recentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    flexShrink: 1,
+  },
+  recentEmpty: {
+    fontSize: 11,
+    color: theme.inkSoft,
+    fontStyle: 'italic',
+  },
+  recentChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    maxWidth: 90,
+    borderWidth: 1,
+  },
+  recentChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: theme.ink,
+  },
+  pickerBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(245,246,248,0.85)',
+  },
+  pickerCloud: {
+    position: 'absolute',
+    top: 140,
+    left: 10,
+    right: 10,
+    maxHeight: '70%',
+    backgroundColor: 'rgba(255,255,255,0.98)',
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 14,
+    borderWidth: 1,
+    borderColor: theme.line,
+  },
+  pickerHint: {
+    fontSize: 11,
+    color: theme.inkSoft,
+    marginBottom: 10,
+    letterSpacing: 0.3,
+  },
+  pickerWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 7,
+    paddingBottom: 14,
+  },
+  treeScroll: {
+    paddingBottom: 14,
+  },
+  createRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: alpha(theme.accent, 0.08),
+    borderWidth: 1,
+    borderColor: alpha(theme.accent, 0.35),
+    borderStyle: 'dashed',
+    borderRadius: 11,
+    marginBottom: 10,
+  },
+  createPlus: {
+    fontSize: 18,
+    color: theme.accent,
+    fontWeight: '700',
+  },
+  createMain: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.ink,
+  },
+  createPath: {
+    fontSize: 11,
+    color: theme.inkSoft,
+    marginTop: 1,
+  },
+  createNewCat: {
+    color: theme.accent,
+    fontWeight: '600',
+  },
+  pickerChip: {
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 13,
+    borderWidth: 1,
+  },
+  pickerChipText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  pickerNoMatch: {
     fontSize: 13,
     color: theme.inkSoft,
+    paddingVertical: 12,
   },
   backdrop: {
     flex: 1,
