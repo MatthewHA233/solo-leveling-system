@@ -4,26 +4,104 @@ import android.accessibilityservice.AccessibilityService
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * 前台窗口感知 Service。
  *
- * Phase 2-块 1：仅骨架 —— onAccessibilityEvent 只 log，不写 DB。
- * Phase 2-块 2 起接入 perception_events_android（bucket = sls-watcher-window_android）。
+ * Phase 2-块 2：监听 [AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED]，
+ * 提取 (package, class, window_title)，写入 perception_events_android
+ * （bucket = `sls-watcher-window_android`, event_type = `window.state_changed`）。
+ *
+ * 设计要点：
+ * - 同 (pkg, class) 1 秒内去重，过滤 launcher/旋转抖动
+ * - SQLite 写在 SingleThreadExecutor，避免阻塞 Service 主线程
+ * - window_title 从 [AccessibilityEvent.getText] 列表拼接，不读控件树，侵入最小
  *
  * 启用方式：用户去 设置 → 辅助功能 → 已下载的应用 → SLS 感知前台窗口 → 启用。
- * 我们只用 canRetrieveWindowContent + typeWindowStateChanged，不读控件树文本，最小侵入。
  */
 class SlsAccessibilityService : AccessibilityService() {
+
+  private val db: PerceptionDb by lazy { PerceptionDb(applicationContext) }
+  private val executor: ExecutorService = Executors.newSingleThreadExecutor { r ->
+    Thread(r, "sls-a11y-writer").apply { isDaemon = true }
+  }
+  private val pm: PackageManager by lazy { applicationContext.packageManager }
+
+  @Volatile private var lastPkg: String? = null
+  @Volatile private var lastClass: String? = null
+  @Volatile private var lastTs: Long = 0L
 
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     val e = event ?: return
     if (e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-    Log.d(TAG, "window_state_changed pkg=${e.packageName} class=${e.className}")
+
+    val pkg = e.packageName?.toString() ?: return
+    val cls = e.className?.toString() ?: ""
+    val now = System.currentTimeMillis()
+    if (pkg == lastPkg && cls == lastClass && now - lastTs < DEDUP_WINDOW_MS) return
+    lastPkg = pkg
+    lastClass = cls
+    lastTs = now
+
+    val title = extractTitle(e)
+
+    executor.execute {
+      try {
+        val label = resolveLabel(pkg)
+        val payload = org.json.JSONObject().apply {
+          put("package_name", pkg)
+          put("class_name", cls)
+          put("app_label", label)
+          put("window_title", title)
+          put("event_time_ms", now)
+          put("source", SOURCE)
+        }
+        val nowIso = PerceptionDb.nowIso()
+        db.ensureBucket(
+          id = BUCKET_ID,
+          kind = BUCKET_KIND,
+          eventType = EVENT_TYPE,
+          source = SOURCE,
+        )
+        db.insertEvent(
+          bucketId = BUCKET_ID,
+          startAt = nowIso,
+          endAt = nowIso,
+          dataJson = payload.toString(),
+        )
+        Log.d(TAG, "window pkg=$pkg cls=$cls title=$title")
+      } catch (ex: Throwable) {
+        Log.w(TAG, "write window event failed", ex)
+      }
+    }
+  }
+
+  private fun extractTitle(e: AccessibilityEvent): String {
+    val list = e.text ?: return ""
+    val sb = StringBuilder()
+    for (t in list) {
+      val s = t?.toString() ?: continue
+      if (s.isBlank()) continue
+      if (sb.isNotEmpty()) sb.append(" / ")
+      sb.append(s)
+    }
+    return sb.toString()
+  }
+
+  private fun resolveLabel(pkg: String): String = try {
+    val ai = pm.getApplicationInfo(pkg, 0)
+    pm.getApplicationLabel(ai).toString()
+  } catch (_: PackageManager.NameNotFoundException) {
+    pkg
+  } catch (_: Throwable) {
+    pkg
   }
 
   override fun onInterrupt() {
@@ -38,13 +116,20 @@ class SlsAccessibilityService : AccessibilityService() {
 
   override fun onDestroy() {
     instanceRunning = false
+    executor.shutdown()
     super.onDestroy()
   }
 
   companion object {
     private const val TAG = "SlsAccessibility"
 
-    /** Service 自报"我活着"，跟 enabled-list 配合做更严格的存活判断。 */
+    private const val BUCKET_ID = "sls-watcher-window_android"
+    private const val BUCKET_KIND = "window"
+    private const val EVENT_TYPE = "window.state_changed"
+    private const val SOURCE = "android_accessibility"
+
+    private const val DEDUP_WINDOW_MS = 1000L
+
     @Volatile
     private var instanceRunning: Boolean = false
 
