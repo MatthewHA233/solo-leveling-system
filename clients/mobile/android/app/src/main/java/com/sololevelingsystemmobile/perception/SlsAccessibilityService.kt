@@ -9,8 +9,10 @@ import android.provider.Settings
 import android.text.TextUtils
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 前台窗口感知 Service。
@@ -40,8 +42,21 @@ class SlsAccessibilityService : AccessibilityService() {
 
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     val e = event ?: return
-    if (e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+    when (e.eventType) {
+      AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> handleWindowState(e)
+      AccessibilityEvent.TYPE_VIEW_CLICKED -> handleClick(e)
+    }
+  }
 
+  private fun handleClick(e: AccessibilityEvent) {
+    val pkg = e.packageName?.toString() ?: return
+    clickCountsByPkg
+      .computeIfAbsent(pkg) { AtomicLong(0L) }
+      .incrementAndGet()
+    totalClicks.incrementAndGet()
+  }
+
+  private fun handleWindowState(e: AccessibilityEvent) {
     val pkg = e.packageName?.toString() ?: return
     val cls = e.className?.toString() ?: ""
     val now = System.currentTimeMillis()
@@ -132,6 +147,27 @@ class SlsAccessibilityService : AccessibilityService() {
 
     @Volatile
     private var instanceRunning: Boolean = false
+
+    /**
+     * 进程内点击计数：pkg -> 累计次数。Service 进程重启即清零，
+     * 语义是"开机/重启 Service 以来该 app 收到的 TYPE_VIEW_CLICKED 次数"。
+     */
+    private val clickCountsByPkg: ConcurrentHashMap<String, AtomicLong> = ConcurrentHashMap()
+    private val totalClicks = AtomicLong(0L)
+
+    /** 当前快照：返回 (pkg -> count) 列表，按 count 降序，以及总数。 */
+    fun snapshotClicks(): Pair<List<Pair<String, Long>>, Long> {
+      val list = clickCountsByPkg.entries
+        .map { it.key to it.value.get() }
+        .sortedByDescending { it.second }
+      return list to totalClicks.get()
+    }
+
+    /** 清空当前计数。 */
+    fun resetClicks() {
+      clickCountsByPkg.clear()
+      totalClicks.set(0L)
+    }
 
     /** 判断当前 Service 是否已在系统辅助功能列表里启用。 */
     fun isEnabled(context: Context): Boolean {

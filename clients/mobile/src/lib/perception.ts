@@ -54,6 +54,17 @@ export type WindowEvent = {
   eventTimeMs: number
 }
 
+export type ClickCountEntry = {
+  packageName: string
+  appLabel: string
+  count: number
+}
+
+export type ClickCountSnapshot = {
+  total: number
+  entries: ClickCountEntry[]
+}
+
 interface PerceptionNative {
   ping(): Promise<PingResult>
   dbStats(): Promise<DbStats>
@@ -65,6 +76,8 @@ interface PerceptionNative {
   isAccessibilityEnabled(): Promise<boolean>
   openAccessibilitySettings(): Promise<boolean>
   getRecentWindowEvents(limit: number): Promise<WindowEvent[]>
+  getClickCounts(): Promise<ClickCountSnapshot>
+  resetClickCounts(): Promise<boolean>
 }
 
 const Native: PerceptionNative | null =
@@ -124,4 +137,14 @@ export async function openAccessibilitySettings(): Promise<boolean> {
 export async function getRecentWindowEvents(limit: number = 20): Promise<WindowEvent[]> {
   if (!Native) return []
   return Native.getRecentWindowEvents(limit)
+}
+
+export async function getClickCounts(): Promise<ClickCountSnapshot> {
+  if (!Native) return { total: 0, entries: [] }
+  return Native.getClickCounts()
+}
+
+export async function resetClickCounts(): Promise<boolean> {
+  if (!Native) return false
+  return Native.resetClickCounts()
 }

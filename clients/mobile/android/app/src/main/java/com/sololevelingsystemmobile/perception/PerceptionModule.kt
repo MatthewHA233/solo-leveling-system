@@ -121,6 +121,42 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun getClickCounts(promise: Promise) {
+    try {
+      val (list, total) = SlsAccessibilityService.snapshotClicks()
+      val pm = reactContext.packageManager
+      val arr = Arguments.createArray()
+      for ((pkg, count) in list) {
+        val label = try {
+          val ai = pm.getApplicationInfo(pkg, 0)
+          pm.getApplicationLabel(ai).toString()
+        } catch (_: Throwable) { pkg }
+        arr.pushMap(Arguments.createMap().apply {
+          putString("packageName", pkg)
+          putString("appLabel", label)
+          putDouble("count", count.toDouble())
+        })
+      }
+      promise.resolve(Arguments.createMap().apply {
+        putDouble("total", total.toDouble())
+        putArray("entries", arr)
+      })
+    } catch (e: Throwable) {
+      promise.reject("GET_CLICK_COUNTS_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun resetClickCounts(promise: Promise) {
+    try {
+      SlsAccessibilityService.resetClicks()
+      promise.resolve(true)
+    } catch (e: Throwable) {
+      promise.reject("RESET_CLICK_COUNTS_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
   fun getRecentWindowEvents(limit: Double, promise: Promise) {
     try {
       val items = db.recentWindowEvents(limit.toInt())

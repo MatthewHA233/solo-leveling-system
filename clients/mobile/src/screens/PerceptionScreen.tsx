@@ -10,6 +10,7 @@ import {
   collectUsageStats,
   fetchDbStats,
   getLatestUsageSummary,
+  getClickCounts,
   getRecentWindowEvents,
   hasUsageAccess,
   insertDbProbe,
@@ -18,6 +19,8 @@ import {
   openAccessibilitySettings,
   openUsageAccessSettings,
   pingPerception,
+  resetClickCounts,
+  type ClickCountSnapshot,
   type CollectUsageResult,
   type DbStats,
   type UsageSummary,
@@ -42,6 +45,7 @@ export default function PerceptionScreen() {
 
   const [a11yEnabled, setA11yEnabled] = useState<boolean | null>(null)
   const [windowEvents, setWindowEvents] = useState<WindowEvent[]>([])
+  const [clicks, setClicks] = useState<ClickCountSnapshot>({ total: 0, entries: [] })
 
   useEffect(() => {
     void runPing()
@@ -50,7 +54,21 @@ export default function PerceptionScreen() {
     void refreshSummary()
     void refreshA11y()
     void refreshWindowEvents()
+    void refreshClicks()
   }, [])
+
+  async function refreshClicks() {
+    try {
+      setClicks(await getClickCounts())
+    } catch {
+      setClicks({ total: 0, entries: [] })
+    }
+  }
+
+  async function clearClicks() {
+    await resetClickCounts()
+    await refreshClicks()
+  }
 
   async function refreshA11y() {
     try {
@@ -288,6 +306,37 @@ export default function PerceptionScreen() {
         >
           <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
         </Pressable>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>点击计数 · 进程内累计</Text>
+        <Text style={styles.cardValue}>
+          总计 {clicks.total} 次 · 涉及 {clicks.entries.length} 个 app
+        </Text>
+        <Text style={styles.cardSub}>
+          Service 进程重启清零。仅内存，不写 DB。
+        </Text>
+        {clicks.entries.slice(0, 10).map((c) => (
+          <View key={c.packageName} style={styles.appRow}>
+            <View style={styles.appLeft}>
+              <Text style={styles.appLabel} numberOfLines={1}>
+                {c.appLabel || c.packageName}
+              </Text>
+              <Text style={styles.appPkg} numberOfLines={1}>
+                {c.packageName}
+              </Text>
+            </View>
+            <Text style={styles.appDur}>{c.count}</Text>
+          </View>
+        ))}
+        <View style={styles.btnRow}>
+          <Pressable style={styles.btn} onPress={refreshClicks}>
+            <Text style={styles.btnText}>刷新</Text>
+          </Pressable>
+          <Pressable style={[styles.btn, styles.btnGhost]} onPress={clearClicks}>
+            <Text style={[styles.btnText, styles.btnGhostText]}>清零</Text>
+          </Pressable>
+        </View>
       </View>
 
       {summary && summary.apps.length > 0 && (
