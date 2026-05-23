@@ -18,6 +18,7 @@ import {
   mockApplyErase,
   mockApplyPaint,
   mockBlocks,
+  mockCreateTag,
   mockPalette,
   mockReply,
 } from './mock'
@@ -133,6 +134,25 @@ export async function fetchPalette(): Promise<ActivityPalette> {
       tags: data.tags.map(mapTag),
     }
   } catch {
+    return mockPalette()
+  }
+}
+
+/**
+ * 创建新 tag（fullPath 形如 "工作,日常,新事项"）。
+ * 首段未匹配现有 category 时自动新建 category（desktop 尚不支持，手机端先做）。
+ * 返回更新后的完整 palette 方便前端 setState 不需要二次 fetch。
+ */
+export async function createTag(fullPath: string): Promise<ActivityPalette> {
+  try {
+    await lanFetch<unknown>('/api/activities/tag/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fullPath }),
+    })
+    return await fetchPalette()
+  } catch {
+    mockCreateTag(fullPath)
     return mockPalette()
   }
 }
