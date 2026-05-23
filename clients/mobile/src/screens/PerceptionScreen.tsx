@@ -12,7 +12,9 @@ import {
   getLatestUsageSummary,
   hasUsageAccess,
   insertDbProbe,
+  isAccessibilityEnabled,
   isPerceptionAvailable,
+  openAccessibilitySettings,
   openUsageAccessSettings,
   pingPerception,
   type CollectUsageResult,
@@ -36,12 +38,27 @@ export default function PerceptionScreen() {
 
   const [summary, setSummary] = useState<UsageSummary | null>(null)
 
+  const [a11yEnabled, setA11yEnabled] = useState<boolean | null>(null)
+
   useEffect(() => {
     void runPing()
     void refreshDb()
     void refreshUsageAccess()
     void refreshSummary()
+    void refreshA11y()
   }, [])
+
+  async function refreshA11y() {
+    try {
+      setA11yEnabled(await isAccessibilityEnabled())
+    } catch {
+      setA11yEnabled(false)
+    }
+  }
+
+  async function openA11ySettings() {
+    await openAccessibilitySettings()
+  }
 
   async function refreshSummary() {
     try {
@@ -211,6 +228,24 @@ export default function PerceptionScreen() {
         <Pressable style={styles.btn} onPress={runCollect} disabled={collecting}>
           <Text style={styles.btnText}>{collecting ? '采集中…' : '采集一次'}</Text>
         </Pressable>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>AccessibilityService (前台窗口监听)</Text>
+        <Text style={styles.cardValue}>
+          {a11yEnabled == null ? '检测中…' : a11yEnabled ? '已启用' : '未启用'}
+        </Text>
+        <Text style={styles.cardSub}>
+          手动启用路径：系统设置 → 辅助功能 → 已下载的应用 → SLS 感知前台窗口
+        </Text>
+        <View style={styles.btnRow}>
+          <Pressable style={styles.btn} onPress={openA11ySettings}>
+            <Text style={styles.btnText}>打开辅助功能设置</Text>
+          </Pressable>
+          <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshA11y}>
+            <Text style={[styles.btnText, styles.btnGhostText]}>重检</Text>
+          </Pressable>
+        </View>
       </View>
 
       {summary && summary.apps.length > 0 && (

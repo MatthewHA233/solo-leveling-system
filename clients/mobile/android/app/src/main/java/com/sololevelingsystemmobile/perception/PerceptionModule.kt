@@ -121,6 +121,24 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun isAccessibilityEnabled(promise: Promise) {
+    try {
+      promise.resolve(SlsAccessibilityService.isEnabled(reactContext))
+    } catch (e: Throwable) {
+      promise.reject("ACCESSIBILITY_CHECK_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun openAccessibilitySettings(promise: Promise) {
+    try {
+      promise.resolve(SlsAccessibilityService.openSettings(reactContext))
+    } catch (e: Throwable) {
+      promise.reject("OPEN_ACCESSIBILITY_SETTINGS_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
   fun dbInsertProbe(promise: Promise) {
     try {
       val now = PerceptionDb.nowIso()

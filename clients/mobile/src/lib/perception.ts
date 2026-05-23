@@ -52,6 +52,8 @@ interface PerceptionNative {
   openUsageAccessSettings(): Promise<boolean>
   collectUsageStats(rangeMs: number): Promise<CollectUsageResult>
   getLatestUsageSummary(): Promise<UsageSummary | null>
+  isAccessibilityEnabled(): Promise<boolean>
+  openAccessibilitySettings(): Promise<boolean>
 }
 
 const Native: PerceptionNative | null =
@@ -96,4 +98,14 @@ export async function collectUsageStats(
 export async function getLatestUsageSummary(): Promise<UsageSummary | null> {
   if (!Native) return null
   return Native.getLatestUsageSummary()
+}
+
+export async function isAccessibilityEnabled(): Promise<boolean> {
+  if (!Native) return false
+  return Native.isAccessibilityEnabled()
+}
+
+export async function openAccessibilitySettings(): Promise<boolean> {
+  if (!Native) return false
+  return Native.openAccessibilitySettings()
 }
