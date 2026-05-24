@@ -525,7 +525,13 @@ export default function DayNightScreen() {
   const [editMode, setEditMode] = useState(false)
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null)
   const [recentTagIds, setRecentTagIds] = useState<number[]>([])
-  const [tagPickerOpen, setTagPickerOpen] = useState(false)
+  // null = picker 关闭；'browse' = 点中间标签按钮（不自动 focus 输入框）；
+  // 'search' = 点搜索按钮（自动 focus 输入框）
+  const [pickerMode, setPickerMode] = useState<null | 'browse' | 'search'>(null)
+  const tagPickerOpen = pickerMode != null
+  const setTagPickerOpen = (open: boolean) => setPickerMode(open ? 'browse' : null)
+  // picker 浮层贴在 toolbar 下方，需要知道 toolbar 底部 y 坐标
+  const [actionSlotBottom, setActionSlotBottom] = useState(0)
   const [tagQuery, setTagQuery] = useState('')
   const [detail, setDetail] = useState<Span | null>(null)
   const [probeEvents, setProbeEvents] = useState<WindowEvent[]>([])
@@ -1126,7 +1132,13 @@ export default function DayNightScreen() {
 
       {/* 整行按钮：idle 状态显示居中的"编辑"主按钮；编辑模式下同位置一组小按钮 */}
       {palette && (
-        <View style={styles.actionSlot}>
+        <View
+          style={styles.actionSlot}
+          onLayout={(e) => {
+            const { y, height } = e.nativeEvent.layout
+            setActionSlotBottom(y + height)
+          }}
+        >
           {!editMode ? (
             <Pressable onPress={() => setEditMode(true)} style={styles.editFullBtn}>
               <SlidersGlyph color="#FFF" size={15} />
@@ -1134,38 +1146,40 @@ export default function DayNightScreen() {
             </Pressable>
           ) : (
             <View style={styles.editingChips}>
+              {/* 搜索按钮：单独入口，点开后自动 focus 输入框 */}
               <Pressable
-                onPress={() => setTagPickerOpen(true)}
-                style={styles.searchPillBtn}
+                onPress={() =>
+                  setPickerMode((m) => (m === 'search' ? null : 'search'))
+                }
+                style={[
+                  styles.iconBtn,
+                  pickerMode === 'search' && styles.iconBtnActive,
+                ]}
               >
-                <SearchGlyph color={theme.inkSoft} size={13} />
-                <Text style={styles.searchPillText} numberOfLines={1}>
+                <SearchGlyph
+                  color={pickerMode === 'search' ? theme.accent : theme.ink}
+                  size={14}
+                />
+              </Pressable>
+              {/* 当前标签按钮：点开浏览模式（不 focus 输入框，直接看标签云） */}
+              <Pressable
+                onPress={() =>
+                  setPickerMode((m) => (m === 'browse' ? null : 'browse'))
+                }
+                style={[
+                  styles.currentTagBtn,
+                  pickerMode === 'browse' && styles.currentTagBtnActive,
+                ]}
+              >
+                <Text style={styles.currentTagText} numberOfLines={1}>
                   {selectedTagId != null
                     ? tagById.get(selectedTagId)?.leafName ?? '选标签'
                     : '选标签'}
                 </Text>
+                <Text style={styles.currentTagChev}>
+                  {pickerMode === 'browse' ? '▴' : '▾'}
+                </Text>
               </Pressable>
-              {recentTags.slice(0, 4).map((tag) => {
-                const on = tag.id === selectedTagId
-                const c = colorOf(tag.id)
-                return (
-                  <Pressable
-                    key={tag.id}
-                    onPress={() => pickTag(tag.id)}
-                    style={[
-                      styles.recentChip,
-                      {
-                        backgroundColor: on ? alpha(c, 0.38) : alpha(c, 0.22),
-                        borderColor: on ? c : alpha(c, 0.55),
-                      },
-                    ]}
-                  >
-                    <Text style={styles.recentChipText} numberOfLines={1}>
-                      {tag.leafName}
-                    </Text>
-                  </Pressable>
-                )
-              })}
               <Pressable
                 onPress={handleUndo}
                 disabled={undoStack.length === 0}
@@ -1564,17 +1578,19 @@ export default function DayNightScreen() {
         </Pressable>
       </Modal>
 
-      {/* 编辑模式 · 标签云浮层（顶部展开 + 蒙版盖住下方昼夜表） */}
+      {/* 标签云浮层：absolute 紧贴 toolbar 下方 + 自适应贴 DayNightScreen 底部
+          DayNightScreen 是 flex:1 占 TabBar 以上空间，bottom:8 即贴近 TabBar 上沿 */}
       {editMode && tagPickerOpen && palette && (
-        <Pressable
-          style={styles.pickerBackdrop}
-          onPress={() => {
-            setTagPickerOpen(false)
-            setTagQuery('')
-          }}
+        <View
+          style={[
+            styles.pickerFloat,
+            { top: actionSlotBottom + 4 },
+          ]}
+          pointerEvents="box-none"
         >
-          <Pressable style={styles.pickerCloud} onPress={() => {}}>
-            {/* 标签云顶部内嵌搜索框 */}
+          <View style={styles.pickerCloud}>
+            {/* 搜索框常驻；search 模式时自动 focus（弹出输入法）；
+                × 只清空 query，不关 picker —— 关 picker 由 toolbar 上的按钮负责 */}
             <View style={styles.searchBoxInCloud}>
               <SearchGlyph color={theme.inkSoft} />
               <TextInput
@@ -1582,20 +1598,46 @@ export default function DayNightScreen() {
                 onChangeText={setTagQuery}
                 placeholder="搜索标签 / 分类..."
                 placeholderTextColor={theme.inkSoft}
-                autoFocus
+                autoFocus={pickerMode === 'search'}
                 style={styles.searchInput}
               />
-              <Pressable
-                hitSlop={10}
-                onPress={() => {
-                  setTagPickerOpen(false)
-                  setTagQuery('')
-                }}
-                style={styles.searchClose}
-              >
-                <Text style={styles.searchCloseText}>×</Text>
-              </Pressable>
+              {tagQuery.length > 0 && (
+                <Pressable
+                  hitSlop={10}
+                  onPress={() => setTagQuery('')}
+                  style={styles.searchClose}
+                >
+                  <Text style={styles.searchCloseText}>×</Text>
+                </Pressable>
+              )}
             </View>
+            {/* recent 5 个常用，单独一行常驻在标签云顶部，给"老用户回到熟悉标签"用 */}
+            {recentTags.length > 0 && (
+              <View style={styles.recentRowInCloud}>
+                <Text style={styles.recentLabel}>最近</Text>
+                {recentTags.map((tag) => {
+                  const on = tag.id === selectedTagId
+                  const c = colorOf(tag.id)
+                  return (
+                    <Pressable
+                      key={tag.id}
+                      onPress={() => pickTag(tag.id)}
+                      style={[
+                        styles.recentChip,
+                        {
+                          backgroundColor: on ? alpha(c, 0.38) : alpha(c, 0.22),
+                          borderColor: on ? c : alpha(c, 0.55),
+                        },
+                      ]}
+                    >
+                      <Text style={styles.recentChipText} numberOfLines={1}>
+                        {tag.leafName}
+                      </Text>
+                    </Pressable>
+                  )
+                })}
+              </View>
+            )}
             <Text style={styles.pickerHint}>
               {tagQuery
                 ? `匹配 ${filteredTags.length} / ${palette.tags.length} 个`
@@ -1631,8 +1673,11 @@ export default function DayNightScreen() {
               )
             })()}
             <ScrollView
+              style={styles.treeScrollWrap}
               contentContainerStyle={styles.treeScroll}
               keyboardShouldPersistTaps="always"
+              nestedScrollEnabled
+              showsVerticalScrollIndicator
             >
               {filteredTags.length === 0 ? (
                 <Text style={styles.pickerNoMatch}>没找到匹配的标签</Text>
@@ -1648,8 +1693,8 @@ export default function DayNightScreen() {
                 ))
               )}
             </ScrollView>
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       )}
     </View>
   )
@@ -1919,8 +1964,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  iconBtnActive: {
+    backgroundColor: alpha(theme.accent, 0.16),
+  },
   iconBtnDisabled: {
     backgroundColor: alpha(theme.ink, 0.03),
+  },
+  currentTagBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 14,
+    backgroundColor: alpha(theme.ink, 0.08),
+    // flexShrink + minWidth:0 让长标签被截断而不是把右侧 undo/redo/完成挤出屏幕
+    // RN View 默认 flexShrink:0，必须显式声明
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  currentTagBtnActive: {
+    backgroundColor: alpha(theme.accent, 0.16),
+  },
+  currentTagText: {
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.ink,
+  },
+  currentTagChev: {
+    fontSize: 10,
+    color: theme.inkSoft,
+    marginTop: -1,
   },
   iconBtnText: {
     fontSize: 18,
@@ -2016,32 +2091,50 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: theme.ink,
   },
-  pickerBackdrop: {
+  // 标签云浮层容器：absolute 紧贴 toolbar 下方，左右贴边，bottom:8 贴 DayNightScreen 底
+  // pickerCloud 用 flex:1 撑满，让标签列表 ScrollView 自适应剩余高度（不再固定 460）
+  // box-none 让点击穿透到下方昼夜表（仅 pickerCloud 自己接事件）
+  pickerFloat: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(245,246,248,0.85)',
-  },
-  pickerCloud: {
-    position: 'absolute',
-    top: 140,
     left: 10,
     right: 10,
-    maxHeight: '70%',
+    bottom: 8,
+  },
+  pickerCloud: {
+    flex: 1,
     backgroundColor: 'rgba(255,255,255,0.98)',
     borderRadius: 18,
     paddingHorizontal: 14,
     paddingTop: 12,
     paddingBottom: 8,
     shadowColor: '#000',
-    shadowOpacity: 0.12,
+    shadowOpacity: 0.18,
     shadowRadius: 22,
     shadowOffset: { width: 0, height: 8 },
     elevation: 14,
     borderWidth: 1,
     borderColor: theme.line,
+  },
+  // ScrollView 自己撑满 pickerCloud 内剩余空间（搜索框 + recents + hint 之下）
+  // 不给固定 flex 的 ScrollView 在 Android 偶发不响应触摸 / 不滚动
+  treeScrollWrap: {
+    flex: 1,
+  },
+  recentRowInCloud: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 10,
+    paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.line,
+  },
+  recentLabel: {
+    fontSize: 11,
+    color: theme.inkSoft,
+    marginRight: 4,
+    letterSpacing: 0.3,
   },
   pickerHint: {
     fontSize: 11,
