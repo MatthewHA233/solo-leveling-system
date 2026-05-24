@@ -221,9 +221,12 @@ class PerceptionDb(context: Context) :
     return out
   }
 
-  /** 写入电源 / 屏幕事件（screen_on / screen_off / unlocked / boot）。 */
+  /** 写入电源 / 屏幕事件（screen_on / screen_off / unlocked / boot）。
+   *  AUDIT-018: start_at/end_at 必须用真实 eventTimeMs 派生，不能用 nowIso()。
+   *  否则异步 executor 排队、应用忙碌、跨过 span 结束边界时，真实落在 span
+   *  内的事件因为写入时间在 span 外被 powerEventsInRange() 漏掉，影响"花了多久"。 */
   fun insertPowerEvent(event: String, eventTimeMs: Long) {
-    val nowIso = nowIso()
+    val isoFromTs = isoFmt.format(Date(eventTimeMs))
     val payload = org.json.JSONObject().apply {
       put("event", event)
       put("event_time_ms", eventTimeMs)
@@ -234,7 +237,7 @@ class PerceptionDb(context: Context) :
       eventType = "power.state_changed",
       source = "android_receiver",
     )
-    insertEvent(POWER_BUCKET_ID, nowIso, nowIso, payload)
+    insertEvent(POWER_BUCKET_ID, isoFromTs, isoFromTs, payload)
   }
 
   data class PowerEventSnapshot(
