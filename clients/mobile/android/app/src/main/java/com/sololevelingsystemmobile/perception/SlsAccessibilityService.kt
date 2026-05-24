@@ -1,9 +1,11 @@
 package com.sololevelingsystemmobile.perception
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.provider.Settings
 import android.text.TextUtils
@@ -39,6 +41,32 @@ class SlsAccessibilityService : AccessibilityService() {
   @Volatile private var lastPkg: String? = null
   @Volatile private var lastClass: String? = null
   @Volatile private var lastTs: Long = 0L
+
+  // 电源/屏幕事件 receiver —— SCREEN_ON / SCREEN_OFF / USER_PRESENT
+  // ACTION_SCREEN_OFF/ON 在 Android O+ 不能 manifest 静态注册（implicit broadcast 限制），
+  // 必须动态注册到常驻 Service。这个 Service 是 AccessibilityService，系统不杀，能稳收。
+  // BOOT_COMPLETED 不在这处理（要 manifest + RECEIVE_BOOT_COMPLETED 权限，下个迭代）。
+  private val powerReceiver: BroadcastReceiver = object : BroadcastReceiver() {
+    override fun onReceive(ctx: Context?, intent: Intent?) {
+      val action = intent?.action ?: return
+      val event = when (action) {
+        Intent.ACTION_SCREEN_OFF -> "screen_off"
+        Intent.ACTION_SCREEN_ON -> "screen_on"
+        Intent.ACTION_USER_PRESENT -> "unlocked"
+        else -> return
+      }
+      val ts = System.currentTimeMillis()
+      executor.execute {
+        try {
+          db.insertPowerEvent(event, ts)
+          Log.d(TAG, "power $event @ $ts")
+        } catch (ex: Throwable) {
+          Log.w(TAG, "write power event failed", ex)
+        }
+      }
+    }
+  }
+  @Volatile private var powerReceiverRegistered = false
 
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     val e = event ?: return
@@ -130,10 +158,42 @@ class SlsAccessibilityService : AccessibilityService() {
     super.onServiceConnected()
     Log.i(TAG, "SlsAccessibilityService connected")
     instanceRunning = true
+    if (!powerReceiverRegistered) {
+      val filter = IntentFilter().apply {
+        addAction(Intent.ACTION_SCREEN_OFF)
+        addAction(Intent.ACTION_SCREEN_ON)
+        addAction(Intent.ACTION_USER_PRESENT)
+      }
+      try {
+        // RECEIVER_NOT_EXPORTED 标志在 Android 13+ 必须，避免 SecurityException
+        // 系统广播不带数据走 manifest 内部，标志是 receiver 自身可见性
+        registerReceiver(powerReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        powerReceiverRegistered = true
+      } catch (ex: Throwable) {
+        // Android 12 以下不接受 RECEIVER_NOT_EXPORTED 标志，回退
+        try {
+          @Suppress("UnspecifiedRegisterReceiverFlag")
+          registerReceiver(powerReceiver, filter)
+          powerReceiverRegistered = true
+        } catch (ex2: Throwable) {
+          Log.w(TAG, "register power receiver failed", ex2)
+        }
+      }
+      // Service 启动那刻通常对应"应用启动 / 屏幕本来就亮"，记一个 boot 事件
+      // 作为时间轴起点（区别真正 BOOT_COMPLETED 留到下个迭代）
+      val ts = System.currentTimeMillis()
+      executor.execute {
+        try { db.insertPowerEvent("service_started", ts) } catch (_: Throwable) {}
+      }
+    }
   }
 
   override fun onDestroy() {
     instanceRunning = false
+    if (powerReceiverRegistered) {
+      try { unregisterReceiver(powerReceiver) } catch (_: Throwable) {}
+      powerReceiverRegistered = false
+    }
     executor.shutdown()
     super.onDestroy()
   }

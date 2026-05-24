@@ -204,6 +204,25 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun getPowerEventsInRange(startMs: Double, endMs: Double, limit: Double, promise: Promise) {
+    try {
+      val items = db.powerEventsInRange(startMs.toLong(), endMs.toLong(), limit.toInt())
+      val arr = Arguments.createArray()
+      for (it in items) {
+        arr.pushMap(Arguments.createMap().apply {
+          putDouble("rowId", it.rowId.toDouble())
+          putString("startAt", it.startAt)
+          putString("event", it.event)
+          putDouble("eventTimeMs", it.eventTimeMs.toDouble())
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) {
+      promise.reject("GET_POWER_EVENTS_RANGE_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
   fun getRecentWindowEvents(limit: Double, promise: Promise) {
     try {
       val items = db.recentWindowEvents(limit.toInt())

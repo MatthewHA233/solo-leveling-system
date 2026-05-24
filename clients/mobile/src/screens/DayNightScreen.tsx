@@ -30,7 +30,7 @@ import type {
 } from '../types'
 import { createTag, deleteCategory, deleteTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks } from '../lib/api'
 import { addDays, fmtDateLabel, fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
-import { getAppIcons, getWindowEventsInRange, type WindowEvent } from '../lib/perception'
+import { getAppIcons, getPowerEventsInRange, getWindowEventsInRange, type PowerEvent, type WindowEvent } from '../lib/perception'
 
 const GUTTER = 46
 const GAP = 4
@@ -644,6 +644,7 @@ export default function DayNightScreen() {
   const [tagQuery, setTagQuery] = useState('')
   const [detail, setDetail] = useState<Span | null>(null)
   const [probeEvents, setProbeEvents] = useState<WindowEvent[]>([])
+  const [powerEvents, setPowerEvents] = useState<PowerEvent[]>([])
   const [probeLoading, setProbeLoading] = useState(false)
   const [iconCache, setIconCache] = useState<Record<string, string>>({})
   const [focusStart, setFocusStart] = useState(3)
@@ -827,6 +828,7 @@ export default function DayNightScreen() {
   useEffect(() => {
     if (!detail) {
       setProbeEvents([])
+      setPowerEvents([])
       return
     }
     const midnight = new Date(selectedDate)
@@ -835,10 +837,15 @@ export default function DayNightScreen() {
     const endMs = midnight.getTime() + detail.endMin * 60_000
     let alive = true
     setProbeLoading(true)
-    getWindowEventsInRange(startMs, endMs, 200)
-      .then(async (evs) => {
+    // 并行拉窗口事件 + 电源/屏幕事件，合并展示给"准确算花了多久"用
+    Promise.all([
+      getWindowEventsInRange(startMs, endMs, 200),
+      getPowerEventsInRange(startMs, endMs, 100),
+    ])
+      .then(async ([evs, pwrs]) => {
         if (!alive) return
         setProbeEvents(evs)
+        setPowerEvents(pwrs)
         // 异步把还没缓存的 pkg 图标拉过来
         const needed = Array.from(new Set(evs.map((e) => e.packageName))).filter(
           (p) => p && !(p in iconCache),
@@ -849,7 +856,10 @@ export default function DayNightScreen() {
         }
       })
       .catch(() => {
-        if (alive) setProbeEvents([])
+        if (alive) {
+          setProbeEvents([])
+          setPowerEvents([])
+        }
       })
       .finally(() => {
         if (alive) setProbeLoading(false)
@@ -1291,13 +1301,6 @@ export default function DayNightScreen() {
     setRedoStack((prev) => prev.slice(0, -1))
     setBlocks(popped)
     void applyBlocksDelta(current, popped)
-  }
-
-  const eraseSpan = (span: Span) => {
-    const mins: number[] = []
-    for (let m = span.startMin; m < span.endMin; m += 5) mins.push(m)
-    setBlocks((prev) => prev.filter((b) => b.minute < span.startMin || b.minute >= span.endMin))
-    eraseBlocks(selectedDate, mins)
   }
 
   const hasActivityInRange = (start: number, end: number): boolean => {
@@ -1780,84 +1783,125 @@ export default function DayNightScreen() {
       <Modal visible={!!detail} transparent animationType="fade" onRequestClose={() => setDetail(null)}>
         <Pressable style={styles.backdrop} onPress={() => setDetail(null)}>
           <Pressable style={styles.sheet} onPress={() => {}}>
-            <View style={styles.sheetHandle} />
             {detail && (
               <>
-                <View style={styles.sheetTop}>
-                  <View style={[styles.sheetDot, { backgroundColor: colorOf(detail.tagId) }]} />
-                  <Text style={styles.sheetName}>{detailTag?.leafName ?? '活动'}</Text>
-                  <Text style={styles.sheetDur}>{fmtHM(detail.endMin - detail.startMin)}</Text>
-                </View>
-                <Text style={styles.sheetTime}>
-                  {fmtMinute(detail.startMin)} – {fmtMinute(detail.endMin)}
-                </Text>
-                <Text style={styles.sheetPath}>
-                  {detailCat?.name ?? ''}
-                  {detailTag ? ` · ${detailTag.fullPath}` : ''}
-                </Text>
-                {detail.note && <Text style={styles.sheetNote}>{detail.note}</Text>}
-
-                <View style={styles.sheetProbe}>
-                  <Text style={styles.sheetProbeLabel}>在这段时间手机</Text>
-                  {probeLoading ? (
-                    <Text style={styles.sheetProbeEmpty}>读取中…</Text>
-                  ) : probeEvents.length === 0 ? (
-                    <Text style={styles.sheetProbeEmpty}>
-                      没有窗口切换记录（可能 Service 未启用、或当时没切 app）
-                    </Text>
-                  ) : (
-                    <>
-                      {probeEvents.slice(0, 12).map((ev) => {
-                        const label = ev.appLabel || ev.packageName
-                        // 标题等于 app 名（或包名）就不重复显示
-                        const subtitle =
-                          ev.windowTitle && ev.windowTitle !== label && ev.windowTitle !== ev.packageName
-                            ? ev.windowTitle
-                            : ''
-                        const b64 = iconCache[ev.packageName]
-                        const initial = (label || '?').slice(0, 1).toUpperCase()
-                        return (
-                          <View key={ev.rowId} style={styles.sheetProbeRow}>
-                            <Text style={styles.sheetProbeTime}>{fmtHHMMms(ev.eventTimeMs)}</Text>
-                            {b64 ? (
-                              <Image
-                                style={styles.sheetProbeIcon}
-                                source={{ uri: `data:image/png;base64,${b64}` }}
-                              />
-                            ) : (
-                              <View style={styles.sheetProbeIconFallback}>
-                                <Text style={styles.sheetProbeIconText}>{initial}</Text>
-                              </View>
-                            )}
-                            <View style={styles.sheetProbeBody}>
-                              <Text style={styles.sheetProbeApp} numberOfLines={1}>{label}</Text>
-                              {!!subtitle && (
-                                <Text style={styles.sheetProbeSub} numberOfLines={1}>
-                                  {subtitle}
-                                </Text>
-                              )}
-                            </View>
-                          </View>
-                        )
-                      })}
-                      {probeEvents.length > 12 && (
-                        <Text style={styles.sheetProbeMore}>
-                          … 还有 {probeEvents.length - 12} 条
-                        </Text>
-                      )}
-                    </>
-                  )}
+                {/* 头部固定 —— handle + dot/name/dur + time + path + note */}
+                <View style={styles.sheetHead}>
+                  <View style={styles.sheetHandle} />
+                  <View style={styles.sheetTop}>
+                    <View style={[styles.sheetDot, { backgroundColor: colorOf(detail.tagId) }]} />
+                    <Text style={styles.sheetName}>{detailTag?.leafName ?? '活动'}</Text>
+                    <Text style={styles.sheetDur}>{fmtHM(detail.endMin - detail.startMin)}</Text>
+                  </View>
+                  <Text style={styles.sheetTime}>
+                    {fmtMinute(detail.startMin)} – {fmtMinute(detail.endMin)}
+                  </Text>
+                  <Text style={styles.sheetPath}>
+                    {detailCat?.name ?? ''}
+                    {detailTag ? ` · ${detailTag.fullPath}` : ''}
+                  </Text>
+                  {detail.note && <Text style={styles.sheetNote}>{detail.note}</Text>}
                 </View>
 
-                <Pressable
-                  style={styles.sheetDelete}
-                  onPress={() => {
-                    eraseSpan(detail)
-                    setDetail(null)
-                  }}
+                {/* 中部可滚 probe 列表 —— 不再 slice(0,12)，全量可滚 */}
+                <ScrollView
+                  style={styles.sheetScroll}
+                  contentContainerStyle={styles.sheetScrollContent}
+                  showsVerticalScrollIndicator
                 >
-                  <Text style={styles.sheetDeleteText}>删除这段记录</Text>
-                </Pressable>
+                  <View style={styles.sheetProbe}>
+                    {(() => {
+                      // 合并 window + power，按 eventTimeMs 正序展示
+                      // power 事件用 chip 行渲染（screen_off / on / unlocked / service_started）
+                      type Merged =
+                        | { kind: 'window'; key: string; ts: number; ev: WindowEvent }
+                        | { kind: 'power'; key: string; ts: number; ev: PowerEvent }
+                      const merged: Merged[] = [
+                        ...probeEvents.map((ev) => ({
+                          kind: 'window' as const, key: `w${ev.rowId}`, ts: ev.eventTimeMs, ev,
+                        })),
+                        ...powerEvents.map((ev) => ({
+                          kind: 'power' as const, key: `p${ev.rowId}`, ts: ev.eventTimeMs, ev,
+                        })),
+                      ].sort((a, b) => a.ts - b.ts)
+                      return (
+                        <>
+                          <Text style={styles.sheetProbeLabel}>
+                            在这段时间手机
+                            {merged.length > 0 ? ` · ${merged.length} 条` : ''}
+                            {powerEvents.length > 0 ? ` （含 ${powerEvents.length} 条屏幕事件）` : ''}
+                          </Text>
+                          {probeLoading ? (
+                            <Text style={styles.sheetProbeEmpty}>读取中…</Text>
+                          ) : merged.length === 0 ? (
+                            <Text style={styles.sheetProbeEmpty}>
+                              没有窗口切换 / 屏幕事件（可能 Service 未启用、或当时没动手机）
+                            </Text>
+                          ) : (
+                            merged.map((row) => {
+                              if (row.kind === 'power') {
+                                const e = row.ev
+                                const label =
+                                  e.event === 'screen_off' ? '屏幕关闭'
+                                  : e.event === 'screen_on' ? '屏幕亮起'
+                                  : e.event === 'unlocked' ? '解锁'
+                                  : e.event === 'service_started' ? '感知 Service 启动'
+                                  : e.event
+                                const dim = e.event === 'screen_off'
+                                return (
+                                  <View key={row.key} style={styles.sheetPowerRow}>
+                                    <Text style={styles.sheetProbeTime}>{fmtHHMMms(e.eventTimeMs)}</Text>
+                                    <View
+                                      style={[
+                                        styles.sheetPowerDot,
+                                        { backgroundColor: dim ? '#888' : theme.accent },
+                                      ]}
+                                    />
+                                    <Text style={[styles.sheetPowerText, dim && { color: theme.inkSoft }]}>
+                                      {label}
+                                    </Text>
+                                  </View>
+                                )
+                              }
+                              const ev = row.ev
+                              const label = ev.appLabel || ev.packageName
+                              const subtitle =
+                                ev.windowTitle && ev.windowTitle !== label && ev.windowTitle !== ev.packageName
+                                  ? ev.windowTitle
+                                  : ''
+                              const b64 = iconCache[ev.packageName]
+                              const initial = (label || '?').slice(0, 1).toUpperCase()
+                              return (
+                                <View key={row.key} style={styles.sheetProbeRow}>
+                                  <Text style={styles.sheetProbeTime}>{fmtHHMMms(ev.eventTimeMs)}</Text>
+                                  {b64 ? (
+                                    <Image
+                                      style={styles.sheetProbeIcon}
+                                      source={{ uri: `data:image/png;base64,${b64}` }}
+                                    />
+                                  ) : (
+                                    <View style={styles.sheetProbeIconFallback}>
+                                      <Text style={styles.sheetProbeIconText}>{initial}</Text>
+                                    </View>
+                                  )}
+                                  <View style={styles.sheetProbeBody}>
+                                    <Text style={styles.sheetProbeApp} numberOfLines={1}>{label}</Text>
+                                    {!!subtitle && (
+                                      <Text style={styles.sheetProbeSub} numberOfLines={1}>
+                                        {subtitle}
+                                      </Text>
+                                    )}
+                                  </View>
+                                </View>
+                              )
+                            })
+                          )}
+                        </>
+                      )
+                    })()}
+                  </View>
+                </ScrollView>
+
               </>
             )}
           </Pressable>
@@ -2614,8 +2658,8 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     borderRadius: 22,
     paddingHorizontal: 22,
-    paddingBottom: 24,
     paddingTop: 12,
+    paddingBottom: 14,
     borderWidth: 1,
     borderColor: 'rgba(0,0,0,0.05)',
     shadowColor: '#000',
@@ -2623,6 +2667,19 @@ const styles = StyleSheet.create({
     shadowRadius: 22,
     shadowOffset: { width: 0, height: 6 },
     elevation: 10,
+    // 三段布局：固定头 + ScrollView 中部 + 固定删除按钮
+    maxHeight: '82%',
+    flexDirection: 'column',
+  },
+  sheetHead: {
+    flexShrink: 0,
+  },
+  sheetScroll: {
+    flexShrink: 1,
+    marginTop: 4,
+  },
+  sheetScrollContent: {
+    paddingBottom: 10,
   },
   sheetHandle: {
     alignSelf: 'center',
@@ -2669,23 +2726,28 @@ const styles = StyleSheet.create({
     marginTop: 12,
     lineHeight: 21,
   },
-  sheetDelete: {
-    marginTop: 22,
-    paddingVertical: 13,
-    borderRadius: 12,
-    backgroundColor: theme.bg,
-    alignItems: 'center',
-  },
-  sheetDeleteText: {
-    fontSize: 14,
-    color: theme.danger,
-    fontWeight: '500',
-  },
   sheetProbe: {
     marginTop: 18,
     paddingTop: 16,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: 'rgba(0,0,0,0.08)',
+  },
+  sheetPowerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 5,
+    gap: 10,
+  },
+  sheetPowerDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginHorizontal: 2,
+  },
+  sheetPowerText: {
+    fontSize: 13,
+    color: theme.ink,
+    fontWeight: '500',
   },
   sheetProbeLabel: {
     fontSize: 11,

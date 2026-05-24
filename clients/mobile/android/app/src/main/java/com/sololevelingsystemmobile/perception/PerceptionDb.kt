@@ -221,6 +221,67 @@ class PerceptionDb(context: Context) :
     return out
   }
 
+  /** 写入电源 / 屏幕事件（screen_on / screen_off / unlocked / boot）。 */
+  fun insertPowerEvent(event: String, eventTimeMs: Long) {
+    val nowIso = nowIso()
+    val payload = org.json.JSONObject().apply {
+      put("event", event)
+      put("event_time_ms", eventTimeMs)
+    }.toString()
+    ensureBucket(
+      id = POWER_BUCKET_ID,
+      kind = "power",
+      eventType = "power.state_changed",
+      source = "android_receiver",
+    )
+    insertEvent(POWER_BUCKET_ID, nowIso, nowIso, payload)
+  }
+
+  data class PowerEventSnapshot(
+    val rowId: Long,
+    val startAt: String,
+    val event: String,
+    val eventTimeMs: Long,
+  )
+
+  /** 区间内电源事件，按时间正序。 */
+  fun powerEventsInRange(startMs: Long, endMs: Long, limit: Int): List<PowerEventSnapshot> {
+    val db = readableDatabase
+    val cap = limit.coerceIn(1, 500)
+    val out = ArrayList<PowerEventSnapshot>()
+    val startIso = isoFmt.format(Date(startMs))
+    val endIso = isoFmt.format(Date(endMs))
+    db.rawQuery(
+      """
+      SELECT id, start_at, data_json FROM perception_events_android
+      WHERE bucket_id = ?
+        AND start_at >= ? AND start_at < ?
+      ORDER BY id ASC LIMIT ?
+      """.trimIndent(),
+      arrayOf(POWER_BUCKET_ID, startIso, endIso, cap.toString()),
+    ).use { c ->
+      while (c.moveToNext()) {
+        val rowId = c.getLong(0)
+        val startAt = c.getString(1) ?: ""
+        val raw = c.getString(2) ?: continue
+        try {
+          val obj = org.json.JSONObject(raw)
+          out.add(
+            PowerEventSnapshot(
+              rowId = rowId,
+              startAt = startAt,
+              event = obj.optString("event"),
+              eventTimeMs = obj.optLong("event_time_ms", 0L),
+            ),
+          )
+        } catch (_: Throwable) {
+          // ignore malformed
+        }
+      }
+    }
+    return out
+  }
+
   /** 一次性清掉所有 sls 自身的窗口事件（迁移用，新代码不会再写）。 */
   fun purgeSelfWindowEvents(): Int {
     val db = writableDatabase
@@ -315,6 +376,7 @@ class PerceptionDb(context: Context) :
   companion object {
     private const val DB_NAME = "perception.db"
     private const val DB_VERSION = 1
+    private const val POWER_BUCKET_ID = "sls-watcher-power_android"
 
     private val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
       timeZone = TimeZone.getTimeZone("UTC")

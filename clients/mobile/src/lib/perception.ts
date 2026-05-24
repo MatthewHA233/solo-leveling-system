@@ -54,6 +54,14 @@ export type WindowEvent = {
   eventTimeMs: number
 }
 
+export type PowerEvent = {
+  rowId: number
+  startAt: string
+  /** screen_on / screen_off / unlocked / service_started */
+  event: string
+  eventTimeMs: number
+}
+
 export type ClickCountEntry = {
   packageName: string
   appLabel: string
@@ -77,6 +85,7 @@ interface PerceptionNative {
   openAccessibilitySettings(): Promise<boolean>
   getRecentWindowEvents(limit: number): Promise<WindowEvent[]>
   getWindowEventsInRange(startMs: number, endMs: number, limit: number): Promise<WindowEvent[]>
+  getPowerEventsInRange(startMs: number, endMs: number, limit: number): Promise<PowerEvent[]>
   getClickCounts(): Promise<ClickCountSnapshot>
   resetClickCounts(): Promise<boolean>
   getAppIcons(packageNames: string[]): Promise<Record<string, string>>
@@ -149,6 +158,15 @@ export async function getWindowEventsInRange(
 ): Promise<WindowEvent[]> {
   if (!Native) return []
   return Native.getWindowEventsInRange(startMs, endMs, limit)
+}
+
+export async function getPowerEventsInRange(
+  startMs: number,
+  endMs: number,
+  limit: number = 100,
+): Promise<PowerEvent[]> {
+  if (!Native) return []
+  return Native.getPowerEventsInRange(startMs, endMs, limit)
 }
 
 export async function getClickCounts(): Promise<ClickCountSnapshot> {
