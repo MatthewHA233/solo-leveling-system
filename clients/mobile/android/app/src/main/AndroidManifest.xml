@@ -9,6 +9,8 @@
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
+    <!-- 感知层：开机自动启动 — 记录 boot 事件 + 自动起 Service 监听 SCREEN_OFF/ON -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -51,5 +53,18 @@
           android:name="android.accessibilityservice"
           android:resource="@xml/sls_accessibility_service" />
       </service>
+
+      <!-- 开机 / 关机事件 receiver：必须 manifest 静态注册。SCREEN_ON/OFF 等
+           不允许 manifest 注册（Android O+ implicit broadcast 限制），那部分在
+           SlsAccessibilityService 动态注册；BOOT_COMPLETED 是 explicit，可以。 -->
+      <receiver
+        android:name=".perception.PowerStateReceiver"
+        android:exported="true">
+        <intent-filter>
+          <action android:name="android.intent.action.BOOT_COMPLETED" />
+          <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+          <action android:name="android.intent.action.ACTION_SHUTDOWN" />
+        </intent-filter>
+      </receiver>
     </application>
 </manifest>

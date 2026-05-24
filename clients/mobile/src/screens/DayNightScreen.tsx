@@ -1845,9 +1845,11 @@ export default function DayNightScreen() {
                                   e.event === 'screen_off' ? '屏幕关闭'
                                   : e.event === 'screen_on' ? '屏幕亮起'
                                   : e.event === 'unlocked' ? '解锁'
+                                  : e.event === 'boot' ? '⏻ 开机'
+                                  : e.event === 'shutdown' ? '⏻ 关机'
                                   : e.event === 'service_started' ? '感知 Service 启动'
                                   : e.event
-                                const dim = e.event === 'screen_off'
+                                const dim = e.event === 'screen_off' || e.event === 'shutdown'
                                 return (
                                   <View key={row.key} style={styles.sheetPowerRow}>
                                     <Text style={styles.sheetProbeTime}>{fmtHHMMms(e.eventTimeMs)}</Text>
