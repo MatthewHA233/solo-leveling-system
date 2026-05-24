@@ -769,10 +769,17 @@ export default function App() {
             }),
             fetchActivityBlocks(selectedDate).then((b) => {
               setActivityBlocks(b)
+              // AUDIT-001: 同步进来的新 blocks 会覆盖当前 state，旧 undo 快照
+              // 是基于旧 state 拍的，按它撤回会把同步进来的数据覆盖丢失。
+              // 同日同步刷新等同"换了一份当日 blocks"，清栈避免误覆盖。
+              setUndoStack([])
+              setRedoStack([])
               return `${dateStr} 实际块 ${b.length}`
             }),
             fetchPlannedBlocks(selectedDate).then((b) => {
               setPlannedBlocks(b)
+              setPlanUndoStack([])
+              setPlanRedoStack([])
               return `计划块 ${b.length}`
             }),
             selectedProjectTagId != null
@@ -841,10 +848,16 @@ export default function App() {
                 }),
                 fetchActivityBlocks(selectedDate).then((b) => {
                   setActivityBlocks(b)
+                  // AUDIT-001: 同上 sync:imported 分支 —— pull 进来的新 blocks
+                  // 覆盖当前 state，旧 undo 快照按它撤回会把同步进来的数据覆盖丢失
+                  setUndoStack([])
+                  setRedoStack([])
                   return `${dateStr} 实际块 ${b.length}`
                 }),
                 fetchPlannedBlocks(selectedDate).then((b) => {
                   setPlannedBlocks(b)
+                  setPlanUndoStack([])
+                  setPlanRedoStack([])
                   return `计划块 ${b.length}`
                 }),
                 selectedProjectTagId != null
