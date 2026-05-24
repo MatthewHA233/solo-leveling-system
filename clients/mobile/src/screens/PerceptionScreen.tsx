@@ -12,6 +12,7 @@ import {
   isSoloDbAvailable,
   type SoloDbStats,
 } from '../lib/solodb'
+import { seedSoloDbIfEmpty, type SeedReport } from '../lib/solodb_seed'
 import {
   collectUsageStats,
   fetchDbStats,
@@ -52,6 +53,8 @@ export default function PerceptionScreen() {
   const [a11yEnabled, setA11yEnabled] = useState<boolean | null>(null)
   const [soloStats, setSoloStats] = useState<SoloDbStats | null>(null)
   const [soloDeviceId, setSoloDeviceId] = useState<string>('')
+  const [seedReport, setSeedReport] = useState<SeedReport | null>(null)
+  const [seeding, setSeeding] = useState(false)
   const [windowEvents, setWindowEvents] = useState<WindowEvent[]>([])
   const [clicks, setClicks] = useState<ClickCountSnapshot>({ total: 0, entries: [] })
 
@@ -73,6 +76,23 @@ export default function PerceptionScreen() {
       setSoloStats(s)
     } catch {
       setSoloStats(null)
+    }
+  }
+
+  async function runSeed() {
+    setSeeding(true)
+    try {
+      const r = await seedSoloDbIfEmpty()
+      setSeedReport(r)
+      await refreshSoloDb()
+    } catch (e: any) {
+      setSeedReport({
+        before: { cats: -1, tags: -1 }, after: { cats: -1, tags: -1 },
+        wroteCats: 0, wroteTags: 0, skippedTags: 0,
+        errors: [`runSeed: ${e?.message ?? String(e)}`],
+      })
+    } finally {
+      setSeeding(false)
     }
   }
 
@@ -222,9 +242,30 @@ export default function PerceptionScreen() {
         ) : (
           <Text style={styles.cardValue}>未连通</Text>
         )}
-        <Pressable style={[styles.btn, styles.btnGhost, { marginTop: 10 }]} onPress={refreshSoloDb}>
-          <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
-        </Pressable>
+        <View style={styles.btnRow}>
+          <Pressable style={styles.btn} onPress={runSeed} disabled={seeding}>
+            <Text style={styles.btnText}>{seeding ? 'seed 中…' : '手动 seed'}</Text>
+          </Pressable>
+          <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshSoloDb}>
+            <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
+          </Pressable>
+        </View>
+        {seedReport && (
+          <View style={{ marginTop: 10 }}>
+            <Text style={styles.cardSub}>
+              before cats={seedReport.before.cats} tags={seedReport.before.tags} →
+              after cats={seedReport.after.cats} tags={seedReport.after.tags}
+            </Text>
+            <Text style={styles.cardSub}>
+              wroteCats={seedReport.wroteCats} wroteTags={seedReport.wroteTags} skippedTags={seedReport.skippedTags}
+            </Text>
+            {seedReport.errors.length > 0 && seedReport.errors.map((err, i) => (
+              <Text key={i} style={[styles.cardSub, { color: '#C0392B' }]} numberOfLines={2}>
+                ⚠ {err}
+              </Text>
+            ))}
+          </View>
+        )}
       </View>
 
       <View style={styles.card}>

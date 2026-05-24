@@ -164,6 +164,171 @@ class SoloDb(context: Context) :
     onCreate(db)
   }
 
+  // ── 数据访问 ──
+
+  data class CategoryRow(
+    val id: Long, val syncId: String, val name: String, val color: String, val sortOrder: Int,
+    val createdAt: String, val lastUsedAt: String, val updatedAt: String, val deletedAt: String?,
+  )
+
+  data class TagRow(
+    val id: Long, val syncId: String, val categoryId: Long, val fullPath: String,
+    val leafName: String, val depth: Int, val createdAt: String, val lastUsedAt: String,
+    val updatedAt: String, val deletedAt: String?,
+  )
+
+  data class BlockRow(
+    val date: String, val minute: Int, val syncId: String, val tagId: Long, val note: String?,
+    val createdAt: String, val updatedAt: String, val deletedAt: String?,
+  )
+
+  fun listCategories(): List<CategoryRow> {
+    val out = ArrayList<CategoryRow>()
+    readableDatabase.rawQuery(
+      """SELECT id, sync_id, name, color, sort_order, created_at, last_used_at, updated_at, deleted_at
+         FROM activity_categories WHERE deleted_at IS NULL ORDER BY sort_order, id""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) out.add(
+        CategoryRow(
+          c.getLong(0), c.getString(1), c.getString(2), c.getString(3), c.getInt(4),
+          c.getString(5), c.getString(6), c.getString(7), c.getString(8),
+        ),
+      )
+    }
+    return out
+  }
+
+  fun listTags(): List<TagRow> {
+    val out = ArrayList<TagRow>()
+    readableDatabase.rawQuery(
+      """SELECT id, sync_id, category_id, full_path, leaf_name, depth, created_at, last_used_at, updated_at, deleted_at
+         FROM activity_tags WHERE deleted_at IS NULL ORDER BY category_id, id""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) out.add(
+        TagRow(
+          c.getLong(0), c.getString(1), c.getLong(2), c.getString(3),
+          c.getString(4), c.getInt(5), c.getString(6), c.getString(7),
+          c.getString(8), c.getString(9),
+        ),
+      )
+    }
+    return out
+  }
+
+  fun listBlocksForDate(date: String): List<BlockRow> {
+    val out = ArrayList<BlockRow>()
+    readableDatabase.rawQuery(
+      """SELECT date, minute, sync_id, tag_id, note, created_at, updated_at, deleted_at
+         FROM activity_blocks WHERE date = ? AND deleted_at IS NULL ORDER BY minute""".trimIndent(),
+      arrayOf(date),
+    ).use { c ->
+      while (c.moveToNext()) out.add(
+        BlockRow(
+          c.getString(0), c.getInt(1), c.getString(2), c.getLong(3),
+          c.getString(4), c.getString(5), c.getString(6), c.getString(7),
+        ),
+      )
+    }
+    return out
+  }
+
+  /** Upsert category by name UNIQUE；返回 row id。syncId 为空则生成 UUID。 */
+  fun upsertCategory(
+    name: String, color: String, sortOrder: Int,
+    syncId: String? = null, createdAt: String? = null, lastUsedAt: String? = null,
+  ): Long {
+    val now = nowIso()
+    val sid = syncId?.takeIf { it.isNotEmpty() } ?: UUID.randomUUID().toString()
+    val cAt = createdAt ?: now
+    val lAt = lastUsedAt ?: now
+    val db = writableDatabase
+    db.execSQL(
+      """INSERT INTO activity_categories
+           (sync_id, name, color, sort_order, created_at, last_used_at, updated_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+         ON CONFLICT(name) DO UPDATE SET
+           color = excluded.color, sort_order = excluded.sort_order,
+           last_used_at = excluded.last_used_at, updated_at = excluded.updated_at,
+           deleted_at = NULL""".trimIndent(),
+      arrayOf(sid, name, color, sortOrder, cAt, lAt, now),
+    )
+    return db.rawQuery(
+      "SELECT id FROM activity_categories WHERE name = ?", arrayOf(name),
+    ).use { c -> if (c.moveToFirst()) c.getLong(0) else -1L }
+  }
+
+  /** Upsert tag by (category_id, full_path) UNIQUE；返回 row id。 */
+  fun upsertTag(
+    categoryId: Long, fullPath: String, leafName: String, depth: Int,
+    syncId: String? = null, createdAt: String? = null, lastUsedAt: String? = null,
+  ): Long {
+    val now = nowIso()
+    val sid = syncId?.takeIf { it.isNotEmpty() } ?: UUID.randomUUID().toString()
+    val cAt = createdAt ?: now
+    val lAt = lastUsedAt ?: now
+    val db = writableDatabase
+    db.execSQL(
+      """INSERT INTO activity_tags
+           (sync_id, category_id, full_path, leaf_name, depth, created_at, last_used_at, updated_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+         ON CONFLICT(category_id, full_path) DO UPDATE SET
+           leaf_name = excluded.leaf_name, depth = excluded.depth,
+           last_used_at = excluded.last_used_at, updated_at = excluded.updated_at,
+           deleted_at = NULL""".trimIndent(),
+      arrayOf(sid, categoryId, fullPath, leafName, depth, cAt, lAt, now),
+    )
+    return db.rawQuery(
+      "SELECT id FROM activity_tags WHERE category_id = ? AND full_path = ?",
+      arrayOf(categoryId.toString(), fullPath),
+    ).use { c -> if (c.moveToFirst()) c.getLong(0) else -1L }
+  }
+
+  /** Paint：UPSERT 每个 (date, minute) 槽位为 tagId；undelete + bump updated_at。 */
+  fun paintBlocks(date: String, minutes: IntArray, tagId: Long) {
+    if (minutes.isEmpty()) return
+    val now = nowIso()
+    val db = writableDatabase
+    db.beginTransaction()
+    try {
+      for (m in minutes) {
+        val sid = UUID.randomUUID().toString()
+        db.execSQL(
+          """INSERT INTO activity_blocks
+               (date, minute, sync_id, tag_id, note, created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, NULL, ?, ?, NULL)
+             ON CONFLICT(date, minute) DO UPDATE SET
+               tag_id = excluded.tag_id, updated_at = excluded.updated_at, deleted_at = NULL""".trimIndent(),
+          arrayOf(date, m, sid, tagId, now, now),
+        )
+      }
+      db.setTransactionSuccessful()
+    } finally {
+      db.endTransaction()
+    }
+  }
+
+  /** Erase：soft delete + bump updated_at（LWW 同步时另一端能看到删除）。 */
+  fun eraseBlocks(date: String, minutes: IntArray) {
+    if (minutes.isEmpty()) return
+    val now = nowIso()
+    val db = writableDatabase
+    db.beginTransaction()
+    try {
+      for (m in minutes) {
+        db.execSQL(
+          """UPDATE activity_blocks SET deleted_at = ?, updated_at = ?
+             WHERE date = ? AND minute = ?""".trimIndent(),
+          arrayOf(now, now, date, m),
+        )
+      }
+      db.setTransactionSuccessful()
+    } finally {
+      db.endTransaction()
+    }
+  }
+
   /** 当前 device_id（从 sync_meta 读出）。 */
   fun deviceId(): String {
     return readableDatabase.rawQuery(

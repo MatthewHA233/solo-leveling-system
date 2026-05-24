@@ -1,9 +1,9 @@
 // ══════════════════════════════════════════════
-// 数据层 — 局域网 HTTP 客户端 + mock 回退
-//
-// 设计目标：接口形状对齐 desktop 的本地 API（49733 端口），
-// 以后把 LAN host 指向局域网共享数据库服务即可直连；
-// 在 host 未配置或请求失败时，自动回退到 mock 数据。
+// 数据层 —— 昼夜表 / palette 走真 SQLite (SoloDb native module)
+//   首次启动时若 SoloDb 空，自动从 mock seed 9 cat + 70 tag（带稳定 sync_id），
+//   后续编辑全部写真 DB。
+//   LAN HTTP 路径 (lanFetch / setLanHost) 暂保留壳，Phase 5 LAN 同步引擎接入。
+//   聊天 streamChatReply 仍走 mock 合成（独立功能，未接入 SoloDb）。
 // ══════════════════════════════════════════════
 
 import type {
@@ -14,157 +14,116 @@ import type {
   AiMode,
 } from '../types'
 import { toLocalDateStr } from './time'
+import { mockReply } from './mock'
+import { seedSoloDbIfEmpty } from './solodb_seed'
 import {
-  mockApplyErase,
-  mockApplyPaint,
-  mockBlocks,
-  mockCreateTag,
-  mockPalette,
-  mockReply,
-} from './mock'
+  soloEraseBlocks,
+  soloListBlocksForDate,
+  soloListCategories,
+  soloListTags,
+  soloPaintBlocks,
+  soloUpsertCategory,
+  soloUpsertTag,
+  type BlockRow,
+  type CategoryRow,
+  type TagRow,
+} from './solodb'
 
-// ── LAN host 配置 ──
-// 例：'http://192.168.1.20:49733'。null = 仅用 mock。
-let lanHost: string | null = null
 
-export function setLanHost(host: string | null): void {
-  lanHost = host && host.trim() ? host.trim().replace(/\/+$/, '') : null
-}
+// ── SoloDb → 前端类型映射 ──
 
-export function getLanHost(): string | null {
-  return lanHost
-}
-
-const REQUEST_TIMEOUT_MS = 2500
-
-interface ApiResponse<T> {
-  success: boolean
-  data?: T
-  error?: string
-}
-
-/** 带超时的 LAN 请求；host 未配置或失败时抛错，由调用方回退 mock */
-async function lanFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  if (!lanHost) throw new Error('LAN host 未配置')
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
-  try {
-    const res = await fetch(`${lanHost}${path}`, { ...init, signal: controller.signal })
-    const json = (await res.json()) as ApiResponse<T>
-    if (!json.success || json.data === undefined) {
-      throw new Error(json.error || '请求失败')
-    }
-    return json.data
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-// ── HTTP 原始结构 → 前端类型映射（对齐 desktop local-api.ts）──
-
-interface RawCategory {
-  id: number
-  name: string
-  color: string
-  sort_order: number
-  created_at: string
-  last_used_at: string
-}
-
-interface RawTag {
-  id: number
-  category_id: number
-  full_path: string
-  leaf_name: string
-  depth: number
-  created_at: string
-  last_used_at: string
-}
-
-interface RawBlock {
-  date: string
-  minute: number
-  tag_id: number
-  note: string | null
-  created_at: string
-}
-
-function mapCategory(r: RawCategory): ActivityCategory {
+function categoryFromRow(r: CategoryRow): ActivityCategory {
   return {
     id: r.id,
     name: r.name,
     color: r.color,
-    sortOrder: r.sort_order,
-    createdAt: r.created_at,
-    lastUsedAt: r.last_used_at,
+    sortOrder: r.sortOrder,
+    createdAt: r.createdAt,
+    lastUsedAt: r.lastUsedAt,
   }
 }
 
-function mapTag(r: RawTag): ActivityTag {
+function tagFromRow(r: TagRow): ActivityTag {
   return {
     id: r.id,
-    categoryId: r.category_id,
-    fullPath: r.full_path,
-    leafName: r.leaf_name,
+    categoryId: r.categoryId,
+    fullPath: r.fullPath,
+    leafName: r.leafName,
     depth: r.depth,
-    createdAt: r.created_at,
-    lastUsedAt: r.last_used_at,
+    createdAt: r.createdAt,
+    lastUsedAt: r.lastUsedAt,
   }
 }
 
-function mapBlock(r: RawBlock): ActivityBlock {
+function blockFromRow(r: BlockRow): ActivityBlock {
   return {
     date: r.date,
     minute: r.minute,
-    tagId: r.tag_id,
-    note: r.note,
-    createdAt: r.created_at,
+    tagId: r.tagId,
+    note: r.note ?? null,
+    createdAt: r.createdAt,
   }
 }
 
-// ── 活动记录 API ──
+// ── 活动记录 API（主路径走 SoloDb） ──
 
 export async function fetchPalette(): Promise<ActivityPalette> {
-  try {
-    const data = await lanFetch<{ categories: RawCategory[]; tags: RawTag[] }>(
-      '/api/activities/palette',
-    )
-    return {
-      categories: data.categories.map(mapCategory),
-      tags: data.tags.map(mapTag),
-    }
-  } catch {
-    return mockPalette()
+  await seedSoloDbIfEmpty()
+  const [cats, tags] = await Promise.all([soloListCategories(), soloListTags()])
+  return {
+    categories: cats.map(categoryFromRow),
+    tags: tags.map(tagFromRow),
   }
 }
 
 /**
  * 创建新 tag（fullPath 形如 "工作,日常,新事项"）。
  * 首段未匹配现有 category 时自动新建 category（desktop 尚不支持，手机端先做）。
- * 返回更新后的完整 palette 方便前端 setState 不需要二次 fetch。
+ * 返回更新后的完整 palette，方便前端 setState 不需要二次 fetch。
  */
 export async function createTag(fullPath: string): Promise<ActivityPalette> {
-  try {
-    await lanFetch<unknown>('/api/activities/tag/create', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fullPath }),
+  const segs = fullPath.split(',').map((s) => s.trim()).filter(Boolean)
+  if (segs.length === 0) return fetchPalette()
+  const normalized = segs.join(',')
+
+  // 先确保 root category 存在
+  const cats = await soloListCategories()
+  let cat = cats.find((c) => c.name === segs[0])
+  if (!cat) {
+    const usedColors = new Set(cats.map((c) => c.color))
+    const color = CATEGORY_PALETTE_COLORS.find((c) => !usedColors.has(c)) ??
+      CATEGORY_PALETTE_COLORS[cats.length % CATEGORY_PALETTE_COLORS.length]
+    const nextSort = (Math.max(0, ...cats.map((c) => c.sortOrder)) || 0) + 1
+    const newId = await soloUpsertCategory({
+      name: segs[0],
+      color,
+      sortOrder: nextSort,
     })
-    return await fetchPalette()
-  } catch {
-    mockCreateTag(fullPath)
-    return mockPalette()
+    cat = {
+      id: newId,
+      syncId: '',
+      name: segs[0],
+      color,
+      sortOrder: nextSort,
+      createdAt: '',
+      lastUsedAt: '',
+      updatedAt: '',
+    }
   }
+
+  await soloUpsertTag({
+    categoryId: cat.id,
+    fullPath: normalized,
+    leafName: segs[segs.length - 1],
+    depth: segs.length,
+  })
+  return fetchPalette()
 }
 
 export async function fetchBlocks(date: Date): Promise<ActivityBlock[]> {
-  const dateStr = toLocalDateStr(date)
-  try {
-    const data = await lanFetch<RawBlock[]>(`/api/activities/blocks?date=${dateStr}`)
-    return data.map(mapBlock)
-  } catch {
-    return mockBlocks(dateStr)
-  }
+  await seedSoloDbIfEmpty()
+  const rows = await soloListBlocksForDate(toLocalDateStr(date))
+  return rows.map(blockFromRow)
 }
 
 export async function paintBlocks(
@@ -172,30 +131,18 @@ export async function paintBlocks(
   minutes: number[],
   tagId: number,
 ): Promise<void> {
-  const dateStr = toLocalDateStr(date)
-  try {
-    await lanFetch<number>('/api/activities/blocks/paint', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date: dateStr, minutes, tag_id: tagId }),
-    })
-  } catch {
-    mockApplyPaint(dateStr, minutes, tagId)
-  }
+  await soloPaintBlocks(toLocalDateStr(date), minutes, tagId)
 }
 
 export async function eraseBlocks(date: Date, minutes: number[]): Promise<void> {
-  const dateStr = toLocalDateStr(date)
-  try {
-    await lanFetch<number>('/api/activities/blocks/erase', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date: dateStr, minutes }),
-    })
-  } catch {
-    mockApplyErase(dateStr, minutes)
-  }
+  await soloEraseBlocks(toLocalDateStr(date), minutes)
 }
+
+// 新建 category 的预设色板（避开种子色，按光谱排）
+const CATEGORY_PALETTE_COLORS = [
+  '#0EA5E9', '#A855F7', '#EC4899', '#EF4444', '#F59E0B',
+  '#10B981', '#14B8A6', '#8B5CF6', '#6366F1', '#D946EF',
+]
 
 // ── 聊天 API ──
 
