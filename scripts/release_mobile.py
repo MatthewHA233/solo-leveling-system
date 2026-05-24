@@ -31,11 +31,33 @@ import argparse
 import hashlib
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+STEP_TOTAL = 8
+_step_n = [0]
+_t_global = [time.time()]
+
+
+def step(label: str) -> float:
+    """打印阶段头并返回 start 时间戳。结尾用 step_done(t0) 收尾。"""
+    _step_n[0] += 1
+    n = _step_n[0]
+    elapsed = time.time() - _t_global[0]
+    print(f"\n[{n}/{STEP_TOTAL}] {label}   ({elapsed:.1f}s since start)", flush=True)
+    return time.time()
+
+
+def step_done(t0: float) -> None:
+    print(f"    ✓ 完成（{time.time() - t0:.1f}s）", flush=True)
+
+
+def info(msg: str) -> None:
+    print(f"    {msg}", flush=True)
 
 try:
     import oss2
@@ -95,10 +117,25 @@ def assemble_release() -> None:
 
 
 def sha256_of(path: Path) -> str:
+    total = path.stat().st_size
     h = hashlib.sha256()
+    consumed = 0
+    last_print = 0.0
+    t0 = time.time()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
+            consumed += len(chunk)
+            now = time.time()
+            if now - last_print >= 0.3 or consumed >= total:
+                last_print = now
+                pct = consumed * 100.0 / total if total else 100.0
+                sys.stdout.write(
+                    f"\r    sha256: {consumed / 1024 / 1024:.1f}/{total / 1024 / 1024:.1f} MB  {pct:5.1f}%"
+                )
+                sys.stdout.flush()
+    sys.stdout.write(f"  ({time.time() - t0:.1f}s)\n")
+    sys.stdout.flush()
     return h.hexdigest()
 
 
@@ -130,28 +167,69 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="不真正上传，只 dump 计划")
     args = parser.parse_args()
 
+    _t_global[0] = time.time()
+    print(f"=== Solo Leveling mobile release ===   (开始 {datetime.now().strftime('%H:%M:%S')})", flush=True)
+
+    # ── 步骤 1：环境变量 ──
+    t = step("加载 .env")
+    info(f"  从 {EXTERNAL_ENV}（如存在）+ 仓库根 .env 读 OSS_*")
     load_env()
+    if not (os.getenv("OSS_ACCESS_KEY_ID") and os.getenv("OSS_ACCESS_KEY_SECRET")):
+        raise SystemExit("    ✗ 缺少 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，停止")
+    info(f"  OSS_BUCKET_NAME = {os.getenv('OSS_BUCKET_NAME', 'horizn')}")
+    info(f"  OSS_ENDPOINT    = {os.getenv('OSS_ENDPOINT', 'oss-cn-heyuan.aliyuncs.com')}")
+    proxies = [k for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy") if os.getenv(k)]
+    if proxies:
+        info(f"  ⚠ 检测到代理 env: {', '.join(proxies)} —— 可能被国内 OSS 拒绝")
+    step_done(t)
 
+    # ── 步骤 2：版本号 ──
+    t = step("读 VERSION 文件")
     version_name, version_code = read_version()
-    print(f"→ VERSION: {version_name} (vc {version_code})")
+    info(f"  versionName = {version_name}")
+    info(f"  versionCode = {version_code}")
+    step_done(t)
 
+    # ── 步骤 3：APK 准备 ──
+    t = step("准备 release APK")
     if args.build or not APK_PATH.exists():
+        info("  → 跑 gradlew assembleRelease …")
         assemble_release()
+    else:
+        info(f"  复用现有 APK: {APK_PATH}")
     if not APK_PATH.exists():
-        raise SystemExit(f"APK 不存在: {APK_PATH}")
-
-    sha = sha256_of(APK_PATH)
+        raise SystemExit(f"    ✗ APK 不存在: {APK_PATH}")
     size = APK_PATH.stat().st_size
-    print(f"→ APK: {APK_PATH}  {size / 1024 / 1024:.1f} MB  sha256={sha[:16]}…")
+    info(f"  大小 {size / 1024 / 1024:.2f} MB")
+    step_done(t)
 
+    # ── 步骤 4：SHA256 ──
+    t = step("计算 SHA256")
+    sha = sha256_of(APK_PATH)
+    info(f"  sha256 = {sha}")
+    step_done(t)
+
+    # ── 步骤 5：连 OSS ──
+    t = step("连接 OSS")
+    info(f"  TCP probe {os.getenv('OSS_ENDPOINT', 'oss-cn-heyuan.aliyuncs.com')}:443 …")
+    try:
+        socket.create_connection(
+            (os.getenv("OSS_ENDPOINT", "oss-cn-heyuan.aliyuncs.com"), 443),
+            timeout=5,
+        ).close()
+        info("  TCP 通")
+    except Exception as e:
+        info(f"  ⚠ TCP 探测失败: {e}（继续尝试 HTTPS，可能 oss2 自己能走通）")
+    bucket, bucket_name, endpoint = make_bucket()
+    info(f"  bucket {bucket_name} get_bucket_info 通过")
+    step_done(t)
+
+    # ── 准备路径和 manifest payload ──
     prefix = os.getenv("SLS_OSS_PATH_PREFIX", "solo-leveling").rstrip("/")
     apk_key = f"{prefix}/android/releases/sls-{version_name}-vc{version_code}.apk"
     manifest_key = f"{prefix}/android/latest.json"
-
-    bucket, bucket_name, endpoint = make_bucket()
     apk_url = public_url_for(apk_key, bucket_name, endpoint)
     manifest_url = public_url_for(manifest_key, bucket_name, endpoint)
-
     changelog = args.changelog.replace("\\n", "\n").strip()
     manifest = {
         "version_name": version_name,
@@ -165,17 +243,17 @@ def main() -> int:
     if args.min_supported is not None:
         manifest["min_supported_code"] = args.min_supported
 
-    print("→ 计划:")
+    print("\n── 计划 ──")
     print(f"  APK      → {apk_url}")
     print(f"  manifest → {manifest_url}")
-    print(f"  manifest payload: {json.dumps(manifest, ensure_ascii=False, indent=2)}")
+    print(f"  manifest payload:\n{json.dumps(manifest, ensure_ascii=False, indent=2)}")
 
     if args.dry_run:
         print("\n(dry-run，未真正上传)")
         return 0
 
-    # 1. 清掉旧的 sls-*.apk（覆盖式策略）
-    print(f"\n→ 清理 {prefix}/android/releases/ 下旧版本…")
+    # ── 步骤 6：清旧 APK ──
+    t = step(f"清理 {prefix}/android/releases/ 下旧 APK")
     list_prefix = f"{prefix}/android/releases/"
     deleted = 0
     for obj in oss2.ObjectIterator(bucket, prefix=list_prefix):
@@ -184,19 +262,66 @@ def main() -> int:
         if not obj.key.startswith(list_prefix) or not obj.key.endswith(".apk"):
             continue
         bucket.delete_object(obj.key)
-        print(f"  - 删除 {obj.key}")
+        info(f"  - 删除 {obj.key}")
         deleted += 1
     if deleted == 0:
-        print("  (无旧版本可清)")
+        info("  (无旧版本可清)")
+    step_done(t)
 
-    # 2. 上传 APK
-    print(f"\n→ 上传 APK → {apk_key}")
-    t0 = time.time()
-    bucket.put_object_from_file(apk_key, str(APK_PATH))
-    print(f"  完成（{time.time() - t0:.1f}s）")
+    # ── 步骤 7：上传 APK ──
+    t = step(f"上传 APK → {apk_key}")
+    t_upload = time.time()
+    last_print_at = [0.0]
 
-    # 3. 上传 manifest（覆盖）
-    print(f"→ 上传 manifest → {manifest_key}")
+    def progress_cb(consumed: int, total: int) -> None:
+        now = time.time()
+        # 不要每个 chunk 都刷屏（oss2 chunk 偏小，频率太高）
+        if total and consumed < total and now - last_print_at[0] < 0.3:
+            return
+        last_print_at[0] = now
+        elapsed = max(now - t_upload, 0.001)
+        speed = consumed / elapsed
+        speed_str = (
+            f"{speed / 1024 / 1024:.2f} MB/s"
+            if speed >= 1024 * 1024
+            else f"{speed / 1024:.0f} KB/s"
+        )
+        if total:
+            pct = consumed * 100.0 / total
+            done_mb = consumed / 1024 / 1024
+            total_mb = total / 1024 / 1024
+            bar_w = 30
+            filled = int(bar_w * consumed / total)
+            bar = "█" * filled + "░" * (bar_w - filled)
+            eta = (total - consumed) / speed if speed > 0 else 0
+            sys.stdout.write(
+                f"\r    [{bar}] {pct:5.1f}%  {done_mb:.1f}/{total_mb:.1f} MB  "
+                f"{speed_str}  ETA {eta:.0f}s   "
+            )
+        else:
+            sys.stdout.write(
+                f"\r    {consumed / 1024 / 1024:.1f} MB  {speed_str}   "
+            )
+        sys.stdout.flush()
+        if total and consumed >= total:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+    # 分片 + 4 线程并行：把大文件切 4MB part 同时上传，国内带宽抖时累计速度更稳
+    # multipart_threshold=10MB → 文件 > 10MB 自动走 resumable，否则走单流 put_object
+    oss2.resumable_upload(
+        bucket,
+        apk_key,
+        str(APK_PATH),
+        multipart_threshold=10 * 1024 * 1024,
+        part_size=4 * 1024 * 1024,
+        num_threads=4,
+        progress_callback=progress_cb,
+    )
+    step_done(t)
+
+    # ── 步骤 8：上传 manifest ──
+    t = step(f"上传 manifest → {manifest_key}")
     bucket.put_object(
         manifest_key,
         json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
@@ -205,9 +330,10 @@ def main() -> int:
             "Cache-Control": "no-cache, must-revalidate",
         },
     )
-    print("  完成")
+    step_done(t)
 
-    print("\n✓ 发布成功")
+    total_s = time.time() - _t_global[0]
+    print(f"\n✓ 发布成功（总耗时 {total_s:.1f}s）")
     print(f"  访问 manifest：{manifest_url}")
     print(f"  下载 APK：    {apk_url}")
     return 0
