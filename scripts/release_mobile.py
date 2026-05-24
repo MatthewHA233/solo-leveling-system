@@ -77,17 +77,21 @@ ANDROID_DIR = MOBILE_DIR / "android"
 APK_PATH = ANDROID_DIR / "app" / "build" / "outputs" / "apk" / "release" / "app-release.apk"
 VERSION_FILE = MOBILE_DIR / "VERSION"
 
-# 复用 MW_ActivityMonitor/.env（同一台机器、同一套 AK）
-EXTERNAL_ENV = Path.home() / "Projects" / "Github" / "MW_ActivityMonitor" / ".env"
+# sls 自己的 .env（OSS_ACCESS_KEY_* + OSS_BUCKET_NAME + OSS_ENDPOINT +
+# OSS_CUSTOM_DOMAIN + SLS_OSS_PATH_PREFIX）。模板见 .env.example。
+LOCAL_ENV = REPO_ROOT / ".env"
 
 
 def load_env() -> None:
-    if load_dotenv and EXTERNAL_ENV.exists():
-        load_dotenv(EXTERNAL_ENV)
-    # 项目本地 .env 优先级更高（如果有）
-    local_env = REPO_ROOT / ".env"
-    if load_dotenv and local_env.exists():
-        load_dotenv(local_env, override=True)
+    if not load_dotenv:
+        return
+    if LOCAL_ENV.exists():
+        load_dotenv(LOCAL_ENV)
+    else:
+        raise SystemExit(
+            f"找不到 {LOCAL_ENV}\n请按 .env.example 复制并填值（OSS_ACCESS_KEY_ID / "
+            "OSS_ACCESS_KEY_SECRET / OSS_BUCKET_NAME / OSS_ENDPOINT / OSS_CUSTOM_DOMAIN）"
+        )
 
 
 def read_version() -> tuple[str, int]:
@@ -142,7 +146,7 @@ def sha256_of(path: Path) -> str:
 def make_bucket() -> tuple[oss2.Bucket, str, str]:
     ak = os.getenv("OSS_ACCESS_KEY_ID")
     sk = os.getenv("OSS_ACCESS_KEY_SECRET")
-    bucket_name = os.getenv("OSS_BUCKET_NAME", "horizn")
+    bucket_name = os.getenv("OSS_BUCKET_NAME", "lingflow")
     endpoint = os.getenv("OSS_ENDPOINT", "oss-cn-heyuan.aliyuncs.com")
     if not ak or not sk:
         raise SystemExit("缺少 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET")
@@ -153,6 +157,8 @@ def make_bucket() -> tuple[oss2.Bucket, str, str]:
 
 
 def public_url_for(key: str, bucket_name: str, endpoint: str) -> str:
+    """优先用 OSS_CUSTOM_DOMAIN 配的 CDN/CNAME 域。OSS 禁止用原生
+    *.aliyuncs.com 分发 .apk（ApkDownloadForbidden），必须走 CNAME 域。"""
     cd = os.getenv("OSS_CUSTOM_DOMAIN", "").rstrip("/")
     if cd:
         return f"{cd}/{key}"
@@ -172,12 +178,14 @@ def main() -> int:
 
     # ── 步骤 1：环境变量 ──
     t = step("加载 .env")
-    info(f"  从 {EXTERNAL_ENV}（如存在）+ 仓库根 .env 读 OSS_*")
+    info(f"  从 {LOCAL_ENV} 读 OSS 凭证 + 端点 + CNAME")
     load_env()
     if not (os.getenv("OSS_ACCESS_KEY_ID") and os.getenv("OSS_ACCESS_KEY_SECRET")):
         raise SystemExit("    ✗ 缺少 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，停止")
-    info(f"  OSS_BUCKET_NAME = {os.getenv('OSS_BUCKET_NAME', 'horizn')}")
-    info(f"  OSS_ENDPOINT    = {os.getenv('OSS_ENDPOINT', 'oss-cn-heyuan.aliyuncs.com')}")
+    info(f"  bucket          = {os.getenv('OSS_BUCKET_NAME', 'lingflow')}")
+    info(f"  endpoint        = {os.getenv('OSS_ENDPOINT', 'oss-cn-heyuan.aliyuncs.com')}")
+    info(f"  customDomain    = {os.getenv('OSS_CUSTOM_DOMAIN', '(空)') or '(空)'}")
+    info(f"  pathPrefix      = {os.getenv('SLS_OSS_PATH_PREFIX', 'solo-leveling')}")
     proxies = [k for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy") if os.getenv(k)]
     if proxies:
         info(f"  ⚠ 检测到代理 env: {', '.join(proxies)} —— 可能被国内 OSS 拒绝")

@@ -1,4 +1,1 @@
-- 修：窗口事件按真实发生时间索引，详情面板不再漏算跨时段边界事件 (AUDIT-020)
-- 修：强制更新 manifest min_supported_code 现在真的阻止"稍后" (AUDIT-021)
-- 通用 ConfirmDialog 加 hideCancel / dismissible 两个 prop
-- 测试自更新链路（首次从 0.0.0.1 升级到 0.0.0.2）
+

@@ -5,9 +5,10 @@
 # 阿里云 OSS endpoint
 ossEndpoint=oss-cn-heyuan.aliyuncs.com
 # OSS bucket 名
-ossBucket=horizn
+ossBucket=lingflow
 # OSS 路径前缀（latest.json 会在 {prefix}/android/latest.json）
 ossPathPrefix=solo-leveling
-# OSS 自定义域，可空（空时走 https://{bucket}.{endpoint}）
-# 例：ossCustomDomain=https://assets.lingflow.cn
-ossCustomDomain=
+# OSS 自定义域（CNAME / CDN），**必须配**
+# OSS 禁止用原生 *.aliyuncs.com 分发 .apk（ApkDownloadForbidden）；
+# 配了 customDomain 后 latest.json 的 url 字段才会走 CDN 域，自更新能下载
+ossCustomDomain=https://assets.lingflow.cn
