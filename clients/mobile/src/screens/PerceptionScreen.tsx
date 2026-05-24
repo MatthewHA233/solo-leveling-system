@@ -17,6 +17,13 @@ import {
 } from '../lib/solodb'
 import { seedSoloDbIfEmpty, type SeedReport } from '../lib/solodb_seed'
 import {
+  getSyncServerStatus,
+  startSyncServer,
+  stopSyncServer,
+  SYNC_SERVER_DEFAULT_PORT,
+  type SyncServerStatus,
+} from '../lib/syncserver'
+import {
   collectUsageStats,
   fetchDbStats,
   getLatestUsageSummary,
@@ -59,6 +66,8 @@ export default function PerceptionScreen() {
   const [seedReport, setSeedReport] = useState<SeedReport | null>(null)
   const [seeding, setSeeding] = useState(false)
   const [exportSummary, setExportSummary] = useState<string>('')
+  const [serverStatus, setServerStatus] = useState<SyncServerStatus | null>(null)
+  const [serverErr, setServerErr] = useState<string>('')
   const [windowEvents, setWindowEvents] = useState<WindowEvent[]>([])
   const [clicks, setClicks] = useState<ClickCountSnapshot>({ total: 0, entries: [] })
 
@@ -72,7 +81,30 @@ export default function PerceptionScreen() {
     void refreshClicks()
     void refreshSoloDb()
     void runSelfImport()
+    void refreshServer()
   }, [])
+
+  async function refreshServer() {
+    try {
+      setServerStatus(await getSyncServerStatus())
+    } catch (e: any) {
+      setServerErr(e?.message ?? String(e))
+    }
+  }
+
+  async function toggleServer() {
+    setServerErr('')
+    try {
+      if (serverStatus?.running) {
+        await stopSyncServer()
+      } else {
+        await startSyncServer(SYNC_SERVER_DEFAULT_PORT)
+      }
+      await refreshServer()
+    } catch (e: any) {
+      setServerErr(e?.message ?? String(e))
+    }
+  }
 
   async function refreshSoloDb() {
     try {
@@ -315,6 +347,37 @@ export default function PerceptionScreen() {
             ))}
           </View>
         )}
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>Sync HTTP Server · 端口 {SYNC_SERVER_DEFAULT_PORT}</Text>
+        <Text style={styles.cardValue}>
+          {serverStatus?.running ? '运行中' : '未启动'}
+          {serverStatus?.running && serverStatus.port > 0 ? `  ·  :${serverStatus.port}` : ''}
+        </Text>
+        {serverStatus?.running && serverStatus.ipv4s.length > 0 && (
+          <>
+            <Text style={styles.cardSub}>desktop 那边把 device 设成下面任一 URL：</Text>
+            {serverStatus.ipv4s.map((ip) => (
+              <Text key={ip} style={[styles.cardSub, { color: theme.accent }]} selectable>
+                http://{ip}:{serverStatus.port}
+              </Text>
+            ))}
+          </>
+        )}
+        {!!serverErr && (
+          <Text style={[styles.cardSub, { color: '#C0392B' }]}>⚠ {serverErr}</Text>
+        )}
+        <View style={styles.btnRow}>
+          <Pressable style={styles.btn} onPress={toggleServer}>
+            <Text style={styles.btnText}>
+              {serverStatus?.running ? '停止' : '启动'}
+            </Text>
+          </Pressable>
+          <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshServer}>
+            <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.card}>

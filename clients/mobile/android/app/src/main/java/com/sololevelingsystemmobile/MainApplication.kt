@@ -8,6 +8,7 @@ import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.sololevelingsystemmobile.perception.PerceptionPackage
 import com.sololevelingsystemmobile.solodb.SoloDbPackage
+import com.sololevelingsystemmobile.syncserver.SyncServerPackage
 
 class MainApplication : Application(), ReactApplication {
 
@@ -18,6 +19,7 @@ class MainApplication : Application(), ReactApplication {
         PackageList(this).packages.apply {
           add(PerceptionPackage())
           add(SoloDbPackage())
+          add(SyncServerPackage())
         },
     )
   }

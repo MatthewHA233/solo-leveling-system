@@ -116,4 +116,8 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    // Phase 5 LAN 同步：单文件 HTTP server，给 mobile 当 sync 端点
+    // 监听 /api/sync/export + /api/sync/import，desktop 走 reqwest 直连
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
 }
