@@ -541,13 +541,12 @@ class SoloDb(context: Context) :
           if (!shouldApplyExistingId(db, "activity_categories", existingByName, row.updatedAt)) {
             skipped++; continue
           }
-          // 防 sync_id UNIQUE 冲突：UPDATE 会把目标行的 sync_id 改成 incoming.syncId，
-          // 但 mobile DB 里可能已经有另一行的 sync_id == incoming.syncId（罕见，
-          // 比如对端在两个 device_id 之间发生过 sync_id 重新分配）。先删占用方。
-          db.execSQL(
-            "DELETE FROM activity_categories WHERE sync_id = ? AND id != ?",
-            arrayOf(row.syncId, existingByName),
-          )
+          // 防 sync_id UNIQUE 冲突：UPDATE 会把目标行 sync_id 改成 incoming.syncId，
+          // 但 mobile DB 里可能已有另一行 sync_id == incoming.syncId（对端历史重新分配）。
+          // 不能裸 DELETE 旁系 —— FK ON DELETE CASCADE 会静默吞掉它的 tags/blocks/plan
+          // 等本地子数据。改为 cascade-aware merge：先把旁系的子 tag 迁/合并到 existing
+          // 这个权威行，再删空旁系（详见 mergeCategoryConflict）。
+          mergeCategoryConflict(db, row.syncId, existingByName)
           db.execSQL(
             """UPDATE activity_categories
                SET sync_id=?, color=?, sort_order=?, created_at=?, last_used_at=?,
@@ -587,11 +586,9 @@ class SoloDb(context: Context) :
           if (!shouldApplyExistingId(db, "activity_tags", existingByPath, row.updatedAt)) {
             skipped++; continue
           }
-          // 同 categories：UPDATE sync_id 前先删旁系占用
-          db.execSQL(
-            "DELETE FROM activity_tags WHERE sync_id = ? AND id != ?",
-            arrayOf(row.syncId, existingByPath),
-          )
+          // 同 categories：cascade-aware merge 旁系 sync_id 占用行，
+          // 把它的 activity_blocks/plan_nodes 迁到 existingByPath 后才删空
+          mergeTagConflict(db, row.syncId, existingByPath)
           db.execSQL(
             """UPDATE activity_tags
                SET sync_id=?, leaf_name=?, depth=?, created_at=?, last_used_at=?,
@@ -746,6 +743,73 @@ class SoloDb(context: Context) :
 
   private fun lookupIdBySync(db: SQLiteDatabase, table: String, syncId: String): Long? {
     return queryLong(db, "SELECT id FROM $table WHERE sync_id = ?", arrayOf(syncId))
+  }
+
+  // ── Cascade-aware merge helpers (AUDIT-012) ──
+  // categories/tags 段做 UPDATE sync_id 时，若 incoming.syncId 被旁系行占用，
+  // 不能裸 DELETE 旁系 —— FK ON DELETE CASCADE 会静默删除它挂的 activity_tags
+  // / activity_blocks / plan_nodes / planned_blocks 等本地未同步子数据。
+  // 这里把旁系下的子项 FK 迁/合并到 keepId（业务键匹配的权威行），再删空旁系。
+
+  /** 旁系 category 下的 tags 迁到 keepId；同 (cat, full_path) 撞 UNIQUE 时递归合并 tag。 */
+  private fun mergeCategoryConflict(db: SQLiteDatabase, syncId: String, keepId: Long) {
+    val sideId = queryLong(
+      db, "SELECT id FROM activity_categories WHERE sync_id = ? AND id != ?",
+      arrayOf(syncId, keepId),
+    ) ?: return
+    val sideTags = mutableListOf<Pair<Long, String>>()
+    db.rawQuery(
+      "SELECT id, full_path FROM activity_tags WHERE category_id = ?",
+      arrayOf(sideId.toString()),
+    ).use { c -> while (c.moveToNext()) sideTags.add(c.getLong(0) to c.getString(1)) }
+    for ((sideTagId, fullPath) in sideTags) {
+      val targetTagId = queryLong(
+        db, "SELECT id FROM activity_tags WHERE category_id = ? AND full_path = ?",
+        arrayOf(keepId, fullPath),
+      )
+      if (targetTagId != null) {
+        // 目标 category 下已有同 path tag，进一步合并这两个 tag 的子项
+        mergeTagChildren(db, sideTagId, targetTagId)
+        db.execSQL("DELETE FROM activity_tags WHERE id = ?", arrayOf(sideTagId))
+      } else {
+        db.execSQL(
+          "UPDATE activity_tags SET category_id = ? WHERE id = ?",
+          arrayOf(keepId, sideTagId),
+        )
+      }
+    }
+    // 旁系下已无 tag，cascade 此时无子可吞，DELETE 安全
+    db.execSQL("DELETE FROM activity_categories WHERE id = ?", arrayOf(sideId))
+  }
+
+  /** 旁系 tag 的子 blocks/plan_nodes 迁到 keepId 后删空旁系。 */
+  private fun mergeTagConflict(db: SQLiteDatabase, syncId: String, keepId: Long) {
+    val sideId = queryLong(
+      db, "SELECT id FROM activity_tags WHERE sync_id = ? AND id != ?",
+      arrayOf(syncId, keepId),
+    ) ?: return
+    mergeTagChildren(db, sideId, keepId)
+    db.execSQL("DELETE FROM activity_tags WHERE id = ?", arrayOf(sideId))
+  }
+
+  /** 把 sideTagId 下的 blocks + plan_nodes 重新挂到 keepTagId。
+   *  activity_blocks 同 (date, minute) 槽位冲突时优先保留 keepTagId 那份（业务权威）。 */
+  private fun mergeTagChildren(db: SQLiteDatabase, sideTagId: Long, keepTagId: Long) {
+    // 先丢掉旁系跟 keep 同 (date,minute) 的 blocks，否则 UPDATE 会撞 UNIQUE(date,minute)
+    db.execSQL(
+      """DELETE FROM activity_blocks WHERE tag_id = ? AND (date, minute) IN
+           (SELECT date, minute FROM activity_blocks WHERE tag_id = ?)""".trimIndent(),
+      arrayOf(sideTagId, keepTagId),
+    )
+    db.execSQL(
+      "UPDATE activity_blocks SET tag_id = ? WHERE tag_id = ?",
+      arrayOf(keepTagId, sideTagId),
+    )
+    // plan_nodes 没跟 project_tag_id 复合 UNIQUE，直接迁
+    db.execSQL(
+      "UPDATE plan_nodes SET project_tag_id = ? WHERE project_tag_id = ?",
+      arrayOf(keepTagId, sideTagId),
+    )
   }
 
   private fun queryLong(db: SQLiteDatabase, sql: String, args: Array<Any>): Long? {
