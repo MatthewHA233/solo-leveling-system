@@ -80,6 +80,9 @@ export default function PerceptionScreen() {
   // 应用自更新
   const [appVersion, setAppVersion] = useState<LocalVersion | null>(null)
   const [updateManifest, setUpdateManifest] = useState<UpdateManifest | null>(null)
+  // AUDIT-021: latest.json 的 min_supported_code > 本地 versionCode 时强制更新
+  // 强制时弹窗不允许"稍后" / 不能点背景关闭
+  const [updateForced, setUpdateForced] = useState(false)
   const [updateChecking, setUpdateChecking] = useState(false)
   const [updateInstalling, setUpdateInstalling] = useState(false)
   const [updateMsg, setUpdateMsg] = useState<string>('')
@@ -138,13 +141,19 @@ export default function PerceptionScreen() {
       const r = await checkForUpdate()
       if (r) {
         setUpdateManifest(r.manifest)
+        setUpdateForced(r.forced)
         setAppVersion(r.current)
-        setUpdateMsg(`发现新版本 ${r.manifest.version_name}（当前 ${r.current.versionName}）`)
-        // 启动时自动弹一次提示对话框；用户点"稍后"就关闭，不再骚扰
+        setUpdateMsg(
+          r.forced
+            ? `必须更新到 ${r.manifest.version_name}（当前 ${r.current.versionName} 低于最低支持版本）`
+            : `发现新版本 ${r.manifest.version_name}（当前 ${r.current.versionName}）`,
+        )
+        // 启动时自动弹一次提示对话框；非强制时用户点"稍后"就关闭，不再骚扰
         setConfirmUpdateOpen(true)
       } else if (!opts?.silent) {
         setUpdateMsg('已是最新版本')
         setUpdateManifest(null)
+        setUpdateForced(false)
       }
     } catch (e: any) {
       if (!opts?.silent) setUpdateMsg(`检查失败: ${e?.message ?? e}`)
@@ -819,11 +828,16 @@ export default function PerceptionScreen() {
         UI 渲染 Top Apps + 时长 + 最近使用时刻。
       </Text>
 
-      {/* 更新确认对话框 */}
+      {/* 更新确认对话框 —— AUDIT-021: forced 时无"稍后"且不能点背景关闭 */}
       <ConfirmDialog
         open={confirmUpdateOpen}
-        title={`更新到 ${updateManifest?.version_name ?? ''}`}
+        title={
+          updateForced
+            ? `必须更新到 ${updateManifest?.version_name ?? ''}`
+            : `更新到 ${updateManifest?.version_name ?? ''}`
+        }
         body={
+          (updateForced ? '当前版本已不再受支持，必须更新后继续使用。\n\n' : '') +
           (updateManifest?.changelog || '') +
           (updateManifest?.size_bytes
             ? `\n\n大小：${(updateManifest.size_bytes / 1024 / 1024).toFixed(1)} MB`
@@ -832,6 +846,8 @@ export default function PerceptionScreen() {
         }
         confirmText={updateInstalling ? '处理中…' : '下载并安装'}
         cancelText="稍后"
+        hideCancel={updateForced}
+        dismissible={!updateForced}
         onCancel={() => setConfirmUpdateOpen(false)}
         onConfirm={() => void runDownloadAndInstall()}
       />

@@ -14,6 +14,10 @@ export interface ConfirmDialogProps {
   confirmText?: string
   cancelText?: string
   danger?: boolean
+  /** AUDIT-021：强制场景下隐藏"取消"按钮（不渲染） */
+  hideCancel?: boolean
+  /** AUDIT-021：false 时点背景 / 系统返回键不会关闭对话框 */
+  dismissible?: boolean
   onCancel: () => void
   onConfirm: () => void
 }
@@ -25,19 +29,26 @@ export default function ConfirmDialog({
   confirmText = '确认',
   cancelText = '取消',
   danger,
+  hideCancel,
+  dismissible = true,
   onCancel,
   onConfirm,
 }: ConfirmDialogProps) {
+  // dismissible=false 时：点背景 / 系统返回键 都拦住，只能走 onConfirm
+  const onBackdrop = dismissible ? onCancel : () => {}
+  const onRequestClose = dismissible ? onCancel : () => {}
   return (
-    <Modal visible={open} transparent animationType="fade" onRequestClose={onCancel}>
-      <Pressable style={styles.backdrop} onPress={onCancel}>
+    <Modal visible={open} transparent animationType="fade" onRequestClose={onRequestClose}>
+      <Pressable style={styles.backdrop} onPress={onBackdrop}>
         <Pressable style={styles.card} onPress={() => {}}>
           <Text style={styles.title}>{title}</Text>
           {!!body && <Text style={styles.body}>{body}</Text>}
           <View style={styles.row}>
-            <Pressable style={styles.cancelBtn} onPress={onCancel}>
-              <Text style={styles.cancelText}>{cancelText}</Text>
-            </Pressable>
+            {!hideCancel && (
+              <Pressable style={styles.cancelBtn} onPress={onCancel}>
+                <Text style={styles.cancelText}>{cancelText}</Text>
+              </Pressable>
+            )}
             <Pressable
               style={[styles.confirmBtn, danger ? styles.confirmDanger : styles.confirmAccent]}
               onPress={onConfirm}

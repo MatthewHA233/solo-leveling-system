@@ -387,6 +387,11 @@ class PerceptionDb(context: Context) :
 
     fun nowIso(): String = isoFmt.format(Date())
 
+    /** AUDIT-020：把"事件真实发生时刻"派生为查询索引用的 ISO 字符串，
+     *  让 SlsAccessibilityService / 其他 watcher 可以用真实时间写 start_at，
+     *  避免 executor 排队 / executor 内 nowIso() 在边界跨过 span 导致漏查。 */
+    fun isoFromMs(ms: Long): String = isoFmt.format(Date(ms))
+
     private fun sha256Short(s: String): String {
       val md = MessageDigest.getInstance("SHA-256")
       val bytes = md.digest(s.toByteArray(Charsets.UTF_8))
