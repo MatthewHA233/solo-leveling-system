@@ -164,6 +164,8 @@ export default function PerceptionScreen() {
 
   async function runDownloadAndInstall() {
     if (!updateManifest) return
+    // 拦重复触发：installing 中再次点击直接 noop，避免 enqueue 多个下载任务
+    if (updateInstalling) return
     setConfirmUpdateOpen(false)
     setUpdateInstalling(true)
     setUpdateMsg('下载中…（系统通知栏可看进度）')

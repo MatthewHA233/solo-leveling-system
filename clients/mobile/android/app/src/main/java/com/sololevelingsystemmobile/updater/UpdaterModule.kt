@@ -26,6 +26,12 @@ import java.io.File
  */
 class UpdaterModule(private val ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) {
 
+  // 上次 enqueue 的 download id（线程内更新，主线程读）。新一次 downloadApk 前
+  // 先 dm.remove(oldId) 取消旧任务，避免：
+  //   1) 用户多次点"立即更新" → 多个并行下载条 + 失败通知刷屏
+  //   2) 旧任务最终落到 sls-latest.apk 覆盖新任务结果
+  @Volatile private var lastDownloadId: Long = -1L
+
   override fun getName(): String = "Updater"
 
   @ReactMethod
@@ -63,14 +69,25 @@ class UpdaterModule(private val ctx: ReactApplicationContext) : ReactContextBase
       val target = File(updatesDir, "sls-latest.apk")
 
       val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+
+      // 取消上一次 enqueue 的任务 —— 避免用户多次点"立即更新"导致状态栏
+      // 多个进度条 / 失败通知刷屏
+      if (lastDownloadId >= 0) {
+        try { dm.remove(lastDownloadId) } catch (_: Throwable) {}
+      }
+
       val req = DownloadManager.Request(Uri.parse(url))
         .setTitle("Solo Leveling 更新")
         .setDescription("下载新版本中…")
-        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+        // VISIBILITY_VISIBLE 而非 VISIBLE_NOTIFY_COMPLETED：后者在某些 OEM
+        // ROM 上下载过程通知行为不一致，下载完成另开一条通知；用 VISIBLE
+        // 时进度条会随下载更新，完成后通知自动消失，体验更稳
+        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
         .setDestinationInExternalFilesDir(ctx, "updates", "sls-latest.apk")
         .setAllowedOverMetered(true)
         .setAllowedOverRoaming(true)
       val id = dm.enqueue(req)
+      lastDownloadId = id
 
       // 轮询下载状态 —— 简单实现，不上 BroadcastReceiver（一次性操作）
       Thread {
