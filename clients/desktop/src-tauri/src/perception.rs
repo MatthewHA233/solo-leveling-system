@@ -2,10 +2,14 @@
 #[path = "perception_windows.rs"]
 mod platform;
 
-#[cfg(windows)]
+#[cfg(target_os = "macos")]
+#[path = "perception_macos.rs"]
+mod platform;
+
+#[cfg(any(windows, target_os = "macos"))]
 pub use platform::*;
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "macos")))]
 mod platform {
     #![allow(dead_code)]
 
@@ -159,5 +163,5 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub use platform::*;

@@ -54,6 +54,14 @@ interface Props {
   onPinPos?: (pos: { col: number; y: number; minute: number } | null) => void
 }
 
+function getAppTrackLabel(): string {
+  if (typeof navigator === 'undefined') return '应用'
+  const ua = navigator.userAgent
+  if (/Macintosh|Mac OS X/i.test(ua)) return '应用(Mac)'
+  if (/Windows/i.test(ua)) return '应用(Win)'
+  return '应用'
+}
+
 // ── 响应式密度模式（纵向驱动）──
 // 每列行数决定列密度：12行/列=1列/小时，6行/列=2列/小时，4行/列=3列/小时，3行/列=4列/小时
 
@@ -2845,7 +2853,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
         </span>
         {(['apps', 'bili'] as const).map((mode) => {
           const active = trackMode === mode
-          const label = mode === 'apps' ? '应用' : '哔哩哔哩'
+          const label = mode === 'apps' ? getAppTrackLabel() : '哔哩哔哩'
           const color = mode === 'apps' ? theme.electricBlue : BILI_COLOR
           return (
             <HudTabButton
@@ -2853,7 +2861,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
               label={label}
               active={active}
               color={color}
-              width={82}
+              width={mode === 'apps' ? 96 : 82}
               height={24}
               onClick={() => onTrackModeChange?.(mode)}
             />

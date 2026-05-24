@@ -1565,7 +1565,7 @@ pub fn run() {
                     sync_engine::run_startup_sync(db_for_startup_sync, app_handle_for_startup).await;
                 });
 
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 {
                     let db_for_window = db_clone.clone();
                     tauri::async_runtime::spawn(async move {

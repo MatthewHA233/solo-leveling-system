@@ -17,6 +17,8 @@ const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets_windows";
 const PERCEPTION_EVENTS_TABLE: &str = "perception_events_windows";
 #[cfg(windows)]
 const APP_CATALOG_TABLE: &str = "app_catalog_windows";
+#[cfg(windows)]
+const PERCEPTION_PLATFORM: &str = "win";
 
 #[cfg(target_os = "macos")]
 const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets_macos";
@@ -24,6 +26,8 @@ const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets_macos";
 const PERCEPTION_EVENTS_TABLE: &str = "perception_events_macos";
 #[cfg(target_os = "macos")]
 const APP_CATALOG_TABLE: &str = "app_catalog_macos";
+#[cfg(target_os = "macos")]
+const PERCEPTION_PLATFORM: &str = "mac";
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
 const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets";
@@ -31,6 +35,8 @@ const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets";
 const PERCEPTION_EVENTS_TABLE: &str = "perception_events";
 #[cfg(all(not(windows), not(target_os = "macos")))]
 const APP_CATALOG_TABLE: &str = "app_catalog";
+#[cfg(all(not(windows), not(target_os = "macos")))]
+const PERCEPTION_PLATFORM: &str = "desktop";
 
 // ── 数据类型 ──
 
@@ -339,6 +345,7 @@ pub struct PerceptionSpan {
     pub title: String,
     pub group_name: Option<String>,
     pub color: Option<String>,
+    pub platform: Option<String>,
 }
 
 // ── Chat Session Types ──
@@ -3139,6 +3146,7 @@ impl Database {
                         title: if title.is_empty() { app.clone() } else { title },
                         group_name: Some(app.clone()),
                         color: Some(color),
+                        platform: Some(PERCEPTION_PLATFORM.to_string()),
                     });
                 }
                 "status" => {
@@ -3151,6 +3159,7 @@ impl Database {
                         title: status.clone(),
                         group_name: Some(status.clone()),
                         color: Some(color_for_status(&status)),
+                        platform: Some(PERCEPTION_PLATFORM.to_string()),
                     });
                 }
                 "tag" => {
@@ -3165,6 +3174,7 @@ impl Database {
                         title,
                         group_name: group,
                         color,
+                        platform: None,
                     });
                 }
                 _ => {}

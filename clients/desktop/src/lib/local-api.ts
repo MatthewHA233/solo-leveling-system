@@ -617,6 +617,7 @@ export interface PerceptionSpan {
   title: string
   group_name: string | null
   color: string | null  // "#F9BA00"
+  platform?: 'mac' | 'win' | 'desktop' | string | null
 }
 
 /** 查询某天的本机感知 spans（apps + tags/status） */
