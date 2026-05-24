@@ -62,6 +62,7 @@ import { pcm16ChunksToWavBlob } from './lib/voice/voice-recorder'
 // UI
 import DayNightChart from './components/DayNightChart'
 import MotivationDashboard from './components/MotivationDashboard'
+import TorrentFieldPanel from './components/TorrentFieldPanel'
 import ViewSwitcher, { type MainViewMode } from './components/ViewSwitcher'
 import ChatPanel from './components/ChatPanel'
 import SessionPicker from './components/SessionPicker'
@@ -75,7 +76,7 @@ import ModelDialog from './components/ModelDialog'
 import SyncPeerDialog, { type SyncLogEntry } from './components/SyncPeerDialog'
 import { useBiliHistory } from './lib/bilibili/useHistory'
 import ActivityTagPalette from './components/ActivityTagPalette'
-import PlanNodePalette from './components/PlanNodePalette'
+import TodoListPanel from './components/TodoListPanel'
 import ActivityToast from './components/ActivityToast'
 import type { FairyState } from './components/FairyHUD'
 import { HudFrame, NeonRule } from './components/hud'
@@ -290,7 +291,7 @@ export default function App() {
   const [showModels, setShowModels] = useState(false)
   const [showSync, setShowSync] = useState(false)
 
-  // 主舞台视图模式：动机仪表盘（默认首屏）/ 昼夜表
+  // 主舞台视图模式：今日/当日协议（默认首屏）/ 昼夜表 / 洪流域
   const [mainView, setMainView] = useState<MainViewMode>('motivation')
   // tab 行 hover 状态 — 平时两卡完全重叠；hover 时背后卡向上滑出露顶（Aceternity tabs 行为）
   const [tabsHovering, setTabsHovering] = useState(false)
@@ -624,6 +625,8 @@ export default function App() {
       date.getMonth() === now.getMonth() &&
       date.getDate() === now.getDate()
   }, [])
+  const selectedDateIsToday = isToday(selectedDate)
+  const protocolViewLabel = selectedDateIsToday ? '今日协议' : '当日协议'
 
   const refreshPerceptionSpans = useCallback(() => {
     fetchPerceptionSpans(selectedDate)
@@ -2258,6 +2261,31 @@ export default function App() {
     }
   }, [])
 
+  const mainPanelStyle = (mode: MainViewMode): React.CSSProperties => {
+    const panelOrder: Record<MainViewMode, number> = { motivation: 0, daynight: 1, torrent: 2 }
+    const active = mainView === mode
+    const distance = Math.abs(panelOrder[mode] - panelOrder[mainView])
+    const inactiveOpacity = Math.max(0.16, 0.42 - distance * 0.12)
+    const inactiveScale = Math.max(0.94, 0.985 - distance * 0.015)
+
+    return {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      transformOrigin: 'top center',
+      transform: active
+        ? tabsHovering ? 'translateY(24px) scale(1)' : 'translateY(0) scale(1)'
+        : tabsHovering ? `translateY(${distance * 8}px) scale(${inactiveScale})` : 'translateY(0) scale(1)',
+      opacity: active ? 1 : tabsHovering ? inactiveOpacity : 0,
+      filter: active ? 'none' : 'brightness(0.7) saturate(0.7)',
+      zIndex: active ? 3 : 1,
+      pointerEvents: active ? 'auto' : 'none',
+      transition: 'transform 0.55s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease, filter 0.4s ease',
+    }
+  }
+
   return (
     <div style={{
       display: 'flex', flexDirection: 'column',
@@ -2627,9 +2655,9 @@ export default function App() {
               display: 'flex', alignItems: 'flex-end',
             }}
           >
-            <ViewSwitcher viewMode={mainView} onChange={setMainView} />
+            <ViewSwitcher viewMode={mainView} onChange={setMainView} protocolLabel={protocolViewLabel} />
           </div>
-          {/* 卡片堆叠：两个面板 absolute 重叠；hover tab 时背后卡向上滑出露顶。
+          {/* 卡片堆叠：三个面板 absolute 重叠；hover tab 时背后卡向上滑出露顶。
               paddingTop 留出"露出空间"，overflow:hidden 把超出顶部的部分裁掉，
               避免卡片跑进 ViewSwitcher tab 行遮挡标签。 */}
           <div style={{
@@ -2640,23 +2668,7 @@ export default function App() {
             perspective: '1400px',
             perspectiveOrigin: 'top center',
           }}>
-            <div style={{
-              position: 'absolute',
-              top: 0, left: 0, right: 0, bottom: 0,
-              transformOrigin: 'top center',
-              transform: mainView === 'daynight'
-                ? tabsHovering
-                  ? 'translateY(24px) scale(1)'
-                  : 'translateY(0) scale(1)'
-                : tabsHovering
-                  ? 'translateY(0) scale(0.97)'
-                  : 'translateY(0) scale(1)',
-              opacity: mainView === 'daynight' ? 1 : tabsHovering ? 0.45 : 0,
-              filter: mainView === 'daynight' ? 'none' : 'brightness(0.7) saturate(0.7)',
-              zIndex: mainView === 'daynight' ? 2 : 1,
-              pointerEvents: mainView === 'daynight' ? 'auto' : 'none',
-              transition: 'transform 0.55s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease, filter 0.4s ease',
-            }}>
+            <div style={mainPanelStyle('daynight')}>
               <DayNightChart
                 activityBlocks={activityBlocks}
                 plannedBlocks={plannedBlocks}
@@ -2686,24 +2698,11 @@ export default function App() {
                 onPinPos={setPinnedPos}
               />
             </div>
-            <div style={{
-              position: 'absolute',
-              top: 0, left: 0, right: 0, bottom: 0,
-              transformOrigin: 'top center',
-              transform: mainView === 'motivation'
-                ? tabsHovering
-                  ? 'translateY(24px) scale(1)'
-                  : 'translateY(0) scale(1)'
-                : tabsHovering
-                  ? 'translateY(0) scale(0.97)'
-                  : 'translateY(0) scale(1)',
-              opacity: mainView === 'motivation' ? 1 : tabsHovering ? 0.45 : 0,
-              filter: mainView === 'motivation' ? 'none' : 'brightness(0.7) saturate(0.7)',
-              zIndex: mainView === 'motivation' ? 2 : 1,
-              pointerEvents: mainView === 'motivation' ? 'auto' : 'none',
-              transition: 'transform 0.55s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease, filter 0.4s ease',
-            }}>
-              <MotivationDashboard />
+            <div style={mainPanelStyle('motivation')}>
+              <MotivationDashboard protocolLabel={protocolViewLabel} isTodayProtocol={selectedDateIsToday} />
+            </div>
+            <div style={mainPanelStyle('torrent')}>
+              <TorrentFieldPanel />
             </div>
           </div>
         </div>
@@ -2820,7 +2819,7 @@ export default function App() {
             </button>
           )}
 
-          {/* 右侧栏内容：编辑模式 → 标签库（+ 当前轨道详情）；非编辑模式 → 聊天 / 详情 */}
+          {/* 右侧栏内容：编辑模式 → 实际记录标签库 / 计划待办；非编辑模式 → 聊天 / 详情 */}
           {editMode ? (() => {
             const pm = pinnedPos?.minute ?? null
             const dtToMin = (dt: string) => { const [h,m] = (dt.split(' ')[1]??'').split(':').map(Number); return h*60+m }
@@ -2846,7 +2845,7 @@ export default function App() {
             const detail = trackMode === 'bili' ? biliSpan : appSpan
             return (
               <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-                {/* 上半：标签库 */}
+                {/* 上半：实际记录标签库 / 计划待办 */}
                 <div style={{
                   flex: detail ? '1 1 42%' : '1 1 100%',
                   minHeight: 0,
@@ -2854,7 +2853,8 @@ export default function App() {
                   position: 'relative',
                 }}>
                   {recordLayer === 'plan' ? (
-                    <PlanNodePalette
+                    <TodoListPanel
+                      selectedDate={selectedDate}
                       palette={activityPalette}
                       nodes={planNodes}
                       selectedProjectTagId={selectedProjectTagId}

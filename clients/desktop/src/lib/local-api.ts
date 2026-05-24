@@ -263,7 +263,7 @@ export async function addPlanNode(
 
 export async function updatePlanNode(
   id: number,
-  patch: { title?: string; status?: PlanNode['status']; parentId?: number | null },
+  patch: { title?: string; status?: PlanNode['status'] },
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/plans/nodes/${id}`, {
     method: 'PATCH',
@@ -272,7 +272,6 @@ export async function updatePlanNode(
       id,
       title: patch.title ?? null,
       status: patch.status ?? null,
-      parent_id: patch.parentId ?? null,
     }),
   })
   const json: ApiResponse<void> = await res.json()

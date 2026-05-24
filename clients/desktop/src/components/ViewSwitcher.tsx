@@ -2,28 +2,30 @@
 // ViewSwitcher — VSCode 风格主舞台 tab
 //   · 矮窄单行（~26px 高），字号 12，padding 紧凑，节省垂直空间
 //   · 左右拖拽换序（HTML5 native drag），顺序持久化到 localStorage
-//   · 不可关闭（无 × 按钮）— 只有"昼夜表"和"任务调度"两个固定视图
+//   · 不可关闭（无 × 按钮）— 今日/当日协议、昼夜表、洪流域三个固定视图
 //   · active 视觉：底部 1px 白色 underline + 文字加粗
 // ══════════════════════════════════════════════
 
 import { useEffect, useRef, useState } from 'react'
 import { theme } from '../theme'
 
-export type MainViewMode = 'motivation' | 'daynight'
+export type MainViewMode = 'motivation' | 'daynight' | 'torrent'
 
 interface Props {
   readonly viewMode: MainViewMode
   readonly onChange: (m: MainViewMode) => void
+  readonly protocolLabel: string
 }
 
 const LABELS: Record<MainViewMode, string> = {
-  motivation: '动机仪表盘',
+  motivation: '今日协议',
   daynight: '昼夜表',
+  torrent: '洪流域',
 }
 
-const DEFAULT_ORDER: ReadonlyArray<MainViewMode> = ['motivation', 'daynight']
-// v2 因枚举值变化，换 storage key（旧值不再生效，自动 fallback 到 default order）
-const ORDER_STORAGE_KEY = 'sls.viewSwitcher.order.v2'
+const DEFAULT_ORDER: ReadonlyArray<MainViewMode> = ['motivation', 'daynight', 'torrent']
+// v3 新增洪流域，换 storage key（旧值不再生效，自动 fallback 到 default order）
+const ORDER_STORAGE_KEY = 'sls.viewSwitcher.order.v3'
 
 function loadOrder(): MainViewMode[] {
   try {
@@ -31,15 +33,15 @@ function loadOrder(): MainViewMode[] {
     if (!raw) return [...DEFAULT_ORDER]
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return [...DEFAULT_ORDER]
-    const valid = parsed.filter((x): x is MainViewMode => x === 'motivation' || x === 'daynight')
+    const valid = parsed.filter((x): x is MainViewMode => x === 'motivation' || x === 'daynight' || x === 'torrent')
     for (const k of DEFAULT_ORDER) if (!valid.includes(k)) valid.push(k)
-    return valid.slice(0, 2)
+    return valid.slice(0, DEFAULT_ORDER.length)
   } catch {
     return [...DEFAULT_ORDER]
   }
 }
 
-export default function ViewSwitcher({ viewMode, onChange }: Props) {
+export default function ViewSwitcher({ viewMode, onChange, protocolLabel }: Props) {
   const [order, setOrder] = useState<MainViewMode[]>(loadOrder)
   const dragIdxRef = useRef<number | null>(null)
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null)
@@ -67,6 +69,7 @@ export default function ViewSwitcher({ viewMode, onChange }: Props) {
       {order.map((id, idx) => {
         const active = id === viewMode
         const isDragOver = dragOverIdx === idx
+        const label = id === 'motivation' ? protocolLabel : LABELS[id]
         return (
           <button
             key={id}
@@ -128,7 +131,7 @@ export default function ViewSwitcher({ viewMode, onChange }: Props) {
               if (!active) (e.currentTarget as HTMLButtonElement).style.color = theme.textMuted
             }}
           >
-            {LABELS[id]}
+            {label}
             {/* active 底部 1px 白色 underline */}
             {active && (
               <span
