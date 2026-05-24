@@ -58,6 +58,9 @@ export type UpsertCategoryArgs = {
   syncId?: string
   createdAt?: string
   lastUsedAt?: string
+  /** LWW 关键字段；seed 种子数据时必须传 desktop 原始 updated_at，
+   * 否则会被对端视为"mobile 刚改"覆盖 desktop 已更新版本。 */
+  updatedAt?: string
 }
 
 // ── Sync export 类型（镜像 desktop SyncExport） ──
@@ -138,6 +141,8 @@ export type UpsertTagArgs = {
   syncId?: string
   createdAt?: string
   lastUsedAt?: string
+  /** LWW 关键字段；同 UpsertCategoryArgs */
+  updatedAt?: string
 }
 
 interface SoloDbNative {

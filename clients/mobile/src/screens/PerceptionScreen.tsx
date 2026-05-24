@@ -86,11 +86,14 @@ export default function PerceptionScreen() {
   async function runExport() {
     try {
       const ex: SyncExport = await soloExportSync(null)
+      const firstCat = ex.activityCategories[0]
+      const firstTag = ex.activityTags[0]
       setExportSummary(
         `cats=${ex.activityCategories.length} tags=${ex.activityTags.length} ` +
         `blocks=${ex.activityBlocks.length} pNodes=${ex.planNodes.length} ` +
-        `pBlocks=${ex.plannedBlocks.length} · cursor=${ex.cursor.slice(11, 19)} ` +
-        `· device=${ex.deviceId.slice(0, 8)}`
+        `pBlocks=${ex.plannedBlocks.length}\n` +
+        `首 cat: ${firstCat?.name} updatedAt=${firstCat?.updatedAt}\n` +
+        `首 tag: ${firstTag?.leafName} updatedAt=${firstTag?.updatedAt}`
       )
     } catch (e: any) {
       setExportSummary(`error: ${e?.message ?? String(e)}`)
@@ -272,8 +275,8 @@ export default function PerceptionScreen() {
           </Pressable>
         </View>
         {!!exportSummary && (
-          <Text style={[styles.cardSub, { marginTop: 8 }]} numberOfLines={2}>
-            export: {exportSummary}
+          <Text style={[styles.cardSub, { marginTop: 8 }]} numberOfLines={4}>
+            {exportSummary}
           </Text>
         )}
         {seedReport && (

@@ -242,15 +242,22 @@ class SoloDb(context: Context) :
     return out
   }
 
-  /** Upsert category by name UNIQUE；返回 row id。syncId 为空则生成 UUID。 */
+  /**
+   * Upsert category by name UNIQUE；返回 row id。
+   * syncId / createdAt / lastUsedAt / updatedAt 都可选；
+   * updatedAt 是 LWW 同步的关键，seed 时必须传 desktop 原始 updated_at，
+   * 否则会被对端视为"mobile 刚改"覆盖 desktop 更新的版本。
+   */
   fun upsertCategory(
     name: String, color: String, sortOrder: Int,
-    syncId: String? = null, createdAt: String? = null, lastUsedAt: String? = null,
+    syncId: String? = null,
+    createdAt: String? = null, lastUsedAt: String? = null, updatedAt: String? = null,
   ): Long {
     val now = nowIso()
     val sid = syncId?.takeIf { it.isNotEmpty() } ?: UUID.randomUUID().toString()
     val cAt = createdAt ?: now
     val lAt = lastUsedAt ?: now
+    val uAt = updatedAt ?: now
     val db = writableDatabase
     db.execSQL(
       """INSERT INTO activity_categories
@@ -260,22 +267,24 @@ class SoloDb(context: Context) :
            color = excluded.color, sort_order = excluded.sort_order,
            last_used_at = excluded.last_used_at, updated_at = excluded.updated_at,
            deleted_at = NULL""".trimIndent(),
-      arrayOf(sid, name, color, sortOrder, cAt, lAt, now),
+      arrayOf(sid, name, color, sortOrder, cAt, lAt, uAt),
     )
     return db.rawQuery(
       "SELECT id FROM activity_categories WHERE name = ?", arrayOf(name),
     ).use { c -> if (c.moveToFirst()) c.getLong(0) else -1L }
   }
 
-  /** Upsert tag by (category_id, full_path) UNIQUE；返回 row id。 */
+  /** Upsert tag by (category_id, full_path) UNIQUE；返回 row id。同 upsertCategory 注释。 */
   fun upsertTag(
     categoryId: Long, fullPath: String, leafName: String, depth: Int,
-    syncId: String? = null, createdAt: String? = null, lastUsedAt: String? = null,
+    syncId: String? = null,
+    createdAt: String? = null, lastUsedAt: String? = null, updatedAt: String? = null,
   ): Long {
     val now = nowIso()
     val sid = syncId?.takeIf { it.isNotEmpty() } ?: UUID.randomUUID().toString()
     val cAt = createdAt ?: now
     val lAt = lastUsedAt ?: now
+    val uAt = updatedAt ?: now
     val db = writableDatabase
     db.execSQL(
       """INSERT INTO activity_tags
@@ -285,7 +294,7 @@ class SoloDb(context: Context) :
            leaf_name = excluded.leaf_name, depth = excluded.depth,
            last_used_at = excluded.last_used_at, updated_at = excluded.updated_at,
            deleted_at = NULL""".trimIndent(),
-      arrayOf(sid, categoryId, fullPath, leafName, depth, cAt, lAt, now),
+      arrayOf(sid, categoryId, fullPath, leafName, depth, cAt, lAt, uAt),
     )
     return db.rawQuery(
       "SELECT id FROM activity_tags WHERE category_id = ? AND full_path = ?",

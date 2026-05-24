@@ -136,12 +136,13 @@ class SoloDbModule(private val reactContext: ReactApplicationContext) :
         syncId = if (args.hasKey("syncId")) args.getString("syncId") else null,
         createdAt = if (args.hasKey("createdAt")) args.getString("createdAt") else null,
         lastUsedAt = if (args.hasKey("lastUsedAt")) args.getString("lastUsedAt") else null,
+        updatedAt = if (args.hasKey("updatedAt")) args.getString("updatedAt") else null,
       )
       promise.resolve(id.toDouble())
     } catch (e: Throwable) { promise.reject("SOLODB_UPSERT_CAT_FAILED", e.message, e) }
   }
 
-  /** Upsert tag。args: categoryId, fullPath, leafName, depth (+ 可选 syncId/createdAt/lastUsedAt)。 */
+  /** Upsert tag。args: categoryId, fullPath, leafName, depth (+ 可选 syncId/createdAt/lastUsedAt/updatedAt)。 */
   @ReactMethod
   fun upsertTag(args: ReadableMap, promise: Promise) {
     try {
@@ -153,6 +154,7 @@ class SoloDbModule(private val reactContext: ReactApplicationContext) :
         syncId = if (args.hasKey("syncId")) args.getString("syncId") else null,
         createdAt = if (args.hasKey("createdAt")) args.getString("createdAt") else null,
         lastUsedAt = if (args.hasKey("lastUsedAt")) args.getString("lastUsedAt") else null,
+        updatedAt = if (args.hasKey("updatedAt")) args.getString("updatedAt") else null,
       )
       promise.resolve(id.toDouble())
     } catch (e: Throwable) { promise.reject("SOLODB_UPSERT_TAG_FAILED", e.message, e) }
