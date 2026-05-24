@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">Solo Leveling</string>
-    <string name="sls_accessibility_description">允许 Solo Leveling System 记录前台窗口切换，用于活动感知与时间统计。数据仅保存在本机 SQLite，不会上传。</string>
+    <string name="sls_accessibility_description">让 Solo Leveling 记录你在哪些 app 的哪些页面停留，作为昼夜表的"实际活动"参考。数据仅保存在本机 SQLite，不会上传任何服务器。</string>
 </resources>

@@ -38,7 +38,7 @@
       <!-- 感知层：前台窗口切换监听 (Phase 2)。用户需在 设置→辅助功能 中手动启用。 -->
       <service
         android:name=".perception.SlsAccessibilityService"
-        android:label="SLS 感知前台窗口"
+        android:label="Solo Leveling · 活动感知"
         android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
         android:exported="true">
         <intent-filter>

@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicLong
  * - SQLite 写在 SingleThreadExecutor，避免阻塞 Service 主线程
  * - window_title 从 [AccessibilityEvent.getText] 列表拼接，不读控件树，侵入最小
  *
- * 启用方式：用户去 设置 → 辅助功能 → 已下载的应用 → SLS 感知前台窗口 → 启用。
+ * 启用方式：用户去 设置 → 辅助功能 → 已下载的应用 → Solo Leveling · 活动感知 → 启用。
  */
 class SlsAccessibilityService : AccessibilityService() {
 

@@ -266,7 +266,7 @@ export default function PerceptionScreen() {
           {a11yEnabled == null ? '检测中…' : a11yEnabled ? '已启用' : '未启用'}
         </Text>
         <Text style={styles.cardSub}>
-          手动启用路径：系统设置 → 辅助功能 → 已下载的应用 → SLS 感知前台窗口
+          手动启用路径：系统设置 → 辅助功能 → 已下载的应用 → Solo Leveling · 活动感知
         </Text>
         <View style={styles.btnRow}>
           <Pressable style={styles.btn} onPress={openA11ySettings}>
