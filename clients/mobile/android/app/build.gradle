@@ -120,4 +120,7 @@ dependencies {
     // Phase 5 LAN 同步：单文件 HTTP server，给 mobile 当 sync 端点
     // 监听 /api/sync/export + /api/sync/import，desktop 走 reqwest 直连
     implementation 'org.nanohttpd:nanohttpd:2.3.1'
+
+    // WorkManager：定时后台同步，app 被杀也能跑（PeriodicWorkRequest 最低 15min）
+    implementation 'androidx.work:work-runtime-ktx:2.10.0'
 }

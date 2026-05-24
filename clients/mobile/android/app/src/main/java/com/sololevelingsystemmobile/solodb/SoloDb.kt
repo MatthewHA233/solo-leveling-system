@@ -760,6 +760,64 @@ class SoloDb(context: Context) :
     }
   }
 
+  // ── linked_devices CRUD (mobile 主动 pull desktop 时用) ──
+
+  data class LinkedDevice(
+    val deviceId: String,
+    val alias: String,
+    val lastBase: String,
+    val lastSyncedAt: String?,
+    val createdAt: String,
+  )
+
+  fun listLinkedDevices(): List<LinkedDevice> {
+    val out = ArrayList<LinkedDevice>()
+    readableDatabase.rawQuery(
+      """SELECT device_id, alias, last_base, last_synced_at, created_at
+         FROM linked_devices ORDER BY created_at""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        out.add(LinkedDevice(
+          deviceId = c.getString(0), alias = c.getString(1),
+          lastBase = c.getString(2),
+          lastSyncedAt = if (c.isNull(3)) null else c.getString(3),
+          createdAt = c.getString(4),
+        ))
+      }
+    }
+    return out
+  }
+
+  /** Upsert linked device。如果对端 device_id 已存在，刷新 alias 和 last_base。 */
+  fun addLinkedDevice(deviceId: String, alias: String, lastBase: String): LinkedDevice {
+    val now = nowIso()
+    writableDatabase.execSQL(
+      """INSERT INTO linked_devices (device_id, alias, last_base, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(device_id) DO UPDATE SET
+           alias=excluded.alias, last_base=excluded.last_base""".trimIndent(),
+      arrayOf(deviceId, alias, lastBase, now),
+    )
+    return LinkedDevice(deviceId, alias, lastBase, null, now)
+  }
+
+  fun removeLinkedDevice(deviceId: String) {
+    writableDatabase.execSQL(
+      "DELETE FROM linked_devices WHERE device_id = ?", arrayOf(deviceId),
+    )
+  }
+
+  /** 同步成功后 touch lastSyncedAt + 刷新 lastBase（对端 IP 可能变了）。 */
+  fun touchLinkSynced(deviceId: String, lastBase: String) {
+    val now = nowIso()
+    writableDatabase.execSQL(
+      """UPDATE linked_devices SET last_synced_at = ?, last_base = ?
+         WHERE device_id = ?""".trimIndent(),
+      arrayOf(now, lastBase, deviceId),
+    )
+  }
+
   /**
    * 生成跟 desktop db.rs generate_alias 完全一致的"形容词+水果"别名。
    * 算法：FNV-1a hash `solo-leveling-system:alias:v1:<device_id>`，
