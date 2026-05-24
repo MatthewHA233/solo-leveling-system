@@ -541,6 +541,13 @@ class SoloDb(context: Context) :
           if (!shouldApplyExistingId(db, "activity_categories", existingByName, row.updatedAt)) {
             skipped++; continue
           }
+          // 防 sync_id UNIQUE 冲突：UPDATE 会把目标行的 sync_id 改成 incoming.syncId，
+          // 但 mobile DB 里可能已经有另一行的 sync_id == incoming.syncId（罕见，
+          // 比如对端在两个 device_id 之间发生过 sync_id 重新分配）。先删占用方。
+          db.execSQL(
+            "DELETE FROM activity_categories WHERE sync_id = ? AND id != ?",
+            arrayOf(row.syncId, existingByName),
+          )
           db.execSQL(
             """UPDATE activity_categories
                SET sync_id=?, color=?, sort_order=?, created_at=?, last_used_at=?,
@@ -580,6 +587,11 @@ class SoloDb(context: Context) :
           if (!shouldApplyExistingId(db, "activity_tags", existingByPath, row.updatedAt)) {
             skipped++; continue
           }
+          // 同 categories：UPDATE sync_id 前先删旁系占用
+          db.execSQL(
+            "DELETE FROM activity_tags WHERE sync_id = ? AND id != ?",
+            arrayOf(row.syncId, existingByPath),
+          )
           db.execSQL(
             """UPDATE activity_tags
                SET sync_id=?, leaf_name=?, depth=?, created_at=?, last_used_at=?,
@@ -748,6 +760,20 @@ class SoloDb(context: Context) :
     }
   }
 
+  /**
+   * 生成跟 desktop db.rs generate_alias 完全一致的"形容词+水果"别名。
+   * 算法：FNV-1a hash `solo-leveling-system:alias:v1:<device_id>`，
+   * 拆 hex[0..8]/[8..16] 转 u32 取模 ADJECTIVES / FRUITS。
+   * 同一个 device_id 在 mobile / desktop 算出来的 alias 完全相同。
+   */
+  fun generateAlias(deviceId: String): String {
+    val input = "solo-leveling-system:alias:v1:$deviceId"
+    val hex = fnv1aHex(input)
+    val adjIdx = (hex.substring(0, 8).toLong(16) % ALIAS_ADJECTIVES.size).toInt()
+    val fruitIdx = (hex.substring(8, 16).toLong(16) % ALIAS_FRUITS.size).toInt()
+    return "${ALIAS_ADJECTIVES[adjIdx]}的${ALIAS_FRUITS[fruitIdx]}"
+  }
+
   /** 当前 device_id（从 sync_meta 读出）。 */
   fun deviceId(): String {
     return readableDatabase.rawQuery(
@@ -785,5 +811,28 @@ class SoloDb(context: Context) :
     }
 
     fun nowIso(): String = isoFmt.format(Date())
+
+    // 跟 desktop db.rs ALIAS_ADJECTIVES / ALIAS_FRUITS 完全一致的词库
+    private val ALIAS_ADJECTIVES = arrayOf(
+      "迷人", "美丽", "巨大", "明亮", "干净", "聪明", "帅气", "可爱", "狡猾", "坚定",
+      "有活力", "高效", "极好", "快速", "不错", "新鲜", "华丽", "伟大", "英俊", "炽热",
+      "善良", "诚实", "神秘", "整洁", "开心", "耐心", "漂亮", "强大", "富有", "秘密",
+      "稳固", "特别", "战略", "智慧",
+    )
+    private val ALIAS_FRUITS = arrayOf(
+      "苹果", "鳄梨", "香蕉", "黑莓", "蓝莓", "西兰花", "胡萝卜", "樱桃", "椰子", "葡萄",
+      "柠檬", "莴苣", "芒果", "甜瓜", "蘑菇", "洋葱", "橙子", "木瓜", "桃子", "梨",
+      "菠萝", "土豆", "南瓜", "覆盆子", "草莓", "番茄",
+    )
+
+    /** FNV-1a 64bit hash → 16 字符 hex（跟 desktop db.rs stable_hash_hex 一致）。 */
+    private fun fnv1aHex(input: String): String {
+      var hash = 0xcbf29ce484222325UL
+      for (byte in input.toByteArray(Charsets.UTF_8)) {
+        hash = hash xor (byte.toUByte().toULong())
+        hash = (hash * 0x100000001b3UL)
+      }
+      return hash.toString(16).padStart(16, '0')
+    }
   }
 }

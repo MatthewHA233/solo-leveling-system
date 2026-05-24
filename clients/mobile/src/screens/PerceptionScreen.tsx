@@ -81,12 +81,26 @@ export default function PerceptionScreen() {
     void refreshClicks()
     void refreshSoloDb()
     void runSelfImport()
-    void refreshServer()
+    void autoStartServer()
   }, [])
 
   async function refreshServer() {
     try {
       setServerStatus(await getSyncServerStatus())
+    } catch (e: any) {
+      setServerErr(e?.message ?? String(e))
+    }
+  }
+
+  // 启动 app 时自动启 HTTP server，让 desktop 一打开 SyncPeerDialog 就能找到。
+  // 失败不打扰用户（端口被占或权限），可以手动点"启动"重试。
+  async function autoStartServer() {
+    try {
+      const cur = await getSyncServerStatus()
+      if (!cur?.running) {
+        await startSyncServer(SYNC_SERVER_DEFAULT_PORT)
+      }
+      await refreshServer()
     } catch (e: any) {
       setServerErr(e?.message ?? String(e))
     }
@@ -288,6 +302,55 @@ export default function PerceptionScreen() {
       <Text style={styles.h1}>感知层</Text>
       <Text style={styles.h2}>Phase 1：原生桥接 + SQLite</Text>
 
+      {/* 同步傻瓜式入口：自动启 server，大字显示 IP 让电脑直接照抄 */}
+      <View style={[styles.card, { borderColor: theme.accent, borderWidth: 1.5 }]}>
+        <Text style={[styles.cardLabel, { color: theme.accent, fontWeight: '700' }]}>
+          🔗 局域网同步 · 电脑端添加这台手机
+        </Text>
+        {serverStatus?.running ? (
+          serverStatus.ipv4s.length > 0 ? (
+            <>
+              <Text style={styles.cardSub}>在电脑上打开"同步设备"对话框，手动输入下面地址：</Text>
+              {serverStatus.ipv4s.map((ip) => (
+                <Text
+                  key={ip}
+                  selectable
+                  style={{
+                    fontSize: 22,
+                    fontWeight: '700',
+                    color: theme.ink,
+                    paddingVertical: 6,
+                    letterSpacing: 0.4,
+                  }}
+                >
+                  {ip}:{serverStatus.port}
+                </Text>
+              ))}
+              <Text style={styles.cardSub}>(手机和电脑必须在同一 WiFi)</Text>
+            </>
+          ) : (
+            <Text style={[styles.cardSub, { color: '#C0392B' }]}>
+              ⚠ 没找到 LAN IP，检查 WiFi 是否打开
+            </Text>
+          )
+        ) : (
+          <Text style={styles.cardSub}>同步服务未启动，点下面"启动"按钮</Text>
+        )}
+        {!!serverErr && (
+          <Text style={[styles.cardSub, { color: '#C0392B' }]}>⚠ {serverErr}</Text>
+        )}
+        <View style={[styles.btnRow, { marginTop: 8 }]}>
+          <Pressable style={styles.btn} onPress={toggleServer}>
+            <Text style={styles.btnText}>
+              {serverStatus?.running ? '停止' : '启动'}
+            </Text>
+          </Pressable>
+          <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshServer}>
+            <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
+          </Pressable>
+        </View>
+      </View>
+
       <View style={styles.card}>
         <Text style={styles.cardLabel}>Native module 状态</Text>
         <Text style={styles.cardValue}>
@@ -347,37 +410,6 @@ export default function PerceptionScreen() {
             ))}
           </View>
         )}
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardLabel}>Sync HTTP Server · 端口 {SYNC_SERVER_DEFAULT_PORT}</Text>
-        <Text style={styles.cardValue}>
-          {serverStatus?.running ? '运行中' : '未启动'}
-          {serverStatus?.running && serverStatus.port > 0 ? `  ·  :${serverStatus.port}` : ''}
-        </Text>
-        {serverStatus?.running && serverStatus.ipv4s.length > 0 && (
-          <>
-            <Text style={styles.cardSub}>desktop 那边把 device 设成下面任一 URL：</Text>
-            {serverStatus.ipv4s.map((ip) => (
-              <Text key={ip} style={[styles.cardSub, { color: theme.accent }]} selectable>
-                http://{ip}:{serverStatus.port}
-              </Text>
-            ))}
-          </>
-        )}
-        {!!serverErr && (
-          <Text style={[styles.cardSub, { color: '#C0392B' }]}>⚠ {serverErr}</Text>
-        )}
-        <View style={styles.btnRow}>
-          <Pressable style={styles.btn} onPress={toggleServer}>
-            <Text style={styles.btnText}>
-              {serverStatus?.running ? '停止' : '启动'}
-            </Text>
-          </Pressable>
-          <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshServer}>
-            <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
-          </Pressable>
-        </View>
       </View>
 
       <View style={styles.card}>
