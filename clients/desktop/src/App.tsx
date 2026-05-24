@@ -822,6 +822,41 @@ export default function App() {
               alias,
               text: `✓ ${alias} 同步完成 · 拉 [${pullDetail}] / 推 [${pushDetail}]`,
             })
+            // 拉过来的 row 数 > 0 才触发重渲染（避免空 pull 也刷新打扰）。
+            // 之前缺这段：sync:finished 只刷设备列表，本端是发起方时
+            // pull 到的对端数据要等下次手动 fetch 才显示，体验不对。
+            const pulled = r?.pulled
+            const pulledCount =
+              (pulled?.activity_categories ?? 0) +
+              (pulled?.activity_tags ?? 0) +
+              (pulled?.activity_blocks ?? 0) +
+              (pulled?.plan_nodes ?? 0) +
+              (pulled?.planned_blocks ?? 0)
+            if (pulledCount > 0) {
+              const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`
+              Promise.all([
+                fetchActivityPalette().then((p) => {
+                  setActivityPalette(p)
+                  return `标签库 ${p.categories.length} 分类 / ${p.tags.length} 标签`
+                }),
+                fetchActivityBlocks(selectedDate).then((b) => {
+                  setActivityBlocks(b)
+                  return `${dateStr} 实际块 ${b.length}`
+                }),
+                fetchPlannedBlocks(selectedDate).then((b) => {
+                  setPlannedBlocks(b)
+                  return `计划块 ${b.length}`
+                }),
+                selectedProjectTagId != null
+                  ? fetchPlanNodes(selectedProjectTagId).then((nodes) => `计划节点 ${nodes.length}`)
+                  : Promise.resolve('计划节点 -'),
+              ]).then((lines) => {
+                invalidateActivityRangeCache(selectedDate)
+                pushSyncLog({ kind: 'info', alias, text: `🔄 已重渲染: ${lines.join(' · ')}` })
+              }).catch((err) => {
+                pushSyncLog({ kind: 'error', alias, text: `🔄 重渲染失败: ${err}` })
+              })
+            }
           } else {
             pushSyncLog({ kind: 'error', alias, text: `✗ ${alias} 同步失败: ${e.payload?.error ?? '未知错误'}` })
           }
