@@ -19,6 +19,7 @@ import {
   View,
 } from 'react-native'
 import type { LayoutChangeEvent } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { alpha, theme } from '../theme'
 import type {
   ActivityBlock,
@@ -512,6 +513,11 @@ interface DragState {
 }
 
 export default function DayNightScreen() {
+  // SafeArea inset 是异步算的 —— 第一次 mount 时 top=0，几 ms 后变成
+  // 状态栏 + 刘海高度。App.tsx 用 paddingTop: insets.top 推开整个 root，
+  // 所以 insets.top 变化时 cellArea 的屏幕 y 偏移也跟着变，必须重 measure，
+  // 否则 measureInWindow 拿到的是 inset=0 时的旧值 → 拖拽落点漂移到上方。
+  const insets = useSafeAreaInsets()
   const [selectedDate, setSelectedDate] = useState(() => new Date())
   const [palette, setPalette] = useState<ActivityPalette | null>(null)
   const [blocks, setBlocks] = useState<ActivityBlock[]>([])
@@ -593,13 +599,14 @@ export default function DayNightScreen() {
     }
   }, [selectedDate])
 
-  // detail span 打开时，按时段拉对应窗口切换事件
-  // 编辑模式或焦点行变化时，UI 上方 toolbar 会改变 cellArea 的屏幕 y 偏移。
-  // onLayout 不一定及时触发（cellArea 自身尺寸没变），所以这里主动重 measure。
+  // 重 measure cellArea 的屏幕坐标 —— 三种触发：
+  //   editMode / focusStart 变化 → 上方 toolbar 内容变化
+  //   insets.top / insets.bottom 异步更新 → root paddingTop 变化（cellArea 全局下移）
+  // onLayout 在 cellArea 自身尺寸不变时不会触发，必须手动兜底。
   useEffect(() => {
     const t = setTimeout(measureArea, 80)
     return () => clearTimeout(t)
-  }, [editMode, focusStart])
+  }, [editMode, focusStart, insets.top, insets.bottom])
 
   useEffect(() => {
     if (!detail) {
@@ -782,12 +789,12 @@ export default function DayNightScreen() {
   interactionRef.current = { editMode, selectedTagId, rows, blocks, blockByMinute, spans, selectedDate }
 
   // ── 点 → 命中格子 ──
-  const cellFromPoint = (px: number, py: number): HitCell | null => {
+  // cellArea 自己的手势使用本地坐标 locationX/locationY，不再依赖
+  // measureInWindow 的异步 x/y 缓存，避免 SafeArea / toolbar 改变后落点漂移。
+  const cellFromLocalPoint = (lx: number, ly: number): HitCell | null => {
     const area = areaRef.current
     const rs = interactionRef.current.rows
-    if (area.h <= 0 || rs.length === 0) return null
-    const lx = px - area.x
-    const ly = py - area.y
+    if (area.w <= 0 || area.h <= 0 || rs.length === 0) return null
     if (lx < 0 || ly < 0 || lx > area.w || ly > area.h) return null
     const rowH = area.h / rs.length
     const row = rs[clamp(Math.floor(ly / rowH), 0, rs.length - 1)]
@@ -797,6 +804,12 @@ export default function DayNightScreen() {
     }
     const col = clamp(Math.floor(lx / (area.w / row.hours.length)), 0, row.hours.length - 1)
     return { kind: 'compressed', hour: row.hours[col] }
+  }
+
+  // 外部拖放仍然拿 pageX/pageY，这里才用 measureInWindow 的 x/y 转成本地坐标。
+  const cellFromPagePoint = (px: number, py: number): HitCell | null => {
+    const area = areaRef.current
+    return cellFromLocalPoint(px - area.x, py - area.y)
   }
 
   // 经过旧色块的逻辑（对齐 desktop DayNightChart commitDragOrCancel）：
@@ -855,7 +868,7 @@ export default function DayNightScreen() {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onPanResponderGrant: (e) => {
-        const cell = cellFromPoint(e.nativeEvent.pageX, e.nativeEvent.pageY)
+        const cell = cellFromLocalPoint(e.nativeEvent.locationX, e.nativeEvent.locationY)
         const { editMode: em, blockByMinute: bm, selectedTagId: tagId } = interactionRef.current
         const d: DragState = {
           mode: 'paint',
@@ -881,7 +894,7 @@ export default function DayNightScreen() {
         if (!interactionRef.current.editMode) return
         const d = dragRef.current
         if (d.startMin == null) return
-        const cell = cellFromPoint(e.nativeEvent.pageX, e.nativeEvent.pageY)
+        const cell = cellFromLocalPoint(e.nativeEvent.locationX, e.nativeEvent.locationY)
         if (!cell || cell.kind !== 'full') return
         if (cell.minute === d.lastMin) return
         d.lastMin = cell.minute
@@ -936,10 +949,19 @@ export default function DayNightScreen() {
     }),
   ).current
 
-  // onLayout 时 measure 一次拿 window 坐标；PanResponderGrant 时会再 measure 一次兜底
-  const measureArea = () => {
-    cellAreaRef.current?.measureInWindow((x, y, w, h) => {
-      areaRef.current = { x, y, w, h }
+  // onLayout 同步拿 width/height 立刻给 areaRef（避免 measureInWindow 异步
+  // 回调前用户已开始拖拽，area.h=0 导致命中函数一直返回 null、
+  // PanResponder 拿不到 startMin、move 全部 early return —— 表现为"完全拖不动"）。
+  // x/y 仍异步由 measureInWindow 拿（监听 insets/editMode/focusStart 变化重测）。
+  const measureArea = (e?: LayoutChangeEvent) => {
+    if (e) {
+      const { width, height } = e.nativeEvent.layout
+      areaRef.current = { ...areaRef.current, w: width, h: height }
+    }
+    cellAreaRef.current?.measureInWindow((x, y) => {
+      // 只更新 x/y（onLayout 给的 w/h 才是权威；measureInWindow 偶尔返 0
+      // 会把同步设好的 w/h 清掉，导致命中函数 area.h<=0 全部 return null）
+      areaRef.current = { ...areaRef.current, x, y }
     })
   }
 
@@ -1036,7 +1058,7 @@ export default function DayNightScreen() {
   }
 
   const scheduleTaskFromPoint = (taskId: string, pageX: number, pageY: number) => {
-    const cell = cellFromPoint(pageX, pageY)
+    const cell = cellFromPagePoint(pageX, pageY)
     if (cell?.kind === 'full') scheduleTaskAt(taskId, cell.minute)
     else scheduleTaskAt(taskId, null)
   }
@@ -1212,6 +1234,7 @@ export default function DayNightScreen() {
           <View
             ref={cellAreaRef}
             style={styles.cellArea}
+            pointerEvents="box-only"
             onLayout={measureArea}
             {...cellPan.panHandlers}
           >
