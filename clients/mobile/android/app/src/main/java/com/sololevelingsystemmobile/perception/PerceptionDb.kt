@@ -21,6 +21,13 @@ import java.util.TimeZone
 class PerceptionDb(context: Context) :
   SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
 
+  override fun onConfigure(db: SQLiteDatabase) {
+    super.onConfigure(db)
+    // Android SQLite 默认外键不强制；perception_events_android.bucket_id 有
+    // ON DELETE CASCADE，开外键避免删 bucket 后 events 残留孤儿。
+    db.setForeignKeyConstraintsEnabled(true)
+  }
+
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL(
       """

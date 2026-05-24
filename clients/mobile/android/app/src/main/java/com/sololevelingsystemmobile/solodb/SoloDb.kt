@@ -28,6 +28,14 @@ import java.util.UUID
 class SoloDb(context: Context) :
   SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
 
+  override fun onConfigure(db: SQLiteDatabase) {
+    super.onConfigure(db)
+    // Android SQLite 默认外键不强制，但 schema 用了 ON DELETE CASCADE。
+    // 跟 desktop db.rs 的 `PRAGMA foreign_keys = ON` 保持一致，
+    // 避免删 category/tag/plan_node 后残留孤儿行。每个连接都要开。
+    db.setForeignKeyConstraintsEnabled(true)
+  }
+
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL(
       """
