@@ -1,7 +1,7 @@
 // ══════════════════════════════════════════════
 // 数据层 —— 昼夜表 / palette 走真 SQLite (SoloDb native module)
-//   首次启动时若 SoloDb 空，自动从 mock seed 9 cat + 70 tag（带稳定 sync_id），
-//   后续编辑全部写真 DB。
+//   全新装时 palette 为空，UI 显示"新建标签"引导；后续可手动 createTag
+//   或 LAN 同步从 desktop 拉过来。
 //   LAN HTTP 路径 (lanFetch / setLanHost) 暂保留壳，Phase 5 LAN 同步引擎接入。
 //   聊天 streamChatReply 仍走 mock 合成（独立功能，未接入 SoloDb）。
 // ══════════════════════════════════════════════
@@ -15,8 +15,9 @@ import type {
 } from '../types'
 import { toLocalDateStr } from './time'
 import { mockReply } from './mock'
-import { seedSoloDbIfEmpty } from './solodb_seed'
 import {
+  soloDeleteCategory,
+  soloDeleteTag,
   soloEraseBlocks,
   soloListBlocksForDate,
   soloListCategories,
@@ -68,7 +69,7 @@ function blockFromRow(r: BlockRow): ActivityBlock {
 // ── 活动记录 API（主路径走 SoloDb） ──
 
 export async function fetchPalette(): Promise<ActivityPalette> {
-  await seedSoloDbIfEmpty()
+  // 不再 seed 硬编码标签库 —— 等用户在 UI 里创建，或 LAN 同步从 desktop 拉过来
   const [cats, tags] = await Promise.all([soloListCategories(), soloListTags()])
   return {
     categories: cats.map(categoryFromRow),
@@ -120,8 +121,17 @@ export async function createTag(fullPath: string): Promise<ActivityPalette> {
   return fetchPalette()
 }
 
+export async function deleteTag(tagId: number): Promise<ActivityPalette> {
+  await soloDeleteTag(tagId)
+  return fetchPalette()
+}
+
+export async function deleteCategory(categoryId: number): Promise<ActivityPalette> {
+  await soloDeleteCategory(categoryId)
+  return fetchPalette()
+}
+
 export async function fetchBlocks(date: Date): Promise<ActivityBlock[]> {
-  await seedSoloDbIfEmpty()
   const rows = await soloListBlocksForDate(toLocalDateStr(date))
   return rows.map(blockFromRow)
 }

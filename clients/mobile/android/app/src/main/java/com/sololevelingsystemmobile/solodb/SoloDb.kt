@@ -302,7 +302,9 @@ class SoloDb(context: Context) :
     ).use { c -> if (c.moveToFirst()) c.getLong(0) else -1L }
   }
 
-  /** Paint：UPSERT 每个 (date, minute) 槽位为 tagId；undelete + bump updated_at。 */
+  /** Paint：UPSERT 每个 (date, minute) 槽位为 tagId；undelete + bump updated_at。
+   *  同时更新 tag.last_used_at 和 category.last_used_at（对齐 desktop paint_blocks
+   *  逻辑：拖拽涂色 = 真正"使用"该 tag，LWW 同步到对端，"最近"列表自动跨设备）。 */
   fun paintBlocks(date: String, minutes: IntArray, tagId: Long) {
     if (minutes.isEmpty()) return
     val now = nowIso()
@@ -320,10 +322,89 @@ class SoloDb(context: Context) :
           arrayOf(date, m, sid, tagId, now, now),
         )
       }
+      db.execSQL(
+        "UPDATE activity_tags SET last_used_at = ?, updated_at = ? WHERE id = ?",
+        arrayOf(now, now, tagId),
+      )
+      db.execSQL(
+        """UPDATE activity_categories SET last_used_at = ?, updated_at = ?
+           WHERE id = (SELECT category_id FROM activity_tags WHERE id = ?)""".trimIndent(),
+        arrayOf(now, now, tagId),
+      )
       db.setTransactionSuccessful()
     } finally {
       db.endTransaction()
     }
+  }
+
+  /** 软删 tag（设 deleted_at + bump updated_at），同时把它挂的 blocks/plan_nodes 也软删，
+   *  保证 LWW 同步能传播到对端。返回受影响的 block 数量。 */
+  fun deleteTag(tagId: Long): Int {
+    val now = nowIso()
+    val db = writableDatabase
+    var blocksAffected = 0
+    db.beginTransaction()
+    try {
+      db.execSQL(
+        "UPDATE activity_tags SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+        arrayOf(now, now, tagId),
+      )
+      // 关联的 blocks / plan_nodes 也软删，否则 LWW 看不到删除事件
+      db.execSQL(
+        "UPDATE activity_blocks SET deleted_at = ?, updated_at = ? WHERE tag_id = ? AND deleted_at IS NULL",
+        arrayOf(now, now, tagId),
+      )
+      db.rawQuery("SELECT changes()", null).use { c ->
+        if (c.moveToFirst()) blocksAffected = c.getInt(0)
+      }
+      db.execSQL(
+        "UPDATE plan_nodes SET deleted_at = ?, updated_at = ? WHERE project_tag_id = ? AND deleted_at IS NULL",
+        arrayOf(now, now, tagId),
+      )
+      db.setTransactionSuccessful()
+    } finally {
+      db.endTransaction()
+    }
+    return blocksAffected
+  }
+
+  /** 软删 category：连带它下面所有 tags 一并软删。 */
+  fun deleteCategory(categoryId: Long): Int {
+    val now = nowIso()
+    val db = writableDatabase
+    var tagsAffected = 0
+    db.beginTransaction()
+    try {
+      db.execSQL(
+        "UPDATE activity_categories SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+        arrayOf(now, now, categoryId),
+      )
+      // 把该 category 下所有非删 tag 也软删 + 它们的 blocks/plan_nodes
+      val tagIds = mutableListOf<Long>()
+      db.rawQuery(
+        "SELECT id FROM activity_tags WHERE category_id = ? AND deleted_at IS NULL",
+        arrayOf(categoryId.toString()),
+      ).use { c -> while (c.moveToNext()) tagIds.add(c.getLong(0)) }
+      tagsAffected = tagIds.size
+      for (tid in tagIds) {
+        db.execSQL(
+          "UPDATE activity_tags SET deleted_at = ?, updated_at = ? WHERE id = ?",
+          arrayOf(now, now, tid),
+        )
+        db.execSQL(
+          "UPDATE activity_blocks SET deleted_at = ?, updated_at = ? WHERE tag_id = ? AND deleted_at IS NULL",
+          arrayOf(now, now, tid),
+        )
+        db.execSQL(
+          "UPDATE plan_nodes SET deleted_at = ?, updated_at = ? WHERE project_tag_id = ? AND deleted_at IS NULL",
+          arrayOf(now, now, tid),
+        )
+      }
+      db.setTransactionSuccessful()
+    } finally {
+      db.endTransaction()
+    }
+    return tagsAffected
   }
 
   /** Erase：soft delete + bump updated_at（LWW 同步时另一端能看到删除）。 */

@@ -20,6 +20,7 @@ import {
 } from 'react-native'
 import type { LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import ConfirmDialog from '../components/ConfirmDialog'
 import { alpha, theme } from '../theme'
 import type {
   ActivityBlock,
@@ -27,16 +28,43 @@ import type {
   ActivityPalette,
   ActivityTag,
 } from '../types'
-import { createTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks } from '../lib/api'
+import { createTag, deleteCategory, deleteTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks } from '../lib/api'
 import { addDays, fmtDateLabel, fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
 import { getAppIcons, getWindowEventsInRange, type WindowEvent } from '../lib/perception'
 
-const FULL_ROWS = 18
-const FULL_COLS = 12
 const GUTTER = 46
 const GAP = 4
 const R_ACTIVITY = 14
 const R_EMPTY = 5
+
+// 4 档 zoom：cols = 每个 full row 的格子数（cell 永远 5min）
+//   12 → 1 行 60 分钟 / focus 18h / 上下各 1 层 compressed
+//    6 → 1 行 30 分钟 / focus 8h  / 上下各 2 层
+//    4 → 1 行 20 分钟 / focus 6h  / 上下各 3 层
+//    3 → 1 行 15 分钟 / focus 5h  / 上下各 3 层
+// focus 总是整小时（rows 跟 cols 联动调整）
+type ZoomCols = 12 | 6 | 4 | 3
+const ZOOM_LEVELS: readonly ZoomCols[] = [12, 6, 4, 3] as const
+const ZOOM_CONFIG: Record<ZoomCols, { rows: number; tiers: number }> = {
+  12: { rows: 18, tiers: 1 },
+  6:  { rows: 16, tiers: 2 },
+  4:  { rows: 18, tiers: 3 },
+  3:  { rows: 20, tiers: 3 },
+}
+function zoomFocusHours(cols: ZoomCols): number {
+  const cfg = ZOOM_CONFIG[cols]
+  return Math.round((cfg.rows * cols * 5) / 60)
+}
+function totalRowCount(cols: ZoomCols): number {
+  // 全屏 grid 总行数 = focus 行 + 上下 compressed tier；用于 axisPan rowH 推算
+  const cfg = ZOOM_CONFIG[cols]
+  const focusH = zoomFocusHours(cols)
+  // 上下 compressed tier 行数（注意：实际可能因 focusStart 边界减少；用最大值估算行高即可）
+  const restHours = 24 - focusH
+  const topTiers = restHours > 0 ? cfg.tiers : 0
+  const botTiers = restHours > 0 ? cfg.tiers : 0
+  return cfg.rows + topTiers + botTiers
+}
 
 interface Span {
   startMin: number
@@ -46,7 +74,7 @@ interface Span {
 }
 
 type Row =
-  | { kind: 'full'; hour: number }
+  | { kind: 'full'; startMin: number; cols: number }
   | { kind: 'compressed'; hours: number[] }
 
 type HitCell =
@@ -98,15 +126,40 @@ function buildSpans(blocks: ActivityBlock[]): Span[] {
   return spans
 }
 
-function buildRows(focusStart: number): Row[] {
+function buildRows(focusStart: number, zoomCols: ZoomCols): Row[] {
+  const cfg = ZOOM_CONFIG[zoomCols]
+  const focusH = zoomFocusHours(zoomCols)
+  const safeStart = clamp(focusStart, 0, 24 - focusH)
   const rows: Row[] = []
-  const top: number[] = []
-  for (let h = 0; h < focusStart; h++) top.push(h)
-  if (top.length > 0) rows.push({ kind: 'compressed', hours: top })
-  for (let h = focusStart; h < focusStart + FULL_ROWS; h++) rows.push({ kind: 'full', hour: h })
-  const bot: number[] = []
-  for (let h = focusStart + FULL_ROWS; h < 24; h++) bot.push(h)
-  if (bot.length > 0) rows.push({ kind: 'compressed', hours: bot })
+
+  // 上方 compressed：[0, safeStart) hour 均分到 cfg.tiers 行
+  const topHours: number[] = []
+  for (let h = 0; h < safeStart; h++) topHours.push(h)
+  if (topHours.length > 0) {
+    const chunk = Math.ceil(topHours.length / cfg.tiers)
+    for (let i = 0; i < cfg.tiers; i++) {
+      const slice = topHours.slice(i * chunk, (i + 1) * chunk)
+      if (slice.length > 0) rows.push({ kind: 'compressed', hours: slice })
+    }
+  }
+
+  // focus：cfg.rows 行，每行 zoomCols * 5 分钟（5min/cell × zoomCols cols）
+  const startMin = safeStart * 60
+  const minutesPerRow = zoomCols * 5
+  for (let i = 0; i < cfg.rows; i++) {
+    rows.push({ kind: 'full', startMin: startMin + i * minutesPerRow, cols: zoomCols })
+  }
+
+  // 下方 compressed：[safeStart + focusH, 24) hour 均分到 cfg.tiers 行
+  const botHours: number[] = []
+  for (let h = safeStart + focusH; h < 24; h++) botHours.push(h)
+  if (botHours.length > 0) {
+    const chunk = Math.ceil(botHours.length / cfg.tiers)
+    for (let i = 0; i < cfg.tiers; i++) {
+      const slice = botHours.slice(i * chunk, (i + 1) * chunk)
+      if (slice.length > 0) rows.push({ kind: 'compressed', hours: slice })
+    }
+  }
   return rows
 }
 
@@ -201,11 +254,15 @@ function TagTreeView({
   depth,
   selectedId,
   onPick,
+  onLongPressTag,
+  onLongPressCategory,
 }: {
   node: TagTreeNode
   depth: number
   selectedId: number | null
   onPick: (id: number) => void
+  onLongPressTag: (tag: ActivityTag) => void
+  onLongPressCategory: (categoryName: string) => void
 }) {
   // 叶子：无 children 且有 tag → 单 chip
   if (node.children.length === 0 && node.tag) {
@@ -214,6 +271,8 @@ function TagTreeView({
     return (
       <Pressable
         onPress={() => onPick(node.tag!.id)}
+        onLongPress={() => onLongPressTag(node.tag!)}
+        delayLongPress={400}
         style={[
           treeStyles.leafChip,
           {
@@ -246,8 +305,13 @@ function TagTreeView({
       ]}
     >
       <Pressable
-        disabled={node.tag == null}
         onPress={() => node.tag && onPick(node.tag.id)}
+        onLongPress={() => {
+          if (node.tag) onLongPressTag(node.tag)
+          else if (depth === 0) onLongPressCategory(node.segment)
+          // 中间分支节点（非 root 也无 tag）= 虚拟段，没法删，不响应长按
+        }}
+        delayLongPress={400}
         style={treeStyles.headerRow}
       >
         <View
@@ -275,6 +339,8 @@ function TagTreeView({
               depth={depth + 1}
               selectedId={selectedId}
               onPick={onPick}
+              onLongPressTag={onLongPressTag}
+              onLongPressCategory={onLongPressCategory}
             />
           ))}
         </View>
@@ -286,6 +352,8 @@ function TagTreeView({
           depth={depth + 1}
           selectedId={selectedId}
           onPick={onPick}
+          onLongPressTag={onLongPressTag}
+          onLongPressCategory={onLongPressCategory}
         />
       ))}
     </View>
@@ -440,6 +508,47 @@ function SlidersGlyph({ color = '#FFF', size = 14 }: { color?: string; size?: nu
   )
 }
 
+/** 纯 RN 几何三角 caret（▾ / ▴）。Unicode ▾ 在 RN Text 里偏小且基线不稳，
+ *  改用 border-trick 画稳定的实心三角。 */
+function CaretGlyph({
+  color = '#888',
+  size = 8,
+  direction = 'down',
+}: { color?: string; size?: number; direction?: 'down' | 'up' }) {
+  const w = size
+  const h = Math.round(size * 0.6)
+  if (direction === 'down') {
+    return (
+      <View
+        style={{
+          width: 0,
+          height: 0,
+          borderLeftWidth: w / 2,
+          borderRightWidth: w / 2,
+          borderTopWidth: h,
+          borderLeftColor: 'transparent',
+          borderRightColor: 'transparent',
+          borderTopColor: color,
+        }}
+      />
+    )
+  }
+  return (
+    <View
+      style={{
+        width: 0,
+        height: 0,
+        borderLeftWidth: w / 2,
+        borderRightWidth: w / 2,
+        borderBottomWidth: h,
+        borderLeftColor: 'transparent',
+        borderRightColor: 'transparent',
+        borderBottomColor: color,
+      }}
+    />
+  )
+}
+
 /** 纯 RN 画的 search 图标（圆环 + 把手），无第三方 SVG 依赖。 */
 function SearchGlyph({ color = '#888', size = 14 }: { color?: string; size?: number }) {
   const ringSize = Math.round(size * 0.78)
@@ -510,6 +619,7 @@ interface DragState {
   snapshot: ActivityBlock[]    // 拖拽前的 blocks 快照，用于"区间反向"时恢复 + undo
   moved: boolean
   tapCell: HitCell | null
+  grantTs: number              // grant 时间戳，release 时算时长用于 long-press 防误触
 }
 
 export default function DayNightScreen() {
@@ -524,7 +634,6 @@ export default function DayNightScreen() {
   const [loading, setLoading] = useState(true)
   const [editMode, setEditMode] = useState(false)
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null)
-  const [recentTagIds, setRecentTagIds] = useState<number[]>([])
   // null = picker 关闭；'browse' = 点中间标签按钮（不自动 focus 输入框）；
   // 'search' = 点搜索按钮（自动 focus 输入框）
   const [pickerMode, setPickerMode] = useState<null | 'browse' | 'search'>(null)
@@ -538,6 +647,8 @@ export default function DayNightScreen() {
   const [probeLoading, setProbeLoading] = useState(false)
   const [iconCache, setIconCache] = useState<Record<string, string>>({})
   const [focusStart, setFocusStart] = useState(3)
+  // 非编辑模式下双指 pinch 切换：12 / 6 / 4 / 3 cols（cell 永远 5min）
+  const [zoomCols, setZoomCols] = useState<ZoomCols>(12)
   // 撤回/前进栈：每个元素是 blocks 数组快照，最多 30 个；点"完成"不清记忆
   const [undoStack, setUndoStack] = useState<readonly ActivityBlock[][]>([])
   const [redoStack, setRedoStack] = useState<readonly ActivityBlock[][]>([])
@@ -574,18 +685,105 @@ export default function DayNightScreen() {
     snapshot: [],
     moved: false,
     tapCell: null,
+    grantTs: 0,
   })
   const plannedTasksRef = useRef<PlannedTask[]>([])
 
   focusStartRef.current = focusStart
   plannedTasksRef.current = plannedTasks
 
+  // palette 走 ref —— PanResponder 闭包里查 tag 名要拿最新 palette，
+  // 不能直接读闭包外的 tagById（那是首次 render 时的空 Map）
+  const paletteRef = useRef<ActivityPalette | null>(null)
+  paletteRef.current = palette
+
+  // zoom 同步 ref（PanResponder 回调拿最新值）
+  const zoomColsRef = useRef<ZoomCols>(12)
+  zoomColsRef.current = zoomCols
+  // pinch 手势状态：起始两指距离 + 起始 zoom 档
+  const pinchRef = useRef({ initialDist: 0, startCols: 12 as ZoomCols })
+
+  // zoom toast：每次切换显示 "cols × rows"，2s 自动淡出
+  const [zoomToast, setZoomToast] = useState<string | null>(null)
+  const zoomToastOpacity = useRef(new Animated.Value(0)).current
+  const zoomToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // 长按标签 / 分类 → 弹确认框删除
+  const [confirmDelete, setConfirmDelete] = useState<
+    { kind: 'tag' | 'category'; id: number; label: string } | null
+  >(null)
+  const doConfirmDelete = async () => {
+    if (!confirmDelete) return
+    const item = confirmDelete
+    setConfirmDelete(null)
+    try {
+      const next = item.kind === 'tag' ? await deleteTag(item.id) : await deleteCategory(item.id)
+      setPalette(next)
+      // 删的是当前选中标签 → 清掉 selected
+      if (item.kind === 'tag' && selectedTagId === item.id) setSelectedTagId(null)
+      // recent 列表从 next.tags 重算（被删的 tag/category 不会出现在 next 里）
+      // 当日 blocks 引用了被删 tag 的部分需要刷新（mock 不刷会显示空）
+      const refreshed = await fetchBlocks(selectedDate)
+      setBlocks(refreshed)
+    } catch (e) {
+      // 失败静默
+    }
+  }
+
+  // paint span toast：拖拽涂色完成后底部显示新段起止时间
+  // 拆 name / time 两段，让 name 太长能 ellipsize 而时间始终完整可见
+  const [paintToast, setPaintToast] = useState<{ name: string; time: string } | null>(null)
+  const paintToastOpacity = useRef(new Animated.Value(0)).current
+  const paintToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const showPaintToast = (msg: { name: string; time: string }) => {
+    setPaintToast(msg)
+    if (paintToastTimer.current) clearTimeout(paintToastTimer.current)
+    Animated.timing(paintToastOpacity, {
+      toValue: 1, duration: 140, useNativeDriver: true,
+    }).start()
+    paintToastTimer.current = setTimeout(() => {
+      Animated.timing(paintToastOpacity, {
+        toValue: 0, duration: 320, useNativeDriver: true,
+      }).start(() => setPaintToast(null))
+    }, 1600)
+  }
+
+  // zoom 切换：尽量保持 focus 屏幕中心不变（新 focusHours 对称裹原中心 hour）
+  const applyZoom = (newCols: ZoomCols) => {
+    if (newCols === zoomColsRef.current) return
+    const oldCols = zoomColsRef.current
+    const oldFocusH = zoomFocusHours(oldCols)
+    const newFocusH = zoomFocusHours(newCols)
+    const center = focusStartRef.current + oldFocusH / 2
+    const newStart = clamp(Math.round(center - newFocusH / 2), 0, 24 - newFocusH)
+    zoomColsRef.current = newCols
+    setZoomCols(newCols)
+    setFocusStart(newStart)
+    // toast
+    const cfg = ZOOM_CONFIG[newCols]
+    setZoomToast(`${newCols} × ${cfg.rows}`)
+    if (zoomToastTimer.current) clearTimeout(zoomToastTimer.current)
+    Animated.timing(zoomToastOpacity, {
+      toValue: 1, duration: 120, useNativeDriver: true,
+    }).start()
+    zoomToastTimer.current = setTimeout(() => {
+      Animated.timing(zoomToastOpacity, {
+        toValue: 0, duration: 280, useNativeDriver: true,
+      }).start(() => setZoomToast(null))
+    }, 1400)
+  }
+
   useEffect(() => {
     let alive = true
     fetchPalette().then((p) => {
       if (!alive) return
       setPalette(p)
-      setSelectedTagId(p.tags[0]?.id ?? null)
+      // 默认选最近用过的 tag；都没用过就不选（让用户主动点选标签按钮）
+      // 不再用 p.tags[0]（那是按 category_id, id 排的最早 tag，不是用户意图）
+      const mostRecent = [...p.tags]
+        .filter((t) => !!t.lastUsedAt)
+        .sort((a, b) => (b.lastUsedAt ?? '').localeCompare(a.lastUsedAt ?? ''))[0]
+      setSelectedTagId(mostRecent?.id ?? null)
     })
     return () => {
       alive = false
@@ -685,22 +883,9 @@ export default function DayNightScreen() {
     return cat?.color ?? theme.inkSoft
   }
 
-  // 选标签 + LRU 推进 + 更新 lastUsedAt + 关闭 picker
+  // 选标签 = 仅切换 selected，不算"使用过"（使用过=拖拽涂色，由 paint commit 维护）
   const pickTag = (id: number) => {
     setSelectedTagId(id)
-    setRecentTagIds((prev) => [id, ...prev.filter((x) => x !== id)].slice(0, 8))
-    if (palette) {
-      const now = new Date().toISOString()
-      let changed = false
-      const nextTags = palette.tags.map((t) => {
-        if (t.id === id) {
-          changed = true
-          return { ...t, lastUsedAt: now }
-        }
-        return t
-      })
-      if (changed) setPalette({ ...palette, tags: nextTags })
-    }
     setTagPickerOpen(false)
     setTagQuery('')
   }
@@ -734,13 +919,16 @@ export default function DayNightScreen() {
     return scored.map((s) => s.tag)
   }, [palette, tagQuery, categoryById])
 
+  // 最近用过 = 按 tag.lastUsedAt 倒序取前 3
+  // lastUsedAt 由 paintBlocks 内部事务更新（对齐 desktop），LWW 跨设备同步
+  // 不再单独维护 recentTagIds state —— 持久化和单一来源
   const recentTags = useMemo(() => {
     if (!palette) return []
-    return recentTagIds
-      .map((id) => palette.tags.find((t) => t.id === id))
-      .filter((t): t is NonNullable<typeof t> => !!t)
-      .slice(0, 5)
-  }, [palette, recentTagIds])
+    return [...palette.tags]
+      .filter((t) => !!t.lastUsedAt)
+      .sort((a, b) => (b.lastUsedAt ?? '').localeCompare(a.lastUsedAt ?? ''))
+      .slice(0, 3)
+  }, [palette])
 
   const tagAt = (hour: number, col: number): number | null =>
     blockByMinute.get(hour * 60 + col * 5)?.tagId ?? null
@@ -789,7 +977,7 @@ export default function DayNightScreen() {
   const composerMeta = useMemo(() => inferPlanMeta(composerTitle), [composerTitle])
 
   const isToday = isSameDay(new Date(), selectedDate)
-  const rows = useMemo(() => buildRows(focusStart), [focusStart])
+  const rows = useMemo(() => buildRows(focusStart, zoomCols), [focusStart, zoomCols])
 
   // 同步 refs
   interactionRef.current = { editMode, selectedTagId, rows, blocks, blockByMinute, spans, selectedDate }
@@ -805,8 +993,9 @@ export default function DayNightScreen() {
     const rowH = area.h / rs.length
     const row = rs[clamp(Math.floor(ly / rowH), 0, rs.length - 1)]
     if (row.kind === 'full') {
-      const col = clamp(Math.floor(lx / (area.w / FULL_COLS)), 0, FULL_COLS - 1)
-      return { kind: 'full', hour: row.hour, col, minute: row.hour * 60 + col * 5 }
+      const col = clamp(Math.floor(lx / (area.w / row.cols)), 0, row.cols - 1)
+      const minute = row.startMin + col * 5
+      return { kind: 'full', hour: Math.floor(minute / 60), col, minute }
     }
     const col = clamp(Math.floor(lx / (area.w / row.hours.length)), 0, row.hours.length - 1)
     return { kind: 'compressed', hour: row.hours[col] }
@@ -874,6 +1063,7 @@ export default function DayNightScreen() {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onPanResponderGrant: (e) => {
+        pinchRef.current.initialDist = 0
         const cell = cellFromLocalPoint(e.nativeEvent.locationX, e.nativeEvent.locationY)
         const { editMode: em, blockByMinute: bm, selectedTagId: tagId } = interactionRef.current
         const d: DragState = {
@@ -886,6 +1076,7 @@ export default function DayNightScreen() {
           snapshot: interactionRef.current.blocks,
           moved: false,
           tapCell: cell,
+          grantTs: Date.now(),
         }
         dragRef.current = d
         if (em && cell && cell.kind === 'full') {
@@ -896,6 +1087,39 @@ export default function DayNightScreen() {
         }
       },
       onPanResponderMove: (e, g) => {
+        // pinch 检测：非编辑模式 + 至少 2 根活动手指
+        // 用 gestureState.numberActiveTouches（RN 0.85 Fabric 下比 nativeEvent.touches 稳）
+        const numTouches = g.numberActiveTouches
+        const touches = e.nativeEvent.touches
+        // 一旦本次手势曾出现过双指，就永久锁住 multiTouch 标志：
+        // 后续即使第二指先抬起 numTouches=1，剩下那根继续动也不能走 tap/paint 路径
+        // （否则放手后会误触发"详情"/"编辑"）
+        if (numTouches >= 2) {
+          dragRef.current.moved = true       // 阻断 tap commit
+          dragRef.current.startMin = null    // 阻断 paint commit
+        }
+        if (!interactionRef.current.editMode && numTouches >= 2 && touches && touches.length >= 2) {
+          const [a, b] = [touches[0], touches[1]]
+          const dist = Math.hypot(a.pageX - b.pageX, a.pageY - b.pageY)
+          // 第一次进 pinch：记录起始距离 + 起始 zoom 档
+          if (pinchRef.current.initialDist === 0) {
+            pinchRef.current = { initialDist: dist, startCols: zoomColsRef.current }
+            return
+          }
+          const scale = dist / pinchRef.current.initialDist
+          const startIdx = ZOOM_LEVELS.indexOf(pinchRef.current.startCols)
+          // 渐进式：scale ≥ 1.25 进 1 档；≥ 1.7 进 2 档；≤ 0.8 / ≤ 0.6 反向
+          // 阈值收紧让用户更快感觉到反应
+          let delta = 0
+          if (scale >= 1.7) delta = 2
+          else if (scale >= 1.25) delta = 1
+          else if (scale <= 0.6) delta = -2
+          else if (scale <= 0.8) delta = -1
+          const targetIdx = clamp(startIdx + delta, 0, ZOOM_LEVELS.length - 1)
+          const target = ZOOM_LEVELS[targetIdx]
+          if (target !== zoomColsRef.current) applyZoom(target)
+          return
+        }
         if (Math.abs(g.dx) + Math.abs(g.dy) > 8) dragRef.current.moved = true
         if (!interactionRef.current.editMode) return
         const d = dragRef.current
@@ -907,6 +1131,11 @@ export default function DayNightScreen() {
         applyRange(cell.minute)
       },
       onPanResponderRelease: () => {
+        // pinch 抬手 → 重置；不走 tap/paint commit 路径
+        if (pinchRef.current.initialDist > 0) {
+          pinchRef.current.initialDist = 0
+          return
+        }
         const d = dragRef.current
         const { editMode: em, selectedTagId: tagId, spans: sp, selectedDate: date } =
           interactionRef.current
@@ -919,7 +1148,35 @@ export default function DayNightScreen() {
           setRedoStack([])
           // 分批写后端：paint 走 tagId / erase 不带 tagId
           if (paintArr.length > 0 && tagId != null) {
-            paintBlocks(date, paintArr, tagId)
+            // SoloDb.paintBlocks 内部事务会同时 bump tag/category 的 last_used_at
+            // （对齐 desktop paint_blocks），LWW 同步到对端，"最近"自动跨设备
+            paintBlocks(date, paintArr, tagId).then(() => {
+              // 拉回真值刷新 palette，让 recentTags useMemo 能感知新 lastUsedAt
+              fetchPalette().then(setPalette).catch(() => {})
+            })
+            // 底部 toast：找出本次 paint 覆盖区间在 post-paint blocks 里的合并段，
+            // 显示连片段（含相邻同色已有 block）的起止时间
+            // post-paint blocks 已通过 setBlocks 写过；这里用 d.snapshot + paintArr + tagId
+            // 重建 nextBlockByMinute 找连片
+            const next = new Map<number, number>()
+            d.snapshot.forEach((b) => next.set(b.minute, b.tagId))
+            d.eraseMins.forEach((m) => next.delete(m))
+            paintArr.forEach((m) => next.set(m, tagId))
+            const paintSorted = [...paintArr].sort((a, b) => a - b)
+            const firstM = paintSorted[0]
+            const lastM = paintSorted[paintSorted.length - 1]
+            // 向左扩：起点之前还有同色 → 起点前移
+            let start = firstM
+            while (start - 5 >= 0 && next.get(start - 5) === tagId) start -= 5
+            // 向右扩：终点之后还有同色 → 终点后移
+            let endExcl = lastM + 5
+            while (endExcl < 1440 && next.get(endExcl) === tagId) endExcl += 5
+            // 走 paletteRef 拿最新 palette；tagById 是闭包变量永远是首次 render 的空 Map
+            const tagName = paletteRef.current?.tags.find((t) => t.id === tagId)?.leafName ?? '标签'
+            showPaintToast({
+              name: tagName,
+              time: `${fmtMinute(start)} – ${fmtMinute(endExcl)}`,
+            })
           }
           if (eraseArr.length > 0) {
             eraseBlocks(date, eraseArr)
@@ -927,13 +1184,17 @@ export default function DayNightScreen() {
           return
         }
         if (d.moved || !d.tapCell) return
+        // long-press 防误触：按住超过 350ms 抬起不视为 tap（用户可能在思考 / 准备 pinch）
+        if (Date.now() - d.grantTs > 350) return
         if (d.tapCell.kind === 'full') {
           const min = d.tapCell.minute
           const span = sp.find((s) => min >= s.startMin && min < s.endMin)
           if (span) setDetail(span)
         } else {
+          // tap compressed hour → 把该 hour 拉到 focus 上沿；focus 高度跟 zoom 走
           const h = d.tapCell.hour
-          setFocusStart(clamp(h > 17 ? h - 17 : h, 0, 6))
+          const focusH = zoomFocusHours(zoomColsRef.current)
+          setFocusStart(clamp(h > 24 - focusH ? 24 - focusH : h, 0, 24 - focusH))
         }
       },
     }),
@@ -948,8 +1209,10 @@ export default function DayNightScreen() {
         focusBaseRef.current = focusStartRef.current
       },
       onPanResponderMove: (_, g) => {
-        const rowH = gridHRef.current > 0 ? gridHRef.current / 20 : 40
-        const next = clamp(focusBaseRef.current + Math.round(-g.dy / rowH), 0, 6)
+        const total = totalRowCount(zoomColsRef.current)
+        const rowH = gridHRef.current > 0 ? gridHRef.current / total : 40
+        const focusH = zoomFocusHours(zoomColsRef.current)
+        const next = clamp(focusBaseRef.current + Math.round(-g.dy / rowH), 0, 24 - focusH)
         setFocusStart((cur) => (cur === next ? cur : next))
       },
     }),
@@ -1176,9 +1439,11 @@ export default function DayNightScreen() {
                     ? tagById.get(selectedTagId)?.leafName ?? '选标签'
                     : '选标签'}
                 </Text>
-                <Text style={styles.currentTagChev}>
-                  {pickerMode === 'browse' ? '▴' : '▾'}
-                </Text>
+                <CaretGlyph
+                  color={theme.inkSoft}
+                  size={9}
+                  direction={pickerMode === 'browse' ? 'up' : 'down'}
+                />
               </Pressable>
               <Pressable
                 onPress={handleUndo}
@@ -1233,15 +1498,19 @@ export default function DayNightScreen() {
         >
           {/* 时间轴 */}
           <View style={styles.axis} {...axisPan.panHandlers}>
-            {rows.map((row, i) => (
-              <View key={i} style={styles.axisCell}>
-                <Text style={styles.axisText}>
-                  {row.kind === 'full'
-                    ? `${row.hour}:00`
-                    : `${row.hours[0]}~${row.hours[row.hours.length - 1]}`}
-                </Text>
-              </View>
-            ))}
+            {rows.map((row, i) => {
+              // 整点 → 加粗 + 更黑（compressed 一定整点；full 行只 startMin % 60 === 0）
+              const isHourMark = row.kind === 'compressed' || row.startMin % 60 === 0
+              return (
+                <View key={i} style={styles.axisCell}>
+                  <Text style={[styles.axisText, isHourMark && styles.axisTextHour]}>
+                    {row.kind === 'full'
+                      ? fmtMinute(row.startMin)
+                      : `${row.hours[0]}~${row.hours[row.hours.length - 1]}`}
+                  </Text>
+                </View>
+              )
+            })}
           </View>
 
           {/* 格子区 */}
@@ -1309,11 +1578,16 @@ export default function DayNightScreen() {
                   </View>
                 )
               }
-              // 按 horizontal run 渲染色块：12 个 cellSlot 撑 layout + 空格背景，
-              // tag run 叠加为整段色块（标签居中，宽度按段调整）
+              // 按 horizontal run 渲染色块：row.cols 个 cellSlot 撑 layout + 空格背景，
+              // tag run 叠加为整段色块（标签居中，宽度按段调整）。
+              // zoom 后 cell 仍 5min；行总分钟 = row.cols * 5（zoom=12 时 60min, zoom=3 时 15min）
+              const rowCols = row.cols
+              const rowMinutes = rowCols * 5
+              const rowStart = row.startMin
               const runs: { l: number; r: number; tag: number }[] = []
-              for (let col = 0; col < FULL_COLS; col++) {
-                const t = tagAt(row.hour, col)
+              for (let col = 0; col < rowCols; col++) {
+                const m = rowStart + col * 5
+                const t = blockByMinute.get(m)?.tagId ?? null
                 if (t == null) continue
                 const last = runs[runs.length - 1]
                 if (last && last.tag === t && last.r === col - 1) last.r = col
@@ -1322,29 +1596,29 @@ export default function DayNightScreen() {
               const planRuns = scheduledTasks
                 .filter((task): task is PlannedTask & { scheduledStartMin: number } => {
                   if (task.scheduledStartMin == null) return false
-                  return task.scheduledStartMin < row.hour * 60 + 60
-                    && task.scheduledStartMin + task.durationMin > row.hour * 60
+                  return task.scheduledStartMin < rowStart + rowMinutes
+                    && task.scheduledStartMin + task.durationMin > rowStart
                 })
                 .map((task) => {
-                  const rowStart = row.hour * 60
                   const start = Math.max(task.scheduledStartMin, rowStart)
-                  const end = Math.min(task.scheduledStartMin + task.durationMin, rowStart + 60)
+                  const end = Math.min(task.scheduledStartMin + task.durationMin, rowStart + rowMinutes)
                   return { task, start, end }
                 })
               return (
                 <View key={i} style={styles.cellRow}>
-                  {Array.from({ length: FULL_COLS }, (_, col) => (
+                  {Array.from({ length: rowCols }, (_, col) => (
                     <View key={col} style={styles.cellSlot}>
                       <View style={styles.emptyInner} />
                     </View>
                   ))}
                   {runs.map((run) => {
                     const span = run.r - run.l + 1
-                    const leftPct = (run.l / FULL_COLS) * 100
-                    const widthPct = (span / FULL_COLS) * 100
+                    const leftPct = (run.l / rowCols) * 100
+                    const widthPct = (span / rowCols) * 100
                     const tagName = tagById.get(run.tag)?.leafName ?? ''
-                    // 段太窄（≤1 cell = 5min）放标签会被压成竖排，干脆不显示
-                    const showLabel = span >= 2
+                    // 段太窄放标签会被压成竖排：12 cols 时单 cell 屏宽 ≈ 50px 不够，
+                    // 6/4/3 cols 时单 cell ≥ 100px，单 cell 也能塞下标签
+                    const showLabel = span >= 2 || rowCols <= 6
                     return (
                       <View
                         key={`t${run.l}`}
@@ -1578,6 +1852,42 @@ export default function DayNightScreen() {
         </Pressable>
       </Modal>
 
+      {/* zoom toast：pinch 切档时屏幕正中悬浮显示 cols × rows */}
+      {zoomToast && (
+        <View pointerEvents="none" style={styles.zoomToastWrap}>
+          <Animated.View style={[styles.zoomToast, { opacity: zoomToastOpacity }]}>
+            <Text style={styles.zoomToastText}>{zoomToast}</Text>
+          </Animated.View>
+        </View>
+      )}
+      {/* paint toast：拖拽涂色完成后底部显示新合并段起止时间 */}
+      {paintToast && (
+        <View pointerEvents="none" style={styles.paintToastWrap}>
+          <Animated.View style={[styles.paintToast, { opacity: paintToastOpacity }]}>
+            <Text style={styles.paintToastName} numberOfLines={1} ellipsizeMode="tail">
+              {paintToast.name}
+            </Text>
+            <Text style={styles.paintToastTime}>{paintToast.time}</Text>
+          </Animated.View>
+        </View>
+      )}
+      {/* 删除确认框 */}
+      <ConfirmDialog
+        open={confirmDelete != null}
+        title={confirmDelete?.kind === 'category' ? '删除分类' : '删除标签'}
+        body={
+          confirmDelete?.kind === 'category'
+            ? `分类「${confirmDelete.label}」及其下所有子标签、关联的活动记录都会被删除（软删，可通过 LAN 同步从其他端找回）。`
+            : confirmDelete
+              ? `标签「${confirmDelete.label}」及关联的活动记录都会被删除（软删，可通过 LAN 同步从其他端找回）。`
+              : ''
+        }
+        confirmText="删除"
+        danger
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={doConfirmDelete}
+      />
+
       {/* 标签云浮层：absolute 紧贴 toolbar 下方 + 自适应贴 DayNightScreen 底部
           DayNightScreen 是 flex:1 占 TabBar 以上空间，bottom:8 即贴近 TabBar 上沿 */}
       {editMode && tagPickerOpen && palette && (
@@ -1639,9 +1949,14 @@ export default function DayNightScreen() {
               </View>
             )}
             <Text style={styles.pickerHint}>
-              {tagQuery
+              {palette.tags.length === 0 ? (
+                <>
+                  还没有标签 · 在搜索框输入 <Text style={styles.pickerHintStrong}>分类,标签</Text> 创建第一个{'\n'}
+                  例：<Text style={styles.pickerHintStrong}>编程,氛围编程</Text> · 或 LAN 同步从 desktop 拉过来
+                </>
+              ) : tagQuery
                 ? `匹配 ${filteredTags.length} / ${palette.tags.length} 个`
-                : `全部 ${palette.tags.length} 个标签 · 输入即过滤 · 含 , 可新建`}
+                : `全部 ${palette.tags.length} 个标签 · 输入即过滤 · 含 , 可新建 · 长按标签删除`}
             </Text>
             {(() => {
               const trimmed = tagQuery.trim().replace(/^,+|,+$/g, '')
@@ -1689,6 +2004,13 @@ export default function DayNightScreen() {
                     depth={0}
                     selectedId={selectedTagId}
                     onPick={pickTag}
+                    onLongPressTag={(t) =>
+                      setConfirmDelete({ kind: 'tag', id: t.id, label: t.fullPath })
+                    }
+                    onLongPressCategory={(name) => {
+                      const cat = palette.categories.find((c) => c.name === name)
+                      if (cat) setConfirmDelete({ kind: 'category', id: cat.id, label: name })
+                    }}
                   />
                 ))
               )}
@@ -1866,6 +2188,11 @@ const styles = StyleSheet.create({
     color: theme.inkSoft,
     letterSpacing: 0.3,
     fontWeight: '500',
+  },
+  // 整点（含 compressed 区间）加粗 + 更黑，让 zoom=6/4/3 时半点/三分点更弱
+  axisTextHour: {
+    color: theme.ink,
+    fontWeight: '700',
   },
   cellArea: {
     flex: 1,
@@ -2100,6 +2427,66 @@ const styles = StyleSheet.create({
     right: 10,
     bottom: 8,
   },
+  zoomToastWrap: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  zoomToast: {
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+    backgroundColor: 'rgba(20,22,28,0.78)',
+    borderRadius: 14,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 10,
+  },
+  zoomToastText: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#FFF',
+    letterSpacing: 1.2,
+    fontVariant: ['tabular-nums'],
+  },
+  paintToastWrap: {
+    position: 'absolute',
+    left: 0, right: 0, bottom: 24,
+    alignItems: 'center',
+  },
+  paintToast: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(20,22,28,0.85)',
+    borderRadius: 18,
+    shadowColor: '#000',
+    shadowOpacity: 0.22,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+    maxWidth: '88%',     // 留 12% 给两边屏边距，避免顶到边缘
+    gap: 10,
+  },
+  paintToastName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFF',
+    letterSpacing: 0.3,
+    flexShrink: 1,        // 太长允许缩并 ellipsize
+    minWidth: 0,
+  },
+  paintToastTime: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: 'rgba(255,255,255,0.85)',
+    letterSpacing: 0.3,
+    fontVariant: ['tabular-nums'],
+    flexShrink: 0,        // 时间永远完整可见
+  },
   pickerCloud: {
     flex: 1,
     backgroundColor: 'rgba(255,255,255,0.98)',
@@ -2141,6 +2528,11 @@ const styles = StyleSheet.create({
     color: theme.inkSoft,
     marginBottom: 10,
     letterSpacing: 0.3,
+    lineHeight: 18,
+  },
+  pickerHintStrong: {
+    color: theme.accent,
+    fontWeight: '700',
   },
   pickerWrap: {
     flexDirection: 'row',

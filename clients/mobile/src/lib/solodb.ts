@@ -156,6 +156,8 @@ interface SoloDbNative {
   upsertTag(args: UpsertTagArgs): Promise<number>
   paintBlocks(date: string, minutes: number[], tagId: number): Promise<number>
   eraseBlocks(date: string, minutes: number[]): Promise<number>
+  deleteTag(tagId: number): Promise<number>
+  deleteCategory(categoryId: number): Promise<number>
   exportSync(since: string | null): Promise<SyncExport>
   importSync(payload: SyncExport): Promise<SyncImportResult>
 }
@@ -224,6 +226,16 @@ export async function soloPaintBlocks(date: string, minutes: number[], tagId: nu
 export async function soloEraseBlocks(date: string, minutes: number[]): Promise<number> {
   if (!Native) return 0
   return Native.eraseBlocks(date, minutes)
+}
+
+export async function soloDeleteTag(tagId: number): Promise<number> {
+  if (!Native) return 0
+  return Native.deleteTag(tagId)
+}
+
+export async function soloDeleteCategory(categoryId: number): Promise<number> {
+  if (!Native) return 0
+  return Native.deleteCategory(categoryId)
 }
 
 /**

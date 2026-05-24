@@ -161,6 +161,22 @@ class SoloDbModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun deleteTag(tagId: Double, promise: Promise) {
+    try {
+      val n = db.deleteTag(tagId.toLong())
+      promise.resolve(n.toDouble())
+    } catch (e: Throwable) { promise.reject("SOLODB_DELETE_TAG_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun deleteCategory(categoryId: Double, promise: Promise) {
+    try {
+      val n = db.deleteCategory(categoryId.toLong())
+      promise.resolve(n.toDouble())
+    } catch (e: Throwable) { promise.reject("SOLODB_DELETE_CAT_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
   fun paintBlocks(date: String, minutes: ReadableArray, tagId: Double, promise: Promise) {
     try {
       val arr = IntArray(minutes.size()) { minutes.getInt(it) }
