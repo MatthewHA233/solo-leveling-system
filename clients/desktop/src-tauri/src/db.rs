@@ -2070,6 +2070,12 @@ impl Database {
                     result.skipped += 1;
                     continue;
                 }
+                // AUDIT-011: UPDATE 会把目标行 sync_id 改成 incoming.sync_id；
+                // 若 desktop 已有旁系行（不同 name）占着 incoming.sync_id，会撞 UNIQUE(sync_id)
+                // 整次 import_sync 失败。不能裸 DELETE 旁系（ON DELETE CASCADE 会静默吞
+                // 它挂的 tags / blocks / plan_nodes / planned_blocks 等本地未同步子数据）。
+                // 改为 cascade-aware merge：旁系子项迁/合并到 id（业务键匹配权威行）再删空旁系。
+                merge_category_conflict(&conn, &row.sync_id, id)?;
                 conn.execute(
                     "UPDATE activity_categories
                      SET sync_id=?, color=?, sort_order=?, created_at=?, last_used_at=?, updated_at=?, deleted_at=?
@@ -2109,6 +2115,8 @@ impl Database {
                     result.skipped += 1;
                     continue;
                 }
+                // 同 categories：AUDIT-011 cascade-aware merge 旁系 sync_id 占用
+                merge_tag_conflict(&conn, &row.sync_id, id)?;
                 conn.execute(
                     "UPDATE activity_tags
                      SET sync_id=?, leaf_name=?, depth=?, created_at=?, last_used_at=?, updated_at=?, deleted_at=?
@@ -3593,6 +3601,91 @@ fn lookup_id_by_sync(conn: &Connection, table: &str, sync_id: &str) -> Result<Op
     conn.query_row(&sql, params![sync_id], |row| row.get(0))
         .optional()
         .map_err(|e| e.to_string())
+}
+
+// ── Cascade-aware merge helpers (AUDIT-011) ──
+// categories/tags 段 UPDATE sync_id 时，若 incoming.sync_id 被旁系行（不同业务键）
+// 占用，不能裸 DELETE 旁系 —— FK ON DELETE CASCADE 会静默删它挂的 activity_tags
+// / activity_blocks / plan_nodes / planned_blocks 等本地未同步子数据。
+// 把旁系下的子项 FK 迁/合并到 keep_id（业务键匹配的权威行），再删空旁系。
+
+/// 旁系 category 下的 tags 迁到 keep_id；同 (cat, full_path) 撞 UNIQUE 时递归合并 tag。
+fn merge_category_conflict(conn: &Connection, sync_id: &str, keep_id: i64) -> Result<(), String> {
+    let side_id: Option<i64> = conn.query_row(
+        "SELECT id FROM activity_categories WHERE sync_id = ? AND id != ?",
+        params![sync_id, keep_id],
+        |r| r.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    let Some(side_id) = side_id else { return Ok(()) };
+
+    let side_tags: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, full_path FROM activity_tags WHERE category_id = ?",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![side_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        }).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows { out.push(row.map_err(|e| e.to_string())?); }
+        out
+    };
+    for (side_tag_id, full_path) in side_tags {
+        let target_tag_id: Option<i64> = conn.query_row(
+            "SELECT id FROM activity_tags WHERE category_id = ? AND full_path = ?",
+            params![keep_id, &full_path],
+            |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())?;
+        if let Some(target_tag_id) = target_tag_id {
+            // 目标 category 下已有同 path tag，合并这两个 tag 的子项
+            merge_tag_children(conn, side_tag_id, target_tag_id)?;
+            conn.execute("DELETE FROM activity_tags WHERE id = ?", params![side_tag_id])
+                .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute(
+                "UPDATE activity_tags SET category_id = ? WHERE id = ?",
+                params![keep_id, side_tag_id],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+    // 旁系下已无 tag，cascade 无子可吞，DELETE 安全
+    conn.execute("DELETE FROM activity_categories WHERE id = ?", params![side_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 旁系 tag 的子 blocks/plan_nodes 迁到 keep_id 后删空旁系。
+fn merge_tag_conflict(conn: &Connection, sync_id: &str, keep_id: i64) -> Result<(), String> {
+    let side_id: Option<i64> = conn.query_row(
+        "SELECT id FROM activity_tags WHERE sync_id = ? AND id != ?",
+        params![sync_id, keep_id],
+        |r| r.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    let Some(side_id) = side_id else { return Ok(()) };
+    merge_tag_children(conn, side_id, keep_id)?;
+    conn.execute("DELETE FROM activity_tags WHERE id = ?", params![side_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 把 side_tag_id 下的 blocks + plan_nodes 重新挂到 keep_tag_id。
+/// activity_blocks 同 (date, minute) 槽位冲突时优先保留 keep_tag_id 那份（业务权威）。
+fn merge_tag_children(conn: &Connection, side_tag_id: i64, keep_tag_id: i64) -> Result<(), String> {
+    // 先丢掉旁系跟 keep 同 (date,minute) 的 blocks，否则 UPDATE 会撞 UNIQUE(date,minute)
+    conn.execute(
+        "DELETE FROM activity_blocks WHERE tag_id = ? AND (date, minute) IN
+           (SELECT date, minute FROM activity_blocks WHERE tag_id = ?)",
+        params![side_tag_id, keep_tag_id],
+    ).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE activity_blocks SET tag_id = ? WHERE tag_id = ?",
+        params![keep_tag_id, side_tag_id],
+    ).map_err(|e| e.to_string())?;
+    // plan_nodes 没跟 project_tag_id 复合 UNIQUE，直接迁
+    conn.execute(
+        "UPDATE plan_nodes SET project_tag_id = ? WHERE project_tag_id = ?",
+        params![keep_tag_id, side_tag_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn stable_hash_hex(input: &str) -> String {
