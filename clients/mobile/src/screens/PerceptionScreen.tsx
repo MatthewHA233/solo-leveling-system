@@ -15,7 +15,7 @@ import {
   type SoloDbStats,
   type SyncExport,
 } from '../lib/solodb'
-import { seedSoloDbIfEmpty, type SeedReport } from '../lib/solodb_seed'
+// solodb_seed 已删除（不再硬编码 9 类 70 标签 seed）；空 palette 由 UI 创建或 LAN 同步拉取。
 import {
   getSyncServerStatus,
   startSyncServer,
@@ -71,8 +71,6 @@ export default function PerceptionScreen() {
   const [a11yEnabled, setA11yEnabled] = useState<boolean | null>(null)
   const [soloStats, setSoloStats] = useState<SoloDbStats | null>(null)
   const [soloDeviceId, setSoloDeviceId] = useState<string>('')
-  const [seedReport, setSeedReport] = useState<SeedReport | null>(null)
-  const [seeding, setSeeding] = useState(false)
   const [exportSummary, setExportSummary] = useState<string>('')
   const [serverStatus, setServerStatus] = useState<SyncServerStatus | null>(null)
   const [serverErr, setServerErr] = useState<string>('')
@@ -242,23 +240,6 @@ export default function PerceptionScreen() {
       )
     } catch (e: any) {
       setExportSummary(`error: ${e?.message ?? String(e)}`)
-    }
-  }
-
-  async function runSeed() {
-    setSeeding(true)
-    try {
-      const r = await seedSoloDbIfEmpty()
-      setSeedReport(r)
-      await refreshSoloDb()
-    } catch (e: any) {
-      setSeedReport({
-        before: { cats: -1, tags: -1 }, after: { cats: -1, tags: -1 },
-        wroteCats: 0, wroteTags: 0, skippedTags: 0,
-        errors: [`runSeed: ${e?.message ?? String(e)}`],
-      })
-    } finally {
-      setSeeding(false)
     }
   }
 
@@ -532,9 +513,6 @@ export default function PerceptionScreen() {
           <Text style={styles.cardValue}>未连通</Text>
         )}
         <View style={styles.btnRow}>
-          <Pressable style={styles.btn} onPress={runSeed} disabled={seeding}>
-            <Text style={styles.btnText}>{seeding ? 'seed 中…' : '手动 seed'}</Text>
-          </Pressable>
           <Pressable style={[styles.btn, styles.btnGhost]} onPress={runExport}>
             <Text style={[styles.btnText, styles.btnGhostText]}>测试 export</Text>
           </Pressable>
@@ -549,22 +527,6 @@ export default function PerceptionScreen() {
           <Text style={[styles.cardSub, { marginTop: 8 }]} numberOfLines={4}>
             {exportSummary}
           </Text>
-        )}
-        {seedReport && (
-          <View style={{ marginTop: 10 }}>
-            <Text style={styles.cardSub}>
-              before cats={seedReport.before.cats} tags={seedReport.before.tags} →
-              after cats={seedReport.after.cats} tags={seedReport.after.tags}
-            </Text>
-            <Text style={styles.cardSub}>
-              wroteCats={seedReport.wroteCats} wroteTags={seedReport.wroteTags} skippedTags={seedReport.skippedTags}
-            </Text>
-            {seedReport.errors.length > 0 && seedReport.errors.map((err, i) => (
-              <Text key={i} style={[styles.cardSub, { color: '#C0392B' }]} numberOfLines={2}>
-                ⚠ {err}
-              </Text>
-            ))}
-          </View>
         )}
       </View>
 

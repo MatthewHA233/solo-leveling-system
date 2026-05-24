@@ -722,12 +722,30 @@ export default function DayNightScreen() {
     const item = confirmDelete
     setConfirmDelete(null)
     try {
+      // AUDIT-016: 算出本次删除会软删哪些 tagId（删 category 时连带其全部 tag）
+      // 用删除前 palette 的快照，删除后再判断 selectedTagId 是否在内
+      const deletedTagIds = new Set<number>()
+      if (palette) {
+        if (item.kind === 'tag') {
+          deletedTagIds.add(item.id)
+        } else {
+          for (const t of palette.tags) {
+            if (t.categoryId === item.id) deletedTagIds.add(t.id)
+          }
+        }
+      }
       const next = item.kind === 'tag' ? await deleteTag(item.id) : await deleteCategory(item.id)
       setPalette(next)
-      // 删的是当前选中标签 → 清掉 selected
-      if (item.kind === 'tag' && selectedTagId === item.id) setSelectedTagId(null)
-      // recent 列表从 next.tags 重算（被删的 tag/category 不会出现在 next 里）
-      // 当日 blocks 引用了被删 tag 的部分需要刷新（mock 不刷会显示空）
+      // 删到当前选中 tag（含 category 删带走的子 tag）→ 清掉 selected，
+      // 防止编辑模式继续用已软删 tagId 涂色写回 activity_blocks
+      if (selectedTagId != null && deletedTagIds.has(selectedTagId)) {
+        setSelectedTagId(null)
+      }
+      // AUDIT-016: 同时清 undo/redo 栈 —— 旧快照里的 blocks 引用了已删除 tagId，
+      // 撤回会把这些 block 重新写回，LWW 同步会传播出去导致引用孤儿 tag
+      setUndoStack([])
+      setRedoStack([])
+      // 当日 blocks 刷新（DB 已对 tag/category 软删，关联 blocks 也软删）
       const refreshed = await fetchBlocks(selectedDate)
       setBlocks(refreshed)
     } catch (e) {

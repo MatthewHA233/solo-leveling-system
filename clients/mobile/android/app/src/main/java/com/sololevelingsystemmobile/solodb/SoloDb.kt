@@ -304,11 +304,18 @@ class SoloDb(context: Context) :
 
   /** Paint：UPSERT 每个 (date, minute) 槽位为 tagId；undelete + bump updated_at。
    *  同时更新 tag.last_used_at 和 category.last_used_at（对齐 desktop paint_blocks
-   *  逻辑：拖拽涂色 = 真正"使用"该 tag，LWW 同步到对端，"最近"列表自动跨设备）。 */
+   *  逻辑：拖拽涂色 = 真正"使用"该 tag，LWW 同步到对端，"最近"列表自动跨设备）。
+   *  AUDIT-016 防御：tag 已软删时拒绝写入，避免 blocks 引用孤儿 tag。 */
   fun paintBlocks(date: String, minutes: IntArray, tagId: Long) {
     if (minutes.isEmpty()) return
-    val now = nowIso()
     val db = writableDatabase
+    // tag 已软删 / 不存在 → 静默跳过；防止 undo / stale UI 把死 tagId 写回
+    val tagOk = db.rawQuery(
+      "SELECT 1 FROM activity_tags WHERE id = ? AND deleted_at IS NULL LIMIT 1",
+      arrayOf(tagId.toString()),
+    ).use { c -> c.moveToFirst() }
+    if (!tagOk) return
+    val now = nowIso()
     db.beginTransaction()
     try {
       for (m in minutes) {
