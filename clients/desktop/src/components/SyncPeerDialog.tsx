@@ -198,6 +198,39 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
     return map
   }, [peers])
 
+  // 对每个 linked device 主动 fetch /api/sync/hello 拿 device_type/model + 在线状态。
+  // mDNS 不广播的设备（如 mobile）也能识别成"手机"+ 显示真实在线。
+  // 5 秒一次轮询；失败视为离线。
+  const [helloByDeviceId, setHelloByDeviceId] = useState<Map<string, SyncHello>>(new Map())
+  useEffect(() => {
+    if (!open || links.length === 0) return
+    let cancelled = false
+    const probeAll = async () => {
+      const results = await Promise.all(
+        links.map(async (l) => {
+          try {
+            const h = await fetchSyncHello(l.last_base)
+            return [l.device_id, h] as const
+          } catch {
+            return [l.device_id, null] as const
+          }
+        }),
+      )
+      if (cancelled) return
+      setHelloByDeviceId((prev) => {
+        const next = new Map(prev)
+        for (const [id, h] of results) {
+          if (h) next.set(id, h)
+          else next.delete(id)
+        }
+        return next
+      })
+    }
+    void probeAll()
+    const timer = setInterval(probeAll, 5_000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [open, links])
+
   const unlinkedPeers = useMemo(() => {
     const linkedIds = new Set(links.map((l) => l.device_id))
     return peers.filter((p) => !linkedIds.has(p.device_id))
@@ -547,8 +580,12 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
             <div style={{ display: 'grid', gap: 6 }}>
               {links.map((link) => {
                 const peer = peerByDeviceId.get(link.device_id)
-                const online = !!peer
-                const Icon = platformIcon(peer?.device_type ?? 'desktop', peer?.device_model ?? '', link.alias)
+                // hello 探测优先（mobile 不走 mDNS 也能拿到 device_type / model + 在线）
+                const hello = helloByDeviceId.get(link.device_id)
+                const online = !!peer || !!hello
+                const deviceType = hello?.device_type ?? peer?.device_type ?? 'desktop'
+                const deviceModel = hello?.device_model ?? peer?.device_model
+                const Icon = platformIcon(deviceType, deviceModel ?? '', link.alias)
                 const busy = busyLinkId === link.device_id
                 return (
                   <LinkedCard
@@ -556,7 +593,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
                     link={link}
                     online={online}
                     busy={busy}
-                    deviceModel={peer?.device_model}
+                    deviceModel={deviceModel}
                     Icon={Icon}
                     onSyncNow={() => syncLinkNow(link)}
                     onUnlink={() => unlinkDevice(link)}
