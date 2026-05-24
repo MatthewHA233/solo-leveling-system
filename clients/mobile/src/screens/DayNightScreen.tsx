@@ -697,6 +697,10 @@ export default function DayNightScreen() {
   const paletteRef = useRef<ActivityPalette | null>(null)
   paletteRef.current = palette
 
+  // 标签 picker 搜索输入 ref —— AUDIT-014：autoFocus 只 mount 时生效，
+  // 从 browse 切到 search 时 TextInput 已挂载，必须显式 focus()
+  const searchInputRef = useRef<TextInput>(null)
+
   // zoom 同步 ref（PanResponder 回调拿最新值）
   const zoomColsRef = useRef<ZoomCols>(12)
   zoomColsRef.current = zoomCols
@@ -811,6 +815,14 @@ export default function DayNightScreen() {
     const t = setTimeout(measureArea, 80)
     return () => clearTimeout(t)
   }, [editMode, focusStart, insets.top, insets.bottom])
+
+  // AUDIT-014: 切到 search 模式时显式 focus 搜索框（autoFocus 只 mount 时生效，
+  // 已挂载 TextInput 改 prop 不会重新聚焦）。小延迟避免与 picker 渲染竞态
+  useEffect(() => {
+    if (pickerMode !== 'search') return
+    const t = setTimeout(() => searchInputRef.current?.focus(), 40)
+    return () => clearTimeout(t)
+  }, [pickerMode])
 
   useEffect(() => {
     if (!detail) {
@@ -1904,6 +1916,7 @@ export default function DayNightScreen() {
             <View style={styles.searchBoxInCloud}>
               <SearchGlyph color={theme.inkSoft} />
               <TextInput
+                ref={searchInputRef}
                 value={tagQuery}
                 onChangeText={setTagQuery}
                 placeholder="搜索标签 / 分类..."
