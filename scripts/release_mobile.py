@@ -156,12 +156,20 @@ def make_bucket() -> tuple[oss2.Bucket, str, str]:
     return bucket, bucket_name, endpoint
 
 
-def public_url_for(key: str, bucket_name: str, endpoint: str) -> str:
-    """优先用 OSS_CUSTOM_DOMAIN 配的 CDN/CNAME 域。OSS 禁止用原生
-    *.aliyuncs.com 分发 .apk（ApkDownloadForbidden），必须走 CNAME 域。"""
+def public_url_for_apk(key: str, bucket_name: str, endpoint: str) -> str:
+    """APK 走 CDN/CNAME 域。OSS 禁止用原生 *.aliyuncs.com 分发 .apk
+    （ApkDownloadForbidden）。"""
     cd = os.getenv("OSS_CUSTOM_DOMAIN", "").rstrip("/")
     if cd:
         return f"{cd}/{key}"
+    return f"https://{bucket_name}.{endpoint}/{key}"
+
+
+def public_url_for_manifest(key: str, bucket_name: str, endpoint: str) -> str:
+    """latest.json 走 OSS 原生域，不过 CDN。
+    原因：CDN 边缘节点常忽略 Cache-Control: no-cache 头，缓存几小时甚至几天，
+    新版本发布后用户拿到旧 manifest 误以为没更新；OSS 原生域永远是最新。
+    小文件几百字节，不走加速也无所谓。JSON 不在 ApkDownloadForbidden 限制内。"""
     return f"https://{bucket_name}.{endpoint}/{key}"
 
 
@@ -236,8 +244,8 @@ def main() -> int:
     prefix = os.getenv("SLS_OSS_PATH_PREFIX", "solo-leveling").rstrip("/")
     apk_key = f"{prefix}/android/releases/sls-{version_name}-vc{version_code}.apk"
     manifest_key = f"{prefix}/android/latest.json"
-    apk_url = public_url_for(apk_key, bucket_name, endpoint)
-    manifest_url = public_url_for(manifest_key, bucket_name, endpoint)
+    apk_url = public_url_for_apk(apk_key, bucket_name, endpoint)
+    manifest_url = public_url_for_manifest(manifest_key, bucket_name, endpoint)
     changelog = args.changelog.replace("\\n", "\n").strip()
     manifest = {
         "version_name": version_name,

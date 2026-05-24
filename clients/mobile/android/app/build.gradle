@@ -83,21 +83,18 @@ def slsVersionName = versionProps.getProperty('versionName', '0.0.0.1')
 def slsVersionCode = (versionProps.getProperty('versionCode', '1')) as int
 
 // 从 clients/mobile/sls.properties 读 OSS 端点（不入 git）。
-// 缺省走原生 OSS 域名；配了 ossCustomDomain 优先用 CDN。
 def slsProps = new Properties()
 def slsPropFile = file("../../sls.properties")
 if (slsPropFile.exists()) {
     slsPropFile.withInputStream { slsProps.load(it) }
 }
 def slsOssEndpoint = slsProps.getProperty('ossEndpoint', 'oss-cn-heyuan.aliyuncs.com')
-def slsOssBucket = slsProps.getProperty('ossBucket', 'horizn')
+def slsOssBucket = slsProps.getProperty('ossBucket', 'lingflow')
 def slsOssPrefix = slsProps.getProperty('ossPathPrefix', 'solo-leveling')
-def slsOssDomain = slsProps.getProperty('ossCustomDomain', '').trim()
-// 组装 latest.json 完整 URL。CDN 域 > OSS 原生域
-def slsBaseUrl = !slsOssDomain.isEmpty()
-        ? slsOssDomain.replaceAll('/$', '')
-        : "https://${slsOssBucket}.${slsOssEndpoint}"
-def slsManifestUrl = "${slsBaseUrl}/${slsOssPrefix}/android/latest.json"
+// 关键：latest.json 走 OSS 原生域，不走 CDN。原因：CDN 边缘节点常忽略
+// Cache-Control: no-cache，缓存几小时甚至几天，用户拿到旧 manifest 误以为没更新。
+// 小文件几百字节，不走加速也无所谓。CDN 留给 APK 用（脚本里 url 字段那个）。
+def slsManifestUrl = "https://${slsOssBucket}.${slsOssEndpoint}/${slsOssPrefix}/android/latest.json"
 
 android {
     ndkVersion rootProject.ext.ndkVersion

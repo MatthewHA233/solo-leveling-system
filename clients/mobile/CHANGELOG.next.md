@@ -1,7 +1,7 @@
-- 修：状态栏出现多个"更新失败"通知。根因是用户多次点"立即更新"会
-  enqueue 多个并行下载任务；UpdaterModule 现在记录上次 download id，
-  新一次开始前 dm.remove(oldId) 取消，并把 Notification visibility
-  从 VISIBLE_NOTIFY_COMPLETED 改成 VISIBLE（下载过程中显示进度条，
-  完成后通知自动消失）
-- 修：PerceptionScreen.runDownloadAndInstall 拦重复触发，installing
-  中再点确认按钮直接 noop
+- latest.json 改走 OSS 原生域（lingflow.oss-cn-heyuan.aliyuncs.com），不走
+  assets.lingflow.cn CDN：CDN 边缘节点常忽略 Cache-Control: no-cache 缓存
+  几小时甚至几天，新版本发布后用户拿到旧 manifest 误以为没更新；OSS 原生
+  域永远是最新。APK 仍走 CDN（大文件需要加速）。
+- 发布脚本拆 public_url_for_apk / public_url_for_manifest 两个函数
+- gradle BuildConfig SLS_UPDATE_MANIFEST_URL 不再读 ossCustomDomain，
+  直接拼 OSS 原生域
