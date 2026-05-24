@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 node_modules/
+# macOS Finder 元数据，不要入库（mobile/.gitignore 已忽略一份；这里覆盖根 + 其他目录）
+.DS_Store
+**/.DS_Store
 /package.json
 /package-lock.json
 data/
