@@ -2167,6 +2167,15 @@ impl Database {
                 result.skipped += 1;
                 continue;
             };
+            // 双键挑战：sync_id UNIQUE + PK(date, minute)。同 sync_id 跨槽位
+            // 迁移（block 被对端改了时间）旧 INSERT 只 ON CONFLICT(date,minute)
+            // 会撞 UNIQUE(sync_id) → 抛 SQLITE_CONSTRAINT_UNIQUE，
+            // import_sync 当前传播错误 → 整次同步失败。
+            // 先 DELETE 同 sync_id 但不在目标槽位的旧 row（AUDIT-009）
+            conn.execute(
+                "DELETE FROM activity_blocks WHERE sync_id = ? AND NOT (date = ? AND minute = ?)",
+                params![&row.sync_id, &row.date, row.minute],
+            ).map_err(|e| e.to_string())?;
             conn.execute(
                 "INSERT INTO activity_blocks (sync_id, date, minute, tag_id, note, created_at, updated_at, deleted_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -2191,6 +2200,11 @@ impl Database {
                 result.skipped += 1;
                 continue;
             };
+            // 同 activity_blocks 双键挑战，AUDIT-009 修复
+            conn.execute(
+                "DELETE FROM planned_blocks WHERE sync_id = ? AND NOT (date = ? AND minute = ?)",
+                params![&row.sync_id, &row.date, row.minute],
+            ).map_err(|e| e.to_string())?;
             conn.execute(
                 "INSERT INTO planned_blocks (sync_id, date, minute, plan_node_id, note, created_at, updated_at, deleted_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
