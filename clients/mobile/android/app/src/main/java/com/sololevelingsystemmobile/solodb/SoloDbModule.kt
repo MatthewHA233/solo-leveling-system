@@ -172,6 +172,131 @@ class SoloDbModule(private val reactContext: ReactApplicationContext) :
   // ── Sync export ──
 
   @ReactMethod
+  fun importSync(payload: ReadableMap, promise: Promise) {
+    try {
+      // ReadableMap → SoloDb.SyncExport
+      val syncExport = SoloDb.SyncExport(
+        deviceId = payload.getString("deviceId") ?: "",
+        exportedAt = payload.getString("exportedAt") ?: "",
+        cursor = payload.getString("cursor") ?: "",
+        activityCategories = readCats(payload.getArray("activityCategories")),
+        activityTags = readTags(payload.getArray("activityTags")),
+        activityBlocks = readBlocks(payload.getArray("activityBlocks")),
+        planNodes = readPlanNodes(payload.getArray("planNodes")),
+        plannedBlocks = readPlannedBlocks(payload.getArray("plannedBlocks")),
+      )
+      val r = db.importSync(syncExport)
+      promise.resolve(Arguments.createMap().apply {
+        putInt("activityCategories", r.activityCategories)
+        putInt("activityTags", r.activityTags)
+        putInt("activityBlocks", r.activityBlocks)
+        putInt("planNodes", r.planNodes)
+        putInt("plannedBlocks", r.plannedBlocks)
+        putInt("skipped", r.skipped)
+      })
+    } catch (e: Throwable) {
+      promise.reject("SOLODB_IMPORT_FAILED", e.message, e)
+    }
+  }
+
+  private fun readCats(arr: ReadableArray?): List<SoloDb.SyncCategoryRow> {
+    if (arr == null) return emptyList()
+    val out = ArrayList<SoloDb.SyncCategoryRow>(arr.size())
+    for (i in 0 until arr.size()) {
+      val m = arr.getMap(i) ?: continue
+      out.add(SoloDb.SyncCategoryRow(
+        syncId = m.getString("syncId") ?: continue,
+        name = m.getString("name") ?: continue,
+        color = m.getString("color") ?: "#888",
+        sortOrder = if (m.hasKey("sortOrder")) m.getInt("sortOrder") else 0,
+        createdAt = m.getString("createdAt") ?: "",
+        lastUsedAt = m.getString("lastUsedAt") ?: "",
+        updatedAt = m.getString("updatedAt") ?: "",
+        deletedAt = if (m.hasKey("deletedAt")) m.getString("deletedAt") else null,
+      ))
+    }
+    return out
+  }
+
+  private fun readTags(arr: ReadableArray?): List<SoloDb.SyncTagRow> {
+    if (arr == null) return emptyList()
+    val out = ArrayList<SoloDb.SyncTagRow>(arr.size())
+    for (i in 0 until arr.size()) {
+      val m = arr.getMap(i) ?: continue
+      out.add(SoloDb.SyncTagRow(
+        syncId = m.getString("syncId") ?: continue,
+        categorySyncId = m.getString("categorySyncId") ?: continue,
+        fullPath = m.getString("fullPath") ?: continue,
+        leafName = m.getString("leafName") ?: "",
+        depth = if (m.hasKey("depth")) m.getInt("depth") else 1,
+        createdAt = m.getString("createdAt") ?: "",
+        lastUsedAt = m.getString("lastUsedAt") ?: "",
+        updatedAt = m.getString("updatedAt") ?: "",
+        deletedAt = if (m.hasKey("deletedAt")) m.getString("deletedAt") else null,
+      ))
+    }
+    return out
+  }
+
+  private fun readBlocks(arr: ReadableArray?): List<SoloDb.SyncBlockRow> {
+    if (arr == null) return emptyList()
+    val out = ArrayList<SoloDb.SyncBlockRow>(arr.size())
+    for (i in 0 until arr.size()) {
+      val m = arr.getMap(i) ?: continue
+      out.add(SoloDb.SyncBlockRow(
+        syncId = m.getString("syncId") ?: continue,
+        date = m.getString("date") ?: continue,
+        minute = m.getInt("minute"),
+        tagSyncId = m.getString("tagSyncId") ?: continue,
+        note = if (m.hasKey("note")) m.getString("note") else null,
+        createdAt = m.getString("createdAt") ?: "",
+        updatedAt = m.getString("updatedAt") ?: "",
+        deletedAt = if (m.hasKey("deletedAt")) m.getString("deletedAt") else null,
+      ))
+    }
+    return out
+  }
+
+  private fun readPlanNodes(arr: ReadableArray?): List<SoloDb.SyncPlanNodeRow> {
+    if (arr == null) return emptyList()
+    val out = ArrayList<SoloDb.SyncPlanNodeRow>(arr.size())
+    for (i in 0 until arr.size()) {
+      val m = arr.getMap(i) ?: continue
+      out.add(SoloDb.SyncPlanNodeRow(
+        syncId = m.getString("syncId") ?: continue,
+        projectTagSyncId = m.getString("projectTagSyncId") ?: continue,
+        parentSyncId = if (m.hasKey("parentSyncId")) m.getString("parentSyncId") else null,
+        title = m.getString("title") ?: "",
+        status = m.getString("status") ?: "active",
+        sortOrder = if (m.hasKey("sortOrder")) m.getInt("sortOrder") else 0,
+        createdAt = m.getString("createdAt") ?: "",
+        updatedAt = m.getString("updatedAt") ?: "",
+        deletedAt = if (m.hasKey("deletedAt")) m.getString("deletedAt") else null,
+      ))
+    }
+    return out
+  }
+
+  private fun readPlannedBlocks(arr: ReadableArray?): List<SoloDb.SyncPlannedBlockRow> {
+    if (arr == null) return emptyList()
+    val out = ArrayList<SoloDb.SyncPlannedBlockRow>(arr.size())
+    for (i in 0 until arr.size()) {
+      val m = arr.getMap(i) ?: continue
+      out.add(SoloDb.SyncPlannedBlockRow(
+        syncId = m.getString("syncId") ?: continue,
+        date = m.getString("date") ?: continue,
+        minute = m.getInt("minute"),
+        planNodeSyncId = m.getString("planNodeSyncId") ?: continue,
+        note = if (m.hasKey("note")) m.getString("note") else null,
+        createdAt = m.getString("createdAt") ?: "",
+        updatedAt = m.getString("updatedAt") ?: "",
+        deletedAt = if (m.hasKey("deletedAt")) m.getString("deletedAt") else null,
+      ))
+    }
+    return out
+  }
+
+  @ReactMethod
   fun exportSync(since: String?, promise: Promise) {
     try {
       val ex = db.exportSync(since)

@@ -11,6 +11,7 @@ import {
   getSoloDbStats,
   isSoloDbAvailable,
   soloExportSync,
+  soloImportSync,
   type SoloDbStats,
   type SyncExport,
 } from '../lib/solodb'
@@ -70,7 +71,7 @@ export default function PerceptionScreen() {
     void refreshWindowEvents()
     void refreshClicks()
     void refreshSoloDb()
-    void runExport()
+    void runSelfImport()
   }, [])
 
   async function refreshSoloDb() {
@@ -80,6 +81,22 @@ export default function PerceptionScreen() {
       setSoloStats(s)
     } catch {
       setSoloStats(null)
+    }
+  }
+
+  async function runSelfImport() {
+    try {
+      // round-trip 测试：export 自己 → 再 import 自己
+      // 因 updated_at 完全相等，应该全部 skipped
+      const ex = await soloExportSync(null)
+      const r = await soloImportSync(ex)
+      setExportSummary(
+        `self-import: cats=${r.activityCategories} tags=${r.activityTags} ` +
+        `blocks=${r.activityBlocks} pNodes=${r.planNodes} pBlocks=${r.plannedBlocks} ` +
+        `skipped=${r.skipped} (期望 cats/tags/blocks 全 0、skipped > 0)`
+      )
+    } catch (e: any) {
+      setExportSummary(`self-import error: ${e?.message ?? String(e)}`)
     }
   }
 
@@ -269,6 +286,9 @@ export default function PerceptionScreen() {
           </Pressable>
           <Pressable style={[styles.btn, styles.btnGhost]} onPress={runExport}>
             <Text style={[styles.btnText, styles.btnGhostText]}>测试 export</Text>
+          </Pressable>
+          <Pressable style={[styles.btn, styles.btnGhost]} onPress={runSelfImport}>
+            <Text style={[styles.btnText, styles.btnGhostText]}>self-import</Text>
           </Pressable>
           <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshSoloDb}>
             <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>

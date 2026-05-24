@@ -157,6 +157,16 @@ interface SoloDbNative {
   paintBlocks(date: string, minutes: number[], tagId: number): Promise<number>
   eraseBlocks(date: string, minutes: number[]): Promise<number>
   exportSync(since: string | null): Promise<SyncExport>
+  importSync(payload: SyncExport): Promise<SyncImportResult>
+}
+
+export type SyncImportResult = {
+  activityCategories: number
+  activityTags: number
+  activityBlocks: number
+  planNodes: number
+  plannedBlocks: number
+  skipped: number
 }
 
 const Native: SoloDbNative | null =
@@ -214,6 +224,21 @@ export async function soloPaintBlocks(date: string, minutes: number[], tagId: nu
 export async function soloEraseBlocks(date: string, minutes: number[]): Promise<number> {
   if (!Native) return 0
   return Native.eraseBlocks(date, minutes)
+}
+
+/**
+ * 把对端 SyncExport 合进本地，LWW 按 updated_at 比较，
+ * sync_id 主匹配 + 业务键回查 + (date, minute) slot 冲突保护。
+ * 返回每张表实际 upsert 行数 + skipped。
+ */
+export async function soloImportSync(payload: SyncExport): Promise<SyncImportResult> {
+  if (!Native) {
+    return {
+      activityCategories: 0, activityTags: 0, activityBlocks: 0,
+      planNodes: 0, plannedBlocks: 0, skipped: 0,
+    }
+  }
+  return Native.importSync(payload)
 }
 
 /**

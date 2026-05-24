@@ -506,6 +506,233 @@ class SoloDb(context: Context) :
     )
   }
 
+  // ── Sync import ── 镜像 desktop db.rs import_sync 的 LWW 合并逻辑：
+  //   1. sync_id 是跨设备主键 —— 已存在按 sync_id 找；否则业务键回查（name /
+  //      (cat,full_path) / (date,minute)）
+  //   2. updated_at 字符串字典序比较：incoming 更新才覆盖
+  //   3. blocks / planned_blocks 多一层 slot 冲突保护：同 (date, minute) 但
+  //      sync_id 不同的两条记录，取 updated_at 更大的
+  //   4. tags / blocks / plan_nodes / planned_blocks 都要查 FK sync_id 对应
+  //      的 local row id；找不到就 skip（FK 未到位时不要写入产生外键错误）
+
+  data class ImportResult(
+    val activityCategories: Int = 0,
+    val activityTags: Int = 0,
+    val activityBlocks: Int = 0,
+    val planNodes: Int = 0,
+    val plannedBlocks: Int = 0,
+    val skipped: Int = 0,
+  )
+
+  fun importSync(payload: SyncExport): ImportResult {
+    val db = writableDatabase
+    var cats = 0; var tags = 0; var blocks = 0
+    var pNodes = 0; var pBlocks = 0; var skipped = 0
+
+    db.beginTransaction()
+    try {
+      // ── activity_categories ──
+      for (row in payload.activityCategories) {
+        if (!shouldApplySyncRow(db, "activity_categories", row.syncId, row.updatedAt)) {
+          skipped++; continue
+        }
+        val existingByName = queryLong(db, "SELECT id FROM activity_categories WHERE name = ?", arrayOf(row.name))
+        if (existingByName != null) {
+          if (!shouldApplyExistingId(db, "activity_categories", existingByName, row.updatedAt)) {
+            skipped++; continue
+          }
+          db.execSQL(
+            """UPDATE activity_categories
+               SET sync_id=?, color=?, sort_order=?, created_at=?, last_used_at=?,
+                   updated_at=?, deleted_at=?
+               WHERE id=?""".trimIndent(),
+            arrayOf(row.syncId, row.color, row.sortOrder, row.createdAt, row.lastUsedAt,
+                    row.updatedAt, row.deletedAt, existingByName),
+          )
+        } else {
+          db.execSQL(
+            """INSERT INTO activity_categories
+                 (sync_id, name, color, sort_order, created_at, last_used_at, updated_at, deleted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(sync_id) DO UPDATE SET
+                 name=excluded.name, color=excluded.color, sort_order=excluded.sort_order,
+                 created_at=excluded.created_at, last_used_at=excluded.last_used_at,
+                 updated_at=excluded.updated_at, deleted_at=excluded.deleted_at""".trimIndent(),
+            arrayOf(row.syncId, row.name, row.color, row.sortOrder, row.createdAt,
+                    row.lastUsedAt, row.updatedAt, row.deletedAt),
+          )
+        }
+        cats++
+      }
+
+      // ── activity_tags ── (要先有 categories)
+      for (row in payload.activityTags) {
+        if (!shouldApplySyncRow(db, "activity_tags", row.syncId, row.updatedAt)) {
+          skipped++; continue
+        }
+        val categoryId = lookupIdBySync(db, "activity_categories", row.categorySyncId)
+        if (categoryId == null) { skipped++; continue }
+        val existingByPath = queryLong(db,
+          "SELECT id FROM activity_tags WHERE category_id = ? AND full_path = ?",
+          arrayOf(categoryId, row.fullPath),
+        )
+        if (existingByPath != null) {
+          if (!shouldApplyExistingId(db, "activity_tags", existingByPath, row.updatedAt)) {
+            skipped++; continue
+          }
+          db.execSQL(
+            """UPDATE activity_tags
+               SET sync_id=?, leaf_name=?, depth=?, created_at=?, last_used_at=?,
+                   updated_at=?, deleted_at=?
+               WHERE id=?""".trimIndent(),
+            arrayOf(row.syncId, row.leafName, row.depth, row.createdAt, row.lastUsedAt,
+                    row.updatedAt, row.deletedAt, existingByPath),
+          )
+        } else {
+          db.execSQL(
+            """INSERT INTO activity_tags
+                 (sync_id, category_id, full_path, leaf_name, depth, created_at, last_used_at, updated_at, deleted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(sync_id) DO UPDATE SET
+                 category_id=excluded.category_id, full_path=excluded.full_path, leaf_name=excluded.leaf_name,
+                 depth=excluded.depth, created_at=excluded.created_at, last_used_at=excluded.last_used_at,
+                 updated_at=excluded.updated_at, deleted_at=excluded.deleted_at""".trimIndent(),
+            arrayOf(row.syncId, categoryId, row.fullPath, row.leafName, row.depth,
+                    row.createdAt, row.lastUsedAt, row.updatedAt, row.deletedAt),
+          )
+        }
+        tags++
+      }
+
+      // ── plan_nodes ── (要先有 tags + 自引用 parent)
+      for (row in payload.planNodes) {
+        if (!shouldApplySyncRow(db, "plan_nodes", row.syncId, row.updatedAt)) {
+          skipped++; continue
+        }
+        val projectTagId = lookupIdBySync(db, "activity_tags", row.projectTagSyncId)
+        if (projectTagId == null) { skipped++; continue }
+        val parentId = row.parentSyncId?.let { lookupIdBySync(db, "plan_nodes", it) }
+        // 注：如果 parentSyncId 给了但还没 import，parentId=null 会丢失 parent 关系；
+        // desktop 现在也是这样处理（"插入顺序" 假设父先于子）。Phase 5 可以加两遍 pass。
+        db.execSQL(
+          """INSERT INTO plan_nodes
+               (sync_id, project_tag_id, parent_id, title, status, sort_order,
+                created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(sync_id) DO UPDATE SET
+               project_tag_id=excluded.project_tag_id, parent_id=excluded.parent_id,
+               title=excluded.title, status=excluded.status, sort_order=excluded.sort_order,
+               created_at=excluded.created_at, updated_at=excluded.updated_at,
+               deleted_at=excluded.deleted_at""".trimIndent(),
+          arrayOf(row.syncId, projectTagId, parentId, row.title, row.status, row.sortOrder,
+                  row.createdAt, row.updatedAt, row.deletedAt),
+        )
+        pNodes++
+      }
+
+      // ── activity_blocks ── (要先有 tags)
+      for (row in payload.activityBlocks) {
+        if (!shouldApplySyncRow(db, "activity_blocks", row.syncId, row.updatedAt)) {
+          skipped++; continue
+        }
+        if (!shouldApplySlotRow(db, "activity_blocks", row.date, row.minute, row.syncId, row.updatedAt)) {
+          skipped++; continue
+        }
+        val tagId = lookupIdBySync(db, "activity_tags", row.tagSyncId)
+        if (tagId == null) { skipped++; continue }
+        db.execSQL(
+          """INSERT INTO activity_blocks
+               (sync_id, date, minute, tag_id, note, created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(date, minute) DO UPDATE SET
+               sync_id=excluded.sync_id, tag_id=excluded.tag_id, note=excluded.note,
+               created_at=excluded.created_at, updated_at=excluded.updated_at,
+               deleted_at=excluded.deleted_at""".trimIndent(),
+          arrayOf(row.syncId, row.date, row.minute, tagId, row.note,
+                  row.createdAt, row.updatedAt, row.deletedAt),
+        )
+        blocks++
+      }
+
+      // ── planned_blocks ── (要先有 plan_nodes)
+      for (row in payload.plannedBlocks) {
+        if (!shouldApplySyncRow(db, "planned_blocks", row.syncId, row.updatedAt)) {
+          skipped++; continue
+        }
+        if (!shouldApplySlotRow(db, "planned_blocks", row.date, row.minute, row.syncId, row.updatedAt)) {
+          skipped++; continue
+        }
+        val planNodeId = lookupIdBySync(db, "plan_nodes", row.planNodeSyncId)
+        if (planNodeId == null) { skipped++; continue }
+        db.execSQL(
+          """INSERT INTO planned_blocks
+               (sync_id, date, minute, plan_node_id, note, created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(date, minute) DO UPDATE SET
+               sync_id=excluded.sync_id, plan_node_id=excluded.plan_node_id, note=excluded.note,
+               created_at=excluded.created_at, updated_at=excluded.updated_at,
+               deleted_at=excluded.deleted_at""".trimIndent(),
+          arrayOf(row.syncId, row.date, row.minute, planNodeId, row.note,
+                  row.createdAt, row.updatedAt, row.deletedAt),
+        )
+        pBlocks++
+      }
+
+      db.setTransactionSuccessful()
+    } finally {
+      db.endTransaction()
+    }
+
+    return ImportResult(cats, tags, blocks, pNodes, pBlocks, skipped)
+  }
+
+  // ── LWW helpers ──
+  private fun shouldApplySyncRow(
+    db: SQLiteDatabase, table: String, syncId: String, incomingUpdatedAt: String,
+  ): Boolean {
+    val local = queryString(db, "SELECT updated_at FROM $table WHERE sync_id = ?", arrayOf(syncId))
+    return local == null || incomingUpdatedAt > local
+  }
+
+  private fun shouldApplyExistingId(
+    db: SQLiteDatabase, table: String, id: Long, incomingUpdatedAt: String,
+  ): Boolean {
+    val local = queryString(db, "SELECT updated_at FROM $table WHERE id = ?", arrayOf(id))
+    return local == null || incomingUpdatedAt > local
+  }
+
+  private fun shouldApplySlotRow(
+    db: SQLiteDatabase, table: String, date: String, minute: Int,
+    incomingSyncId: String, incomingUpdatedAt: String,
+  ): Boolean {
+    return db.rawQuery(
+      "SELECT sync_id, updated_at FROM $table WHERE date = ? AND minute = ?",
+      arrayOf(date, minute.toString()),
+    ).use { c ->
+      if (!c.moveToFirst()) return@use true
+      val localSyncId = c.getString(0)
+      val localUpdatedAt = c.getString(1)
+      if (localSyncId == incomingSyncId) return@use true
+      incomingUpdatedAt > localUpdatedAt
+    }
+  }
+
+  private fun lookupIdBySync(db: SQLiteDatabase, table: String, syncId: String): Long? {
+    return queryLong(db, "SELECT id FROM $table WHERE sync_id = ?", arrayOf(syncId))
+  }
+
+  private fun queryLong(db: SQLiteDatabase, sql: String, args: Array<Any>): Long? {
+    return db.rawQuery(sql, args.map { it.toString() }.toTypedArray()).use { c ->
+      if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
+    }
+  }
+
+  private fun queryString(db: SQLiteDatabase, sql: String, args: Array<Any>): String? {
+    return db.rawQuery(sql, args.map { it.toString() }.toTypedArray()).use { c ->
+      if (c.moveToFirst() && !c.isNull(0)) c.getString(0) else null
+    }
+  }
+
   /** 当前 device_id（从 sync_meta 读出）。 */
   fun deviceId(): String {
     return readableDatabase.rawQuery(
