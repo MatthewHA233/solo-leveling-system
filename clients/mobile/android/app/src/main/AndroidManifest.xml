@@ -2,6 +2,9 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- LAN 同步：UDP multicast 广播给 desktop SyncDiscovery 自动发现 -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- 感知层：app 使用情况采集。用户需在设置→应用→特殊访问权限→使用情况访问 中授权。 -->
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"

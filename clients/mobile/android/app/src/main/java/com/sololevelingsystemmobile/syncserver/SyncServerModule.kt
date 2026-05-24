@@ -26,7 +26,13 @@ class SyncServerModule(private val reactContext: ReactApplicationContext) :
   private var server: SyncHttpServer? = null
 
   @Volatile
+  private var broadcaster: SyncDiscoveryBroadcaster? = null
+
+  @Volatile
   private var currentPort: Int = 0
+
+  // 跟 desktop generate_alias 同算法（形容词+水果），同 device_id 全平台一致
+  private val deviceAlias: String by lazy { db.generateAlias(db.deviceId()) }
 
   @ReactMethod
   fun start(port: Double, promise: Promise) {
@@ -39,10 +45,15 @@ class SyncServerModule(private val reactContext: ReactApplicationContext) :
       }
       // 跑着别的端口先停
       server?.stop()
-      val s = SyncHttpServer(p, db)
+      broadcaster?.stop()
+      val s = SyncHttpServer(p, db, deviceAlias)
       s.start(SOCKET_TIMEOUT_MS, false)  // daemon=false 让线程跟 app 进程
       server = s
       currentPort = p
+      // 启动 mDNS multicast 广播，让 desktop SyncDiscovery 在 NEARBY 区自动看到
+      val b = SyncDiscoveryBroadcaster(reactContext, db, p, deviceAlias)
+      b.start()
+      broadcaster = b
       promise.resolve(addrMap(p))
     } catch (e: Throwable) {
       promise.reject("SYNC_SERVER_START_FAILED", e.message, e)
@@ -54,6 +65,8 @@ class SyncServerModule(private val reactContext: ReactApplicationContext) :
     try {
       server?.stop()
       server = null
+      broadcaster?.stop()
+      broadcaster = null
       currentPort = 0
       promise.resolve(true)
     } catch (e: Throwable) {
