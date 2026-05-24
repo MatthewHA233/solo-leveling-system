@@ -5,7 +5,16 @@
 
 import { useEffect, useState } from 'react'
 import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import ConfirmDialog from '../components/ConfirmDialog'
 import { theme } from '../theme'
+import {
+  checkForUpdate,
+  downloadAndInstall,
+  getCurrentVersion,
+  isUpdaterAvailable,
+  type LocalVersion,
+  type UpdateManifest,
+} from '../lib/updater'
 import {
   getSoloDbDeviceId,
   getSoloDbStats,
@@ -68,6 +77,14 @@ export default function PerceptionScreen() {
 
   const [summary, setSummary] = useState<UsageSummary | null>(null)
 
+  // 应用自更新
+  const [appVersion, setAppVersion] = useState<LocalVersion | null>(null)
+  const [updateManifest, setUpdateManifest] = useState<UpdateManifest | null>(null)
+  const [updateChecking, setUpdateChecking] = useState(false)
+  const [updateInstalling, setUpdateInstalling] = useState(false)
+  const [updateMsg, setUpdateMsg] = useState<string>('')
+  const [confirmUpdateOpen, setConfirmUpdateOpen] = useState(false)
+
   const [a11yEnabled, setA11yEnabled] = useState<boolean | null>(null)
   const [soloStats, setSoloStats] = useState<SoloDbStats | null>(null)
   const [soloDeviceId, setSoloDeviceId] = useState<string>('')
@@ -98,7 +115,58 @@ export default function PerceptionScreen() {
     void refreshLinkedDevices()
     // 注册定时后台同步（KEEP 策略幂等，重复调不会重置 15min 计时器）
     void enqueuePeriodicSync(15)
+    // 启动静默检查更新（拉本地 versionCode + OSS latest.json）
+    void initUpdater()
   }, [])
+
+  async function initUpdater() {
+    if (!isUpdaterAvailable()) return
+    try {
+      const v = await getCurrentVersion()
+      setAppVersion(v)
+    } catch {}
+    void runCheckForUpdate({ silent: true })
+  }
+
+  async function runCheckForUpdate(opts?: { silent?: boolean }) {
+    if (!isUpdaterAvailable()) {
+      if (!opts?.silent) setUpdateMsg('updater 模块不可用')
+      return
+    }
+    setUpdateChecking(true)
+    try {
+      const r = await checkForUpdate()
+      if (r) {
+        setUpdateManifest(r.manifest)
+        setAppVersion(r.current)
+        setUpdateMsg(`发现新版本 ${r.manifest.version_name}（当前 ${r.current.versionName}）`)
+        // 启动时自动弹一次提示对话框；用户点"稍后"就关闭，不再骚扰
+        setConfirmUpdateOpen(true)
+      } else if (!opts?.silent) {
+        setUpdateMsg('已是最新版本')
+        setUpdateManifest(null)
+      }
+    } catch (e: any) {
+      if (!opts?.silent) setUpdateMsg(`检查失败: ${e?.message ?? e}`)
+    } finally {
+      setUpdateChecking(false)
+    }
+  }
+
+  async function runDownloadAndInstall() {
+    if (!updateManifest) return
+    setConfirmUpdateOpen(false)
+    setUpdateInstalling(true)
+    setUpdateMsg('下载中…（系统通知栏可看进度）')
+    try {
+      await downloadAndInstall(updateManifest.url)
+      setUpdateMsg('已唤起系统安装器，按提示确认安装')
+    } catch (e: any) {
+      setUpdateMsg(`更新失败: ${e?.message ?? e}`)
+    } finally {
+      setUpdateInstalling(false)
+    }
+  }
 
   async function refreshLinkedDevices() {
     try {
@@ -364,6 +432,42 @@ export default function PerceptionScreen() {
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
       <Text style={styles.h1}>感知层</Text>
       <Text style={styles.h2}>Phase 1：原生桥接 + SQLite</Text>
+
+      {/* 版本 + 检查更新 */}
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>📦 应用版本</Text>
+        <Text style={styles.cardValue}>
+          {appVersion ? `${appVersion.versionName} (vc ${appVersion.versionCode})` : '—'}
+        </Text>
+        {updateManifest && updateManifest.version_code > (appVersion?.versionCode ?? 0) && (
+          <Text style={[styles.cardSub, { color: theme.accent, fontWeight: '600' }]}>
+            ⬆ 有新版本 {updateManifest.version_name}（vc {updateManifest.version_code}）
+          </Text>
+        )}
+        {!!updateMsg && <Text style={styles.cardSub} numberOfLines={2}>{updateMsg}</Text>}
+        <View style={[styles.btnRow, { marginTop: 8 }]}>
+          <Pressable
+            style={styles.btn}
+            onPress={() => void runCheckForUpdate()}
+            disabled={updateChecking || updateInstalling}
+          >
+            <Text style={styles.btnText}>
+              {updateChecking ? '检查中…' : '检查更新'}
+            </Text>
+          </Pressable>
+          {updateManifest && updateManifest.version_code > (appVersion?.versionCode ?? 0) && (
+            <Pressable
+              style={[styles.btn, styles.btnGhost]}
+              onPress={() => setConfirmUpdateOpen(true)}
+              disabled={updateInstalling}
+            >
+              <Text style={[styles.btnText, styles.btnGhostText]}>
+                {updateInstalling ? '更新中…' : '立即更新'}
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
 
       {/* 同步傻瓜式入口：自动启 server，大字显示 IP 让电脑直接照抄 */}
       <View style={[styles.card, { borderColor: theme.accent, borderWidth: 1.5 }]}>
@@ -714,6 +818,23 @@ export default function PerceptionScreen() {
         Phase 1 块 4：从 perception_events_android 读最新一条 app.usage_summary，
         UI 渲染 Top Apps + 时长 + 最近使用时刻。
       </Text>
+
+      {/* 更新确认对话框 */}
+      <ConfirmDialog
+        open={confirmUpdateOpen}
+        title={`更新到 ${updateManifest?.version_name ?? ''}`}
+        body={
+          (updateManifest?.changelog || '') +
+          (updateManifest?.size_bytes
+            ? `\n\n大小：${(updateManifest.size_bytes / 1024 / 1024).toFixed(1)} MB`
+            : '') +
+          '\n\n下载完成后会跳到系统安装器，按提示确认即可。'
+        }
+        confirmText={updateInstalling ? '处理中…' : '下载并安装'}
+        cancelText="稍后"
+        onCancel={() => setConfirmUpdateOpen(false)}
+        onConfirm={() => void runDownloadAndInstall()}
+      />
     </ScrollView>
   )
 }

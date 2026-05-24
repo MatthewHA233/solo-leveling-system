@@ -10,6 +10,7 @@ import com.sololevelingsystemmobile.perception.PerceptionPackage
 import com.sololevelingsystemmobile.solodb.SoloDbPackage
 import com.sololevelingsystemmobile.syncclient.SyncClientPackage
 import com.sololevelingsystemmobile.syncserver.SyncServerPackage
+import com.sololevelingsystemmobile.updater.UpdaterPackage
 
 class MainApplication : Application(), ReactApplication {
 
@@ -22,6 +23,7 @@ class MainApplication : Application(), ReactApplication {
           add(SoloDbPackage())
           add(SyncServerPackage())
           add(SyncClientPackage())
+          add(UpdaterPackage())
         },
     )
   }

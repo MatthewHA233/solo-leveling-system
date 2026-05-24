@@ -72,6 +72,33 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+// 从 clients/mobile/VERSION 读 versionName/versionCode —— 本地手动维护
+// 格式：两行 key=value (versionName=0.0.0.1 / versionCode=1)
+def versionProps = new Properties()
+def versionFile = file("../../VERSION")
+if (versionFile.exists()) {
+    versionFile.withInputStream { versionProps.load(it) }
+}
+def slsVersionName = versionProps.getProperty('versionName', '0.0.0.1')
+def slsVersionCode = (versionProps.getProperty('versionCode', '1')) as int
+
+// 从 clients/mobile/sls.properties 读 OSS 端点（不入 git）。
+// 缺省走原生 OSS 域名；配了 ossCustomDomain 优先用 CDN。
+def slsProps = new Properties()
+def slsPropFile = file("../../sls.properties")
+if (slsPropFile.exists()) {
+    slsPropFile.withInputStream { slsProps.load(it) }
+}
+def slsOssEndpoint = slsProps.getProperty('ossEndpoint', 'oss-cn-heyuan.aliyuncs.com')
+def slsOssBucket = slsProps.getProperty('ossBucket', 'horizn')
+def slsOssPrefix = slsProps.getProperty('ossPathPrefix', 'solo-leveling')
+def slsOssDomain = slsProps.getProperty('ossCustomDomain', '').trim()
+// 组装 latest.json 完整 URL。CDN 域 > OSS 原生域
+def slsBaseUrl = !slsOssDomain.isEmpty()
+        ? slsOssDomain.replaceAll('/$', '')
+        : "https://${slsOssBucket}.${slsOssEndpoint}"
+def slsManifestUrl = "${slsBaseUrl}/${slsOssPrefix}/android/latest.json"
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -82,8 +109,16 @@ android {
         applicationId "com.sololevelingsystemmobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode slsVersionCode
+        versionName slsVersionName
+        // 给 Kotlin / TS 通过 NativeModule 暴露版本信息（updater 自检用）
+        buildConfigField "String", "SLS_VERSION_NAME", "\"${slsVersionName}\""
+        buildConfigField "int", "SLS_VERSION_CODE", "${slsVersionCode}"
+        // 给 Updater 暴露 OSS latest.json URL（不硬编码）
+        buildConfigField "String", "SLS_UPDATE_MANIFEST_URL", "\"${slsManifestUrl}\""
+    }
+    buildFeatures {
+        buildConfig true
     }
     signingConfigs {
         debug {

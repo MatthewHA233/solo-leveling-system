@@ -299,6 +299,67 @@ cd clients/mobile/android
 
 iOS 打包待补（需要 macOS + Xcode 真机签名）。
 
+#### 版本号 + OSS 发布 + 自更新
+
+**版本号手动维护**：`clients/mobile/VERSION` 两行 properties，gradle 读取 → BuildConfig 注入：
+
+```
+versionName=0.0.0.1
+versionCode=1
+```
+
+四位号 `a.b.c.d`，`versionCode` 单调递增即可（OSS latest.json 用 versionCode 整数比较新旧）。
+
+**OSS 端点配置**：`clients/mobile/sls.properties`（已 gitignore，模板见 `sls.properties.example`）：
+
+```
+ossEndpoint=oss-cn-heyuan.aliyuncs.com
+ossBucket=horizn
+ossPathPrefix=solo-leveling
+ossCustomDomain=                   # 留空走原生 https://{bucket}.{endpoint}；配了优先 CDN
+```
+
+gradle 自动拼 `SLS_UPDATE_MANIFEST_URL = {base}/{prefix}/android/latest.json` 注入 BuildConfig；
+`Updater.getUpdateManifestUrl()` 暴露给 JS，**TS / Kotlin 都不能再硬编码 URL**。
+
+**OSS 路径布局**（覆盖式 — 测试期间只保留 latest）：
+
+```
+solo-leveling/android/
+  latest.json                       # version_name / version_code / url / sha256 / changelog
+  releases/sls-{name}-vc{code}.apk  # 每次发布清旧 .apk 留一份新的
+```
+
+**发布脚本**：`scripts/release_mobile.py`（依赖 `oss2 python-dotenv`）。
+
+OSS AK/SK 从 `MW_ActivityMonitor/.env` 复用（`OSS_ACCESS_KEY_ID/SECRET`，同一台机器一套钥匙）。
+**绝对禁止**把 AK/SK 写进 sls 仓库的任何文件。
+
+```bash
+# 已经 build 过 release APK → 直接发
+python3 scripts/release_mobile.py --changelog "修复 xxx"
+
+# 同时重建 APK 再发
+python3 scripts/release_mobile.py --build --changelog "修复 xxx"
+
+# dry-run 看计划不真发
+python3 scripts/release_mobile.py --dry-run --changelog "..."
+
+# 强制更新最低版本（< min-supported 用户不能"稍后"）
+python3 scripts/release_mobile.py --min-supported 5 --changelog "..."
+```
+
+发布前自己改 `clients/mobile/VERSION` 两个值；脚本不会自动 bump。
+
+**自更新流程（mobile 端）**：
+- `Updater` NativeModule（`clients/mobile/android/.../updater/`）+ `src/lib/updater.ts`
+- 启动 PerceptionScreen 时静默 `checkForUpdate()` 拉 latest.json 对比 BuildConfig.SLS_VERSION_CODE
+- 有新版本弹 ConfirmDialog（用户可"稍后"）；手动按"检查更新"也走同一路径
+- 点确认 → `DownloadManager` 下到 `getExternalFilesDir("updates")/sls-latest.apk`
+- 完成后 FileProvider 包装 → `ACTION_VIEW application/vnd.android.package-archive` 拉系统安装器
+- 用户首次需要在系统设置允许"未知来源安装"；Android 不允许完全无感更新
+- 权限：manifest 加了 `REQUEST_INSTALL_PACKAGES`，FileProvider authorities=`${applicationId}.fileprovider`，paths 配 `external-files-path name="updates" path="updates/"`
+
 #### LAN 数据层（已预留，未启用）
 
 `src/lib/api.ts` 已写成"先打局域网 HTTP，失败 fallback 到 mock"的形态，端口对齐 desktop 的 `49733`（详见 `clients/desktop/src-tauri/src/api.rs`）。当前手机端总是走 mock —— `setLanHost(null)`。后续 LAN 共享数据库框架定下来后，调用 `setLanHost('192.168.x.x:49733')` 即可切到真实数据。

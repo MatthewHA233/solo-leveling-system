@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 暴露下载好的 APK 给系统安装器（com.android.packageinstaller）。
+     external-files-path 对应 Context.getExternalFilesDir() —— 应用私有目录，
+     不需要 WRITE_EXTERNAL_STORAGE 权限。 -->
+<paths>
+  <external-files-path name="updates" path="updates/" />
+</paths>

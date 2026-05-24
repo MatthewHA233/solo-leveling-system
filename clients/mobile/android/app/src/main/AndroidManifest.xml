@@ -11,6 +11,8 @@
         tools:ignore="ProtectedPermissions" />
     <!-- 感知层：开机自动启动 — 记录 boot 事件 + 自动起 Service 监听 SCREEN_OFF/ON -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- App 自更新：从 OSS 下载 APK 后拉系统安装器；用户首次需在系统设置允许"未知来源" -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -53,6 +55,17 @@
           android:name="android.accessibilityservice"
           android:resource="@xml/sls_accessibility_service" />
       </service>
+
+      <!-- 自更新下载 APK 后拉系统安装器需要 FileProvider 共享文件 URI -->
+      <provider
+        android:name="androidx.core.content.FileProvider"
+        android:authorities="${applicationId}.fileprovider"
+        android:exported="false"
+        android:grantUriPermissions="true">
+        <meta-data
+          android:name="android.support.FILE_PROVIDER_PATHS"
+          android:resource="@xml/sls_file_provider_paths" />
+      </provider>
 
       <!-- 开机 / 关机事件 receiver：必须 manifest 静态注册。SCREEN_ON/OFF 等
            不允许 manifest 注册（Android O+ implicit broadcast 限制），那部分在

@@ -73,3 +73,7 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Solo Leveling 本地配置（OSS endpoint / bucket / 路径前缀），勿入 git
+sls.properties
+

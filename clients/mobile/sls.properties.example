@@ -1,0 +1,13 @@
+# Solo Leveling mobile — 本地配置（复制为 sls.properties，已 gitignore）
+# 用于 gradle 注入 BuildConfig 字段，给 Updater native module 读
+# 同步发布脚本 scripts/release_mobile.py 也用同样的值（从 .env 读）
+
+# 阿里云 OSS endpoint
+ossEndpoint=oss-cn-heyuan.aliyuncs.com
+# OSS bucket 名
+ossBucket=horizn
+# OSS 路径前缀（latest.json 会在 {prefix}/android/latest.json）
+ossPathPrefix=solo-leveling
+# OSS 自定义域，可空（空时走 https://{bucket}.{endpoint}）
+# 例：ossCustomDomain=https://assets.lingflow.cn
+ossCustomDomain=
