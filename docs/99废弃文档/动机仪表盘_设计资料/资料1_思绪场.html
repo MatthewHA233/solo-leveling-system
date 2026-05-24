@@ -1,0 +1,1474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>思绪场</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #f1ebdd;
+  --paper-deep: #e8e0cc;
+  --paper-light: #f7f2e6;
+  --ink: #1a1814;
+  --ink-soft: #3a342a;
+  --ink-faint: #6b6253;
+  --ink-ghost: #a89e8b;
+  --rule: #c9bfa8;
+  --rule-faint: #ddd3bc;
+  --accent: #c8341f;
+  --accent-deep: #9a2614;
+  --shadow: 0 1px 0 rgba(26,24,20,.04), 0 8px 24px -12px rgba(26,24,20,.18);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: 'Noto Sans SC', sans-serif;
+  font-weight: 600;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  position: relative;
+}
+body :is(.card-body, .source-card, .res-body, .action-text, .anchor-idea, .pick-body, .hint-card, .modal textarea, .compose textarea, .action-add input) {
+  font-weight: 600;
+}
+body :is(.card-id, .card-time, .src-id, .res-id, .h-id, .pick-id, .anchor-id, .progress-label, .masthead-left, .masthead-right, .roadmap-meta) {
+  font-weight: 600;
+}
+
+/* 纸张纹理 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(139,115,85,.04) 0%, transparent 40%),
+    radial-gradient(circle at 80% 70%, rgba(139,115,85,.03) 0%, transparent 40%),
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.4 0 0 0 0 0.35 0 0 0 0 0.25 0 0 0 0.08 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: auto, auto, 200px 200px;
+  z-index: 1;
+  mix-blend-mode: multiply;
+  opacity: .9;
+}
+
+#app { position: relative; z-index: 2; }
+
+/* ====== 顶部刊头 ====== */
+.masthead {
+  border-bottom: 1px solid var(--ink);
+  padding: 22px 40px 14px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: end;
+  gap: 24px;
+  background: var(--paper);
+}
+
+.masthead-left {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: .14em;
+  color: var(--ink-faint);
+  line-height: 1.6;
+}
+
+.masthead-title { text-align: center; position: relative; }
+
+.masthead-title .zh {
+  font-family: 'Noto Serif SC', serif;
+  font-weight: 700;
+  font-size: 36px;
+  letter-spacing: .42em;
+  padding-left: .42em;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.masthead-right {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: .14em;
+  color: var(--ink-faint);
+  text-align: right;
+  line-height: 1.6;
+}
+
+.masthead-right .accent { color: var(--accent); }
+
+/* ====== 视角切换器（替代 tab） ====== */
+.perspectives {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--ink);
+  background: var(--paper);
+  padding: 10px 40px;
+  gap: 6px;
+}
+
+.psp-label {
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 11px;
+  letter-spacing: .35em;
+  color: var(--ink-faint);
+  margin-right: 18px;
+  font-weight: 600;
+}
+
+.psp {
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .25em;
+  color: var(--ink-faint);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--rule);
+  padding: 7px 18px 7px 22px;
+  position: relative;
+  transition: all .18s;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.psp:hover { color: var(--ink); border-color: var(--ink-faint); }
+
+.psp.active {
+  color: var(--paper-light);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.psp .num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-ghost);
+  letter-spacing: .1em;
+}
+.psp.active .num { color: var(--accent); }
+
+.psp-spacer { flex: 1; }
+
+.psp-meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: .14em;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+.psp-meta strong { color: var(--accent); font-weight: 700; }
+
+/* ====== 主视图 ====== */
+.stage {
+  padding: 28px 40px 80px;
+  min-height: calc(100vh - 200px);
+}
+
+/* 输入卡 */
+.compose {
+  background: var(--paper-light);
+  border: 1px solid var(--rule);
+  padding: 20px 22px;
+  margin-bottom: 16px;
+  position: relative;
+}
+
+.compose::before {
+  content: '✎';
+  position: absolute;
+  top: 16px;
+  left: -14px;
+  background: var(--accent);
+  color: var(--paper-light);
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.compose-label {
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 11px;
+  letter-spacing: .25em;
+  color: var(--ink-faint);
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.compose textarea {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: 'Noto Serif SC', serif;
+  font-size: 17px;
+  color: var(--ink);
+  line-height: 1.65;
+  resize: vertical;
+  min-height: 64px;
+  font-weight: 600;
+}
+.compose textarea::placeholder { color: var(--ink-ghost); }
+
+.compose-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--rule);
+}
+
+.compose-hint-status {
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 11px;
+  color: var(--ink-ghost);
+  letter-spacing: .12em;
+  font-weight: 600;
+}
+.compose-hint-status .pin-count { color: var(--accent); font-weight: 700; }
+
+.btn-primary {
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 12px;
+  letter-spacing: .35em;
+  background: var(--accent);
+  color: var(--paper-light);
+  border: none;
+  padding: 8px 22px 8px 26px;
+  cursor: pointer;
+  transition: all .15s;
+  font-weight: 600;
+}
+.btn-primary:hover { background: var(--accent-deep); }
+
+/* 联想提示区 */
+.assoc-hints {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  flex-wrap: wrap;
+  min-height: 0;
+  margin-bottom: 28px;
+  transition: min-height .2s;
+}
+.assoc-hints.has-content { min-height: 76px; padding: 6px 0 0; }
+.assoc-hints.empty { min-height: 0; margin-bottom: 18px; }
+
+.hint-label {
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 11px;
+  letter-spacing: .25em;
+  color: var(--ink-faint);
+  padding: 12px 16px 12px 0;
+  align-self: center;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.hint-card {
+  flex: 0 1 240px;
+  background: var(--paper-light);
+  border: 1px dashed var(--rule);
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: all .15s;
+  font-family: 'Noto Serif SC', serif;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  position: relative;
+  opacity: .72;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  font-weight: 600;
+}
+
+.hint-card:hover { opacity: 1; border-style: solid; border-color: var(--ink); }
+
+.hint-card.pinned {
+  opacity: 1;
+  border: 1px solid var(--accent);
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--accent), 0 4px 14px -6px rgba(200,52,31,.3);
+}
+
+.hint-card.pinned::before {
+  content: '↗';
+  position: absolute;
+  top: 3px;
+  right: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hint-card .h-id {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  letter-spacing: .15em;
+  color: var(--ink-ghost);
+  display: block;
+  margin-bottom: 3px;
+  font-weight: 600;
+}
+
+/* ====== 卡片场（核心：3 种 mode 共用一个 DOM 容器） ====== */
+.cards-stage {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 18px;
+  align-items: start;
+  position: relative;
+}
+
+/* 路线 / 动作 镜头：外层切换为 flex column，由 group + ghost-grid 自己排版 */
+.cards-stage[data-mode="route"],
+.cards-stage[data-mode="action"] {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ghost grid：route/action 镜头里包裹"无关卡"的小网格 */
+.ghost-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  align-items: start;
+  margin-top: 6px;
+}
+
+@media (max-width: 980px) { .cards-stage { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); } }
+@media (max-width: 640px) { .cards-stage { grid-template-columns: 1fr; } }
+
+.card {
+  background: var(--paper-light);
+  border: 1px solid var(--rule);
+  padding: 14px 16px 12px;
+  position: relative;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+}
+
+.card:hover {
+  border-color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+/* 关联高亮 */
+.card.related-glow {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 6px 18px -8px rgba(200,52,31,.25);
+}
+
+/* 热度衰减 4 档 */
+.card[data-heat="hot"]  { padding: 18px 20px 14px; border-color: var(--ink-soft); }
+.card[data-heat="hot"] .card-body  { font-size: 16px; color: var(--ink); }
+.card[data-heat="warm"] { padding: 14px 16px 12px; border-color: var(--rule); }
+.card[data-heat="warm"] .card-body { font-size: 15px; color: var(--ink); }
+.card[data-heat="cool"] { padding: 11px 13px 10px; border-color: var(--rule-faint); opacity: .8; }
+.card[data-heat="cool"] .card-body { font-size: 13.5px; color: var(--ink-soft); }
+.card[data-heat="cool"] .card-foot, .card[data-heat="cool"] .card-head { opacity: .8; }
+.card[data-heat="cold"] { padding: 9px 11px 8px; border: 1px dashed var(--rule-faint); background: transparent; opacity: .55; }
+.card[data-heat="cold"] .card-body { font-size: 12px; color: var(--ink-faint); }
+
+/* Ghost 状态：在路线/动作镜头下，无关卡缩小且半透 */
+.card.ghost { opacity: .35; transform: scale(.82); transform-origin: top left; }
+.card.ghost:hover { opacity: .7; transform: scale(.86); }
+.card.ghost .card-body {
+  font-size: 11.5px;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Focus 状态：被镜头突出的卡，盖在 ghost 之上 */
+.card.focus {
+  border-color: var(--ink);
+  box-shadow: 0 6px 18px -8px rgba(26,24,20,.25);
+}
+
+/* 路线分组容器 */
+.route-group {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 60px 1fr;
+  gap: 16px;
+  align-items: center;
+  margin: 8px 0 8px;
+  padding: 18px 0;
+  border-top: 1px dashed var(--rule);
+  border-bottom: 1px dashed var(--rule);
+  position: relative;
+}
+
+.route-group::before {
+  content: attr(data-route-label);
+  position: absolute;
+  top: -10px;
+  left: 14px;
+  background: var(--paper);
+  padding: 0 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: .16em;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.route-arrow {
+  display: flex; flex-direction: column;
+  align-items: center; gap: 6px;
+  color: var(--accent);
+}
+.route-arrow svg { width: 28px; height: 28px; }
+.route-arrow span {
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 10px;
+  letter-spacing: .25em;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.route-sources { display: flex; flex-direction: column; gap: 10px; }
+.route-result-wrap { display: flex; align-items: center; }
+.route-result-wrap .card {
+  flex: 1;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 4px 14px -6px rgba(200,52,31,.2);
+}
+.route-result-wrap .card::after {
+  content: '新';
+  position: absolute;
+  top: -10px; right: 14px;
+  background: var(--accent);
+  color: var(--paper-light);
+  font-family: 'Noto Serif SC', serif;
+  font-size: 11px;
+  letter-spacing: .1em;
+  padding: 3px 9px;
+  font-weight: 600;
+}
+
+.ungrouped-label {
+  grid-column: 1 / -1;
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 11px;
+  letter-spacing: .35em;
+  color: var(--ink-faint);
+  padding: 18px 0 6px;
+  border-top: 1px dashed var(--rule);
+  margin-top: 8px;
+  font-weight: 600;
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule-faint);
+}
+
+.card-id {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: .16em;
+  color: var(--ink-ghost);
+}
+
+.card-time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: .12em;
+  color: var(--ink-faint);
+}
+
+.card-body {
+  font-family: 'Noto Serif SC', serif;
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.card-foot {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--rule-faint);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 10px;
+  letter-spacing: .14em;
+  color: var(--ink-ghost);
+  font-weight: 600;
+}
+
+.card-foot .lineage { color: var(--ink-ghost); }
+.card-foot .lineage strong { color: var(--accent); font-weight: 700; }
+.card-foot .ref-by { color: var(--accent); font-weight: 600; }
+
+/* 删除按钮 */
+.card-del {
+  position: absolute;
+  top: 6px; right: 6px;
+  background: transparent;
+  border: none;
+  color: var(--ink-ghost);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+  opacity: 0;
+  transition: all .15s;
+  line-height: 1;
+}
+.card:hover .card-del { opacity: 1; }
+.card-del:hover { color: var(--accent); }
+
+/* === 动作镜头：卡内内嵌动作树 === */
+.card.with-actions {
+  grid-column: 1 / -1;
+  background: var(--paper-light);
+}
+
+.card-actions {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--rule);
+}
+
+.actions-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.actions-head .lbl {
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 11px;
+  letter-spacing: .3em;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.action-add {
+  display: flex;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  margin-bottom: 10px;
+}
+.action-add input {
+  flex: 1;
+  background: transparent;
+  border: none; outline: none;
+  padding: 9px 12px;
+  font-family: 'Noto Serif SC', serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.action-add input::placeholder { color: var(--ink-ghost); }
+.action-add button {
+  background: var(--ink);
+  color: var(--paper-light);
+  border: none;
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 11px;
+  letter-spacing: .3em;
+  padding: 0 16px 0 19px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.action-add button:hover { background: var(--accent); }
+
+.action-tree { list-style: none; }
+.action-item { padding: 7px 0; border-bottom: 1px solid var(--rule-faint); }
+.action-row { display: flex; align-items: flex-start; gap: 10px; }
+
+.action-check {
+  width: 16px; height: 16px;
+  border: 1px solid var(--ink);
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-top: 2px;
+  position: relative;
+  transition: all .15s;
+  padding: 0;
+}
+.action-check:hover { border-color: var(--accent); }
+.action-check.done { background: var(--ink); }
+.action-check.done::after {
+  content: '';
+  position: absolute;
+  left: 3px; top: 0;
+  width: 5px; height: 10px;
+  border: solid var(--paper-light);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+.action-text {
+  flex: 1;
+  font-family: 'Noto Serif SC', serif;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.55;
+  color: var(--ink);
+  background: transparent;
+  border: none; outline: none;
+  padding: 2px 0;
+  word-break: break-word;
+}
+.action-item.done .action-text {
+  color: var(--ink-ghost);
+  text-decoration: line-through;
+  text-decoration-color: var(--ink-faint);
+  text-decoration-thickness: .5px;
+}
+
+.action-controls {
+  display: flex; gap: 2px;
+  opacity: 0;
+  transition: opacity .15s;
+}
+.action-item:hover .action-controls { opacity: 1; }
+.action-ctrl {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 11px;
+  letter-spacing: .12em;
+  color: var(--ink-ghost);
+  font-weight: 600;
+}
+.action-ctrl:hover { color: var(--accent); }
+
+.action-children {
+  list-style: none;
+  margin-left: 26px;
+  margin-top: 6px;
+  padding-left: 12px;
+  border-left: 1px dashed var(--rule);
+}
+
+.action-progress {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rule-faint);
+}
+.progress-track {
+  flex: 1; height: 1px;
+  background: var(--rule);
+  position: relative;
+}
+.progress-fill {
+  position: absolute;
+  left: 0; top: -1px;
+  height: 3px;
+  background: var(--accent);
+  transition: width .3s;
+}
+.progress-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: .1em;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+/* 空状态 */
+.empty-stage {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 80px 20px;
+  color: var(--ink-faint);
+}
+.empty-stage p {
+  font-family: 'Noto Serif SC', serif;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: .15em;
+  margin-bottom: 10px;
+}
+.empty-stage small {
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 11px;
+  letter-spacing: .25em;
+  color: var(--ink-ghost);
+  font-weight: 600;
+}
+
+/* 响应式 */
+@media (max-width: 880px) {
+  .masthead { grid-template-columns: 1fr; text-align: center; padding: 18px 20px 12px; }
+  .masthead-left, .masthead-right { text-align: center; }
+  .perspectives { padding: 10px 20px; flex-wrap: wrap; }
+  .stage { padding: 24px 20px 80px; }
+  .route-group { grid-template-columns: 1fr; gap: 12px; }
+  .route-arrow { transform: rotate(90deg); }
+}
+
+/* 落入动画 */
+@keyframes drip {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.card.fresh { animation: drip .6s ease both; }
+
+@keyframes flash-source {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  30% { box-shadow: 0 0 0 1px var(--accent), 0 0 18px 2px rgba(200,52,31,.4); }
+}
+.card.flash { animation: flash-source 1.4s ease both; }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+<!-- 刊头 -->
+<header class="masthead">
+  <div class="masthead-left">
+    卷 <span id="vol-roman">壹</span> · 第 <span id="vol-num">001</span> 号<br>
+    <span id="today-date">— · —</span>
+  </div>
+  <div class="masthead-title"><div class="zh">思 绪 场</div></div>
+  <div class="masthead-right">
+    想法 <span id="card-count">0</span> · 动作 <span id="action-count">0</span><br>
+    路线 <span class="accent" id="route-count">0</span>
+  </div>
+</header>
+
+<!-- 视角切换器 -->
+<nav class="perspectives">
+  <div class="psp-label">镜 头</div>
+  <button class="psp active" data-mode="default">
+    <span class="num">壹</span><span>语境</span>
+  </button>
+  <button class="psp" data-mode="route">
+    <span class="num">贰</span><span>路线</span>
+  </button>
+  <button class="psp" data-mode="action">
+    <span class="num">叁</span><span>动作</span>
+  </button>
+  <div class="psp-spacer"></div>
+  <div class="psp-meta">
+    今日 <strong id="today-count">0</strong> 条 · 已铺 <strong id="route-count2">0</strong> 路
+  </div>
+</nav>
+
+<!-- 主视图（合并：compose + assoc-hints + cards 一直存在） -->
+<section class="stage">
+
+  <div class="compose">
+    <div class="compose-label">新 条 目</div>
+    <textarea id="compose-text" placeholder="写下一个想法或一段动机……" rows="2"></textarea>
+    <div class="compose-foot">
+      <div class="compose-hint-status" id="compose-hint-status">写时会自动联想相关旧卡</div>
+      <button class="btn-primary" id="compose-submit">登 记</button>
+    </div>
+  </div>
+
+  <div class="assoc-hints empty" id="assoc-hints"></div>
+
+  <div class="cards-stage" id="cards-stage"></div>
+
+</section>
+
+</div>
+
+<script>
+// ============ 数据模型 ============
+const STORAGE_KEY = 'fot-data-v2';
+
+let state = {
+  cards: [],
+  routes: [],
+  actions: [],
+  mode: 'default',  // 'default' | 'route' | 'action'
+};
+
+// 写作中状态
+let pendingPinned = new Set();
+let hoverRelatedIds = new Set();
+
+// ============ 存储 ============
+const hasSandboxStorage = typeof window !== 'undefined' && window.storage && typeof window.storage.get === 'function';
+
+async function loadState() {
+  try {
+    let raw = null;
+    if (hasSandboxStorage) {
+      const result = await window.storage.get(STORAGE_KEY);
+      raw = result && result.value;
+    } else {
+      raw = localStorage.getItem(STORAGE_KEY);
+    }
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      state = { ...state, ...parsed, mode: state.mode };
+    }
+  } catch (e) {}
+}
+
+async function saveState() {
+  const toSave = { cards: state.cards, routes: state.routes, actions: state.actions };
+  try {
+    const payload = JSON.stringify(toSave);
+    if (hasSandboxStorage) await window.storage.set(STORAGE_KEY, payload);
+    else localStorage.setItem(STORAGE_KEY, payload);
+  } catch (e) { console.error('保存失败', e); }
+}
+
+// ============ 工具 ============
+function uid(prefix) {
+  return prefix + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+}
+
+const PREFIX_ZH = { idea: '想', route: '路', act: '动' };
+function shortId(id) {
+  const parts = id.split('-');
+  const prefix = PREFIX_ZH[parts[0]] || parts[0];
+  return prefix + '·' + (parts[parts.length-1] || '').toUpperCase();
+}
+
+function fmtDate(ts) {
+  const d = new Date(ts);
+  return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()} 年 ${d.getMonth()+1} 月 ${d.getDate()} 日`;
+}
+
+const VOL_ROMAN = ['壹','贰','叁','肆','伍','陆','柒','捌','玖','拾','拾壹','拾贰'];
+
+function lastTouchedAt(card) {
+  let t = card.createdAt;
+  state.routes.forEach(r => {
+    if (r.resultCardId === card.id || r.sourceIds.includes(card.id)) {
+      if (r.createdAt > t) t = r.createdAt;
+    }
+  });
+  state.actions.forEach(a => {
+    if (a.ideaId === card.id && a.createdAt > t) t = a.createdAt;
+  });
+  return t;
+}
+
+function heatOf(card) {
+  const days = (Date.now() - lastTouchedAt(card)) / (24 * 60 * 60 * 1000);
+  if (days <= 1) return 'hot';
+  if (days <= 7) return 'warm';
+  if (days <= 30) return 'cool';
+  return 'cold';
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function relatedIdsOf(cardId) {
+  const set = new Set();
+  state.routes.forEach(r => {
+    if (r.resultCardId === cardId) r.sourceIds.forEach(s => set.add(s));
+    if (r.sourceIds.includes(cardId)) {
+      set.add(r.resultCardId);
+      r.sourceIds.forEach(s => { if (s !== cardId) set.add(s); });
+    }
+  });
+  return set;
+}
+
+// ============ 联想 ============
+function tokenSet(text) {
+  const stopChars = new Set([..." 　,，.。!?！？:：;；、'\"“”‘’()（）[]【】《》—-_/\\\t\n"]);
+  const arr = [];
+  for (const ch of text) {
+    if (!stopChars.has(ch) && ch.trim() !== '') arr.push(ch);
+  }
+  return new Set(arr);
+}
+
+function computeAssociations(text) {
+  if (!text || text.length < 2 || state.cards.length === 0) return [];
+  const cur = tokenSet(text);
+  if (cur.size === 0) return [];
+  const scored = state.cards.map(card => {
+    const old = tokenSet(card.body);
+    let overlap = 0;
+    cur.forEach(ch => { if (old.has(ch)) overlap++; });
+    return { card, overlap };
+  });
+  return scored
+    .filter(s => s.overlap >= 2)
+    .sort((a, b) => b.overlap - a.overlap || b.card.createdAt - a.card.createdAt)
+    .slice(0, 4);
+}
+
+let hintTimer = null;
+function scheduleHints() {
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => {
+    renderHints(document.getElementById('compose-text').value);
+  }, 220);
+}
+
+function renderHints(text) {
+  const wrap = document.getElementById('assoc-hints');
+  wrap.innerHTML = '';
+  if (!text || text.trim() === '') {
+    wrap.classList.add('empty');
+    wrap.classList.remove('has-content');
+    if (pendingPinned.size > 0) {
+      renderPinnedOnly(wrap);
+      wrap.classList.remove('empty');
+      wrap.classList.add('has-content');
+    }
+    updateStatus();
+    return;
+  }
+  const matches = computeAssociations(text);
+  const ids = new Set(matches.map(m => m.card.id));
+  const merged = [...matches.map(m => m.card)];
+  pendingPinned.forEach(id => {
+    if (!ids.has(id)) {
+      const c = state.cards.find(x => x.id === id);
+      if (c) merged.push(c);
+    }
+  });
+  if (merged.length === 0) {
+    wrap.classList.add('empty');
+    wrap.classList.remove('has-content');
+    updateStatus();
+    return;
+  }
+  wrap.classList.remove('empty');
+  wrap.classList.add('has-content');
+  const label = document.createElement('div');
+  label.className = 'hint-label';
+  label.textContent = '可 能 联 想 →';
+  wrap.appendChild(label);
+  merged.forEach(card => wrap.appendChild(buildHintCard(card)));
+  updateStatus();
+}
+
+function renderPinnedOnly(wrap) {
+  const label = document.createElement('div');
+  label.className = 'hint-label';
+  label.textContent = '已 钉 选 →';
+  wrap.appendChild(label);
+  pendingPinned.forEach(id => {
+    const c = state.cards.find(x => x.id === id);
+    if (c) wrap.appendChild(buildHintCard(c));
+  });
+}
+
+function buildHintCard(card) {
+  const el = document.createElement('div');
+  el.className = 'hint-card' + (pendingPinned.has(card.id) ? ' pinned' : '');
+  el.innerHTML = `<span class="h-id">${shortId(card.id)}</span>${escapeHtml(card.body)}`;
+  el.addEventListener('click', () => {
+    if (pendingPinned.has(card.id)) pendingPinned.delete(card.id);
+    else pendingPinned.add(card.id);
+    renderHints(document.getElementById('compose-text').value);
+  });
+  return el;
+}
+
+function updateStatus() {
+  const status = document.getElementById('compose-hint-status');
+  const n = pendingPinned.size;
+  if (n === 0) status.innerHTML = '写时会自动联想相关旧卡';
+  else status.innerHTML = `已钉 <span class="pin-count">${n}</span> 张作为联想源`;
+}
+
+// ============ 卡片场（3 种镜头共用） ============
+function estimateRowSpan(text, heat) {
+  // 按字符数估高度；hot 字大占多，cold 字小占少
+  const len = text.length;
+  let baseRows;
+  if (heat === 'hot')      baseRows = 6 + Math.ceil(len / 28);
+  else if (heat === 'warm') baseRows = 5 + Math.ceil(len / 30);
+  else if (heat === 'cool') baseRows = 4 + Math.ceil(len / 36);
+  else                       baseRows = 3 + Math.ceil(len / 42);
+  return Math.max(5, Math.min(baseRows, 20));
+}
+
+function buildCard(card, opts = {}) {
+  const actionCount = state.actions.filter(a => a.ideaId === card.id).length;
+  const route = state.routes.find(r => r.resultCardId === card.id);
+  const refCount = state.routes.filter(r => r.sourceIds.includes(card.id)).length;
+  const heat = heatOf(card);
+
+  const el = document.createElement('article');
+  el.className = 'card';
+  el.dataset.id = card.id;
+  el.dataset.heat = heat;
+
+  if (opts.ghost) el.classList.add('ghost');
+  if (opts.focus) el.classList.add('focus');
+  if (opts.withActions) el.classList.add('with-actions');
+
+  // grid 模式下不再用 row-span 模拟瀑布流（估算偏多导致空白），改用整齐 grid
+
+  el.innerHTML = `
+    <button class="card-del" data-action="del" title="删除">×</button>
+    <div class="card-head">
+      <span class="card-id">${shortId(card.id)}</span>
+      <span class="card-time">${fmtDate(card.createdAt)}</span>
+    </div>
+    <div class="card-body">${escapeHtml(card.body)}</div>
+    <div class="card-foot">
+      <span class="lineage">${route ? `源 自 <strong>${route.sourceIds.length}</strong> 张` : ''}</span>
+      <span>${refCount > 0 ? `<span class="ref-by">被引 ${refCount}</span>` : ''}${actionCount > 0 ? ` · <strong style="color:var(--accent);">${actionCount}</strong> 动作` : ''}</span>
+    </div>`;
+
+  if (opts.withActions) {
+    el.appendChild(buildActionPanel(card));
+  }
+
+  el.addEventListener('click', (e) => {
+    if (e.target.dataset.action === 'del') {
+      if (confirm('删除这张卡片？相关动作和路线也会受影响。')) deleteCard(card.id);
+      return;
+    }
+  });
+  el.addEventListener('mouseenter', () => {
+    hoverRelatedIds = relatedIdsOf(card.id);
+    applyHoverHighlight();
+  });
+  el.addEventListener('mouseleave', () => {
+    hoverRelatedIds = new Set();
+    applyHoverHighlight();
+  });
+
+  return el;
+}
+
+function applyHoverHighlight() {
+  document.querySelectorAll('#cards-stage .card').forEach(el => {
+    if (hoverRelatedIds.has(el.dataset.id)) el.classList.add('related-glow');
+    else el.classList.remove('related-glow');
+  });
+}
+
+// === 动作面板（嵌在卡片内部） ===
+function buildActionPanel(card) {
+  const wrap = document.createElement('div');
+  wrap.className = 'card-actions';
+  const ideaActions = state.actions.filter(a => a.ideaId === card.id);
+  const total = ideaActions.length;
+  const done = ideaActions.filter(a => a.done).length;
+  const pct = total === 0 ? 0 : Math.round(done / total * 100);
+
+  wrap.innerHTML = `
+    <div class="actions-head">
+      <span class="lbl">动 作 · ${done}/${total}</span>
+    </div>
+    <div class="action-add">
+      <input type="text" placeholder="加一个动作…（回车提交）" data-action-add="${card.id}" />
+      <button data-action-add-btn="${card.id}">加</button>
+    </div>
+    <ul class="action-tree" data-tree="${card.id}"></ul>
+    ${total > 0 ? `
+      <div class="action-progress">
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+        <div class="progress-label">${done} / ${total} · ${pct}%</div>
+      </div>` : ''}
+  `;
+
+  // 渲染动作树
+  const tree = wrap.querySelector('[data-tree]');
+  const roots = ideaActions.filter(a => !a.parentId).sort((a,b) => a.order - b.order);
+  roots.forEach(a => tree.appendChild(buildActionNode(a, ideaActions)));
+
+  // 绑定加按钮
+  const input = wrap.querySelector('input');
+  const btn = wrap.querySelector('button[data-action-add-btn]');
+  const submit = async () => {
+    const text = input.value.trim();
+    if (!text) return;
+    await addAction(card.id, null, text);
+    input.value = '';
+    input.focus();
+  };
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  input.addEventListener('click', e => e.stopPropagation());
+
+  return wrap;
+}
+
+function buildActionNode(action, allActions) {
+  const li = document.createElement('li');
+  li.className = 'action-item' + (action.done ? ' done' : '');
+
+  const row = document.createElement('div');
+  row.className = 'action-row';
+
+  const check = document.createElement('button');
+  check.className = 'action-check' + (action.done ? ' done' : '');
+  check.addEventListener('click', e => { e.stopPropagation(); toggleAction(action.id); });
+
+  const text = document.createElement('div');
+  text.className = 'action-text';
+  text.contentEditable = 'true';
+  text.spellcheck = false;
+  text.textContent = action.text;
+  text.addEventListener('click', e => e.stopPropagation());
+  text.addEventListener('blur', () => {
+    const newText = text.textContent.trim();
+    if (newText && newText !== action.text) updateActionText(action.id, newText);
+    else if (!newText) text.textContent = action.text;
+  });
+  text.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); text.blur(); }
+  });
+
+  const ctrls = document.createElement('div');
+  ctrls.className = 'action-controls';
+  ctrls.innerHTML = `<button class="action-ctrl" data-act="sub">+ 子</button><button class="action-ctrl" data-act="del">删</button>`;
+  ctrls.querySelector('[data-act=sub]').addEventListener('click', e => {
+    e.stopPropagation();
+    promptSubAction(action.id, action.ideaId);
+  });
+  ctrls.querySelector('[data-act=del]').addEventListener('click', e => {
+    e.stopPropagation();
+    deleteAction(action.id);
+  });
+
+  row.appendChild(check); row.appendChild(text); row.appendChild(ctrls);
+  li.appendChild(row);
+
+  const children = allActions.filter(a => a.parentId === action.id).sort((a,b) => a.order - b.order);
+  if (children.length > 0) {
+    const ul = document.createElement('ul');
+    ul.className = 'action-children';
+    children.forEach(c => ul.appendChild(buildActionNode(c, allActions)));
+    li.appendChild(ul);
+  }
+  return li;
+}
+
+// ============ 3 种镜头的渲染 ============
+function renderStage() {
+  const stage = document.getElementById('cards-stage');
+  // FLIP step 1: 记录旧位置
+  const oldRects = new Map();
+  stage.querySelectorAll('.card').forEach(c => {
+    oldRects.set(c.dataset.id, c.getBoundingClientRect());
+  });
+
+  stage.innerHTML = '';
+  stage.dataset.mode = state.mode;
+
+  if (state.cards.length === 0) {
+    stage.innerHTML = `
+      <div class="empty-stage">
+        <p>空 白 页 等 待 第 一 个 念 头</p>
+        <small>在 上 方 写 下 一 句</small>
+      </div>`;
+    return;
+  }
+
+  const mode = state.mode;
+  if (mode === 'default') renderDefaultMode(stage);
+  else if (mode === 'route') renderRouteMode(stage);
+  else if (mode === 'action') renderActionMode(stage);
+
+  // FLIP step 2-4: invert + play
+  const newCards = stage.querySelectorAll('.card');
+  newCards.forEach(c => {
+    const oldRect = oldRects.get(c.dataset.id);
+    if (!oldRect) return;
+    const newRect = c.getBoundingClientRect();
+    const dx = oldRect.left - newRect.left;
+    const dy = oldRect.top - newRect.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    c.style.transformOrigin = 'top left';
+    c.style.transform = `translate(${dx}px, ${dy}px)`;
+    c.style.transition = 'none';
+    requestAnimationFrame(() => {
+      c.style.transition = 'transform 220ms cubic-bezier(.2,.8,.2,1)';
+      c.style.transform = '';
+    });
+    setTimeout(() => {
+      c.style.transition = '';
+      c.style.transformOrigin = '';
+      c.style.transform = '';
+    }, 260);
+  });
+
+  applyHoverHighlight();
+}
+
+// 默认镜头：按热度排
+function renderDefaultMode(stage) {
+  const sorted = [...state.cards].sort((a, b) => lastTouchedAt(b) - lastTouchedAt(a));
+  sorted.forEach(card => stage.appendChild(buildCard(card)));
+}
+
+// 路线镜头：按 route group 排
+function renderRouteMode(stage) {
+  const routes = [...state.routes].sort((a,b) => b.createdAt - a.createdAt);
+  const involvedIds = new Set();
+  routes.forEach(r => { involvedIds.add(r.resultCardId); r.sourceIds.forEach(s => involvedIds.add(s)); });
+
+  // 每条路线一个 group
+  routes.forEach((route, idx) => {
+    const result = state.cards.find(c => c.id === route.resultCardId);
+    if (!result) return;
+    const sources = route.sourceIds.map(sid => state.cards.find(c => c.id === sid)).filter(Boolean);
+
+    const group = document.createElement('div');
+    group.className = 'route-group';
+    group.dataset.routeLabel = `第 ${String(state.routes.length - idx).padStart(3,'0')} 号路线 · ${sources.length} → 1`;
+
+    const left = document.createElement('div');
+    left.className = 'route-sources';
+    sources.forEach(s => left.appendChild(buildCard(s, { focus: true })));
+
+    const arrow = document.createElement('div');
+    arrow.className = 'route-arrow';
+    arrow.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+        <path d="M4 12h16M14 6l6 6-6 6"/>
+      </svg>
+      <span>迭 代</span>`;
+
+    const right = document.createElement('div');
+    right.className = 'route-result-wrap';
+    right.appendChild(buildCard(result, { focus: true }));
+
+    group.appendChild(left);
+    group.appendChild(arrow);
+    group.appendChild(right);
+    stage.appendChild(group);
+  });
+
+  // 未参与任何路线的卡 → ghost-grid
+  const ungrouped = state.cards.filter(c => !involvedIds.has(c.id))
+    .sort((a, b) => lastTouchedAt(b) - lastTouchedAt(a));
+  if (ungrouped.length > 0) {
+    const lbl = document.createElement('div');
+    lbl.className = 'ungrouped-label';
+    lbl.textContent = `无 关 联 · ${ungrouped.length} 张`;
+    stage.appendChild(lbl);
+    const ghostGrid = document.createElement('div');
+    ghostGrid.className = 'ghost-grid';
+    ungrouped.forEach(card => ghostGrid.appendChild(buildCard(card, { ghost: true })));
+    stage.appendChild(ghostGrid);
+  }
+}
+
+// 动作镜头：有动作的卡放大、内嵌动作树；无动作的 ghost
+function renderActionMode(stage) {
+  const withActions = state.cards
+    .filter(c => state.actions.some(a => a.ideaId === c.id))
+    .sort((a, b) => {
+      const ca = state.actions.filter(x => x.ideaId === a.id).length;
+      const cb = state.actions.filter(x => x.ideaId === b.id).length;
+      if (cb !== ca) return cb - ca;
+      return lastTouchedAt(b) - lastTouchedAt(a);
+    });
+  const withoutActions = state.cards
+    .filter(c => !state.actions.some(a => a.ideaId === c.id))
+    .sort((a, b) => lastTouchedAt(b) - lastTouchedAt(a));
+
+  withActions.forEach(card => stage.appendChild(buildCard(card, { withActions: true, focus: true })));
+
+  if (withoutActions.length > 0) {
+    const lbl = document.createElement('div');
+    lbl.className = 'ungrouped-label';
+    lbl.textContent = `尚 未 挂 动 作 · ${withoutActions.length} 张`;
+    stage.appendChild(lbl);
+    const ghostGrid = document.createElement('div');
+    ghostGrid.className = 'ghost-grid';
+    withoutActions.forEach(card => ghostGrid.appendChild(buildCard(card, { ghost: true })));
+    stage.appendChild(ghostGrid);
+  }
+}
+
+// ============ 刊头 ============
+function renderHeader() {
+  document.getElementById('today-date').textContent = todayStr();
+  document.getElementById('card-count').textContent = state.cards.length;
+  document.getElementById('action-count').textContent = state.actions.length;
+  document.getElementById('route-count').textContent = state.routes.length;
+  document.getElementById('route-count2').textContent = state.routes.length;
+  const today = new Date().toDateString();
+  const todayCount = state.cards.filter(c => new Date(c.createdAt).toDateString() === today).length;
+  document.getElementById('today-count').textContent = todayCount;
+  const monthIdx = new Date().getMonth();
+  document.getElementById('vol-roman').textContent = VOL_ROMAN[monthIdx] || (monthIdx + 1);
+  const dayNum = Math.ceil((Date.now() - new Date(new Date().getFullYear(),0,0)) / 86400000);
+  document.getElementById('vol-num').textContent = String(dayNum).padStart(3,'0');
+}
+
+// ============ 卡片 CRUD ============
+async function addCardWithAssociations(body) {
+  const newCard = {
+    id: uid('idea'),
+    body: body.trim(),
+    createdAt: Date.now(),
+  };
+  state.cards.push(newCard);
+  if (pendingPinned.size > 0) {
+    state.routes.push({
+      id: uid('route'),
+      sourceIds: [...pendingPinned],
+      resultCardId: newCard.id,
+      createdAt: Date.now(),
+    });
+    pendingPinned.clear();
+  }
+  await saveState();
+  renderAll();
+  setTimeout(() => {
+    const newCardEl = document.querySelector(`#cards-stage .card[data-id="${newCard.id}"]`);
+    if (newCardEl) newCardEl.classList.add('fresh');
+    const lastRoute = state.routes[state.routes.length - 1];
+    if (lastRoute && lastRoute.resultCardId === newCard.id) {
+      lastRoute.sourceIds.forEach(sid => {
+        const srcEl = document.querySelector(`#cards-stage .card[data-id="${sid}"]`);
+        if (srcEl) srcEl.classList.add('flash');
+      });
+    }
+  }, 20);
+}
+
+async function deleteCard(id) {
+  state.cards = state.cards.filter(c => c.id !== id);
+  state.actions = state.actions.filter(a => a.ideaId !== id);
+  state.routes = state.routes.filter(r => r.resultCardId !== id && !r.sourceIds.includes(id));
+  pendingPinned.delete(id);
+  await saveState();
+  renderAll();
+}
+
+// ============ 动作 ============
+async function addAction(ideaId, parentId, text) {
+  const siblings = state.actions.filter(a => a.ideaId === ideaId && a.parentId === parentId);
+  state.actions.push({
+    id: uid('act'),
+    ideaId, parentId, text, done: false,
+    createdAt: Date.now(),
+    order: siblings.length,
+  });
+  await saveState();
+  renderAll();
+}
+
+async function promptSubAction(parentId, ideaId) {
+  const text = prompt('子动作内容：');
+  if (text && text.trim()) await addAction(ideaId, parentId, text.trim());
+}
+
+async function toggleAction(id) {
+  const a = state.actions.find(x => x.id === id);
+  if (!a) return;
+  a.done = !a.done;
+  await saveState();
+  renderAll();
+}
+
+async function updateActionText(id, text) {
+  const a = state.actions.find(x => x.id === id);
+  if (!a) return;
+  a.text = text;
+  await saveState();
+}
+
+async function deleteAction(id) {
+  const toDelete = [id];
+  let i = 0;
+  while (i < toDelete.length) {
+    const children = state.actions.filter(a => a.parentId === toDelete[i]).map(a => a.id);
+    toDelete.push(...children);
+    i++;
+  }
+  state.actions = state.actions.filter(a => !toDelete.includes(a.id));
+  await saveState();
+  renderAll();
+}
+
+// ============ 镜头切换 ============
+function switchMode(name) {
+  if (state.mode === name) return;
+  state.mode = name;
+  document.querySelectorAll('.psp').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === name);
+  });
+  renderStage();
+}
+
+// ============ 全量重绘 ============
+function renderAll() {
+  renderHeader();
+  renderStage();
+  renderHints(document.getElementById('compose-text').value);
+}
+
+// ============ 事件 ============
+function bindEvents() {
+  document.querySelectorAll('.psp').forEach(b => {
+    b.addEventListener('click', () => switchMode(b.dataset.mode));
+  });
+
+  const composeText = document.getElementById('compose-text');
+  composeText.addEventListener('input', scheduleHints);
+
+  document.getElementById('compose-submit').addEventListener('click', async () => {
+    const v = composeText.value.trim();
+    if (!v) { composeText.focus(); return; }
+    await addCardWithAssociations(v);
+    composeText.value = '';
+    renderHints('');
+    composeText.focus();
+  });
+
+  composeText.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      document.getElementById('compose-submit').click();
+    }
+  });
+}
+
+// ============ 启动 ============
+(async function init() {
+  await loadState();
+  bindEvents();
+  renderAll();
+})();
+</script>
+
+</body>
+</html>
