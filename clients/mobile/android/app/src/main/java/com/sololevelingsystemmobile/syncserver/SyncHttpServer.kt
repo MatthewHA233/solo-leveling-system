@@ -39,8 +39,9 @@ class SyncHttpServer(
   }
 
   private fun handlePing(): Response {
+    // 字段名对齐 desktop sync_engine.rs / db.rs（snake_case）
     val payload = JSONObject().apply {
-      put("deviceId", db.deviceId())
+      put("device_id", db.deviceId())
       put("alias", alias)
     }
     return envelope(payload)
@@ -60,66 +61,70 @@ class SyncHttpServer(
     val bodyStr = files["postData"] ?: session.parameters["body"]?.firstOrNull() ?: "{}"
     val payload = jsonToExport(JSONObject(bodyStr))
     val r = db.importSync(payload)
+    // SyncImportResult 字段名对齐 desktop db.rs
     val rJson = JSONObject().apply {
-      put("activityCategories", r.activityCategories)
-      put("activityTags", r.activityTags)
-      put("activityBlocks", r.activityBlocks)
-      put("planNodes", r.planNodes)
-      put("plannedBlocks", r.plannedBlocks)
+      put("activity_categories", r.activityCategories)
+      put("activity_tags", r.activityTags)
+      put("activity_blocks", r.activityBlocks)
+      put("plan_nodes", r.planNodes)
+      put("planned_blocks", r.plannedBlocks)
       put("skipped", r.skipped)
     }
     return envelope(rJson)
   }
 
-  // ── JSON 编解码（对齐 desktop SyncExport 字段名） ──
+  // ── JSON 编解码（HTTP wire format 严格对齐 desktop SyncExport snake_case） ──
+  // desktop db.rs 的 SyncExport / SyncActivityXxx 全部 snake_case 字段，
+  // 没用 #[serde(rename_all)]；mobile 内部 native module 可以是 camelCase，
+  // 但 HTTP 端必须 snake_case 才能跟 desktop 互通。
 
   private fun exportToJson(ex: SoloDb.SyncExport): JSONObject {
     val o = JSONObject()
-    o.put("deviceId", ex.deviceId)
-    o.put("exportedAt", ex.exportedAt)
+    o.put("device_id", ex.deviceId)
+    o.put("exported_at", ex.exportedAt)
     o.put("cursor", ex.cursor)
-    o.put("activityCategories", JSONArray().apply {
+    o.put("activity_categories", JSONArray().apply {
       for (r in ex.activityCategories) put(JSONObject().apply {
-        put("syncId", r.syncId); put("name", r.name); put("color", r.color)
-        put("sortOrder", r.sortOrder); put("createdAt", r.createdAt)
-        put("lastUsedAt", r.lastUsedAt); put("updatedAt", r.updatedAt)
-        if (r.deletedAt != null) put("deletedAt", r.deletedAt)
+        put("sync_id", r.syncId); put("name", r.name); put("color", r.color)
+        put("sort_order", r.sortOrder); put("created_at", r.createdAt)
+        put("last_used_at", r.lastUsedAt); put("updated_at", r.updatedAt)
+        if (r.deletedAt != null) put("deleted_at", r.deletedAt)
       })
     })
-    o.put("activityTags", JSONArray().apply {
+    o.put("activity_tags", JSONArray().apply {
       for (r in ex.activityTags) put(JSONObject().apply {
-        put("syncId", r.syncId); put("categorySyncId", r.categorySyncId)
-        put("fullPath", r.fullPath); put("leafName", r.leafName); put("depth", r.depth)
-        put("createdAt", r.createdAt); put("lastUsedAt", r.lastUsedAt)
-        put("updatedAt", r.updatedAt)
-        if (r.deletedAt != null) put("deletedAt", r.deletedAt)
+        put("sync_id", r.syncId); put("category_sync_id", r.categorySyncId)
+        put("full_path", r.fullPath); put("leaf_name", r.leafName); put("depth", r.depth)
+        put("created_at", r.createdAt); put("last_used_at", r.lastUsedAt)
+        put("updated_at", r.updatedAt)
+        if (r.deletedAt != null) put("deleted_at", r.deletedAt)
       })
     })
-    o.put("activityBlocks", JSONArray().apply {
+    o.put("activity_blocks", JSONArray().apply {
       for (r in ex.activityBlocks) put(JSONObject().apply {
-        put("syncId", r.syncId); put("date", r.date); put("minute", r.minute)
-        put("tagSyncId", r.tagSyncId)
+        put("sync_id", r.syncId); put("date", r.date); put("minute", r.minute)
+        put("tag_sync_id", r.tagSyncId)
         if (r.note != null) put("note", r.note)
-        put("createdAt", r.createdAt); put("updatedAt", r.updatedAt)
-        if (r.deletedAt != null) put("deletedAt", r.deletedAt)
+        put("created_at", r.createdAt); put("updated_at", r.updatedAt)
+        if (r.deletedAt != null) put("deleted_at", r.deletedAt)
       })
     })
-    o.put("planNodes", JSONArray().apply {
+    o.put("plan_nodes", JSONArray().apply {
       for (r in ex.planNodes) put(JSONObject().apply {
-        put("syncId", r.syncId); put("projectTagSyncId", r.projectTagSyncId)
-        if (r.parentSyncId != null) put("parentSyncId", r.parentSyncId)
-        put("title", r.title); put("status", r.status); put("sortOrder", r.sortOrder)
-        put("createdAt", r.createdAt); put("updatedAt", r.updatedAt)
-        if (r.deletedAt != null) put("deletedAt", r.deletedAt)
+        put("sync_id", r.syncId); put("project_tag_sync_id", r.projectTagSyncId)
+        if (r.parentSyncId != null) put("parent_sync_id", r.parentSyncId)
+        put("title", r.title); put("status", r.status); put("sort_order", r.sortOrder)
+        put("created_at", r.createdAt); put("updated_at", r.updatedAt)
+        if (r.deletedAt != null) put("deleted_at", r.deletedAt)
       })
     })
-    o.put("plannedBlocks", JSONArray().apply {
+    o.put("planned_blocks", JSONArray().apply {
       for (r in ex.plannedBlocks) put(JSONObject().apply {
-        put("syncId", r.syncId); put("date", r.date); put("minute", r.minute)
-        put("planNodeSyncId", r.planNodeSyncId)
+        put("sync_id", r.syncId); put("date", r.date); put("minute", r.minute)
+        put("plan_node_sync_id", r.planNodeSyncId)
         if (r.note != null) put("note", r.note)
-        put("createdAt", r.createdAt); put("updatedAt", r.updatedAt)
-        if (r.deletedAt != null) put("deletedAt", r.deletedAt)
+        put("created_at", r.createdAt); put("updated_at", r.updatedAt)
+        if (r.deletedAt != null) put("deleted_at", r.deletedAt)
       })
     })
     return o
@@ -127,56 +132,56 @@ class SyncHttpServer(
 
   private fun jsonToExport(o: JSONObject): SoloDb.SyncExport {
     return SoloDb.SyncExport(
-      deviceId = o.optString("deviceId"),
-      exportedAt = o.optString("exportedAt"),
+      deviceId = o.optString("device_id"),
+      exportedAt = o.optString("exported_at"),
       cursor = o.optString("cursor"),
-      activityCategories = jsonArr(o, "activityCategories") { it ->
+      activityCategories = jsonArr(o, "activity_categories") { it ->
         SoloDb.SyncCategoryRow(
-          syncId = it.optString("syncId"), name = it.optString("name"),
+          syncId = it.optString("sync_id"), name = it.optString("name"),
           color = it.optString("color", "#888"),
-          sortOrder = it.optInt("sortOrder"),
-          createdAt = it.optString("createdAt"), lastUsedAt = it.optString("lastUsedAt"),
-          updatedAt = it.optString("updatedAt"),
-          deletedAt = if (it.isNull("deletedAt")) null else it.optString("deletedAt", null),
+          sortOrder = it.optInt("sort_order"),
+          createdAt = it.optString("created_at"), lastUsedAt = it.optString("last_used_at"),
+          updatedAt = it.optString("updated_at"),
+          deletedAt = if (it.isNull("deleted_at")) null else it.optString("deleted_at", null),
         )
       },
-      activityTags = jsonArr(o, "activityTags") { it ->
+      activityTags = jsonArr(o, "activity_tags") { it ->
         SoloDb.SyncTagRow(
-          syncId = it.optString("syncId"), categorySyncId = it.optString("categorySyncId"),
-          fullPath = it.optString("fullPath"), leafName = it.optString("leafName"),
+          syncId = it.optString("sync_id"), categorySyncId = it.optString("category_sync_id"),
+          fullPath = it.optString("full_path"), leafName = it.optString("leaf_name"),
           depth = it.optInt("depth", 1),
-          createdAt = it.optString("createdAt"), lastUsedAt = it.optString("lastUsedAt"),
-          updatedAt = it.optString("updatedAt"),
-          deletedAt = if (it.isNull("deletedAt")) null else it.optString("deletedAt", null),
+          createdAt = it.optString("created_at"), lastUsedAt = it.optString("last_used_at"),
+          updatedAt = it.optString("updated_at"),
+          deletedAt = if (it.isNull("deleted_at")) null else it.optString("deleted_at", null),
         )
       },
-      activityBlocks = jsonArr(o, "activityBlocks") { it ->
+      activityBlocks = jsonArr(o, "activity_blocks") { it ->
         SoloDb.SyncBlockRow(
-          syncId = it.optString("syncId"), date = it.optString("date"),
-          minute = it.optInt("minute"), tagSyncId = it.optString("tagSyncId"),
+          syncId = it.optString("sync_id"), date = it.optString("date"),
+          minute = it.optInt("minute"), tagSyncId = it.optString("tag_sync_id"),
           note = if (it.isNull("note")) null else it.optString("note", null),
-          createdAt = it.optString("createdAt"), updatedAt = it.optString("updatedAt"),
-          deletedAt = if (it.isNull("deletedAt")) null else it.optString("deletedAt", null),
+          createdAt = it.optString("created_at"), updatedAt = it.optString("updated_at"),
+          deletedAt = if (it.isNull("deleted_at")) null else it.optString("deleted_at", null),
         )
       },
-      planNodes = jsonArr(o, "planNodes") { it ->
+      planNodes = jsonArr(o, "plan_nodes") { it ->
         SoloDb.SyncPlanNodeRow(
-          syncId = it.optString("syncId"),
-          projectTagSyncId = it.optString("projectTagSyncId"),
-          parentSyncId = if (it.isNull("parentSyncId")) null else it.optString("parentSyncId", null),
+          syncId = it.optString("sync_id"),
+          projectTagSyncId = it.optString("project_tag_sync_id"),
+          parentSyncId = if (it.isNull("parent_sync_id")) null else it.optString("parent_sync_id", null),
           title = it.optString("title"), status = it.optString("status", "active"),
-          sortOrder = it.optInt("sortOrder"),
-          createdAt = it.optString("createdAt"), updatedAt = it.optString("updatedAt"),
-          deletedAt = if (it.isNull("deletedAt")) null else it.optString("deletedAt", null),
+          sortOrder = it.optInt("sort_order"),
+          createdAt = it.optString("created_at"), updatedAt = it.optString("updated_at"),
+          deletedAt = if (it.isNull("deleted_at")) null else it.optString("deleted_at", null),
         )
       },
-      plannedBlocks = jsonArr(o, "plannedBlocks") { it ->
+      plannedBlocks = jsonArr(o, "planned_blocks") { it ->
         SoloDb.SyncPlannedBlockRow(
-          syncId = it.optString("syncId"), date = it.optString("date"),
-          minute = it.optInt("minute"), planNodeSyncId = it.optString("planNodeSyncId"),
+          syncId = it.optString("sync_id"), date = it.optString("date"),
+          minute = it.optInt("minute"), planNodeSyncId = it.optString("plan_node_sync_id"),
           note = if (it.isNull("note")) null else it.optString("note", null),
-          createdAt = it.optString("createdAt"), updatedAt = it.optString("updatedAt"),
-          deletedAt = if (it.isNull("deletedAt")) null else it.optString("deletedAt", null),
+          createdAt = it.optString("created_at"), updatedAt = it.optString("updated_at"),
+          deletedAt = if (it.isNull("deleted_at")) null else it.optString("deleted_at", null),
         )
       },
     )
