@@ -796,9 +796,15 @@ class SoloDb(context: Context) :
    *  activity_blocks 同 (date, minute) 槽位冲突时优先保留 keepTagId 那份（业务权威）。 */
   private fun mergeTagChildren(db: SQLiteDatabase, sideTagId: Long, keepTagId: Long) {
     // 先丢掉旁系跟 keep 同 (date,minute) 的 blocks，否则 UPDATE 会撞 UNIQUE(date,minute)
+    // AUDIT-013: 用 EXISTS 替代 row-value `(date, minute) IN (...)`，避免 minSdkVersion=24
+    // 的 API 24/25 旧 Android SQLite 不支持 row-value SQL 抛 SQLiteException 回滚整事务
     db.execSQL(
-      """DELETE FROM activity_blocks WHERE tag_id = ? AND (date, minute) IN
-           (SELECT date, minute FROM activity_blocks WHERE tag_id = ?)""".trimIndent(),
+      """DELETE FROM activity_blocks WHERE tag_id = ? AND EXISTS (
+           SELECT 1 FROM activity_blocks k
+           WHERE k.tag_id = ?
+             AND k.date = activity_blocks.date
+             AND k.minute = activity_blocks.minute
+         )""".trimIndent(),
       arrayOf(sideTagId, keepTagId),
     )
     db.execSQL(
