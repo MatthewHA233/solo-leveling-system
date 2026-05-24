@@ -880,13 +880,14 @@ export default function App() {
     return () => clearInterval(tick)
   }, [])
 
-  // 切换日期 / 进出编辑模式 → 清空撤回栈（栈是当日操作的快照，跨日无意义）
+  // 切换日期 → 清空撤回栈（栈是当日 blocks 的快照，跨日 apply 会写错日期）
+  // 注意：editMode 不再触发清空，让"完成 → 再编辑"也能继续撤回最近的操作
   useEffect(() => {
     setUndoStack([])
     setRedoStack([])
     setPlanUndoStack([])
     setPlanRedoStack([])
-  }, [selectedDate, editMode])
+  }, [selectedDate])
 
   /** 计算从 from 状态变到 to 状态需要的 paint/erase 操作 */
   const computeBlocksDelta = useCallback((from: ActivityBlock[], to: ActivityBlock[]) => {
@@ -964,7 +965,7 @@ export default function App() {
         if (undoPrev.length === 0) return undoPrev
         const popped = undoPrev[undoPrev.length - 1]
         const current = plannedBlocks
-        setPlanRedoStack((redoPrev) => [...redoPrev.slice(-4), current])
+        setPlanRedoStack((redoPrev) => [...redoPrev.slice(-29), current])
         setPlannedBlocks(popped)
         applyPlannedBlocksDelta(current, popped)
           .then(() => refreshActivityPalette())
@@ -981,7 +982,7 @@ export default function App() {
       if (undoPrev.length === 0) return undoPrev
       const popped = undoPrev[undoPrev.length - 1]
       const current = activityBlocks
-      setRedoStack((redoPrev) => [...redoPrev.slice(-4), current])
+      setRedoStack((redoPrev) => [...redoPrev.slice(-29), current])
       setActivityBlocks(popped)
       applyBlocksDelta(current, popped)
         .then(() => refreshActivityPalette())
@@ -999,7 +1000,7 @@ export default function App() {
         if (redoPrev.length === 0) return redoPrev
         const popped = redoPrev[redoPrev.length - 1]
         const current = plannedBlocks
-        setPlanUndoStack((undoPrev) => [...undoPrev.slice(-4), current])
+        setPlanUndoStack((undoPrev) => [...undoPrev.slice(-29), current])
         setPlannedBlocks(popped)
         applyPlannedBlocksDelta(current, popped)
           .then(() => refreshActivityPalette())
@@ -1016,7 +1017,7 @@ export default function App() {
       if (redoPrev.length === 0) return redoPrev
       const popped = redoPrev[redoPrev.length - 1]
       const current = activityBlocks
-      setUndoStack((undoPrev) => [...undoPrev.slice(-4), current])
+      setUndoStack((undoPrev) => [...undoPrev.slice(-29), current])
       setActivityBlocks(popped)
       applyBlocksDelta(current, popped)
         .then(() => refreshActivityPalette())
@@ -1067,7 +1068,7 @@ export default function App() {
 
     if (spec.layer === 'plan') {
       const snapshot = plannedBlocks
-      setPlanUndoStack((prev) => [...prev.slice(-4), snapshot])
+      setPlanUndoStack((prev) => [...prev.slice(-29), snapshot])
       setPlanRedoStack([])
       setPlannedBlocks((prev) => {
         const eraseSet = new Set(spec.eraseMinutes)
@@ -1127,7 +1128,7 @@ export default function App() {
 
     // 1) 乐观更新本地块；同时把"操作前快照"推入 undo 栈（保留最近 5 步），并清空 redo 栈
     const snapshot = activityBlocks
-    setUndoStack((prev) => [...prev.slice(-4), snapshot])
+    setUndoStack((prev) => [...prev.slice(-29), snapshot])
     setRedoStack([])
     setActivityBlocks((prev) => {
       const eraseSet = new Set(spec.eraseMinutes)
