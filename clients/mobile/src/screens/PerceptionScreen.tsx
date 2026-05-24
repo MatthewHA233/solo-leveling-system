@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useEffect, useState } from 'react'
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { theme } from '../theme'
 import {
   getSoloDbDeviceId,
@@ -23,6 +23,14 @@ import {
   SYNC_SERVER_DEFAULT_PORT,
   type SyncServerStatus,
 } from '../lib/syncserver'
+import {
+  enqueuePeriodicSync,
+  linkPeer,
+  listLinkedDevices,
+  syncNow,
+  unlinkPeer,
+  type LinkedDevice,
+} from '../lib/syncclient'
 import {
   collectUsageStats,
   fetchDbStats,
@@ -68,6 +76,13 @@ export default function PerceptionScreen() {
   const [exportSummary, setExportSummary] = useState<string>('')
   const [serverStatus, setServerStatus] = useState<SyncServerStatus | null>(null)
   const [serverErr, setServerErr] = useState<string>('')
+
+  // 主动同步：linked desktops + 手动同步状态
+  const [linkedDevices, setLinkedDevices] = useState<LinkedDevice[]>([])
+  const [linkUrl, setLinkUrl] = useState<string>('')
+  const [linkBusy, setLinkBusy] = useState(false)
+  const [linkMsg, setLinkMsg] = useState<string>('')
+  const [syncingId, setSyncingId] = useState<string | null>(null)
   const [windowEvents, setWindowEvents] = useState<WindowEvent[]>([])
   const [clicks, setClicks] = useState<ClickCountSnapshot>({ total: 0, entries: [] })
 
@@ -82,7 +97,74 @@ export default function PerceptionScreen() {
     void refreshSoloDb()
     void runSelfImport()
     void autoStartServer()
+    void refreshLinkedDevices()
+    // 注册定时后台同步（KEEP 策略幂等，重复调不会重置 15min 计时器）
+    void enqueuePeriodicSync(15)
   }, [])
+
+  async function refreshLinkedDevices() {
+    try {
+      setLinkedDevices(await listLinkedDevices())
+    } catch {
+      setLinkedDevices([])
+    }
+  }
+
+  async function doLinkPeer() {
+    const url = linkUrl.trim()
+    if (!url) {
+      setLinkMsg('请填写电脑 IP，例如 192.168.0.104')
+      return
+    }
+    setLinkBusy(true)
+    setLinkMsg('')
+    try {
+      const r = await linkPeer(url)
+      if (r) {
+        setLinkMsg(
+          `✓ ${r.alias}：拉 cat ${r.pulled.activityCategories} tag ${r.pulled.activityTags} ` +
+          `block ${r.pulled.activityBlocks} / 推 cat ${r.pushed.activityCategories} ` +
+          `tag ${r.pushed.activityTags} block ${r.pushed.activityBlocks}`,
+        )
+        setLinkUrl('')
+        await refreshLinkedDevices()
+      }
+    } catch (e: any) {
+      setLinkMsg(`✗ 链接失败: ${e?.message ?? String(e)}`)
+    } finally {
+      setLinkBusy(false)
+    }
+  }
+
+  async function doSyncNow(deviceId: string) {
+    setSyncingId(deviceId)
+    setLinkMsg('')
+    try {
+      const r = await syncNow(deviceId)
+      if (r) {
+        setLinkMsg(
+          `✓ ${r.alias}：拉 cat ${r.pulled.activityCategories} tag ${r.pulled.activityTags} ` +
+          `block ${r.pulled.activityBlocks} / 推 cat ${r.pushed.activityCategories} ` +
+          `tag ${r.pushed.activityTags} block ${r.pushed.activityBlocks}`,
+        )
+        await refreshLinkedDevices()
+      }
+    } catch (e: any) {
+      setLinkMsg(`✗ 同步失败: ${e?.message ?? String(e)}`)
+    } finally {
+      setSyncingId(null)
+    }
+  }
+
+  async function doUnlinkPeer(deviceId: string, alias: string) {
+    try {
+      await unlinkPeer(deviceId)
+      setLinkMsg(`已解除与 ${alias} 的链接`)
+      await refreshLinkedDevices()
+    } catch (e: any) {
+      setLinkMsg(`✗ 解除失败: ${e?.message ?? String(e)}`)
+    }
+  }
 
   async function refreshServer() {
     try {
@@ -349,6 +431,80 @@ export default function PerceptionScreen() {
             <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
           </Pressable>
         </View>
+      </View>
+
+      {/* 手机主动链接电脑端 + 已链接列表 + 立即同步按钮 */}
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>📲 链接电脑端 (手机主动同步 + 每 15 分钟后台跑)</Text>
+        <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', marginTop: 8 }}>
+          <TextInput
+            value={linkUrl}
+            onChangeText={setLinkUrl}
+            placeholder="例: 192.168.0.104"
+            placeholderTextColor={theme.inkSoft}
+            editable={!linkBusy}
+            style={{
+              flex: 1,
+              borderWidth: 1,
+              borderColor: theme.line,
+              borderRadius: 8,
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              color: theme.ink,
+              backgroundColor: '#fff',
+            }}
+          />
+          <Pressable style={styles.btn} onPress={doLinkPeer} disabled={linkBusy}>
+            <Text style={styles.btnText}>{linkBusy ? '连接中…' : '链接'}</Text>
+          </Pressable>
+        </View>
+        {!!linkMsg && (
+          <Text style={[styles.cardSub, { marginTop: 8 }]} numberOfLines={3}>
+            {linkMsg}
+          </Text>
+        )}
+        {linkedDevices.length === 0 ? (
+          <Text style={[styles.cardSub, { marginTop: 8, fontStyle: 'italic' }]}>
+            尚未链接任何电脑。
+          </Text>
+        ) : (
+          <View style={{ marginTop: 12, gap: 8 }}>
+            {linkedDevices.map((d) => (
+              <View
+                key={d.deviceId}
+                style={{
+                  borderWidth: 1, borderColor: theme.line, borderRadius: 8,
+                  padding: 10,
+                }}
+              >
+                <Text style={[styles.cardValue, { fontSize: 14 }]} numberOfLines={1}>
+                  {d.alias}
+                </Text>
+                <Text style={styles.cardSub} numberOfLines={1}>{d.lastBase}</Text>
+                <Text style={styles.cardSub}>
+                  上次同步：{d.lastSyncedAt ?? '尚未同步'}
+                </Text>
+                <View style={[styles.btnRow, { marginTop: 8 }]}>
+                  <Pressable
+                    style={styles.btn}
+                    onPress={() => doSyncNow(d.deviceId)}
+                    disabled={syncingId === d.deviceId}
+                  >
+                    <Text style={styles.btnText}>
+                      {syncingId === d.deviceId ? '同步中…' : '立即同步'}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.btn, styles.btnGhost]}
+                    onPress={() => doUnlinkPeer(d.deviceId, d.alias)}
+                  >
+                    <Text style={[styles.btnText, styles.btnGhostText]}>解除</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
       </View>
 
       <View style={styles.card}>
