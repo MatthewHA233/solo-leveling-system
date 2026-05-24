@@ -1,0 +1,199 @@
+package com.sololevelingsystemmobile.solodb
+
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+import java.util.UUID
+
+/**
+ * 主数据 SQLite —— 镜像 desktop solo.db 的同步表 schema，
+ * 为 Phase 5 LAN P2P 同步打底。和感知层 perception.db 分开两个文件，
+ * 隔离用户活动数据（昼夜表）和系统观测数据（窗口/usage 事件）。
+ *
+ * 包含同步必需的 5 张表 + sync_meta + linked_devices：
+ *   activity_categories / activity_tags / activity_blocks
+ *   plan_nodes / planned_blocks
+ *   linked_devices, sync_meta（device_id / device_alias）
+ *
+ * 关键设计（跟 desktop ensure_sync_metadata 一致）：
+ *   - 每张同步表都有 sync_id (UUID)、updated_at、deleted_at
+ *   - last-write-wins by updated_at；sync_id 匹配同一条记录
+ *   - 业务键 UNIQUE：activity_categories.name; activity_tags(category_id, full_path)
+ *   - activity_blocks / planned_blocks 用 PK(date, minute) 表达稀疏 5min 槽位
+ */
+class SoloDb(context: Context) :
+  SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
+
+  override fun onCreate(db: SQLiteDatabase) {
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS activity_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sync_id TEXT NOT NULL UNIQUE,
+        name TEXT UNIQUE NOT NULL,
+        color TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      );
+      """.trimIndent()
+    )
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_activity_categories_sync_updated ON activity_categories(updated_at);")
+
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS activity_tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sync_id TEXT NOT NULL UNIQUE,
+        category_id INTEGER NOT NULL REFERENCES activity_categories(id) ON DELETE CASCADE,
+        full_path TEXT NOT NULL,
+        leaf_name TEXT NOT NULL,
+        depth INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT,
+        UNIQUE (category_id, full_path)
+      );
+      """.trimIndent()
+    )
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_activity_tags_category ON activity_tags(category_id);")
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_activity_tags_sync_updated ON activity_tags(updated_at);")
+
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS activity_blocks (
+        date TEXT NOT NULL,
+        minute INTEGER NOT NULL,
+        sync_id TEXT NOT NULL UNIQUE,
+        tag_id INTEGER NOT NULL REFERENCES activity_tags(id) ON DELETE CASCADE,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT,
+        PRIMARY KEY (date, minute)
+      );
+      """.trimIndent()
+    )
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_activity_blocks_tag ON activity_blocks(tag_id);")
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_activity_blocks_sync_updated ON activity_blocks(updated_at);")
+
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS plan_nodes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sync_id TEXT NOT NULL UNIQUE,
+        project_tag_id INTEGER NOT NULL REFERENCES activity_tags(id) ON DELETE CASCADE,
+        parent_id INTEGER REFERENCES plan_nodes(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      );
+      """.trimIndent()
+    )
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_plan_nodes_project ON plan_nodes(project_tag_id);")
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_plan_nodes_parent ON plan_nodes(parent_id);")
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_plan_nodes_sync_updated ON plan_nodes(updated_at);")
+
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS planned_blocks (
+        date TEXT NOT NULL,
+        minute INTEGER NOT NULL,
+        sync_id TEXT NOT NULL UNIQUE,
+        plan_node_id INTEGER NOT NULL REFERENCES plan_nodes(id) ON DELETE CASCADE,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT,
+        PRIMARY KEY (date, minute)
+      );
+      """.trimIndent()
+    )
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_planned_blocks_node ON planned_blocks(plan_node_id);")
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_planned_blocks_sync_updated ON planned_blocks(updated_at);")
+
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS linked_devices (
+        device_id TEXT PRIMARY KEY,
+        alias TEXT NOT NULL,
+        last_base TEXT NOT NULL,
+        last_synced_at TEXT,
+        created_at TEXT NOT NULL
+      );
+      """.trimIndent()
+    )
+
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS sync_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      """.trimIndent()
+    )
+    // 进程内创建好 device_id（同 desktop get_or_create_device_id 行为）
+    val now = nowIso()
+    val deviceId = UUID.randomUUID().toString()
+    db.execSQL(
+      "INSERT OR IGNORE INTO sync_meta (key, value, updated_at) VALUES ('device_id', ?, ?)",
+      arrayOf(deviceId, now),
+    )
+  }
+
+  override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+    // Phase 0：尚无线上数据，破坏式升级最快
+    db.execSQL("DROP TABLE IF EXISTS planned_blocks")
+    db.execSQL("DROP TABLE IF EXISTS plan_nodes")
+    db.execSQL("DROP TABLE IF EXISTS activity_blocks")
+    db.execSQL("DROP TABLE IF EXISTS activity_tags")
+    db.execSQL("DROP TABLE IF EXISTS activity_categories")
+    db.execSQL("DROP TABLE IF EXISTS linked_devices")
+    db.execSQL("DROP TABLE IF EXISTS sync_meta")
+    onCreate(db)
+  }
+
+  /** 当前 device_id（从 sync_meta 读出）。 */
+  fun deviceId(): String {
+    return readableDatabase.rawQuery(
+      "SELECT value FROM sync_meta WHERE key = 'device_id'", null,
+    ).use { c -> if (c.moveToFirst()) c.getString(0) else "" }
+  }
+
+  /** 返回 (tableName → row count, dbPath)。Phase 0 阶段用来验证连通。 */
+  fun stats(): Pair<Map<String, Long>, String> {
+    val db = readableDatabase
+    val tables = listOf(
+      "activity_categories", "activity_tags", "activity_blocks",
+      "plan_nodes", "planned_blocks", "linked_devices", "sync_meta",
+    )
+    val counts = LinkedHashMap<String, Long>()
+    for (t in tables) {
+      counts[t] = db.rawQuery("SELECT COUNT(*) FROM $t", null)
+        .use { c -> if (c.moveToFirst()) c.getLong(0) else 0L }
+    }
+    return counts to (db.path ?: "")
+  }
+
+  companion object {
+    private const val DB_NAME = "solo.db"
+    private const val DB_VERSION = 1
+
+    private val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+      timeZone = TimeZone.getTimeZone("UTC")
+    }
+
+    fun nowIso(): String = isoFmt.format(Date())
+  }
+}

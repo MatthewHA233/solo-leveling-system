@@ -7,6 +7,12 @@ import { useEffect, useState } from 'react'
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { theme } from '../theme'
 import {
+  getSoloDbDeviceId,
+  getSoloDbStats,
+  isSoloDbAvailable,
+  type SoloDbStats,
+} from '../lib/solodb'
+import {
   collectUsageStats,
   fetchDbStats,
   getLatestUsageSummary,
@@ -44,6 +50,8 @@ export default function PerceptionScreen() {
   const [summary, setSummary] = useState<UsageSummary | null>(null)
 
   const [a11yEnabled, setA11yEnabled] = useState<boolean | null>(null)
+  const [soloStats, setSoloStats] = useState<SoloDbStats | null>(null)
+  const [soloDeviceId, setSoloDeviceId] = useState<string>('')
   const [windowEvents, setWindowEvents] = useState<WindowEvent[]>([])
   const [clicks, setClicks] = useState<ClickCountSnapshot>({ total: 0, entries: [] })
 
@@ -55,7 +63,18 @@ export default function PerceptionScreen() {
     void refreshA11y()
     void refreshWindowEvents()
     void refreshClicks()
+    void refreshSoloDb()
   }, [])
+
+  async function refreshSoloDb() {
+    try {
+      const [id, s] = await Promise.all([getSoloDbDeviceId(), getSoloDbStats()])
+      setSoloDeviceId(id ?? '')
+      setSoloStats(s)
+    } catch {
+      setSoloStats(null)
+    }
+  }
 
   async function refreshClicks() {
     try {
@@ -182,8 +201,30 @@ export default function PerceptionScreen() {
       <View style={styles.card}>
         <Text style={styles.cardLabel}>Native module 状态</Text>
         <Text style={styles.cardValue}>
-          {isPerceptionAvailable() ? '已加载' : '未加载'}
+          Perception: {isPerceptionAvailable() ? '已加载' : '未加载'}
+          {'  ·  '}
+          SoloDb: {isSoloDbAvailable() ? '已加载' : '未加载'}
         </Text>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>SoloDb (solo.db) · Phase 5 LAN 同步底座</Text>
+        {soloStats ? (
+          <>
+            <Text style={styles.cardValue}>
+              {Object.entries(soloStats.tables)
+                .map(([k, v]) => `${k.replace('activity_', 'a_').replace('planned_', 'p_').replace('plan_nodes', 'p_nodes').replace('linked_devices', 'links').replace('sync_meta', 'meta')}=${v}`)
+                .join(' · ')}
+            </Text>
+            <Text style={styles.cardSub} numberOfLines={1}>device_id: {soloDeviceId || '—'}</Text>
+            <Text style={styles.cardSub} numberOfLines={1}>{soloStats.path}</Text>
+          </>
+        ) : (
+          <Text style={styles.cardValue}>未连通</Text>
+        )}
+        <Pressable style={[styles.btn, styles.btnGhost, { marginTop: 10 }]} onPress={refreshSoloDb}>
+          <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
+        </Pressable>
       </View>
 
       <View style={styles.card}>
