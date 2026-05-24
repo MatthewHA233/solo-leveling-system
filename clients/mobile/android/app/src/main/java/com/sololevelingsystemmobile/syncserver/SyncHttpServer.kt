@@ -28,7 +28,8 @@ class SyncHttpServer(
     val uri = session.uri ?: "/"
     return try {
       when {
-        session.method == Method.GET && uri == "/api/ping" -> handlePing()
+        // desktop SyncPeerDialog 走 /api/sync/hello 做握手；/api/ping 是 alias 兜底
+        session.method == Method.GET && (uri == "/api/sync/hello" || uri == "/api/ping") -> handlePing()
         session.method == Method.GET && uri == "/api/sync/export" -> handleExport(session)
         session.method == Method.POST && uri == "/api/sync/import" -> handleImport(session)
         else -> envelopeError("not found: $uri")
@@ -39,12 +40,40 @@ class SyncHttpServer(
   }
 
   private fun handlePing(): Response {
-    // 字段名对齐 desktop sync_engine.rs / db.rs（snake_case）
+    // 协议字段对齐 desktop api.rs SyncHello (snake_case)；
+    // 字段不全会让 desktop fetchSyncHello 解析失败 → 手动建链反馈"连接失败"。
+    val devId = db.deviceId()
     val payload = JSONObject().apply {
-      put("device_id", db.deviceId())
+      put("device_id", devId)
+      put("pair_code", pairCode(devId))
+      put("server_time", java.text.SimpleDateFormat(
+        "yyyy-MM-dd HH:mm:ss", java.util.Locale.US,
+      ).apply { timeZone = java.util.TimeZone.getDefault() }.format(java.util.Date()))
+      put("protocol_version", 1)
+      put("tables", org.json.JSONArray(listOf(
+        "activity_categories", "activity_tags", "activity_blocks",
+        "plan_nodes", "planned_blocks",
+      )))
       put("alias", alias)
+      put("device_type", "mobile")
+      put("device_model", android.os.Build.MODEL ?: "Android")
     }
     return envelope(payload)
+  }
+
+  /**
+   * 跟 desktop db.rs sync_pair_code 完全一致的 FNV-1a 64bit hash + 8 字符
+   * "XXXX-XXXX" 大写格式。LinkPeer 比对用，必须一致才能识别同设备。
+   */
+  private fun pairCode(deviceId: String): String {
+    val input = "solo-leveling-system:sync:v1:$deviceId"
+    var hash = 0xcbf29ce484222325UL
+    for (byte in input.toByteArray(Charsets.UTF_8)) {
+      hash = hash xor (byte.toUByte().toULong())
+      hash = (hash * 0x100000001b3UL)
+    }
+    val hex = hash.toString(16).padStart(16, '0')
+    return "${hex.substring(0, 4)}-${hex.substring(4, 8)}".uppercase()
   }
 
   private fun handleExport(session: IHTTPSession): Response {
@@ -55,10 +84,21 @@ class SyncHttpServer(
   }
 
   private fun handleImport(session: IHTTPSession): Response {
-    // NanoHTTPD POST body 要先 parse 才能拿到（不是约定俗成的 ServletRequest）
-    val files = HashMap<String, String>()
-    session.parseBody(files)
-    val bodyStr = files["postData"] ?: session.parameters["body"]?.firstOrNull() ?: "{}"
+    // ⚠ NanoHTTPD parseBody().get("postData") 内部走 ISO-8859-1 解码
+    // (NanoHTTPD 2.3.1 HTTPSession.java 硬编码 String(buf, "ISO-8859-1"))，
+    // UTF-8 中文每个字 3 字节会被错拆成 3 个西欧字符，落到 mobile DB 就是乱码。
+    // 改成直接从 input stream 读 raw bytes，按 Content-Length 截断，UTF-8 解码。
+    val len = session.headers["content-length"]?.toIntOrNull() ?: 0
+    val bodyStr = if (len > 0) {
+      val buf = ByteArray(len)
+      var off = 0
+      while (off < len) {
+        val r = session.inputStream.read(buf, off, len - off)
+        if (r <= 0) break
+        off += r
+      }
+      String(buf, 0, off, Charsets.UTF_8)
+    } else "{}"
     val payload = jsonToExport(JSONObject(bodyStr))
     val r = db.importSync(payload)
     // SyncImportResult 字段名对齐 desktop db.rs
@@ -203,7 +243,12 @@ class SyncHttpServer(
       put("success", true)
       put("data", data)
     }
-    return newFixedLengthResponse(Response.Status.OK, "application/json", body.toString())
+    // 显式带 UTF-8 charset，desktop 解析中文 alias 等字段就不会回退到 latin-1
+    return newFixedLengthResponse(
+      Response.Status.OK,
+      "application/json; charset=UTF-8",
+      body.toString(),
+    )
   }
 
   private fun envelopeError(msg: String): Response {
@@ -211,6 +256,11 @@ class SyncHttpServer(
       put("success", false)
       put("error", msg)
     }
-    return newFixedLengthResponse(Response.Status.OK, "application/json", body.toString())
+    // 显式带 UTF-8 charset，desktop 解析中文 alias 等字段就不会回退到 latin-1
+    return newFixedLengthResponse(
+      Response.Status.OK,
+      "application/json; charset=UTF-8",
+      body.toString(),
+    )
   }
 }
