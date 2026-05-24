@@ -166,14 +166,24 @@ export default function PerceptionScreen() {
     if (!updateManifest) return
     // 拦重复触发：installing 中再次点击直接 noop，避免 enqueue 多个下载任务
     if (updateInstalling) return
-    setConfirmUpdateOpen(false)
+    // AUDIT-021: 强制更新时弹窗保持打开，下载失败 / 安装器拉起失败 / 用户取消
+    // 都不能让用户回到主界面继续用旧版本。非强制更新仍允许下载开始后关闭弹窗，
+    // 这样用户能去看其他卡片，进度走通知栏
+    if (!updateForced) {
+      setConfirmUpdateOpen(false)
+    }
     setUpdateInstalling(true)
     setUpdateMsg('下载中…（系统通知栏可看进度）')
     try {
       await downloadAndInstall(updateManifest.url)
       setUpdateMsg('已唤起系统安装器，按提示确认安装')
+      // 安装器拉起成功后让用户去系统弹窗；如果用户取消安装，下次进感知页
+      // initUpdater 会再次 checkForUpdate 拿到 forced=true，弹窗再开
     } catch (e: any) {
       setUpdateMsg(`更新失败: ${e?.message ?? e}`)
+      // AUDIT-021: 强制更新下载失败 → 弹窗必须保持打开（防止刚才走 setConfirmUpdateOpen(false) 漏掉的极端时序），
+      // 同时让用户看到错误并重试
+      if (updateForced) setConfirmUpdateOpen(true)
     } finally {
       setUpdateInstalling(false)
     }
