@@ -348,6 +348,61 @@ const treeStyles = StyleSheet.create({
   },
 })
 
+/** 撤回/前进 弯箭头（U 形 + 箭头头），direction=left 是撤回，right 是前进。 */
+function UndoGlyph({
+  color = '#23242A',
+  size = 14,
+  direction = 'left',
+}: { color?: string; size?: number; direction?: 'left' | 'right' }) {
+  const stroke = Math.max(1.2, Math.round(size * 0.12))
+  const arc = Math.round(size * 0.6)
+  const head = Math.round(size * 0.32)
+  const flip = direction === 'right' ? { transform: [{ scaleX: -1 as const }] } : null
+  return (
+    <View style={[{ width: size, height: size, justifyContent: 'center' }, flip]}>
+      {/* 弧线 - 用一个半圆替代：上半圈 */}
+      <View
+        style={{
+          width: arc,
+          height: arc / 2,
+          borderTopLeftRadius: arc / 2,
+          borderTopRightRadius: arc / 2,
+          borderWidth: stroke,
+          borderBottomWidth: 0,
+          borderColor: color,
+          alignSelf: 'center',
+          marginTop: 1,
+        }}
+      />
+      {/* 箭头尾部短竖线 */}
+      <View
+        style={{
+          position: 'absolute',
+          left: (size - arc) / 2 + 1,
+          top: size / 2 - 1,
+          width: stroke,
+          height: head * 0.8,
+          backgroundColor: color,
+          borderRadius: stroke / 2,
+        }}
+      />
+      {/* 箭头头部斜线 */}
+      <View
+        style={{
+          position: 'absolute',
+          left: (size - arc) / 2 - head / 2 + 2,
+          top: size / 2 + head * 0.3,
+          width: head,
+          height: stroke,
+          backgroundColor: color,
+          borderRadius: stroke / 2,
+          transform: [{ rotate: '45deg' }],
+        }}
+      />
+    </View>
+  )
+}
+
 /** 软件风调节器图标 —— 3 条水平滑条 + 圆形滑块，纯 RN 几何，无依赖。 */
 function SlidersGlyph({ color = '#FFF', size = 14 }: { color?: string; size?: number }) {
   const knob = Math.max(3, Math.round(size * 0.22))
@@ -445,11 +500,13 @@ interface Interaction {
 }
 
 interface DragState {
-  mode: 'paint' | 'erase'
+  mode: 'paint' | 'erase'      // 仅起点判定的"主导意图"，commit 仍按每 cell 独立判断
   startMin: number | null      // 拖拽起点（5min 对齐）
   lastMin: number | null       // 上一次 move 命中的 minute
-  painted: Set<number>         // 本次拖拽最终涂过的 mins（按目标区间，每次 move 重算）
-  snapshot: ActivityBlock[]    // 拖拽前的 blocks 快照，用于"区间反向"时恢复
+  painted: Set<number>         // 本次拖拽覆盖的全部 mins（含 paint + erase + replace）
+  paintMins: Set<number>       // 本次拖拽中需要 paint 的 mins（commit 分批用）
+  eraseMins: Set<number>       // 本次拖拽中需要 erase 的 mins
+  snapshot: ActivityBlock[]    // 拖拽前的 blocks 快照，用于"区间反向"时恢复 + undo
   moved: boolean
   tapCell: HitCell | null
 }
@@ -469,6 +526,10 @@ export default function DayNightScreen() {
   const [probeLoading, setProbeLoading] = useState(false)
   const [iconCache, setIconCache] = useState<Record<string, string>>({})
   const [focusStart, setFocusStart] = useState(3)
+  // 撤回/前进栈：每个元素是 blocks 数组快照，最多 30 个；点"完成"不清记忆
+  const [undoStack, setUndoStack] = useState<readonly ActivityBlock[][]>([])
+  const [redoStack, setRedoStack] = useState<readonly ActivityBlock[][]>([])
+  const UNDO_LIMIT = 30
   const [planOpen, setPlanOpen] = useState(false)
   const [composerOpen, setComposerOpen] = useState(false)
   const [composerStage, setComposerStage] = useState<'quick' | 'details'>('quick')
@@ -496,6 +557,8 @@ export default function DayNightScreen() {
     startMin: null,
     lastMin: null,
     painted: new Set(),
+    paintMins: new Set(),
+    eraseMins: new Set(),
     snapshot: [],
     moved: false,
     tapCell: null,
@@ -531,6 +594,13 @@ export default function DayNightScreen() {
   }, [selectedDate])
 
   // detail span 打开时，按时段拉对应窗口切换事件
+  // 编辑模式或焦点行变化时，UI 上方 toolbar 会改变 cellArea 的屏幕 y 偏移。
+  // onLayout 不一定及时触发（cellArea 自身尺寸没变），所以这里主动重 measure。
+  useEffect(() => {
+    const t = setTimeout(measureArea, 80)
+    return () => clearTimeout(t)
+  }, [editMode, focusStart])
+
   useEffect(() => {
     if (!detail) {
       setProbeEvents([])
@@ -729,32 +799,54 @@ export default function DayNightScreen() {
     return { kind: 'compressed', hour: row.hours[col] }
   }
 
-  // 把"起点 minute → 当前 minute"区间内所有 5min 格按拖拽模式应用
-  // 始终基于 snapshot 重建，反向拖能自然回退
+  // 经过旧色块的逻辑（对齐 desktop DayNightChart commitDragOrCancel）：
+  //   每个 5min cell 基于 snapshot 独立判断 paint / erase / replace ——
+  //     空 + 有 brush       → paint
+  //     同 brush 色         → erase（再点一次取消）
+  //     异色 + 有 brush     → replace（paint，UPSERT 覆盖）
+  //     任何 + 无 brush     → erase
+  //   不再用整段统一 mode；混色拖拽会智能地擦同色 + 覆盖异色
   const applyRange = (currMin: number) => {
     const d = dragRef.current
     if (d.startMin == null) return
     const { selectedTagId: tagId, selectedDate: date } = interactionRef.current
-    if (d.mode === 'paint' && tagId == null) return
-
     const lo = Math.min(d.startMin, currMin)
     const hi = Math.max(d.startMin, currMin)
-    const target = new Set<number>()
-    for (let m = lo; m <= hi; m += 5) target.add(m)
+    const inRange = new Set<number>()
+    for (let m = lo; m <= hi; m += 5) inRange.add(m)
 
-    if (d.mode === 'paint') {
-      const next = d.snapshot.filter((b) => !target.has(b.minute))
-      const stamp = new Date().toISOString()
-      const dateStr = toLocalDateStr(date)
-      target.forEach((m) => {
-        next.push({ date: dateStr, minute: m, tagId: tagId as number, note: null, createdAt: stamp })
-      })
-      setBlocks(next)
-    } else {
-      // erase：删除区间内所有原有 block（不限 tag）
-      setBlocks(d.snapshot.filter((b) => !target.has(b.minute)))
+    const initial = new Map<number, number>()
+    d.snapshot.forEach((b) => initial.set(b.minute, b.tagId))
+
+    const paintMins = new Set<number>()
+    const eraseMins = new Set<number>()
+    for (const m of inRange) {
+      const existing = initial.get(m)
+      if (existing === undefined) {
+        if (tagId != null) paintMins.add(m)
+      } else if (existing === tagId) {
+        eraseMins.add(m)
+      } else if (tagId != null) {
+        paintMins.add(m)
+      } else {
+        eraseMins.add(m)
+      }
     }
-    d.painted = target
+
+    const stamp = new Date().toISOString()
+    const dateStr = toLocalDateStr(date)
+    const out: ActivityBlock[] = []
+    d.snapshot.forEach((b) => {
+      if (!inRange.has(b.minute)) out.push(b)
+    })
+    paintMins.forEach((m) => {
+      out.push({ date: dateStr, minute: m, tagId: tagId as number, note: null, createdAt: stamp })
+    })
+    setBlocks(out)
+    // 记到 dragRef 给 release 时分批 commit
+    d.paintMins = paintMins
+    d.eraseMins = eraseMins
+    d.painted = inRange
   }
 
   // ── 格子区手势：编辑拖拽涂色 / 查看点按详情 ──
@@ -770,15 +862,17 @@ export default function DayNightScreen() {
           startMin: cell && cell.kind === 'full' ? cell.minute : null,
           lastMin: cell && cell.kind === 'full' ? cell.minute : null,
           painted: new Set(),
+          paintMins: new Set(),
+          eraseMins: new Set(),
           snapshot: interactionRef.current.blocks,
           moved: false,
           tapCell: cell,
         }
         dragRef.current = d
         if (em && cell && cell.kind === 'full') {
-          // 起点同色 → 整段擦除；空格或异色 → 整段覆盖成当前画笔色
+          // 仅记录起点主导意图（保留旧字段，commit 时仍按每 cell 独立判断）
           const existing = bm.get(cell.minute)
-          d.mode = existing != null && existing === tagId ? 'erase' : 'paint'
+          d.mode = existing != null && existing.tagId === tagId ? 'erase' : 'paint'
           applyRange(cell.minute)
         }
       },
@@ -798,12 +892,18 @@ export default function DayNightScreen() {
         const { editMode: em, selectedTagId: tagId, spans: sp, selectedDate: date } =
           interactionRef.current
         if (em) {
-          const mins = Array.from(d.painted)
-          if (mins.length === 0) return
-          if (d.mode === 'paint' && tagId != null) {
-            paintBlocks(date, mins, tagId)
-          } else if (d.mode === 'erase') {
-            eraseBlocks(date, mins)
+          const paintArr = Array.from(d.paintMins)
+          const eraseArr = Array.from(d.eraseMins)
+          if (paintArr.length === 0 && eraseArr.length === 0) return
+          // 推 undo（snapshot = 操作前的 blocks），清空 redo
+          setUndoStack((prev) => [...prev.slice(-(UNDO_LIMIT - 1)), d.snapshot])
+          setRedoStack([])
+          // 分批写后端：paint 走 tagId / erase 不带 tagId
+          if (paintArr.length > 0 && tagId != null) {
+            paintBlocks(date, paintArr, tagId)
+          }
+          if (eraseArr.length > 0) {
+            eraseBlocks(date, eraseArr)
           }
           return
         }
@@ -836,10 +936,58 @@ export default function DayNightScreen() {
     }),
   ).current
 
+  // onLayout 时 measure 一次拿 window 坐标；PanResponderGrant 时会再 measure 一次兜底
   const measureArea = () => {
     cellAreaRef.current?.measureInWindow((x, y, w, h) => {
       areaRef.current = { x, y, w, h }
     })
+  }
+
+  // 算 from → to 的差异，转成 paint/erase 调用（对齐 desktop applyBlocksDelta）
+  const applyBlocksDelta = async (fromBlocks: ActivityBlock[], toBlocks: ActivityBlock[]) => {
+    const fromMap = new Map(fromBlocks.map((b) => [b.minute, b.tagId]))
+    const toMap = new Map(toBlocks.map((b) => [b.minute, b.tagId]))
+    const paintByTag = new Map<number, number[]>()
+    const eraseMinutes: number[] = []
+    for (const [m, fromTag] of fromMap) {
+      const toTag = toMap.get(m)
+      if (toTag === undefined) {
+        eraseMinutes.push(m)
+      } else if (toTag !== fromTag) {
+        if (!paintByTag.has(toTag)) paintByTag.set(toTag, [])
+        paintByTag.get(toTag)!.push(m)
+      }
+    }
+    for (const [m, toTag] of toMap) {
+      if (!fromMap.has(m)) {
+        if (!paintByTag.has(toTag)) paintByTag.set(toTag, [])
+        paintByTag.get(toTag)!.push(m)
+      }
+    }
+    if (eraseMinutes.length > 0) await eraseBlocks(selectedDate, eraseMinutes)
+    for (const [tagId, mins] of paintByTag) {
+      if (mins.length > 0) await paintBlocks(selectedDate, mins, tagId)
+    }
+  }
+
+  const handleUndo = () => {
+    if (undoStack.length === 0) return
+    const popped = undoStack[undoStack.length - 1]
+    const current = blocks
+    setRedoStack((prev) => [...prev.slice(-(UNDO_LIMIT - 1)), current])
+    setUndoStack((prev) => prev.slice(0, -1))
+    setBlocks(popped)
+    void applyBlocksDelta(current, popped)
+  }
+
+  const handleRedo = () => {
+    if (redoStack.length === 0) return
+    const popped = redoStack[redoStack.length - 1]
+    const current = blocks
+    setUndoStack((prev) => [...prev.slice(-(UNDO_LIMIT - 1)), current])
+    setRedoStack((prev) => prev.slice(0, -1))
+    setBlocks(popped)
+    void applyBlocksDelta(current, popped)
   }
 
   const eraseSpan = (span: Span) => {
@@ -997,9 +1145,37 @@ export default function DayNightScreen() {
                 )
               })}
               <Pressable
-                onPress={() => setEditMode(false)}
-                style={[styles.donePillBtn, { marginLeft: 'auto' }]}
+                onPress={handleUndo}
+                disabled={undoStack.length === 0}
+                style={[
+                  styles.iconBtn,
+                  { marginLeft: 'auto' },
+                  undoStack.length === 0 && styles.iconBtnDisabled,
+                ]}
               >
+                <Text
+                  style={[
+                    styles.iconBtnText,
+                    undoStack.length === 0 && styles.iconBtnTextDisabled,
+                  ]}
+                >↶</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleRedo}
+                disabled={redoStack.length === 0}
+                style={[
+                  styles.iconBtn,
+                  redoStack.length === 0 && styles.iconBtnDisabled,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.iconBtnText,
+                    redoStack.length === 0 && styles.iconBtnTextDisabled,
+                  ]}
+                >↷</Text>
+              </Pressable>
+              <Pressable onPress={() => setEditMode(false)} style={styles.donePillBtn}>
                 <Text style={styles.donePillText}>完成</Text>
               </Pressable>
             </View>
@@ -1710,6 +1886,31 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     fontWeight: '600',
     color: theme.ink,
+  },
+  // 与右侧 donePillBtn 风格一致：同圆角、同 padding，仅颜色更次要
+  iconBtn: {
+    width: 38,
+    paddingVertical: 7,
+    borderRadius: 14,
+    backgroundColor: alpha(theme.ink, 0.08),
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconBtnDisabled: {
+    backgroundColor: alpha(theme.ink, 0.03),
+  },
+  iconBtnText: {
+    fontSize: 18,
+    lineHeight: 18,
+    fontWeight: '700',
+    color: theme.ink,
+    includeFontPadding: false,
+    textAlignVertical: 'center',
+    // ↶ ↷ unicode glyph 基线偏下，向上推 2px 让视觉中心对齐
+    transform: [{ translateY: -2 }],
+  },
+  iconBtnTextDisabled: {
+    color: theme.inkFaint,
   },
   donePillBtn: {
     paddingHorizontal: 12,
