@@ -167,6 +167,85 @@ class SoloDbModule(private val reactContext: ReactApplicationContext) :
     } catch (e: Throwable) { promise.reject("SOLODB_PAINT_FAILED", e.message, e) }
   }
 
+  // ── Sync export ──
+
+  @ReactMethod
+  fun exportSync(since: String?, promise: Promise) {
+    try {
+      val ex = db.exportSync(since)
+      val out = Arguments.createMap().apply {
+        putString("deviceId", ex.deviceId)
+        putString("exportedAt", ex.exportedAt)
+        putString("cursor", ex.cursor)
+        putArray("activityCategories", Arguments.createArray().apply {
+          for (r in ex.activityCategories) pushMap(Arguments.createMap().apply {
+            putString("syncId", r.syncId)
+            putString("name", r.name)
+            putString("color", r.color)
+            putInt("sortOrder", r.sortOrder)
+            putString("createdAt", r.createdAt)
+            putString("lastUsedAt", r.lastUsedAt)
+            putString("updatedAt", r.updatedAt)
+            r.deletedAt?.let { putString("deletedAt", it) }
+          })
+        })
+        putArray("activityTags", Arguments.createArray().apply {
+          for (r in ex.activityTags) pushMap(Arguments.createMap().apply {
+            putString("syncId", r.syncId)
+            putString("categorySyncId", r.categorySyncId)
+            putString("fullPath", r.fullPath)
+            putString("leafName", r.leafName)
+            putInt("depth", r.depth)
+            putString("createdAt", r.createdAt)
+            putString("lastUsedAt", r.lastUsedAt)
+            putString("updatedAt", r.updatedAt)
+            r.deletedAt?.let { putString("deletedAt", it) }
+          })
+        })
+        putArray("activityBlocks", Arguments.createArray().apply {
+          for (r in ex.activityBlocks) pushMap(Arguments.createMap().apply {
+            putString("syncId", r.syncId)
+            putString("date", r.date)
+            putInt("minute", r.minute)
+            putString("tagSyncId", r.tagSyncId)
+            r.note?.let { putString("note", it) }
+            putString("createdAt", r.createdAt)
+            putString("updatedAt", r.updatedAt)
+            r.deletedAt?.let { putString("deletedAt", it) }
+          })
+        })
+        putArray("planNodes", Arguments.createArray().apply {
+          for (r in ex.planNodes) pushMap(Arguments.createMap().apply {
+            putString("syncId", r.syncId)
+            putString("projectTagSyncId", r.projectTagSyncId)
+            r.parentSyncId?.let { putString("parentSyncId", it) }
+            putString("title", r.title)
+            putString("status", r.status)
+            putInt("sortOrder", r.sortOrder)
+            putString("createdAt", r.createdAt)
+            putString("updatedAt", r.updatedAt)
+            r.deletedAt?.let { putString("deletedAt", it) }
+          })
+        })
+        putArray("plannedBlocks", Arguments.createArray().apply {
+          for (r in ex.plannedBlocks) pushMap(Arguments.createMap().apply {
+            putString("syncId", r.syncId)
+            putString("date", r.date)
+            putInt("minute", r.minute)
+            putString("planNodeSyncId", r.planNodeSyncId)
+            r.note?.let { putString("note", it) }
+            putString("createdAt", r.createdAt)
+            putString("updatedAt", r.updatedAt)
+            r.deletedAt?.let { putString("deletedAt", it) }
+          })
+        })
+      }
+      promise.resolve(out)
+    } catch (e: Throwable) {
+      promise.reject("SOLODB_EXPORT_FAILED", e.message, e)
+    }
+  }
+
   @ReactMethod
   fun eraseBlocks(date: String, minutes: ReadableArray, promise: Promise) {
     try {

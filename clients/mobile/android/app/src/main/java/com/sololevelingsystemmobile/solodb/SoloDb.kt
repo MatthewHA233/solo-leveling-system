@@ -337,6 +337,166 @@ class SoloDb(context: Context) :
     }
   }
 
+  // ── Sync export ── 镜像 desktop SyncExport：用 sync_id 而非 local id，
+  // tags / blocks / plan_nodes / planned_blocks 都 JOIN 出关联表的 sync_id。
+  // 对端 import 时按 sync_id 匹配或建 FK 关系，跨设备稳定。
+
+  data class SyncCategoryRow(
+    val syncId: String, val name: String, val color: String, val sortOrder: Int,
+    val createdAt: String, val lastUsedAt: String,
+    val updatedAt: String, val deletedAt: String?,
+  )
+
+  data class SyncTagRow(
+    val syncId: String, val categorySyncId: String,
+    val fullPath: String, val leafName: String, val depth: Int,
+    val createdAt: String, val lastUsedAt: String,
+    val updatedAt: String, val deletedAt: String?,
+  )
+
+  data class SyncBlockRow(
+    val syncId: String, val date: String, val minute: Int,
+    val tagSyncId: String, val note: String?,
+    val createdAt: String, val updatedAt: String, val deletedAt: String?,
+  )
+
+  data class SyncPlanNodeRow(
+    val syncId: String, val projectTagSyncId: String,
+    val parentSyncId: String?, val title: String, val status: String, val sortOrder: Int,
+    val createdAt: String, val updatedAt: String, val deletedAt: String?,
+  )
+
+  data class SyncPlannedBlockRow(
+    val syncId: String, val date: String, val minute: Int,
+    val planNodeSyncId: String, val note: String?,
+    val createdAt: String, val updatedAt: String, val deletedAt: String?,
+  )
+
+  data class SyncExport(
+    val deviceId: String,
+    val exportedAt: String,
+    val cursor: String,
+    val activityCategories: List<SyncCategoryRow>,
+    val activityTags: List<SyncTagRow>,
+    val activityBlocks: List<SyncBlockRow>,
+    val planNodes: List<SyncPlanNodeRow>,
+    val plannedBlocks: List<SyncPlannedBlockRow>,
+  )
+
+  /**
+   * 按 since cursor 增量导出（updated_at > since 或 deleted_at > since）。
+   * since = null → 全量导出。
+   */
+  fun exportSync(since: String?): SyncExport {
+    val db = readableDatabase
+    val exportedAt = nowIso()
+    val devId = deviceId()
+    val changed: (String, String?) -> Boolean = { u, d ->
+      since == null || u > since || (d != null && d > since)
+    }
+
+    val cats = ArrayList<SyncCategoryRow>()
+    db.rawQuery(
+      "SELECT sync_id, name, color, sort_order, created_at, last_used_at, updated_at, deleted_at FROM activity_categories",
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        val u = c.getString(6); val d = c.getString(7)
+        if (!changed(u, d)) continue
+        cats.add(SyncCategoryRow(
+          c.getString(0), c.getString(1), c.getString(2), c.getInt(3),
+          c.getString(4), c.getString(5), u, d,
+        ))
+      }
+    }
+
+    val tags = ArrayList<SyncTagRow>()
+    db.rawQuery(
+      """SELECT t.sync_id, c.sync_id, t.full_path, t.leaf_name, t.depth,
+                t.created_at, t.last_used_at, t.updated_at, t.deleted_at
+         FROM activity_tags t
+         JOIN activity_categories c ON c.id = t.category_id""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        val u = c.getString(7); val d = c.getString(8)
+        if (!changed(u, d)) continue
+        tags.add(SyncTagRow(
+          c.getString(0), c.getString(1), c.getString(2), c.getString(3), c.getInt(4),
+          c.getString(5), c.getString(6), u, d,
+        ))
+      }
+    }
+
+    val blocks = ArrayList<SyncBlockRow>()
+    db.rawQuery(
+      """SELECT b.sync_id, b.date, b.minute, t.sync_id, b.note,
+                b.created_at, b.updated_at, b.deleted_at
+         FROM activity_blocks b
+         JOIN activity_tags t ON t.id = b.tag_id""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        val u = c.getString(6); val d = c.getString(7)
+        if (!changed(u, d)) continue
+        blocks.add(SyncBlockRow(
+          c.getString(0), c.getString(1), c.getInt(2), c.getString(3), c.getString(4),
+          c.getString(5), u, d,
+        ))
+      }
+    }
+
+    val planNodes = ArrayList<SyncPlanNodeRow>()
+    db.rawQuery(
+      """SELECT n.sync_id, t.sync_id, p.sync_id,
+                n.title, n.status, n.sort_order,
+                n.created_at, n.updated_at, n.deleted_at
+         FROM plan_nodes n
+         JOIN activity_tags t ON t.id = n.project_tag_id
+         LEFT JOIN plan_nodes p ON p.id = n.parent_id""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        val u = c.getString(7); val d = c.getString(8)
+        if (!changed(u, d)) continue
+        planNodes.add(SyncPlanNodeRow(
+          c.getString(0), c.getString(1), c.getString(2),
+          c.getString(3), c.getString(4), c.getInt(5),
+          c.getString(6), u, d,
+        ))
+      }
+    }
+
+    val plannedBlocks = ArrayList<SyncPlannedBlockRow>()
+    db.rawQuery(
+      """SELECT pb.sync_id, pb.date, pb.minute, n.sync_id, pb.note,
+                pb.created_at, pb.updated_at, pb.deleted_at
+         FROM planned_blocks pb
+         JOIN plan_nodes n ON n.id = pb.plan_node_id""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        val u = c.getString(6); val d = c.getString(7)
+        if (!changed(u, d)) continue
+        plannedBlocks.add(SyncPlannedBlockRow(
+          c.getString(0), c.getString(1), c.getInt(2), c.getString(3), c.getString(4),
+          c.getString(5), u, d,
+        ))
+      }
+    }
+
+    return SyncExport(
+      deviceId = devId,
+      exportedAt = exportedAt,
+      cursor = exportedAt,
+      activityCategories = cats,
+      activityTags = tags,
+      activityBlocks = blocks,
+      planNodes = planNodes,
+      plannedBlocks = plannedBlocks,
+    )
+  }
+
   /** 当前 device_id（从 sync_meta 读出）。 */
   fun deviceId(): String {
     return readableDatabase.rawQuery(

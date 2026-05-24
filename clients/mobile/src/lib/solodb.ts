@@ -60,6 +60,76 @@ export type UpsertCategoryArgs = {
   lastUsedAt?: string
 }
 
+// ── Sync export 类型（镜像 desktop SyncExport） ──
+
+export type SyncCategoryRow = {
+  syncId: string
+  name: string
+  color: string
+  sortOrder: number
+  createdAt: string
+  lastUsedAt: string
+  updatedAt: string
+  deletedAt?: string
+}
+
+export type SyncTagRow = {
+  syncId: string
+  categorySyncId: string
+  fullPath: string
+  leafName: string
+  depth: number
+  createdAt: string
+  lastUsedAt: string
+  updatedAt: string
+  deletedAt?: string
+}
+
+export type SyncBlockRow = {
+  syncId: string
+  date: string
+  minute: number
+  tagSyncId: string
+  note?: string
+  createdAt: string
+  updatedAt: string
+  deletedAt?: string
+}
+
+export type SyncPlanNodeRow = {
+  syncId: string
+  projectTagSyncId: string
+  parentSyncId?: string
+  title: string
+  status: string
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+  deletedAt?: string
+}
+
+export type SyncPlannedBlockRow = {
+  syncId: string
+  date: string
+  minute: number
+  planNodeSyncId: string
+  note?: string
+  createdAt: string
+  updatedAt: string
+  deletedAt?: string
+}
+
+export type SyncExport = {
+  deviceId: string
+  exportedAt: string
+  cursor: string
+  activityCategories: SyncCategoryRow[]
+  activityTags: SyncTagRow[]
+  activityBlocks: SyncBlockRow[]
+  planNodes: SyncPlanNodeRow[]
+  plannedBlocks: SyncPlannedBlockRow[]
+}
+
 export type UpsertTagArgs = {
   categoryId: number
   fullPath: string
@@ -81,6 +151,7 @@ interface SoloDbNative {
   upsertTag(args: UpsertTagArgs): Promise<number>
   paintBlocks(date: string, minutes: number[], tagId: number): Promise<number>
   eraseBlocks(date: string, minutes: number[]): Promise<number>
+  exportSync(since: string | null): Promise<SyncExport>
 }
 
 const Native: SoloDbNative | null =
@@ -138,4 +209,20 @@ export async function soloPaintBlocks(date: string, minutes: number[], tagId: nu
 export async function soloEraseBlocks(date: string, minutes: number[]): Promise<number> {
   if (!Native) return 0
   return Native.eraseBlocks(date, minutes)
+}
+
+/**
+ * 增量导出（since cursor 之后 updated_at 或 deleted_at 变化的行）。
+ * since = null → 全量。返回结构对齐 desktop SyncExport，可直接用作
+ * POST /api/sync/import 的 body 给对端 LWW 合并。
+ */
+export async function soloExportSync(since: string | null = null): Promise<SyncExport> {
+  if (!Native) {
+    return {
+      deviceId: '', exportedAt: '', cursor: '',
+      activityCategories: [], activityTags: [], activityBlocks: [],
+      planNodes: [], plannedBlocks: [],
+    }
+  }
+  return Native.exportSync(since)
 }

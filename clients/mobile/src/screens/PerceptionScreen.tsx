@@ -10,7 +10,9 @@ import {
   getSoloDbDeviceId,
   getSoloDbStats,
   isSoloDbAvailable,
+  soloExportSync,
   type SoloDbStats,
+  type SyncExport,
 } from '../lib/solodb'
 import { seedSoloDbIfEmpty, type SeedReport } from '../lib/solodb_seed'
 import {
@@ -55,6 +57,7 @@ export default function PerceptionScreen() {
   const [soloDeviceId, setSoloDeviceId] = useState<string>('')
   const [seedReport, setSeedReport] = useState<SeedReport | null>(null)
   const [seeding, setSeeding] = useState(false)
+  const [exportSummary, setExportSummary] = useState<string>('')
   const [windowEvents, setWindowEvents] = useState<WindowEvent[]>([])
   const [clicks, setClicks] = useState<ClickCountSnapshot>({ total: 0, entries: [] })
 
@@ -67,6 +70,7 @@ export default function PerceptionScreen() {
     void refreshWindowEvents()
     void refreshClicks()
     void refreshSoloDb()
+    void runExport()
   }, [])
 
   async function refreshSoloDb() {
@@ -76,6 +80,20 @@ export default function PerceptionScreen() {
       setSoloStats(s)
     } catch {
       setSoloStats(null)
+    }
+  }
+
+  async function runExport() {
+    try {
+      const ex: SyncExport = await soloExportSync(null)
+      setExportSummary(
+        `cats=${ex.activityCategories.length} tags=${ex.activityTags.length} ` +
+        `blocks=${ex.activityBlocks.length} pNodes=${ex.planNodes.length} ` +
+        `pBlocks=${ex.plannedBlocks.length} · cursor=${ex.cursor.slice(11, 19)} ` +
+        `· device=${ex.deviceId.slice(0, 8)}`
+      )
+    } catch (e: any) {
+      setExportSummary(`error: ${e?.message ?? String(e)}`)
     }
   }
 
@@ -246,10 +264,18 @@ export default function PerceptionScreen() {
           <Pressable style={styles.btn} onPress={runSeed} disabled={seeding}>
             <Text style={styles.btnText}>{seeding ? 'seed 中…' : '手动 seed'}</Text>
           </Pressable>
+          <Pressable style={[styles.btn, styles.btnGhost]} onPress={runExport}>
+            <Text style={[styles.btnText, styles.btnGhostText]}>测试 export</Text>
+          </Pressable>
           <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshSoloDb}>
             <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
           </Pressable>
         </View>
+        {!!exportSummary && (
+          <Text style={[styles.cardSub, { marginTop: 8 }]} numberOfLines={2}>
+            export: {exportSummary}
+          </Text>
+        )}
         {seedReport && (
           <View style={{ marginTop: 10 }}>
             <Text style={styles.cardSub}>
