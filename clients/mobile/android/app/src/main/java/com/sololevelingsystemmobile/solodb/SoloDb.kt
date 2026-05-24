@@ -631,6 +631,12 @@ class SoloDb(context: Context) :
       }
 
       // ── activity_blocks ── (要先有 tags)
+      // 槽位双键挑战：sync_id UNIQUE + PRIMARY KEY(date, minute)。
+      // 同 sync_id 跨槽位迁移（block 被改时间或日期）时旧 INSERT 只 ON CONFLICT(date,minute)
+      // 会撞 UNIQUE(sync_id) → 整事务回滚。
+      // 正确做法：先按 sync_id 查 local row：
+      //   有 → 删旧槽位 + 在新槽位 UPSERT（保证 sync_id 唯一性）
+      //   无 → 直接 UPSERT 到 (date, minute) 槽，槽里有别人覆盖
       for (row in payload.activityBlocks) {
         if (!shouldApplySyncRow(db, "activity_blocks", row.syncId, row.updatedAt)) {
           skipped++; continue
@@ -640,6 +646,11 @@ class SoloDb(context: Context) :
         }
         val tagId = lookupIdBySync(db, "activity_tags", row.tagSyncId)
         if (tagId == null) { skipped++; continue }
+        // 先删 sync_id 对应的任何旧槽位（如果 row.date/minute 跟旧槽不一致就生效）
+        db.execSQL(
+          "DELETE FROM activity_blocks WHERE sync_id = ? AND NOT (date = ? AND minute = ?)",
+          arrayOf(row.syncId, row.date, row.minute),
+        )
         db.execSQL(
           """INSERT INTO activity_blocks
                (sync_id, date, minute, tag_id, note, created_at, updated_at, deleted_at)
@@ -654,7 +665,7 @@ class SoloDb(context: Context) :
         blocks++
       }
 
-      // ── planned_blocks ── (要先有 plan_nodes)
+      // ── planned_blocks ── (要先有 plan_nodes) ── 同 activity_blocks 双键处理
       for (row in payload.plannedBlocks) {
         if (!shouldApplySyncRow(db, "planned_blocks", row.syncId, row.updatedAt)) {
           skipped++; continue
@@ -664,6 +675,10 @@ class SoloDb(context: Context) :
         }
         val planNodeId = lookupIdBySync(db, "plan_nodes", row.planNodeSyncId)
         if (planNodeId == null) { skipped++; continue }
+        db.execSQL(
+          "DELETE FROM planned_blocks WHERE sync_id = ? AND NOT (date = ? AND minute = ?)",
+          arrayOf(row.syncId, row.date, row.minute),
+        )
         db.execSQL(
           """INSERT INTO planned_blocks
                (sync_id, date, minute, plan_node_id, note, created_at, updated_at, deleted_at)
@@ -759,8 +774,14 @@ class SoloDb(context: Context) :
     private const val DB_NAME = "solo.db"
     private const val DB_VERSION = 1
 
-    private val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
-      timeZone = TimeZone.getTimeZone("UTC")
+    // 必须跟 desktop db.rs local_now_string() 格式严格一致：
+    // `yyyy-MM-dd HH:mm:ss` + 本地时区（无 'T' 无 'Z' 无毫秒）
+    // 字符串字典序与真实时间顺序在同时区内一致，LWW 才能正确工作。
+    // 之前用 UTC ISO 会让字符串比较错乱（空格 0x20 < 'T' 0x54）：
+    //   desktop "2026-05-24 12:00:00"  <  mobile "2026-05-24T11:00:00.000Z"
+    //   ASCII 比较被误判为 desktop 更早，LWW 错过 desktop 更新
+    private val isoFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).apply {
+      timeZone = TimeZone.getDefault()
     }
 
     fun nowIso(): String = isoFmt.format(Date())
