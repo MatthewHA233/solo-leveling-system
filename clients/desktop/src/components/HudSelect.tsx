@@ -28,6 +28,7 @@ interface Props<T extends string> {
   readonly placeholder?: string
   readonly disabled?: boolean
   readonly popupWidth?: number
+  readonly popupZIndex?: number
   /** true：触发器宽度跟随内容，与按钮同行排列；默认 false（占满父容器宽度） */
   readonly inline?: boolean
 }
@@ -47,7 +48,7 @@ const HARD_MAX_WIDTH = 460
 const TRIGGER_GAP = 4
 
 export default function HudSelect<T extends string>({
-  value, options, onChange, placeholder, disabled, inline, popupWidth,
+  value, options, onChange, placeholder, disabled, inline, popupWidth, popupZIndex = 9999,
 }: Props<T>) {
   const [open, setOpen] = useState(false)
   const [hover, setHover] = useState(false)
@@ -210,7 +211,7 @@ export default function HudSelect<T extends string>({
             width: pos.width,
             maxWidth: pos.width,
             maxHeight: pos.maxHeight,
-            zIndex: 9999,
+            zIndex: popupZIndex,
             background: theme.panelDeep,
             border: `1px solid rgba(0,229,255,0.45)`,
             borderRadius: 4,

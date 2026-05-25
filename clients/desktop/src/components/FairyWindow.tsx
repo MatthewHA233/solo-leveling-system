@@ -52,6 +52,8 @@ const PANEL_SIZES: Record<FairyPanelMode, { w: number; h: number }> = {
   chat: { w: 320, h: 238 },
   models: { w: 350, h: 268 },
 }
+const PANEL_Z_INDEX = 10020
+const PANEL_POPUP_Z_INDEX = PANEL_Z_INDEX + 30
 const PANEL_BOUNDS_SIZE = Object.values(PANEL_SIZES).reduce(
   (acc, size) => ({
     w: Math.max(acc.w, size.w),
@@ -581,7 +583,7 @@ export default function FairyWindow() {
         }
         .fairy-context-menu {
           position: fixed;
-          z-index: 10020;
+          z-index: ${PANEL_Z_INDEX};
           width: ${panel ? getPanelSize(panel.mode).w : PANEL_SIZES.menu.w}px;
           padding: 8px;
           box-sizing: border-box;
@@ -908,6 +910,7 @@ function FeatureModelSelect({
         onChange={onChange}
         disabled={disabled || options.length === 0}
         popupWidth={MODEL_POPUP_WIDTH}
+        popupZIndex={PANEL_POPUP_Z_INDEX}
         placeholder={disabled ? '加载中...' : '选择模型'}
       />
     </div>
