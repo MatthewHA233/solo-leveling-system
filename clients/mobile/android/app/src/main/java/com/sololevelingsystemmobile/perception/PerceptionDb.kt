@@ -82,6 +82,30 @@ class PerceptionDb(context: Context) :
       );
       """.trimIndent()
     )
+
+    createTorrentTables(db)
+  }
+
+  /** "洪流域"raw 文本捕获：每次 a11y 抓到的文本都入库，调试期不做去重
+   *  后期可加自动清理（如保留最近 N 天）。capture_type: a11y-view / a11y-click */
+  private fun createTorrentTables(db: SQLiteDatabase) {
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS torrent_capture_android (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_time_ms INTEGER NOT NULL,
+        package_name TEXT NOT NULL,
+        window_class TEXT NOT NULL DEFAULT '',
+        capture_type TEXT NOT NULL,
+        text TEXT NOT NULL,
+        text_hash TEXT NOT NULL,
+        source_class TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      """.trimIndent()
+    )
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_torrent_time ON torrent_capture_android(event_time_ms);")
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_torrent_pkg_time ON torrent_capture_android(package_name, event_time_ms);")
   }
 
   override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -89,6 +113,7 @@ class PerceptionDb(context: Context) :
     db.execSQL("DROP TABLE IF EXISTS perception_events_android")
     db.execSQL("DROP TABLE IF EXISTS perception_buckets_android")
     db.execSQL("DROP TABLE IF EXISTS app_catalog_android")
+    db.execSQL("DROP TABLE IF EXISTS torrent_capture_android")
     onCreate(db)
   }
 
@@ -376,9 +401,120 @@ class PerceptionDb(context: Context) :
     val eventTimeMs: Long,
   )
 
+  data class TorrentCaptureSnapshot(
+    val rowId: Long,
+    val eventTimeMs: Long,
+    val packageName: String,
+    val windowClass: String,
+    val captureType: String,
+    val text: String,
+    val textHash: String,
+    val sourceClass: String,
+  )
+
+  /** raw 文本捕获插入：调试期不做去重，每次抓到都入库
+   *  text_hash 还是计算保留（后续 UI / 分析可用），但不再用作去重 key */
+  fun insertTorrentCapture(
+    eventTimeMs: Long,
+    packageName: String,
+    windowClass: String,
+    captureType: String,
+    text: String,
+    sourceClass: String,
+  ): Boolean {
+    if (text.isBlank()) return false
+    val hash = sha256Short(text)
+    val db = writableDatabase
+    val cv = ContentValues().apply {
+      put("event_time_ms", eventTimeMs)
+      put("package_name", packageName)
+      put("window_class", windowClass)
+      put("capture_type", captureType)
+      put("text", text)
+      put("text_hash", hash)
+      put("source_class", sourceClass)
+    }
+    db.insertOrThrow("torrent_capture_android", null, cv)
+    return true
+  }
+
+  /** 按时间区间倒序返回，最多 limit 条 */
+  fun torrentCapturesInRange(startMs: Long, endMs: Long, limit: Int): List<TorrentCaptureSnapshot> {
+    val db = readableDatabase
+    val cap = limit.coerceIn(1, 50000)
+    val out = ArrayList<TorrentCaptureSnapshot>()
+    db.rawQuery(
+      """
+      SELECT id, event_time_ms, package_name, window_class, capture_type, text, text_hash, source_class
+      FROM torrent_capture_android
+      WHERE event_time_ms >= ? AND event_time_ms < ?
+      ORDER BY event_time_ms DESC
+      LIMIT ?
+      """.trimIndent(),
+      arrayOf(startMs.toString(), endMs.toString(), cap.toString()),
+    ).use { c ->
+      while (c.moveToNext()) {
+        out.add(TorrentCaptureSnapshot(
+          rowId = c.getLong(0),
+          eventTimeMs = c.getLong(1),
+          packageName = c.getString(2),
+          windowClass = c.getString(3),
+          captureType = c.getString(4),
+          text = c.getString(5),
+          textHash = c.getString(6),
+          sourceClass = c.getString(7),
+        ))
+      }
+    }
+    return out
+  }
+
+  /** 最近 N 条（任意 package），调试 / 时间线倒序 */
+  fun recentTorrentCaptures(limit: Int): List<TorrentCaptureSnapshot> {
+    val db = readableDatabase
+    val cap = limit.coerceIn(1, 50000)
+    val out = ArrayList<TorrentCaptureSnapshot>()
+    db.rawQuery(
+      """
+      SELECT id, event_time_ms, package_name, window_class, capture_type, text, text_hash, source_class
+      FROM torrent_capture_android
+      ORDER BY event_time_ms DESC
+      LIMIT ?
+      """.trimIndent(),
+      arrayOf(cap.toString()),
+    ).use { c ->
+      while (c.moveToNext()) {
+        out.add(TorrentCaptureSnapshot(
+          rowId = c.getLong(0),
+          eventTimeMs = c.getLong(1),
+          packageName = c.getString(2),
+          windowClass = c.getString(3),
+          captureType = c.getString(4),
+          text = c.getString(5),
+          textHash = c.getString(6),
+          sourceClass = c.getString(7),
+        ))
+      }
+    }
+    return out
+  }
+
+  fun countTorrentCaptures(): Long {
+    return readableDatabase.rawQuery("SELECT COUNT(*) FROM torrent_capture_android", null).use { c ->
+      if (c.moveToFirst()) c.getLong(0) else 0L
+    }
+  }
+
+  /** 清空所有 raw 文本捕获 */
+  fun clearTorrentCaptures(): Int {
+    val db = writableDatabase
+    return db.delete("torrent_capture_android", null, null)
+  }
+
   companion object {
+    const val DEDUP_WINDOW_MS = 5 * 60 * 1000L  // 5 分钟去重窗
     private const val DB_NAME = "perception.db"
-    private const val DB_VERSION = 1
+    private const val DB_VERSION = 3
     private const val POWER_BUCKET_ID = "sls-watcher-power_android"
 
     private val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {

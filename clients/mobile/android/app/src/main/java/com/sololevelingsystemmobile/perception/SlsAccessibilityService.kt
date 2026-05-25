@@ -11,6 +11,7 @@ import android.provider.Settings
 import android.text.TextUtils
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -68,11 +69,92 @@ class SlsAccessibilityService : AccessibilityService() {
   }
   @Volatile private var powerReceiverRegistered = false
 
+  @Volatile private var lastTorrentSampleTs: Long = 0L
+
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     val e = event ?: return
+    // 诊断：B 站 a11y event 全打，看点视频时具体触发什么类型
+    val pkg = e.packageName?.toString() ?: ""
+    if (pkg == "tv.danmaku.bili") {
+      val typeStr = AccessibilityEvent.eventTypeToString(e.eventType)
+      val cdSrc = try { e.source?.contentDescription?.toString().orEmpty() } catch (_: Throwable) { "" }
+      Log.i(TAG, "evt=$typeStr cls=${e.className} cd='${cdSrc.take(60)}'")
+    }
     when (e.eventType) {
-      AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> handleWindowState(e)
+      AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+        handleWindowState(e)
+        maybeSampleTorrent(e, throttle = false)
+      }
       AccessibilityEvent.TYPE_VIEW_CLICKED -> handleClick(e)
+      AccessibilityEvent.TYPE_VIEW_SCROLLED,
+      AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+        maybeSampleTorrent(e, throttle = true)
+      }
+    }
+  }
+
+  /** "洪流域"抓取：限定 TORRENT_PACKAGES 白名单（先 B 站），throttle 500ms
+   *  避免滚动时每帧抓取 → 走 getRootInActiveWindow 遍历整树拿可见文本 */
+  private fun maybeSampleTorrent(e: AccessibilityEvent, throttle: Boolean) {
+    val pkg = e.packageName?.toString() ?: return
+    if (pkg !in TORRENT_PACKAGES) return
+    val now = System.currentTimeMillis()
+    if (throttle && now - lastTorrentSampleTs < TORRENT_THROTTLE_MS) return
+    lastTorrentSampleTs = now
+    val windowClass = lastClass ?: e.className?.toString() ?: ""
+    // 控件树 root 必须在主线程拿（执行 a11y 回调时已在主线程）
+    val root = try { rootInActiveWindow } catch (_: Throwable) { null } ?: return
+    // 关键过滤：rootInActiveWindow 可能拿到 SystemUI / 输入法 / 浮窗根，
+    // 即使 event.packageName == B 站，root 也可能是别的 app。
+    // 这种情况下直接跳过，不要污染洪流域
+    val rootPkg = root.packageName?.toString()
+    if (rootPkg != pkg) {
+      Log.d(TAG, "torrent skip: event pkg=$pkg but root pkg=$rootPkg")
+      return
+    }
+    val texts = ArrayList<Pair<String, String>>()  // text, source_class
+    collectTexts(root, texts, depth = 0, maxNodes = 600)
+    if (texts.isEmpty()) return
+    executor.execute {
+      try {
+        var inserted = 0
+        for ((text, srcCls) in texts) {
+          val trimmed = text.trim()
+          if (trimmed.length < 2) continue  // 跳"是""×"这种无意义短文本
+          if (db.insertTorrentCapture(
+              eventTimeMs = now,
+              packageName = pkg,
+              windowClass = windowClass,
+              captureType = "a11y-view",
+              text = trimmed,
+              sourceClass = srcCls,
+            )) inserted++
+        }
+        if (inserted > 0) {
+          Log.d(TAG, "torrent pkg=$pkg cls=$windowClass +$inserted (scanned ${texts.size})")
+        }
+      } catch (ex: Throwable) {
+        Log.w(TAG, "torrent insert failed", ex)
+      }
+    }
+  }
+
+  /** 深度优先遍历控件树，收集所有 text/contentDescription
+   *  maxNodes 防 RecyclerView 巨树爆栈 */
+  private fun collectTexts(
+    node: AccessibilityNodeInfo?,
+    out: MutableList<Pair<String, String>>,
+    depth: Int,
+    maxNodes: Int,
+  ) {
+    if (node == null || depth > 30 || out.size >= maxNodes) return
+    val cls = node.className?.toString() ?: ""
+    node.text?.toString()?.takeIf { it.isNotBlank() }?.let { out.add(it to cls) }
+    node.contentDescription?.toString()?.takeIf { it.isNotBlank() }?.let { out.add(it to cls) }
+    val n = node.childCount
+    for (i in 0 until n) {
+      collectTexts(node.getChild(i), out, depth + 1, maxNodes)
+      if (out.size >= maxNodes) break
     }
   }
 
@@ -83,6 +165,38 @@ class SlsAccessibilityService : AccessibilityService() {
       .computeIfAbsent(pkg) { AtomicLong(0L) }
       .incrementAndGet()
     totalClicks.incrementAndGet()
+    // 点击 = "用户主动选择"：抓 source view 的 contentDescription
+    // 配合 TORRENT_PACKAGES 白名单。B 站 feed 卡片的 contentDescription
+    // 就是聚合行 "视频,标题,UP主xxx,..." → 能精确还原"X 时间点了 Y 视频"
+    if (pkg !in TORRENT_PACKAGES) return
+    val now = System.currentTimeMillis()
+    val source = try { e.source } catch (_: Throwable) { null }
+    val cd = source?.contentDescription?.toString()?.trim().orEmpty()
+    val txt = source?.text?.toString()?.trim().orEmpty()
+    val sourceCls = source?.className?.toString().orEmpty()
+    val windowClass = lastClass ?: e.className?.toString() ?: ""
+    // 日志诊断：B 站 click 是否真的触发，source 是否有 cd/text
+    Log.i(TAG, "click pkg=$pkg cls=$sourceCls cd='${cd.take(50)}' txt='${txt.take(50)}'")
+    val pick = if (cd.length >= 2) cd else txt
+    if (pick.length < 2) {
+      try { source?.recycle() } catch (_: Throwable) {}
+      return
+    }
+    try { source?.recycle() } catch (_: Throwable) {}
+    executor.execute {
+      try {
+        db.insertTorrentCapture(
+          eventTimeMs = now,
+          packageName = pkg,
+          windowClass = windowClass,
+          captureType = "a11y-click",
+          text = pick,
+          sourceClass = sourceCls,
+        )
+      } catch (ex: Throwable) {
+        Log.w(TAG, "click capture insert failed", ex)
+      }
+    }
   }
 
   private fun handleWindowState(e: AccessibilityEvent) {
@@ -210,6 +324,10 @@ class SlsAccessibilityService : AccessibilityService() {
     private const val SOURCE = "android_accessibility"
 
     private const val DEDUP_WINDOW_MS = 1000L
+
+    // "洪流域"抓取白名单 + 节流。Phase 1 先 B 站
+    private val TORRENT_PACKAGES = setOf("tv.danmaku.bili")
+    private const val TORRENT_THROTTLE_MS = 500L
 
     @Volatile
     private var instanceRunning: Boolean = false

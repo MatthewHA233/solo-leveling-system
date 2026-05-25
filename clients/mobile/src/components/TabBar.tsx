@@ -7,7 +7,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native'
 import Svg, { Circle, Path, Rect } from 'react-native-svg'
 import { theme } from '../theme'
 
-export type TabKey = 'daynight' | 'chat' | 'perception'
+export type TabKey = 'daynight' | 'chat' | 'perception' | 'torrent'
 
 interface TabDef {
   key: TabKey
@@ -65,9 +65,21 @@ function IconEye({ color, size = 22 }: IconProps) {
   )
 }
 
+/** lucide Waves —— "洪流" */
+function IconWaves({ color, size = 22 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M2 6c.6.5 1.2 1 2.5 1C7 7 7 5 9.5 5c2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M2 12c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M2 18c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  )
+}
+
 const TABS: TabDef[] = [
   { key: 'daynight', label: '昼夜表', Icon: IconCalendar },
   { key: 'chat', label: '暗影聊天', Icon: IconMessage },
+  { key: 'torrent', label: '洪流域', Icon: IconWaves },
   { key: 'perception', label: '感知', Icon: IconEye },
 ]
 

@@ -289,6 +289,66 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  // ── 洪流域 raw 文本捕获查询 ──
+
+  @ReactMethod
+  fun getRecentTorrentCaptures(limit: Double, promise: Promise) {
+    try {
+      val list = db.recentTorrentCaptures(limit.toInt())
+      val arr = Arguments.createArray()
+      for (c in list) {
+        arr.pushMap(Arguments.createMap().apply {
+          putDouble("rowId", c.rowId.toDouble())
+          putDouble("eventTimeMs", c.eventTimeMs.toDouble())
+          putString("packageName", c.packageName)
+          putString("windowClass", c.windowClass)
+          putString("captureType", c.captureType)
+          putString("text", c.text)
+          putString("textHash", c.textHash)
+          putString("sourceClass", c.sourceClass)
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) {
+      promise.reject("TORRENT_QUERY_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun getTorrentCapturesInRange(startMs: Double, endMs: Double, limit: Double, promise: Promise) {
+    try {
+      val list = db.torrentCapturesInRange(startMs.toLong(), endMs.toLong(), limit.toInt())
+      val arr = Arguments.createArray()
+      for (c in list) {
+        arr.pushMap(Arguments.createMap().apply {
+          putDouble("rowId", c.rowId.toDouble())
+          putDouble("eventTimeMs", c.eventTimeMs.toDouble())
+          putString("packageName", c.packageName)
+          putString("windowClass", c.windowClass)
+          putString("captureType", c.captureType)
+          putString("text", c.text)
+          putString("textHash", c.textHash)
+          putString("sourceClass", c.sourceClass)
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) {
+      promise.reject("TORRENT_QUERY_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun countTorrentCaptures(promise: Promise) {
+    try { promise.resolve(db.countTorrentCaptures().toDouble()) }
+    catch (e: Throwable) { promise.reject("TORRENT_COUNT_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun clearTorrentCaptures(promise: Promise) {
+    try { promise.resolve(db.clearTorrentCaptures().toDouble()) }
+    catch (e: Throwable) { promise.reject("TORRENT_CLEAR_FAILED", e.message, e) }
+  }
+
   companion object {
     const val NAME = "Perception"
   }

@@ -11,6 +11,7 @@ import type { TabKey } from './src/components/TabBar'
 import DayNightScreen from './src/screens/DayNightScreen'
 import ChatScreen from './src/screens/ChatScreen'
 import PerceptionScreen from './src/screens/PerceptionScreen'
+import TorrentScreen from './src/screens/TorrentScreen'
 import { theme } from './src/theme'
 
 function App() {
@@ -33,6 +34,8 @@ function AppContent() {
           <DayNightScreen />
         ) : tab === 'chat' ? (
           <ChatScreen />
+        ) : tab === 'torrent' ? (
+          <TorrentScreen />
         ) : (
           <PerceptionScreen />
         )}

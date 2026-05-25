@@ -90,6 +90,21 @@ interface PerceptionNative {
   resetClickCounts(): Promise<boolean>
   getAppIcons(packageNames: string[]): Promise<Record<string, string>>
   purgeSelfWindowEvents(): Promise<number>
+  getRecentTorrentCaptures(limit: number): Promise<TorrentCapture[]>
+  getTorrentCapturesInRange(startMs: number, endMs: number, limit: number): Promise<TorrentCapture[]>
+  countTorrentCaptures(): Promise<number>
+  clearTorrentCaptures(): Promise<number>
+}
+
+export type TorrentCapture = {
+  rowId: number
+  eventTimeMs: number
+  packageName: string
+  windowClass: string
+  captureType: string
+  text: string
+  textHash: string
+  sourceClass: string
 }
 
 const Native: PerceptionNative | null =
@@ -191,4 +206,26 @@ export async function getAppIcons(packageNames: string[]): Promise<Record<string
 export async function purgeSelfWindowEvents(): Promise<number> {
   if (!Native) return 0
   return Native.purgeSelfWindowEvents()
+}
+
+export async function getRecentTorrentCaptures(limit: number = 200): Promise<TorrentCapture[]> {
+  if (!Native) return []
+  return Native.getRecentTorrentCaptures(limit)
+}
+
+export async function getTorrentCapturesInRange(
+  startMs: number, endMs: number, limit: number = 1000,
+): Promise<TorrentCapture[]> {
+  if (!Native) return []
+  return Native.getTorrentCapturesInRange(startMs, endMs, limit)
+}
+
+export async function countTorrentCaptures(): Promise<number> {
+  if (!Native) return 0
+  return Native.countTorrentCaptures()
+}
+
+export async function clearTorrentCaptures(): Promise<number> {
+  if (!Native) return 0
+  return Native.clearTorrentCaptures()
 }
