@@ -6,8 +6,8 @@ Solo Leveling mobile —— 发布 release APK 到阿里云 OSS。
   1. 读 clients/mobile/VERSION 拿 versionName/versionCode
   2. 检查 release APK 是否存在；不存在就跑 `./gradlew assembleRelease`
   3. SHA256 校验
-  4. 上传 APK 到 OSS：solo-leveling/android/releases/sls-{versionName}-vc{code}.apk
-     （OSS 只保留 latest，先清掉旧 sls-*.apk）
+  4. 上传 APK 到 OSS：solo-leveling/android/releases/sls-{versionName}-vc{code}-{sha}.apk
+     （文件名带 sha 前缀绕开 CDN 旧缓存；OSS 只保留 latest，先清掉旧 sls-*.apk）
   5. 写 latest.json 上传到 solo-leveling/android/latest.json
   6. 输出公开访问 URL
 
@@ -31,6 +31,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -118,6 +120,50 @@ def assemble_release() -> None:
         cwd=ANDROID_DIR,
         check=True,
     )
+
+
+def find_aapt() -> str | None:
+    candidates = []
+    for env_name in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        sdk = os.getenv(env_name)
+        if sdk:
+            candidates.extend(sorted(Path(sdk).glob("build-tools/*/aapt"), reverse=True))
+    candidates.extend(sorted((Path.home() / "Library/Android/sdk/build-tools").glob("*/aapt"), reverse=True))
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return shutil.which("aapt")
+
+
+def read_apk_version(path: Path) -> tuple[str, int]:
+    aapt = find_aapt()
+    if not aapt:
+        raise SystemExit(
+            "找不到 Android SDK 的 aapt，无法校验 APK 内嵌版本；为避免发布错包，停止。"
+        )
+    output = subprocess.check_output(
+        [aapt, "dump", "badging", str(path)],
+        text=True,
+        stderr=subprocess.STDOUT,
+    )
+    first_line = output.splitlines()[0] if output else ""
+    name_match = re.search(r"versionName='([^']+)'", first_line)
+    code_match = re.search(r"versionCode='(\d+)'", first_line)
+    if not name_match or not code_match:
+        raise SystemExit(f"无法从 APK 读取版本信息：{first_line}")
+    return name_match.group(1), int(code_match.group(1))
+
+
+def verify_apk_version(path: Path, expected_name: str, expected_code: int) -> None:
+    apk_name, apk_code = read_apk_version(path)
+    info(f"  APK 内嵌版本 = {apk_name} (vc {apk_code})")
+    if apk_name != expected_name or apk_code != expected_code:
+        raise SystemExit(
+            "    ✗ APK 内嵌版本与 clients/mobile/VERSION 不一致，停止发布。\n"
+            f"      VERSION: {expected_name} (vc {expected_code})\n"
+            f"      APK:     {apk_name} (vc {apk_code})\n"
+            "      请重新构建 release APK 后再发布。"
+        )
 
 
 def sha256_of(path: Path) -> str:
@@ -217,6 +263,7 @@ def main() -> int:
         raise SystemExit(f"    ✗ APK 不存在: {APK_PATH}")
     size = APK_PATH.stat().st_size
     info(f"  大小 {size / 1024 / 1024:.2f} MB")
+    verify_apk_version(APK_PATH, version_name, version_code)
     step_done(t)
 
     # ── 步骤 4：SHA256 ──
@@ -242,7 +289,7 @@ def main() -> int:
 
     # ── 准备路径和 manifest payload ──
     prefix = os.getenv("SLS_OSS_PATH_PREFIX", "solo-leveling").rstrip("/")
-    apk_key = f"{prefix}/android/releases/sls-{version_name}-vc{version_code}.apk"
+    apk_key = f"{prefix}/android/releases/sls-{version_name}-vc{version_code}-{sha[:12]}.apk"
     manifest_key = f"{prefix}/android/latest.json"
     apk_url = public_url_for_apk(apk_key, bucket_name, endpoint)
     manifest_url = public_url_for_manifest(manifest_key, bucket_name, endpoint)

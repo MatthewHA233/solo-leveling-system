@@ -327,7 +327,7 @@ gradle 自动拼 `SLS_UPDATE_MANIFEST_URL = {base}/{prefix}/android/latest.json`
 ```
 solo-leveling/android/
   latest.json                       # version_name / version_code / url / sha256 / changelog
-  releases/sls-{name}-vc{code}.apk  # 每次发布清旧 .apk 留一份新的
+  releases/sls-{name}-vc{code}-{sha12}.apk  # 文件名带 sha256 前 12 位，每次发布永远是新 URL → 绕开 CDN 旧缓存；OSS 仍只保留 latest 一份
 ```
 
 **OSS AK/SK** 从 `~/Projects/Github/MW_ActivityMonitor/.env` 复用（`OSS_ACCESS_KEY_ID/SECRET`，同一台机器一套钥匙）。
@@ -339,8 +339,14 @@ solo-leveling/android/
 1. 改 `clients/mobile/VERSION`（手动 bump 两个值）
 2. 写本次 changelog 到 `clients/mobile/CHANGELOG.next.md`
 3. `open -R clients/mobile/release.command` 用 Finder 选中显示
-4. **由用户双击 .command** 启动 Terminal 跑发布；脚本会清 Clash 代理 env、读 changelog、按回车确认开始
+4. **由用户双击 .command** 启动 Terminal 跑发布；脚本会清 Clash 代理 env、读 changelog、重新构建 release APK 后上传
 5. 跑完用户回到对话告诉 Claude 结果（贴最后几行）
+
+> ⚠️ **绝不能跳过编译**：bump VERSION 后 APK 必须重新 `gradlew assembleRelease` 才能内嵌新版本号。否则上传的是"穿了新衣的旧 APK"——manifest 写 vc8，APK 内部还是 vc7，手机检测到更新，下载安装却还是旧版本，4~8 小时假性自愈（OEM 包管理缓存）让排查极困难。
+>
+> - **`release.command` 已强制 `--build`** + 脚本 [3/8] 用 `aapt dump badging` 校验 APK 内嵌版本 ≠ VERSION 就 abort。两道防线都已就位。
+> - **Claude 引导用户双击前**必须明确告知"双击后会自动跑 gradlew assembleRelease，首次/clean build 需 3~8 分钟，期间不要 Ctrl-C"——避免用户以为是秒发而中断。
+> - **绝对禁止 Claude 自己直接跑 `python3 release_mobile.py`** 绕过 `.command` —— 那条路径既丢代理隔离，又（历史版本）可能绕过 `--build` 校验。
 
 **为什么不让 Claude 直接 `python3 scripts/release_mobile.py`：**
 - Claude 的后台 Bash 继承 mac 全局代理（Clash 等），OSS 国内域被代理走会 502 / 超慢
@@ -351,6 +357,7 @@ solo-leveling/android/
 
 **发布脚本** `scripts/release_mobile.py`（依赖 `oss2 python-dotenv`）的细节，**仅供调试/绕路时直接调用**：
 - 上传走 `oss2.resumable_upload` 4 线程 multipart，4MB part_size，> 10MB 自动分片（50MB APK 实测 11s ≈ 4.5MB/s；单流模式被国内 ISP 限速到 80KB/s）
+- 上传前用 `aapt dump badging` 校验 APK 内嵌 `versionName/versionCode` 必须等于 `clients/mobile/VERSION`，避免旧 APK 被新 manifest 发布
 - 阶段化打印 `[n/8]` 进度 + 每步耗时 + 实时进度条/速度
 - 默认覆盖式：先清 `solo-leveling/android/releases/` 下旧 `.apk` 再传新的；`latest.json` 直接 PUT 覆盖
 
