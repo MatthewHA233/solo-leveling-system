@@ -414,6 +414,27 @@ class SoloDbModule(private val reactContext: ReactApplicationContext) :
     } catch (e: Throwable) { promise.reject("SOLODB_ERASE_FAILED", e.message, e) }
   }
 
+  // ── 设备本地偏好（SharedPreferences）——
+  // 跟 SoloDb sqlite 解耦：zoom / focus 这些设备本地的 UI 偏好不走 LWW 同步，
+  // 每台设备独立。重装 app 才会丢。
+
+  @ReactMethod
+  fun getPref(key: String, fallback: String, promise: Promise) {
+    try {
+      val prefs = reactContext.getSharedPreferences("solo_prefs", android.content.Context.MODE_PRIVATE)
+      promise.resolve(prefs.getString(key, fallback) ?: fallback)
+    } catch (e: Throwable) { promise.reject("PREF_GET_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun setPref(key: String, value: String, promise: Promise) {
+    try {
+      val prefs = reactContext.getSharedPreferences("solo_prefs", android.content.Context.MODE_PRIVATE)
+      prefs.edit().putString(key, value).apply()
+      promise.resolve(true)
+    } catch (e: Throwable) { promise.reject("PREF_SET_FAILED", e.message, e) }
+  }
+
   companion object {
     const val NAME = "SoloDb"
   }

@@ -32,6 +32,7 @@ import type {
   ActivityTag,
 } from '../types'
 import { createTag, deleteCategory, deleteTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks, renameCategory, renameTagPath } from '../lib/api'
+import { loadDayNightZoomPrefs, saveDayNightZoomPrefs } from '../lib/prefs'
 import { addDays, fmtDateLabel, fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
 import { getAppIcons, getPowerEventsInRange, getWindowEventsInRange, type PowerEvent, type WindowEvent } from '../lib/perception'
 
@@ -724,6 +725,9 @@ export default function DayNightScreen() {
   const [powerEvents, setPowerEvents] = useState<PowerEvent[]>([])
   const [probeLoading, setProbeLoading] = useState(false)
   const [iconCache, setIconCache] = useState<Record<string, string>>({})
+  // focusStart/zoomCols/totalRows 启动时从 SharedPreferences 加载
+  // prefsLoadedRef：避免首帧默认值被 useEffect 立刻 save 回去覆盖刚读到的偏好
+  const prefsLoadedRef = useRef(false)
   const [focusStart, setFocusStart] = useState(3)
   // 非编辑模式下双指 pinch 切换：12 / 6 / 4 / 3 cols（cell 永远 5min）
   const [zoomCols, setZoomCols] = useState<ZoomCols>(12)
@@ -785,6 +789,36 @@ export default function DayNightScreen() {
   zoomColsRef.current = zoomCols
   const totalRowsRef = useRef<TotalRows>(24)
   totalRowsRef.current = totalRows
+
+  // 启动时一次性 load 偏好；prefsLoadedRef 标记完成后才允许 save 回去
+  // 避免初值的 useEffect 把刚 load 的值覆盖成 useState 默认值
+  useEffect(() => {
+    let alive = true
+    loadDayNightZoomPrefs().then((p) => {
+      if (!alive) return
+      // 校验值在合法档位内（避免老存的值跟新 ZOOM_LEVELS 不匹配）
+      const cols = (ZOOM_LEVELS as readonly number[]).includes(p.zoomCols)
+        ? (p.zoomCols as ZoomCols) : 12
+      const rows = (TOTAL_ROWS_LEVELS as readonly number[]).includes(p.totalRows)
+        ? (p.totalRows as TotalRows) : 24
+      const focusH = zoomFocusHours(cols, rows)
+      const fs = clamp(p.focusStart, 0, 24 - focusH)
+      setZoomCols(cols)
+      setTotalRows(rows)
+      setFocusStart(fs)
+      prefsLoadedRef.current = true
+    })
+    return () => { alive = false }
+  }, [])
+
+  // save 偏好（防抖 400ms），仅当 prefsLoadedRef=true 之后才生效
+  useEffect(() => {
+    if (!prefsLoadedRef.current) return
+    const id = setTimeout(() => {
+      saveDayNightZoomPrefs({ zoomCols, totalRows, focusStart })
+    }, 400)
+    return () => clearTimeout(id)
+  }, [zoomCols, totalRows, focusStart])
   // 真实 rows.length（focusStart 贴边时 tier 行少 push）；axisPan 用它算 rowH 才准
   // 用 totalRowCount() 估算最大值会导致拖动步进偏小（AUDIT-025）
   const rowsLenRef = useRef(24)

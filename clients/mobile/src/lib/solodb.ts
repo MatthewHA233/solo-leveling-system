@@ -160,6 +160,8 @@ interface SoloDbNative {
   deleteCategory(categoryId: number): Promise<number>
   renameCategory(categoryId: number, newName: string, newColor: string): Promise<number>
   renameTagPath(tagId: number, newFullPath: string): Promise<number>
+  getPref(key: string, fallback: string): Promise<string>
+  setPref(key: string, value: string): Promise<boolean>
   exportSync(since: string | null): Promise<SyncExport>
   importSync(payload: SyncExport): Promise<SyncImportResult>
 }
@@ -252,6 +254,16 @@ export async function soloRenameCategory(
 export async function soloRenameTagPath(tagId: number, newFullPath: string): Promise<number> {
   if (!Native) return 0
   return Native.renameTagPath(tagId, newFullPath)
+}
+
+export async function soloGetPref(key: string, fallback: string): Promise<string> {
+  if (!Native) return fallback
+  return Native.getPref(key, fallback)
+}
+
+export async function soloSetPref(key: string, value: string): Promise<boolean> {
+  if (!Native) return false
+  return Native.setPref(key, value)
 }
 
 /**
