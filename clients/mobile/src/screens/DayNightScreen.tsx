@@ -62,20 +62,26 @@ const MAX_HOURS_PER_TIER = 6  // 每个 compressed 行最多装 6 小时
 
 interface RowConfig { focusRows: number }
 
-// 用 totalRows 反推 focusRows：tier 行数 = ceil(rest / 6)（worst-case 贴边时所有
-// rest hour 都在一边），focusRows 取最大值使 focusRows + tier ≤ totalRows。
-// 实际渲染时 buildRows 按当前 focusStart 算上下 tier 数（居中时少，贴边时多）。
+// 用 totalRows 反推 focusRows：枚举所有合法 focusStart 取最坏 tier 总数
+// （AUDIT-027：之前用单边 ceil(rest/6) 估算，居中场景 top+bot 两边非整 6 时
+// 实际 ceil(top/6) + ceil(bot/6) 可能比单边多 1，导致 buildRows().length > totalRows）
 function computeRowConfig(cols: ZoomCols, totalRows: number): RowConfig {
   const rFactor = COLS_R_FACTOR[cols]
   const rMax = Math.floor((24 * 12) / cols / rFactor) * rFactor
   for (let R = rMax; R >= 0; R -= rFactor) {
     const focusH = (R * cols) / 12
     const rest = 24 - focusH
-    // 贴边场景：rest hour 全在一边，需要 ceil(rest/6) 行 tier
-    // 居中场景：上下各 rest/2，tier 总数 = ceil(rest/12) × 2 ≤ ceil(rest/6) + 1
-    // 估值 ceil(rest/6) 略乐观，居中场景偶尔会多 1 行（buildRows 实际算时溢出 1 行可接受）
-    const tierEstimate = rest === 0 ? 0 : Math.ceil(rest / MAX_HOURS_PER_TIER)
-    if (R + tierEstimate <= totalRows) {
+    let worstTier = 0
+    if (rest > 0) {
+      // 枚举 top = k hour, bot = (rest - k) hour，k ∈ [0, rest]
+      for (let k = 0; k <= rest; k++) {
+        const topTiers = k > 0 ? Math.ceil(k / MAX_HOURS_PER_TIER) : 0
+        const botTiers = rest - k > 0 ? Math.ceil((rest - k) / MAX_HOURS_PER_TIER) : 0
+        const sum = topTiers + botTiers
+        if (sum > worstTier) worstTier = sum
+      }
+    }
+    if (R + worstTier <= totalRows) {
       return { focusRows: R }
     }
   }
@@ -1215,14 +1221,14 @@ export default function DayNightScreen() {
   const isToday = isSameDay(new Date(), selectedDate)
 
   // 实时游标：当天才显示。每秒 tick 一次（cell 内按秒级偏移 = 5min × 60s = 300 刻度）
-  // 切到其他日期/编辑模式时不订阅 tick，省电
+  // 切到其他日期 / 编辑模式时不订阅 tick，省电
   const [nowTs, setNowTs] = useState(Date.now())
   useEffect(() => {
-    if (!isToday) return
+    if (!isToday || editMode) return
     setNowTs(Date.now())
     const id = setInterval(() => setNowTs(Date.now()), 1000)
     return () => clearInterval(id)
-  }, [isToday])
+  }, [isToday, editMode])
   // nowTotalSec = 0..86399；cell 内偏移 = (nowTotalSec % 300) / 300
   const nowDate = new Date(nowTs)
   const nowTotalSec = nowDate.getHours() * 3600 + nowDate.getMinutes() * 60 + nowDate.getSeconds()
@@ -1987,17 +1993,9 @@ export default function DayNightScreen() {
                       </View>
                     )
                   })}
-                  {/* 当前时间游标：仅 isToday + nowMinute 落在本 row 内才画
+                  {/* 当前时间游标：锤子型，chip 紧贴色块上沿 + I 形 cap，
                       位置按秒级精度 = (nowMin - rowStart) + sec/60，占行宽比例
-                      不响应手势（pointerEvents none），盖在色块之上让用户能看见 */}
-                  {(() => {
-                    const inRow = nowMinute >= rowStart && nowMinute < rowStart + rowMinutes
-                    if (rowStart === 960) console.log('[cursor-check]', { rowStart, rowMinutes, nowMinute, isToday, inRow })
-                    return null
-                  })()}
-                  {/* 当前时间游标：I 形，上下小帽穿出色块上下边沿，时间标贴 cursor 上方
-                      位置按秒级精度 = (nowMin - rowStart) + sec/60，占行宽比例
-                      仅 isToday + nowMinute 落在本 row 内才画 */}
+                      仅 isToday + nowMinute 落在本 row 内才画；不响应手势 */}
                   {isToday && nowMinute >= rowStart && nowMinute < rowStart + rowMinutes && (() => {
                     const subSec = nowDate.getSeconds()
                     const offsetMin = (nowMinute - rowStart) + subSec / 60
