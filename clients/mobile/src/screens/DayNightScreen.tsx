@@ -40,24 +40,48 @@ const GAP = 4
 const R_ACTIVITY = 14
 const R_EMPTY = 5
 
-// 4 档 zoom：cols = 每个 full row 的格子数（cell 永远 5min）
-// 全档统一总行数 = 24（focus rows + 上下 tier 行），zoom 切换时行高不变
-//   12 → 1 行 60 分钟 / focus 24h / 无 compressed（一行一小时刚好全天平铺，不需要折叠）
-//    6 → 1 行 30 分钟 / focus 8h  / 上下各 4 层（每行 2 hour）
-//    4 → 1 行 20 分钟 / focus 6h  / 上下各 3 层（每行 3 hour）
-//    3 → 1 行 15 分钟 / focus 4h  / 上下各 4 层（每行 ~3 hour）
-// focus 总是整小时（rows × cols / 12 必须整数）
+// zoom 双轴矩阵：
+//   cols（横向放大，pinch 双指水平展开）：12 / 6 / 4 / 3 → 一行 60/30/20/15 min
+//   totalRows（纵向放大，pinch 双指垂直展开）：24..14 → 屏上行数 = 行高反比
+//
+// 每个 (cols, totalRows) 组合自动算 (focusRows, topTiers, botTiers)：
+//   focusRows × cols / 12 必须是整数 hour（约束 1）
+//   focusRows + topTiers + botTiers = totalRows（约束 2）
+//   topTiers + botTiers ≥ 1 仅当 rest > 0（约束 3：有 hour 要装才需要 tier）
 type ZoomCols = 12 | 6 | 4 | 3
 const ZOOM_LEVELS: readonly ZoomCols[] = [12, 6, 4, 3] as const
-const ZOOM_CONFIG: Record<ZoomCols, { rows: number; tiers: number }> = {
-  12: { rows: 24, tiers: 0 },
-  6:  { rows: 16, tiers: 4 },
-  4:  { rows: 18, tiers: 3 },
-  3:  { rows: 16, tiers: 4 },
+// totalRows 候选：24 默认（最稀疏），14 最紧凑。从稀疏到紧凑排
+const TOTAL_ROWS_LEVELS = [24, 22, 20, 18, 16, 14] as const
+type TotalRows = typeof TOTAL_ROWS_LEVELS[number]
+// cols=12 → 1（focus rows 任意），6 → 2，4 → 3，3 → 4
+const COLS_R_FACTOR: Record<ZoomCols, number> = { 12: 1, 6: 2, 4: 3, 3: 4 }
+
+const MAX_HOURS_PER_TIER = 6  // 每个 compressed 行最多装 6 小时
+
+interface RowConfig { focusRows: number }
+
+// 用 totalRows 反推 focusRows：tier 行数 = ceil(rest / 6)（worst-case 贴边时所有
+// rest hour 都在一边），focusRows 取最大值使 focusRows + tier ≤ totalRows。
+// 实际渲染时 buildRows 按当前 focusStart 算上下 tier 数（居中时少，贴边时多）。
+function computeRowConfig(cols: ZoomCols, totalRows: number): RowConfig {
+  const rFactor = COLS_R_FACTOR[cols]
+  const rMax = Math.floor((24 * 12) / cols / rFactor) * rFactor
+  for (let R = rMax; R >= 0; R -= rFactor) {
+    const focusH = (R * cols) / 12
+    const rest = 24 - focusH
+    // 贴边场景：rest hour 全在一边，需要 ceil(rest/6) 行 tier
+    // 居中场景：上下各 rest/2，tier 总数 = ceil(rest/12) × 2 ≤ ceil(rest/6) + 1
+    // 估值 ceil(rest/6) 略乐观，居中场景偶尔会多 1 行（buildRows 实际算时溢出 1 行可接受）
+    const tierEstimate = rest === 0 ? 0 : Math.ceil(rest / MAX_HOURS_PER_TIER)
+    if (R + tierEstimate <= totalRows) {
+      return { focusRows: R }
+    }
+  }
+  return { focusRows: 0 }
 }
-function zoomFocusHours(cols: ZoomCols): number {
-  const cfg = ZOOM_CONFIG[cols]
-  return Math.round((cfg.rows * cols * 5) / 60)
+
+function zoomFocusHours(cols: ZoomCols, totalRows: number): number {
+  return (computeRowConfig(cols, totalRows).focusRows * cols) / 12
 }
 
 interface Span {
@@ -131,36 +155,38 @@ function buildSpans(blocks: ActivityBlock[]): Span[] {
   return spans
 }
 
-function buildRows(focusStart: number, zoomCols: ZoomCols): Row[] {
-  const cfg = ZOOM_CONFIG[zoomCols]
-  const focusH = zoomFocusHours(zoomCols)
+function buildRows(focusStart: number, zoomCols: ZoomCols, totalRows: number): Row[] {
+  const cfg = computeRowConfig(zoomCols, totalRows)
+  const focusH = (cfg.focusRows * zoomCols) / 12
   const safeStart = clamp(focusStart, 0, 24 - focusH)
   const rows: Row[] = []
 
-  // 上方 compressed：[0, safeStart) hour 均分到 cfg.tiers 行
+  // 上方 compressed：tier 行数 = ceil(topHours / 6)，每行装 ≤ 6 hour（自动新建行）
   const topHours: number[] = []
   for (let h = 0; h < safeStart; h++) topHours.push(h)
   if (topHours.length > 0) {
-    const chunk = Math.ceil(topHours.length / cfg.tiers)
-    for (let i = 0; i < cfg.tiers; i++) {
+    const topTiers = Math.ceil(topHours.length / MAX_HOURS_PER_TIER)
+    const chunk = Math.ceil(topHours.length / topTiers)
+    for (let i = 0; i < topTiers; i++) {
       const slice = topHours.slice(i * chunk, (i + 1) * chunk)
       if (slice.length > 0) rows.push({ kind: 'compressed', hours: slice })
     }
   }
 
-  // focus：cfg.rows 行，每行 zoomCols * 5 分钟（5min/cell × zoomCols cols）
+  // focus
   const startMin = safeStart * 60
   const minutesPerRow = zoomCols * 5
-  for (let i = 0; i < cfg.rows; i++) {
+  for (let i = 0; i < cfg.focusRows; i++) {
     rows.push({ kind: 'full', startMin: startMin + i * minutesPerRow, cols: zoomCols })
   }
 
-  // 下方 compressed：[safeStart + focusH, 24) hour 均分到 cfg.tiers 行
+  // 下方 compressed：同上规则
   const botHours: number[] = []
   for (let h = safeStart + focusH; h < 24; h++) botHours.push(h)
   if (botHours.length > 0) {
-    const chunk = Math.ceil(botHours.length / cfg.tiers)
-    for (let i = 0; i < cfg.tiers; i++) {
+    const botTiers = Math.ceil(botHours.length / MAX_HOURS_PER_TIER)
+    const chunk = Math.ceil(botHours.length / botTiers)
+    for (let i = 0; i < botTiers; i++) {
       const slice = botHours.slice(i * chunk, (i + 1) * chunk)
       if (slice.length > 0) rows.push({ kind: 'compressed', hours: slice })
     }
@@ -701,6 +727,7 @@ export default function DayNightScreen() {
   const [focusStart, setFocusStart] = useState(3)
   // 非编辑模式下双指 pinch 切换：12 / 6 / 4 / 3 cols（cell 永远 5min）
   const [zoomCols, setZoomCols] = useState<ZoomCols>(12)
+  const [totalRows, setTotalRows] = useState<TotalRows>(24)
   // 撤回/前进栈：每个元素是 blocks 数组快照，最多 30 个；点"完成"不清记忆
   const [undoStack, setUndoStack] = useState<readonly ActivityBlock[][]>([])
   const [redoStack, setRedoStack] = useState<readonly ActivityBlock[][]>([])
@@ -756,11 +783,21 @@ export default function DayNightScreen() {
   // zoom 同步 ref（PanResponder 回调拿最新值）
   const zoomColsRef = useRef<ZoomCols>(12)
   zoomColsRef.current = zoomCols
+  const totalRowsRef = useRef<TotalRows>(24)
+  totalRowsRef.current = totalRows
   // 真实 rows.length（focusStart 贴边时 tier 行少 push）；axisPan 用它算 rowH 才准
   // 用 totalRowCount() 估算最大值会导致拖动步进偏小（AUDIT-025）
   const rowsLenRef = useRef(24)
   // pinch 手势状态：起始两指距离 + 起始 zoom 档
-  const pinchRef = useRef({ initialDist: 0, startCols: 12 as ZoomCols })
+  // pinch 状态：grant 时同时记录初始 dx/dy + cols/rows，运行时根据主导轴判定
+  // 调横向 cols 还是纵向 totalRows（两指连线接近横向 → cols；接近纵向 → totalRows）
+  const pinchRef = useRef({
+    initialDx: 0,
+    initialDy: 0,
+    axis: null as null | 'horizontal' | 'vertical',
+    startCols: 12 as ZoomCols,
+    startRows: 24 as TotalRows,
+  })
 
   // zoom toast：每次切换显示 "cols × rows"，2s 自动淡出
   const [zoomToast, setZoomToast] = useState<string | null>(null)
@@ -825,21 +862,21 @@ export default function DayNightScreen() {
     }, 1600)
   }
 
-  // zoom 切换：尽量保持 focus 屏幕中心不变（新 focusHours 对称裹原中心 hour）
-  const applyZoom = (newCols: ZoomCols) => {
-    if (newCols === zoomColsRef.current) return
-    const oldCols = zoomColsRef.current
-    const oldFocusH = zoomFocusHours(oldCols)
-    const newFocusH = zoomFocusHours(newCols)
+  // zoom 切换：cols 或 totalRows 任一变化都走这里
+  // 切换后保持 focus 屏幕中心不变（新 focusHours 对称裹原中心 hour）
+  const applyZoom = (newCols: ZoomCols, newRows: TotalRows) => {
+    if (newCols === zoomColsRef.current && newRows === totalRowsRef.current) return
+    const oldFocusH = zoomFocusHours(zoomColsRef.current, totalRowsRef.current)
+    const newFocusH = zoomFocusHours(newCols, newRows)
     const center = focusStartRef.current + oldFocusH / 2
     const newStart = clamp(Math.round(center - newFocusH / 2), 0, 24 - newFocusH)
     zoomColsRef.current = newCols
+    totalRowsRef.current = newRows
     setZoomCols(newCols)
+    setTotalRows(newRows)
     setFocusStart(newStart)
-    // toast
-    const cfg = ZOOM_CONFIG[newCols]
-    // toast：列数 × 每格分钟（cell 永远 5min，明确写出避免歧义）
-    setZoomToast(`一行 ${newCols} × 5min`)
+    // toast：横向粒度 + 纵向密度（一行 cells × 每格分钟 · 总行数）
+    setZoomToast(`一行 ${newCols} × 5min · 共 ${newRows} 行`)
     if (zoomToastTimer.current) clearTimeout(zoomToastTimer.current)
     Animated.timing(zoomToastOpacity, {
       toValue: 1, duration: 120, useNativeDriver: true,
@@ -1123,7 +1160,7 @@ export default function DayNightScreen() {
   const composerMeta = useMemo(() => inferPlanMeta(composerTitle), [composerTitle])
 
   const isToday = isSameDay(new Date(), selectedDate)
-  const rows = useMemo(() => buildRows(focusStart, zoomCols), [focusStart, zoomCols])
+  const rows = useMemo(() => buildRows(focusStart, zoomCols, totalRows), [focusStart, zoomCols, totalRows])
   rowsLenRef.current = rows.length
 
   // 同步 refs
@@ -1210,7 +1247,10 @@ export default function DayNightScreen() {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onPanResponderGrant: (e) => {
-        pinchRef.current.initialDist = 0
+        // pinch 状态全部重置（axis=null → 下次双指触摸时重新锁主导轴）
+        pinchRef.current.initialDx = 0
+        pinchRef.current.initialDy = 0
+        pinchRef.current.axis = null
         const cell = cellFromLocalPoint(e.nativeEvent.locationX, e.nativeEvent.locationY)
         const { editMode: em, blockByMinute: bm, selectedTagId: tagId } = interactionRef.current
         const d: DragState = {
@@ -1247,24 +1287,41 @@ export default function DayNightScreen() {
         }
         if (!interactionRef.current.editMode && numTouches >= 2 && touches && touches.length >= 2) {
           const [a, b] = [touches[0], touches[1]]
-          const dist = Math.hypot(a.pageX - b.pageX, a.pageY - b.pageY)
-          // 第一次进 pinch：记录起始距离 + 起始 zoom 档
-          if (pinchRef.current.initialDist === 0) {
-            pinchRef.current = { initialDist: dist, startCols: zoomColsRef.current }
+          const dx = Math.abs(a.pageX - b.pageX)
+          const dy = Math.abs(a.pageY - b.pageY)
+          // 第一次进 pinch：锁定主导轴 + 记录起始
+          // 两指连线 |dx| 大于 |dy| → 横向 → 改 cols；反之 → 纵向 → 改 totalRows
+          if (pinchRef.current.axis == null) {
+            pinchRef.current.axis = dx >= dy ? 'horizontal' : 'vertical'
+            pinchRef.current.initialDx = dx
+            pinchRef.current.initialDy = dy
+            pinchRef.current.startCols = zoomColsRef.current
+            pinchRef.current.startRows = totalRowsRef.current
             return
           }
-          const scale = dist / pinchRef.current.initialDist
-          const startIdx = ZOOM_LEVELS.indexOf(pinchRef.current.startCols)
-          // 渐进式：scale ≥ 1.25 进 1 档；≥ 1.7 进 2 档；≤ 0.8 / ≤ 0.6 反向
-          // 阈值收紧让用户更快感觉到反应
+          const scale = pinchRef.current.axis === 'horizontal'
+            ? dx / Math.max(pinchRef.current.initialDx, 1)
+            : dy / Math.max(pinchRef.current.initialDy, 1)
           let delta = 0
           if (scale >= 1.7) delta = 2
           else if (scale >= 1.25) delta = 1
           else if (scale <= 0.6) delta = -2
           else if (scale <= 0.8) delta = -1
-          const targetIdx = clamp(startIdx + delta, 0, ZOOM_LEVELS.length - 1)
-          const target = ZOOM_LEVELS[targetIdx]
-          if (target !== zoomColsRef.current) applyZoom(target)
+          if (pinchRef.current.axis === 'horizontal') {
+            // 横向：cols 越大 = 越粗（一行 60min），index 0 = 12 cols（最粗）
+            // 张开（scale↑）应该让 cols 变小（更细）→ index 增大 → delta 正号
+            const startIdx = ZOOM_LEVELS.indexOf(pinchRef.current.startCols)
+            const targetIdx = clamp(startIdx + delta, 0, ZOOM_LEVELS.length - 1)
+            const target = ZOOM_LEVELS[targetIdx]
+            if (target !== zoomColsRef.current) applyZoom(target, totalRowsRef.current)
+          } else {
+            // 纵向：rows 越大 = 屏上行数越多（行高越矮）。index 0 = 24 行（最稀疏，行最高）
+            // 张开（scale↑）= 想让行更高 → totalRows 变少 → index 增大 → delta 正号
+            const startIdx = TOTAL_ROWS_LEVELS.indexOf(pinchRef.current.startRows)
+            const targetIdx = clamp(startIdx + delta, 0, TOTAL_ROWS_LEVELS.length - 1)
+            const target = TOTAL_ROWS_LEVELS[targetIdx]
+            if (target !== totalRowsRef.current) applyZoom(zoomColsRef.current, target)
+          }
           return
         }
         if (Math.abs(g.dx) + Math.abs(g.dy) > 8) dragRef.current.moved = true
@@ -1279,8 +1336,10 @@ export default function DayNightScreen() {
       },
       onPanResponderRelease: () => {
         // pinch 抬手 → 重置；不走 tap/paint commit 路径
-        if (pinchRef.current.initialDist > 0) {
-          pinchRef.current.initialDist = 0
+        if (pinchRef.current.axis !== null) {
+          pinchRef.current.axis = null
+          pinchRef.current.initialDx = 0
+          pinchRef.current.initialDy = 0
           return
         }
         const d = dragRef.current
@@ -1340,7 +1399,7 @@ export default function DayNightScreen() {
         } else {
           // tap compressed hour → 把该 hour 拉到 focus 上沿；focus 高度跟 zoom 走
           const h = d.tapCell.hour
-          const focusH = zoomFocusHours(zoomColsRef.current)
+          const focusH = zoomFocusHours(zoomColsRef.current, totalRowsRef.current)
           setFocusStart(clamp(h > 24 - focusH ? 24 - focusH : h, 0, 24 - focusH))
         }
       },
@@ -1360,7 +1419,7 @@ export default function DayNightScreen() {
         // 最大值，focusStart 贴边时实际行数更少，rowH 算偏小导致拖动步进慢
         const total = rowsLenRef.current || 1
         const rowH = gridHRef.current > 0 ? gridHRef.current / total : 40
-        const focusH = zoomFocusHours(zoomColsRef.current)
+        const focusH = zoomFocusHours(zoomColsRef.current, totalRowsRef.current)
         const next = clamp(focusBaseRef.current + Math.round(-g.dy / rowH), 0, 24 - focusH)
         setFocusStart((cur) => (cur === next ? cur : next))
       },
@@ -1743,14 +1802,16 @@ export default function DayNightScreen() {
                                   key={idx}
                                   style={{
                                     width: `${widthPct}%`,
-                                    backgroundColor: colorOf(run.tag),
+                                    // compressed 折叠预览：色块半透明，跟 focus 区饱和色块对比
+                                    // 一眼区分"这是折叠预览不是主舞台"
+                                    backgroundColor: alpha(colorOf(run.tag), 0.5),
                                     alignItems: 'center',
                                     justifyContent: 'center',
                                     paddingHorizontal: 4,
                                   }}
                                 >
                                   {showLabel ? (
-                                    <Text style={styles.cellLabel} numberOfLines={1}>
+                                    <Text style={[styles.cellLabel, styles.cellLabelCompressed]} numberOfLines={1}>
                                       {tagName}
                                     </Text>
                                   ) : null}
@@ -2397,7 +2458,7 @@ const styles = StyleSheet.create({
   },
   summary: {
     paddingHorizontal: 18,
-    paddingBottom: 12,
+    paddingBottom: 4,
     gap: 7,
   },
   summaryText: {
@@ -2600,9 +2661,14 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
     textAlign: 'center',
   },
+  // compressed 行 cell 文字弱化（alpha 色块上白字对比变弱时切深字反而清楚）
+  cellLabelCompressed: {
+    color: 'rgba(255,255,255,0.92)',
+    fontWeight: '500',
+  },
   // —— 顶部操作槽位：固定高度，idle = 整行居中编辑按钮，editing = 横排小按钮 ——
   actionSlot: {
-    height: 56,
+    height: 46,
     justifyContent: 'center',
     paddingHorizontal: 12,
   },
