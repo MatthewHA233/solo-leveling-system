@@ -2862,6 +2862,13 @@ export default function App() {
                       onSelectProject={(id) => { setSelectedProjectTagId(id); setSelectedPlanNodeId(null) }}
                       onSelectNode={setSelectedPlanNodeId}
                       onNodesChange={refreshPlanNodes}
+                      onPlanBlocksMayChange={() => {
+                        // AUDIT-022: 计划节点删除后端 cascade 软删 planned_blocks
+                        // 刷当日计划块 + 清 undo/redo 栈防止旧快照恢复死节点
+                        refreshPlannedBlocks()
+                        setPlanUndoStack([])
+                        setPlanRedoStack([])
+                      }}
                     />
                   ) : (
                     <ActivityTagPalette

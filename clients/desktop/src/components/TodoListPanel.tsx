@@ -15,6 +15,10 @@ interface Props {
   readonly onSelectProject: (id: number) => void
   readonly onSelectNode: (id: number | null) => void
   readonly onNodesChange: (projectTagId?: number) => void
+  /** AUDIT-022：删除计划节点后后端会软删 planned_blocks，但本面板只刷新
+   *  节点列表，父级需要刷新 plannedBlocks + 清 undo/redo 栈才能避免显示/
+   *  恢复已删除的计划块。父组件不传也兼容 */
+  readonly onPlanBlocksMayChange?: () => void
 }
 
 type PlanStatus = PlanNode['status']
@@ -129,6 +133,7 @@ export default function TodoListPanel({
   onSelectProject,
   onSelectNode,
   onNodesChange,
+  onPlanBlocksMayChange,
 }: Props) {
   const dateKey = toDateKey(selectedDate)
   const [draft, setDraft] = useState('')
@@ -210,12 +215,29 @@ export default function TodoListPanel({
   }
 
   const removeNode = async (node: PlanNode) => {
+    // AUDIT-022 a) 删除前确认，跟 ActivityTagPalette 一致用原生 confirm
+    // 已涂的 planned blocks 会被后端 cascade 软删，提示用户
+    if (!window.confirm(
+      `确定删除计划「${node.title}」？\n已安排的计划时间块会一并清除。`
+    )) return
     setBusy(true)
     setError(null)
     try {
       await deletePlanNode(node.id)
-      if (selectedPlanNodeId === node.id) onSelectNode(null)
+      // AUDIT-022 b) 当前选中节点 / 它的某个子孙节点正被选中 → 清空 selected
+      // 不只是 selectedPlanNodeId === node.id 那一种；递归找祖先链
+      if (selectedPlanNodeId != null) {
+        const isSelfOrDescendant = (id: number): boolean => {
+          if (id === node.id) return true
+          const n = nodes.find((x) => x.id === id)
+          return n?.parentId != null && isSelfOrDescendant(n.parentId)
+        }
+        if (isSelfOrDescendant(selectedPlanNodeId)) onSelectNode(null)
+      }
       onNodesChange(node.projectTagId)
+      // AUDIT-022 c) 后端 deletePlanNode 同时 cascade 软删 planned_blocks，
+      // 通知父级刷 plannedBlocks + 清 plan undo/redo 栈，避免旧快照恢复死节点
+      onPlanBlocksMayChange?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除计划失败')
     } finally {
