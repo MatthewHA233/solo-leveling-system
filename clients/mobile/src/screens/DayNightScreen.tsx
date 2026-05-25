@@ -1213,6 +1213,20 @@ export default function DayNightScreen() {
   const composerMeta = useMemo(() => inferPlanMeta(composerTitle), [composerTitle])
 
   const isToday = isSameDay(new Date(), selectedDate)
+
+  // 实时游标：当天才显示。每秒 tick 一次（cell 内按秒级偏移 = 5min × 60s = 300 刻度）
+  // 切到其他日期/编辑模式时不订阅 tick，省电
+  const [nowTs, setNowTs] = useState(Date.now())
+  useEffect(() => {
+    if (!isToday) return
+    setNowTs(Date.now())
+    const id = setInterval(() => setNowTs(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [isToday])
+  // nowTotalSec = 0..86399；cell 内偏移 = (nowTotalSec % 300) / 300
+  const nowDate = new Date(nowTs)
+  const nowTotalSec = nowDate.getHours() * 3600 + nowDate.getMinutes() * 60 + nowDate.getSeconds()
+  const nowMinute = Math.floor(nowTotalSec / 60)
   const rows = useMemo(() => buildRows(focusStart, zoomCols, totalRows), [focusStart, zoomCols, totalRows])
   rowsLenRef.current = rows.length
 
@@ -1971,6 +1985,28 @@ export default function DayNightScreen() {
                       </View>
                     )
                   })}
+                  {/* 当前时间游标：仅 isToday + nowMinute 落在本 row 内才画
+                      位置按秒级精度 = (nowMin - rowStart) + sec/60，占行宽比例
+                      不响应手势（pointerEvents none），盖在色块之上让用户能看见 */}
+                  {(() => {
+                    const inRow = nowMinute >= rowStart && nowMinute < rowStart + rowMinutes
+                    if (rowStart === 960) console.log('[cursor-check]', { rowStart, rowMinutes, nowMinute, isToday, inRow })
+                    return null
+                  })()}
+                  {/* 当前时间游标：仅 isToday + nowMinute 落在本 row 内才画
+                      位置按秒级精度 = (nowMin - rowStart) + sec/60，占行宽比例
+                      不响应手势（pointerEvents none），盖在色块之上让用户能看见 */}
+                  {isToday && nowMinute >= rowStart && nowMinute < rowStart + rowMinutes && (() => {
+                    const subSec = nowDate.getSeconds()
+                    const offsetMin = (nowMinute - rowStart) + subSec / 60
+                    const leftPct = (offsetMin / rowMinutes) * 100
+                    return (
+                      <View
+                        pointerEvents="none"
+                        style={[styles.nowCursor, { left: `${leftPct}%` }]}
+                      />
+                    )
+                  })()}
                 </View>
               )
             })}
@@ -2864,6 +2900,18 @@ const styles = StyleSheet.create({
   cellRow: {
     flex: 1,
     flexDirection: 'row',
+  },
+  // 当前时间游标：短竖线，行高 80% 居中，accent 色 + 圆角
+  // marginLeft -1.5 让 3px 居中在 leftPct
+  nowCursor: {
+    position: 'absolute',
+    top: '8%',
+    bottom: '8%',
+    width: 3,
+    marginLeft: -1.5,
+    backgroundColor: theme.accent,
+    borderRadius: 1.5,
+    zIndex: 10,
   },
   // compressed 行整行浅灰底，提示"折叠预览区，不响应编辑"
   cellRowCompressed: {
