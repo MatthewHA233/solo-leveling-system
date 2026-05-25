@@ -845,8 +845,18 @@ export default function App() {
               setPlanRedoStack([])
               return `计划块 ${b.length}`
             }),
+            // AUDIT-033: 同步拉进来的 plan_nodes 必须回写 state，否则右侧计划树
+            // 滞后于昼夜表计划块（昼夜表已 setPlannedBlocks 但 TodoListPanel 仍
+            // 拿旧 planNodes）。逻辑跟 refreshPlanNodes() 对齐：setPlanNodes +
+            // 校正 selectedPlanNodeId（如被同步删了就清空选中）
             selectedProjectTagId != null
-              ? fetchPlanNodes(selectedProjectTagId).then((nodes) => `计划节点 ${nodes.length}`)
+              ? fetchPlanNodes(selectedProjectTagId).then((nodes) => {
+                  setPlanNodes(nodes)
+                  setSelectedPlanNodeId((id) =>
+                    id != null && nodes.some((node) => node.id === id) ? id : null,
+                  )
+                  return `计划节点 ${nodes.length}`
+                })
               : Promise.resolve('计划节点 -'),
           ]).then((lines) => {
             invalidateActivityRangeCache(selectedDate)
@@ -923,8 +933,16 @@ export default function App() {
                   setPlanRedoStack([])
                   return `计划块 ${b.length}`
                 }),
+                // AUDIT-033: 同 sync:imported 分支，pull 完后必须 setPlanNodes
+                // 让 TodoListPanel 跟上同步结果，并校正 selectedPlanNodeId
                 selectedProjectTagId != null
-                  ? fetchPlanNodes(selectedProjectTagId).then((nodes) => `计划节点 ${nodes.length}`)
+                  ? fetchPlanNodes(selectedProjectTagId).then((nodes) => {
+                      setPlanNodes(nodes)
+                      setSelectedPlanNodeId((id) =>
+                        id != null && nodes.some((node) => node.id === id) ? id : null,
+                      )
+                      return `计划节点 ${nodes.length}`
+                    })
                   : Promise.resolve('计划节点 -'),
               ]).then((lines) => {
                 invalidateActivityRangeCache(selectedDate)
