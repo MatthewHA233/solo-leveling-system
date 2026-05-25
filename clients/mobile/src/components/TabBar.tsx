@@ -1,16 +1,74 @@
 // ══════════════════════════════════════════════
-// 底部 Tab 栏 — 极简
+// 底部 Tab 栏 — 三 Tab + lucide SVG 图标
 // ══════════════════════════════════════════════
 
+import type { ReactElement } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
+import Svg, { Circle, Path, Rect } from 'react-native-svg'
 import { theme } from '../theme'
 
 export type TabKey = 'daynight' | 'chat' | 'perception'
 
-const TABS: { key: TabKey; label: string }[] = [
-  { key: 'daynight', label: '昼夜表' },
-  { key: 'chat', label: '暗影聊天' },
-  { key: 'perception', label: '感知' },
+interface TabDef {
+  key: TabKey
+  label: string
+  Icon: (props: IconProps) => ReactElement
+}
+
+interface IconProps {
+  color: string
+  size?: number
+}
+
+// ── lucide 图标内联（path 直接抄自 lucide-static，保持 viewBox 0 0 24 24） ──
+
+/** lucide Calendar —— "时间方格" 隐喻昼夜表 */
+function IconCalendar({ color, size = 22 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M8 2v4" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M16 2v4" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+      <Rect x={3} y={4} width={18} height={18} rx={2} stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M3 10h18" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  )
+}
+
+/** lucide MessageCircle —— 经典聊天气泡 */
+function IconMessage({ color, size = 22 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"
+        stroke={color}
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  )
+}
+
+/** lucide Eye —— "感知 / 观察" */
+function IconEye({ color, size = 22 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"
+        stroke={color}
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Circle cx={12} cy={12} r={3} stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  )
+}
+
+const TABS: TabDef[] = [
+  { key: 'daynight', label: '昼夜表', Icon: IconCalendar },
+  { key: 'chat', label: '暗影聊天', Icon: IconMessage },
+  { key: 'perception', label: '感知', Icon: IconEye },
 ]
 
 export default function TabBar({
@@ -24,18 +82,14 @@ export default function TabBar({
     <View style={styles.bar}>
       {TABS.map((tab) => {
         const on = tab.key === active
+        const tint = on ? theme.accent : theme.inkFaint
         return (
           <Pressable key={tab.key} style={styles.tab} onPress={() => onChange(tab.key)}>
-            <View
-              style={[
-                styles.mark,
-                { backgroundColor: on ? theme.accent : 'transparent' },
-              ]}
-            />
+            <tab.Icon color={tint} size={22} />
             <Text
               style={[
                 styles.label,
-                { color: on ? theme.accent : theme.inkFaint, fontWeight: on ? '600' : '500' },
+                { color: tint, fontWeight: on ? '600' : '500' },
               ]}
             >
               {tab.label}
@@ -57,16 +111,12 @@ const styles = StyleSheet.create({
   tab: {
     flex: 1,
     alignItems: 'center',
-    paddingTop: 9,
-    paddingBottom: 11,
-  },
-  mark: {
-    width: 22,
-    height: 3,
-    borderRadius: 2,
-    marginBottom: 7,
+    paddingTop: 6,
+    paddingBottom: 8,
+    gap: 3,
   },
   label: {
-    fontSize: 13,
+    fontSize: 11,
+    letterSpacing: 0.2,
   },
 })

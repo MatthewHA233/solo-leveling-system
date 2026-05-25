@@ -192,18 +192,31 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose,
     let cancelled = false
     const todayKey = dayKey(today)
     const targets = cells.filter((d) => dayKey(d) <= todayKey)
-    ;(async () => {
-      for (const d of targets) {
-        if (cancelled) return
-        const k = dayKey(d)
-        if (tagRangesCache.has(k)) {
-          if (tagRanges[k] === undefined) setTagRanges((p) => ({ ...p, [k]: tagRangesCache.get(k)! }))
-          continue
-        }
-        const v = await getTagRangesForDay(d)
-        if (cancelled) return
-        setTagRanges((p) => ({ ...p, [k]: v }))
+    // 先把缓存里有的同步刷上去（避免空白闪烁）
+    const hitFromCache: Record<string, TagRange[]> = {}
+    const toFetch: Date[] = []
+    for (const d of targets) {
+      const k = dayKey(d)
+      if (tagRangesCache.has(k)) {
+        if (tagRanges[k] === undefined) hitFromCache[k] = tagRangesCache.get(k)!
+      } else {
+        toFetch.push(d)
       }
+    }
+    if (Object.keys(hitFromCache).length > 0) {
+      setTagRanges((p) => ({ ...p, ...hitFromCache }))
+    }
+    if (toFetch.length === 0) return
+    // 并行拉所有 miss 天 —— 原来串行 await 42 天 × IPC 往返 ≈ 2~3s 卡顿，
+    // 并行后受限于 sqlite 单连接，但 IPC 通道并发 + Promise.all 1 次 setState 合批
+    ;(async () => {
+      const results = await Promise.all(
+        toFetch.map(async (d) => ({ k: dayKey(d), v: await getTagRangesForDay(d) })),
+      )
+      if (cancelled) return
+      const next: Record<string, TagRange[]> = {}
+      for (const r of results) next[r.k] = r.v
+      setTagRanges((p) => ({ ...p, ...next }))
     })()
     return () => { cancelled = true }
   }, [cells, today, mode]) // eslint-disable-line react-hooks/exhaustive-deps

@@ -21,6 +21,7 @@ import {
 import type { LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import Svg, { Path } from 'react-native-svg'
+import CalendarPopover from '../components/CalendarPopover'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { alpha, theme } from '../theme'
 import type {
@@ -657,6 +658,8 @@ export default function DayNightScreen() {
   // 否则 measureInWindow 拿到的是 inset=0 时的旧值 → 拖拽落点漂移到上方。
   const insets = useSafeAreaInsets()
   const [selectedDate, setSelectedDate] = useState(() => new Date())
+  const [calendarOpen, setCalendarOpen] = useState(false)
+  const [statsOpen, setStatsOpen] = useState(false)
   const [palette, setPalette] = useState<ActivityPalette | null>(null)
   const [blocks, setBlocks] = useState<ActivityBlock[]>([])
   const [loading, setLoading] = useState(true)
@@ -835,7 +838,8 @@ export default function DayNightScreen() {
     setFocusStart(newStart)
     // toast
     const cfg = ZOOM_CONFIG[newCols]
-    setZoomToast(`${newCols} × ${cfg.rows}`)
+    // toast：列数 × 每格分钟（cell 永远 5min，明确写出避免歧义）
+    setZoomToast(`一行 ${newCols} × 5min`)
     if (zoomToastTimer.current) clearTimeout(zoomToastTimer.current)
     Animated.timing(zoomToastOpacity, {
       toValue: 1, duration: 120, useNativeDriver: true,
@@ -1043,14 +1047,29 @@ export default function DayNightScreen() {
 
   const summary = useMemo(() => {
     const perCat = new Map<number, number>()
+    const perTag = new Map<number, Map<number, number>>() // catId → tagId → mins
     blocks.forEach((b) => {
       const tag = tagById.get(b.tagId)
       if (!tag) return
       perCat.set(tag.categoryId, (perCat.get(tag.categoryId) ?? 0) + 5)
+      let tagMap = perTag.get(tag.categoryId)
+      if (!tagMap) {
+        tagMap = new Map()
+        perTag.set(tag.categoryId, tagMap)
+      }
+      tagMap.set(b.tagId, (tagMap.get(b.tagId) ?? 0) + 5)
     })
     const rows = Array.from(perCat.entries())
-      .map(([catId, mins]) => ({ cat: categoryById.get(catId), mins }))
-      .filter((r): r is { cat: ActivityCategory; mins: number } => !!r.cat)
+      .map(([catId, mins]) => {
+        const cat = categoryById.get(catId)
+        if (!cat) return null
+        const tagRows = Array.from(perTag.get(catId)?.entries() ?? [])
+          .map(([tid, m]) => ({ tag: tagById.get(tid), mins: m }))
+          .filter((r): r is { tag: ActivityTag; mins: number } => !!r.tag)
+          .sort((a, b) => b.mins - a.mins)
+        return { cat, mins, tags: tagRows }
+      })
+      .filter((r): r is { cat: ActivityCategory; mins: number; tags: { tag: ActivityTag; mins: number }[] } => !!r)
       .sort((a, b) => b.mins - a.mins)
     return { total: blocks.length * 5, rows }
   }, [blocks, tagById, categoryById])
@@ -1447,35 +1466,71 @@ export default function DayNightScreen() {
 
   return (
     <View style={styles.root}>
-      {/* 日期行 */}
+      {/* 日期行：‹ [日期+回到今天 chip 同行] ›  日期可点击弹日历 */}
       <View style={styles.dateRow}>
         <Pressable hitSlop={10} onPress={() => setSelectedDate((d) => addDays(d, -1))} style={styles.arrow}>
           <Text style={styles.arrowText}>‹</Text>
         </Pressable>
-        <Pressable onPress={() => setSelectedDate(new Date())} style={styles.dateCenter}>
-          <Text style={styles.dateText}>{fmtDateLabel(selectedDate)}</Text>
-          {!isToday && <Text style={styles.backToday}>回到今天</Text>}
-        </Pressable>
+        <View style={styles.dateCenter}>
+          <Pressable onPress={() => setCalendarOpen(true)} hitSlop={6}>
+            <Text style={styles.dateText}>{fmtDateLabel(selectedDate)}</Text>
+          </Pressable>
+          {!isToday && (
+            <Pressable onPress={() => setSelectedDate(new Date())} style={styles.backTodayChip} hitSlop={4}>
+              <Text style={styles.backTodayChipText}>回到今天</Text>
+            </Pressable>
+          )}
+        </View>
         <Pressable hitSlop={10} onPress={() => setSelectedDate((d) => addDays(d, 1))} style={styles.arrow}>
           <Text style={styles.arrowText}>›</Text>
         </Pressable>
       </View>
 
-      {/* 概览 */}
-      <View style={styles.summary}>
+      {/* 概览 —— 点击弹出分类/标签明细 */}
+      <Pressable
+        style={styles.summary}
+        onPress={() => summary.rows.length > 0 && setStatsOpen(true)}
+      >
         <Text style={styles.summaryText}>
           已记录 <Text style={styles.summaryStrong}>{fmtHM(summary.total)}</Text>
           {summary.rows.length > 0 ? ` · ${summary.rows.length} 类` : ''}
         </Text>
         <View style={styles.sumBar}>
-          {summary.rows.map((r) => (
-            <View key={r.cat.id} style={{ flex: r.mins, backgroundColor: r.cat.color }} />
-          ))}
+          {summary.rows.map((r) => {
+            // 段落占总日 1440 的比例：太窄（<5%）不放字（直接看下方 chips）
+            const showLabel = r.mins / 1440 >= 0.05
+            return (
+              <View
+                key={r.cat.id}
+                style={[styles.sumSeg, { flex: r.mins, backgroundColor: r.cat.color }]}
+              >
+                {showLabel && (
+                  <Text style={styles.sumSegText} numberOfLines={1}>
+                    {r.cat.name}
+                  </Text>
+                )}
+              </View>
+            )
+          })}
           {summary.total < 1440 && (
             <View style={{ flex: 1440 - summary.total, backgroundColor: theme.line }} />
           )}
         </View>
-      </View>
+        {/* 兜底分类 chips：色块太小时也能看到门类名（永远显示） */}
+        {summary.rows.length > 0 && (
+          <View style={styles.sumChips}>
+            {summary.rows.map((r) => (
+              <View key={r.cat.id} style={styles.sumChip}>
+                <View style={[styles.sumChipDot, { backgroundColor: r.cat.color }]} />
+                <Text style={styles.sumChipText}>
+                  {r.cat.name}
+                  <Text style={styles.sumChipMins}> {fmtHM(r.mins)}</Text>
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </Pressable>
 
       {/* 整行按钮：idle 状态显示居中的"编辑"主按钮；编辑模式下同位置一组小按钮 */}
       {palette && (
@@ -1703,6 +1758,16 @@ export default function DayNightScreen() {
                     // 段太窄放标签会被压成竖排：12 cols 时单 cell 屏宽 ≈ 50px 不够，
                     // 6/4/3 cols 时单 cell ≥ 100px，单 cell 也能塞下标签
                     const showLabel = span >= 2 || rowCols <= 6
+                    // 跨行连接：run 触左边 / 右边时检查相邻行同分钟邻接是否同 tag
+                    // 同色 → 该侧不画圆角（看起来像"换行延续"，而不是孤立色块）
+                    // 左侧延续：run.l === 0 AND 上一行同列时刻 = 同 tag
+                    // 右侧延续：run.r === rowCols-1 AND 下一行 col 0 时刻 = 同 tag
+                    const continuesLeft =
+                      run.l === 0 &&
+                      blockByMinute.get(rowStart - 5)?.tagId === run.tag
+                    const continuesRight =
+                      run.r === rowCols - 1 &&
+                      blockByMinute.get(rowStart + rowMinutes)?.tagId === run.tag
                     return (
                       <View
                         key={`t${run.l}`}
@@ -1712,8 +1777,11 @@ export default function DayNightScreen() {
                           width: `${widthPct}%`,
                           top: 0,
                           bottom: 0,
-                          paddingHorizontal: GAP / 2,
-                          paddingVertical: GAP / 2,
+                          // 上下间距 GAP/2 保留（行间分隔），同色连接时让左/右触边
+                          paddingTop: GAP / 2,
+                          paddingBottom: GAP / 2,
+                          paddingLeft: continuesLeft ? 0 : GAP / 2,
+                          paddingRight: continuesRight ? 0 : GAP / 2,
                         }}
                         pointerEvents="none"
                       >
@@ -1721,7 +1789,11 @@ export default function DayNightScreen() {
                           style={{
                             flex: 1,
                             backgroundColor: colorOf(run.tag),
-                            borderRadius: R_ACTIVITY,
+                            // 同色延续侧：两个角各自不圆，看起来是同段"换行"
+                            borderTopLeftRadius: continuesLeft ? 0 : R_ACTIVITY,
+                            borderBottomLeftRadius: continuesLeft ? 0 : R_ACTIVITY,
+                            borderTopRightRadius: continuesRight ? 0 : R_ACTIVITY,
+                            borderBottomRightRadius: continuesRight ? 0 : R_ACTIVITY,
                             alignItems: 'center',
                             justifyContent: 'center',
                             paddingHorizontal: 8,
@@ -1894,6 +1966,90 @@ export default function DayNightScreen() {
           </Animated.View>
         </View>
       )}
+      {/* 当日分类/标签统计 —— 点击顶部条形图弹出 */}
+      <Modal
+        visible={statsOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setStatsOpen(false)}
+      >
+        <Pressable style={styles.backdrop} onPress={() => setStatsOpen(false)}>
+          <Pressable style={styles.sheet} onPress={() => {}}>
+            <View style={styles.sheetHead}>
+              <View style={styles.sheetHandle} />
+              <View style={styles.sheetTop}>
+                <Text style={styles.sheetName}>当日统计</Text>
+                <Text style={styles.sheetDur}>{fmtHM(summary.total)}</Text>
+              </View>
+              <Text style={styles.sheetTime}>
+                {summary.rows.length} 个分类 ·{' '}
+                {summary.rows.reduce((n, r) => n + r.tags.length, 0)} 个标签
+              </Text>
+            </View>
+            <ScrollView
+              style={styles.sheetScroll}
+              contentContainerStyle={styles.sheetScrollContent}
+              showsVerticalScrollIndicator
+            >
+              {summary.rows.map((row) => {
+                const catPct = summary.total > 0 ? (row.mins / summary.total) * 100 : 0
+                return (
+                  <View key={row.cat.id} style={styles.statsCatBlock}>
+                    <View style={styles.statsCatHead}>
+                      <View
+                        style={[styles.statsCatDot, { backgroundColor: row.cat.color }]}
+                      />
+                      <Text style={styles.statsCatName}>{row.cat.name}</Text>
+                      <Text style={styles.statsCatMins}>{fmtHM(row.mins)}</Text>
+                      <Text style={styles.statsCatPct}>{catPct.toFixed(1)}%</Text>
+                    </View>
+                    {row.tags.map((t) => {
+                      const tagPct =
+                        summary.total > 0 ? (t.mins / summary.total) * 100 : 0
+                      const tagCatPct = row.mins > 0 ? (t.mins / row.mins) * 100 : 0
+                      return (
+                        <View key={t.tag.id} style={styles.statsTagRow}>
+                          <View
+                            style={[
+                              styles.statsTagBarBg,
+                              { backgroundColor: alpha(row.cat.color, 0.18) },
+                            ]}
+                          >
+                            <View
+                              style={[
+                                styles.statsTagBarFill,
+                                {
+                                  width: `${tagCatPct}%`,
+                                  backgroundColor: row.cat.color,
+                                },
+                              ]}
+                            />
+                          </View>
+                          <Text style={styles.statsTagName} numberOfLines={1}>
+                            {t.tag.leafName}
+                          </Text>
+                          <Text style={styles.statsTagMins}>{fmtHM(t.mins)}</Text>
+                          <Text style={styles.statsTagPct}>{tagPct.toFixed(1)}%</Text>
+                        </View>
+                      )
+                    })}
+                  </View>
+                )
+              })}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* 月历选日期面板 —— 每个 cell 背景环显示当日记录时段 */}
+      <CalendarPopover
+        open={calendarOpen}
+        selectedDate={selectedDate}
+        tagById={tagById}
+        categoryById={categoryById}
+        onSelect={setSelectedDate}
+        onClose={() => setCalendarOpen(false)}
+      />
       {/* 删除确认框 */}
       <ConfirmDialog
         open={confirmDelete != null}
@@ -2141,14 +2297,31 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: theme.inkFaint,
   },
+  // 中部一行：日期 + 可选"回到今天"chip 并列
   dateCenter: {
     flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
   },
   dateText: {
     fontSize: 17,
     fontWeight: '600',
     color: theme.ink,
+  },
+  // 回到今天 chip：跟在日期右侧，非今天才显示
+  backTodayChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    backgroundColor: alpha(theme.accent, 0.12),
+  },
+  backTodayChipText: {
+    fontSize: 11,
+    color: theme.accent,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   backToday: {
     fontSize: 11,
@@ -2170,19 +2343,124 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   summaryText: {
-    fontSize: 12.5,
-    color: theme.inkSoft,
+    fontSize: 13,
+    color: theme.ink,
+    fontWeight: '500',
   },
   summaryStrong: {
     color: theme.ink,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   sumBar: {
-    height: 6,
-    borderRadius: 3,
+    height: 20,
+    borderRadius: 5,
     flexDirection: 'row',
     overflow: 'hidden',
     backgroundColor: theme.line,
+  },
+  sumSeg: {
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  sumSegText: {
+    fontSize: 11,
+    color: '#FFF',
+    fontWeight: '600',
+    letterSpacing: 0.2,
+  },
+  sumChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    rowGap: 5,
+    marginTop: 2,
+  },
+  sumChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  sumChipDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  sumChipText: {
+    fontSize: 12,
+    color: theme.ink,
+    fontWeight: '500',
+  },
+  sumChipMins: {
+    color: theme.inkSoft,
+    fontWeight: '400',
+  },
+  // 当日统计 modal
+  statsCatBlock: {
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.lineSoft,
+  },
+  statsCatHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingBottom: 8,
+  },
+  statsCatDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  statsCatName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: theme.ink,
+    flex: 1,
+  },
+  statsCatMins: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.ink,
+  },
+  statsCatPct: {
+    fontSize: 12,
+    color: theme.inkSoft,
+    minWidth: 48,
+    textAlign: 'right',
+  },
+  statsTagRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 5,
+    paddingLeft: 18,
+  },
+  statsTagBarBg: {
+    width: 60,
+    height: 6,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  statsTagBarFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  statsTagName: {
+    flex: 1,
+    fontSize: 13,
+    color: theme.ink,
+  },
+  statsTagMins: {
+    fontSize: 12,
+    color: theme.inkSoft,
+  },
+  statsTagPct: {
+    fontSize: 12,
+    color: theme.inkSoft,
+    minWidth: 48,
+    textAlign: 'right',
   },
   loading: {
     flex: 1,
