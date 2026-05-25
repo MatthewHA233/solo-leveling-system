@@ -20,6 +20,7 @@ import {
 } from 'react-native'
 import type { LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import Svg, { Path } from 'react-native-svg'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { alpha, theme } from '../theme'
 import type {
@@ -97,6 +98,17 @@ interface PlanMeta {
 }
 
 const PLAN_SUGGESTIONS = ['复盘今天', '写论文初稿', 'React Native 动效', '整理收件箱']
+
+// 空 palette 时一键初始化的默认分类 + 标签（与 desktop ActivityTagPalette
+// DEFAULT_PALETTE 一致，让 desktop / mobile 用户初次体验对齐）
+// 不预置"编程"分类 — 不是所有人都适合
+const DEFAULT_PALETTE: ReadonlyArray<{ name: string; tags: ReadonlyArray<string> }> = [
+  { name: '工作', tags: ['会议', '写文档', '日报周报', '沟通协调'] },
+  { name: '学习', tags: ['看书', '看视频课', '做笔记', '复盘'] },
+  { name: '生活', tags: ['做饭', '吃饭', '洗漱', '采购', '通勤'] },
+  { name: '运动健康', tags: ['跑步', '健身', '散步', '冥想'] },
+  { name: '休息娱乐', tags: ['睡觉', '看视频', '玩游戏', '刷手机'] },
+]
 
 const PLAN_PRESETS: { pattern: RegExp; meta: PlanMeta }[] = [
   { pattern: /邮件|消息|沟通|回复|email|mail/i, meta: { icon: '@', color: '#4C86E0', label: '沟通' } },
@@ -473,6 +485,22 @@ function UndoGlyph({
 }
 
 /** 软件风调节器图标 —— 3 条水平滑条 + 圆形滑块，纯 RN 几何，无依赖。 */
+/** "启动 / 激活"图标：lucide Zap（闪电），由 react-native-svg 渲染。
+ *  "一键初始化"的标准 UX 隐喻。 */
+function ZapGlyph({ color = '#FFF', size = 18 }: { color?: string; size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"
+        stroke={color}
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  )
+}
+
 function SlidersGlyph({ color = '#FFF', size = 14 }: { color?: string; size?: number }) {
   const knob = Math.max(3, Math.round(size * 0.22))
   const lineH = Math.max(1, Math.round(size * 0.08))
@@ -642,6 +670,29 @@ export default function DayNightScreen() {
   // picker 浮层贴在 toolbar 下方，需要知道 toolbar 底部 y 坐标
   const [actionSlotBottom, setActionSlotBottom] = useState(0)
   const [tagQuery, setTagQuery] = useState('')
+  // 新建模式：左侧"+"按钮切换；进入后搜索框语义变成"新标签完整路径"，
+  // 下方 tag 列表作为模糊提示，点击 = 回填路径到输入框（节省手打父节点）
+  const [addMode, setAddMode] = useState(false)
+  // 一键初始化默认 6 分类 + 26 标签（空状态时使用，对齐 desktop）
+  const [seeding, setSeeding] = useState(false)
+  const seedDefaults = async () => {
+    if (seeding) return
+    setSeeding(true)
+    try {
+      let next: ActivityPalette | null = null
+      for (const c of DEFAULT_PALETTE) {
+        for (const t of c.tags) {
+          next = await createTag(`${c.name},${t}`)
+        }
+      }
+      if (next) setPalette(next)
+    } catch (e: any) {
+      // 失败静默 — 用户可以再点；UI 上保留按钮
+      console.warn('[seed default palette] failed:', e?.message ?? e)
+    } finally {
+      setSeeding(false)
+    }
+  }
   const [detail, setDetail] = useState<Span | null>(null)
   const [probeEvents, setProbeEvents] = useState<WindowEvent[]>([])
   const [powerEvents, setPowerEvents] = useState<PowerEvent[]>([])
@@ -1871,15 +1922,34 @@ export default function DayNightScreen() {
           pointerEvents="box-none"
         >
           <View style={styles.pickerCloud}>
-            {/* 搜索框常驻；search 模式时自动 focus（弹出输入法）；
+            {/* 搜索框 + 左侧 "+" 按钮 = 新建模式入口（对齐 desktop）。
+                addMode=true 时同一输入框语义变成"新标签完整路径"，下方 tag 列表
+                点击 = 回填路径，节省手打父节点。
+                onChangeText 把中文逗号 → 英文逗号 normalize，避免用户输入法切换烦。
                 × 只清空 query，不关 picker —— 关 picker 由 toolbar 上的按钮负责 */}
             <View style={styles.searchBoxInCloud}>
-              <SearchGlyph color={theme.inkSoft} />
+              <Pressable
+                hitSlop={8}
+                onPress={() => {
+                  setAddMode((m) => !m)
+                  // 进入新建模式聚焦输入框方便直接打
+                  setTimeout(() => searchInputRef.current?.focus(), 30)
+                }}
+                style={[
+                  styles.searchAddBtn,
+                  addMode && styles.searchAddBtnOn,
+                ]}
+              >
+                <Text style={[styles.searchAddText, addMode && styles.searchAddTextOn]}>
+                  {addMode ? '×' : '+'}
+                </Text>
+              </Pressable>
+              {!addMode && <SearchGlyph color={theme.inkSoft} />}
               <TextInput
                 ref={searchInputRef}
                 value={tagQuery}
-                onChangeText={setTagQuery}
-                placeholder="搜索标签 / 分类..."
+                onChangeText={(t) => setTagQuery(t.replace(/,/g, ','))}
+                placeholder={addMode ? '新标签完整路径，如「编程,氛围编程,xxx」' : '搜索标签 / 分类...'}
                 placeholderTextColor={theme.inkSoft}
                 autoFocus={pickerMode === 'search'}
                 style={styles.searchInput}
@@ -1894,17 +1964,25 @@ export default function DayNightScreen() {
                 </Pressable>
               )}
             </View>
-            {/* recent 5 个常用，单独一行常驻在标签云顶部，给"老用户回到熟悉标签"用 */}
+            {/* recent 5 个常用，单独一行常驻在标签云顶部，给"老用户回到熟悉标签"用。
+                addMode 下点击 = 回填 fullPath+ "," 到搜索框（当父路径） */}
             {recentTags.length > 0 && (
               <View style={styles.recentRowInCloud}>
-                <Text style={styles.recentLabel}>最近</Text>
+                <Text style={styles.recentLabel}>{addMode ? '父路径' : '最近'}</Text>
                 {recentTags.map((tag) => {
                   const on = tag.id === selectedTagId
                   const c = colorOf(tag.id)
                   return (
                     <Pressable
                       key={tag.id}
-                      onPress={() => pickTag(tag.id)}
+                      onPress={() => {
+                        if (addMode) {
+                          setTagQuery(tag.fullPath + ',')
+                          searchInputRef.current?.focus()
+                        } else {
+                          pickTag(tag.id)
+                        }
+                      }}
                       style={[
                         styles.recentChip,
                         {
@@ -1921,24 +1999,50 @@ export default function DayNightScreen() {
                 })}
               </View>
             )}
-            <Text style={styles.pickerHint}>
-              {palette.tags.length === 0 ? (
-                <>
-                  还没有标签 · 在搜索框输入 <Text style={styles.pickerHintStrong}>分类,标签</Text> 创建第一个{'\n'}
-                  例：<Text style={styles.pickerHintStrong}>编程,氛围编程</Text> · 或 LAN 同步从 desktop 拉过来
-                </>
-              ) : tagQuery
-                ? `匹配 ${filteredTags.length} / ${palette.tags.length} 个`
-                : `全部 ${palette.tags.length} 个标签 · 输入即过滤 · 含 , 可新建 · 长按标签删除`}
-            </Text>
+            {palette.tags.length === 0 ? (
+              <View style={styles.emptyHintBox}>
+                <Text style={styles.emptyHintTitle}>还没有标签 ·  以下任一方式开始：</Text>
+                <Pressable
+                  style={[styles.seedBtn, seeding && styles.seedBtnDisabled]}
+                  onPress={seeding ? undefined : seedDefaults}
+                  disabled={seeding}
+                >
+                  <ZapGlyph color="#FFF" size={14} />
+                  <Text style={styles.seedBtnTitle} numberOfLines={1}>
+                    {seeding ? '初始化中…' : '一键初始化'}
+                    {!seeding && (
+                      <Text style={styles.seedBtnSub}>  (5 分类 + 22 标签)</Text>
+                    )}
+                  </Text>
+                </Pressable>
+                <Text style={styles.emptyHintSub}>
+                  也可以从电脑端 / 旧手机的<Text style={styles.pickerHintStrong}>局域网同步</Text>过来{'\n'}
+                  或点左侧 <Text style={styles.pickerHintStrong}>+</Text> 自己输入 <Text style={styles.pickerHintStrong}>分类,标签</Text> 新建
+                </Text>
+              </View>
+            ) : (
+              <Text style={styles.pickerHint}>
+                {addMode
+                  ? '新建模式 · 点下方标签 = 把它当父路径回填到输入框，再续写子节点'
+                  : tagQuery
+                    ? `匹配 ${filteredTags.length} / ${palette.tags.length} 个`
+                    : `全部 ${palette.tags.length} 个标签 · 输入过滤 · 点 + 新建 · 长按标签删除`}
+              </Text>
+            )}
             {(() => {
-              const trimmed = tagQuery.trim().replace(/^,+|,+$/g, '')
+              // 中文逗号 onChangeText 已 normalize；这里再兜底一次 + 去首尾逗号
+              const trimmed = tagQuery.replace(/,/g, ',').trim().replace(/^,+|,+$/g, '')
               const segs = trimmed.split(',').map((s) => s.trim()).filter(Boolean)
-              if (segs.length < 2) return null
+              // addMode 下：1 段也允许（用户准备打首段分类名时也展示创建按钮）
+              // 非 addMode：保留旧行为，至少 2 段才出"新建"按钮
+              const minSegs = addMode ? 1 : 2
+              if (segs.length < minSegs) return null
               const normalized = segs.join(',')
               const exists = palette.tags.some((t) => t.fullPath === normalized)
               if (exists) return null
               const isNewCat = !palette.categories.some((c) => c.name === segs[0])
+              const leaf = segs[segs.length - 1]
+              const parent = segs.slice(0, -1).join(' › ')
               return (
                 <Pressable
                   style={styles.createRow}
@@ -1946,16 +2050,24 @@ export default function DayNightScreen() {
                     const updated = await createTag(normalized)
                     setPalette(updated)
                     const created = updated.tags.find((t) => t.fullPath === normalized)
-                    if (created) pickTag(created.id)
+                    if (created) {
+                      pickTag(created.id)
+                      // 新建完退出新建模式 + 清搜索框，让用户看到结果
+                      setAddMode(false)
+                    }
                   }}
                 >
                   <Text style={styles.createPlus}>+</Text>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.createMain}>新建标签 「{segs[segs.length - 1]}」</Text>
-                    <Text style={styles.createPath}>
-                      {segs.slice(0, -1).join(' › ')}
-                      {isNewCat && <Text style={styles.createNewCat}>  · 含新分类「{segs[0]}」</Text>}
+                    <Text style={styles.createMain}>
+                      新建{segs.length === 1 ? '分类' : '标签'} 「{leaf}」
                     </Text>
+                    {segs.length >= 2 && (
+                      <Text style={styles.createPath}>
+                        {parent}
+                        {isNewCat && <Text style={styles.createNewCat}>  · 含新分类「{segs[0]}」</Text>}
+                      </Text>
+                    )}
                   </View>
                 </Pressable>
               )
@@ -1976,7 +2088,19 @@ export default function DayNightScreen() {
                     node={root}
                     depth={0}
                     selectedId={selectedTagId}
-                    onPick={pickTag}
+                    onPick={(id) => {
+                      if (addMode) {
+                        // 新建模式：点 tag = 回填 fullPath + "," 到搜索框
+                        // 用户可以继续打子节点 leaf name
+                        const tag = palette.tags.find((t) => t.id === id)
+                        if (tag) {
+                          setTagQuery(tag.fullPath + ',')
+                          searchInputRef.current?.focus()
+                        }
+                      } else {
+                        pickTag(id)
+                      }
+                    }}
                     onLongPressTag={(t) =>
                       setConfirmDelete({ kind: 'tag', id: t.id, label: t.fullPath })
                     }
@@ -2266,12 +2390,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     height: 38,
-    paddingHorizontal: 12,
+    paddingHorizontal: 6,  // 左侧 + 按钮自己有 padding，外层给小一点
+    paddingRight: 12,
     borderRadius: 19,
     backgroundColor: theme.bg,
     borderWidth: 1,
     borderColor: theme.accent,
     marginBottom: 10,
+  },
+  // 左侧"+"按钮：addMode 开关，对齐 desktop ActivityTagPalette 的 + 按钮
+  searchAddBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: alpha(theme.accent, 0.12),
+  },
+  searchAddBtnOn: {
+    backgroundColor: theme.accent,
+  },
+  searchAddText: {
+    fontSize: 20,
+    fontWeight: '600',
+    lineHeight: 22,
+    color: theme.accent,
+    includeFontPadding: false,
+  },
+  searchAddTextOn: {
+    color: '#FFF',
   },
   searchInput: {
     flex: 1,
@@ -2429,6 +2576,59 @@ const styles = StyleSheet.create({
   pickerHintStrong: {
     color: theme.accent,
     fontWeight: '700',
+  },
+  // 空 palette 引导块：稍大 padding + 圆角浅底，比普通 hint 更醒目
+  emptyHintBox: {
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    borderRadius: 10,
+    backgroundColor: alpha(theme.accent, 0.06),
+    gap: 10,
+  },
+  emptyHintTitle: {
+    fontSize: 12,
+    color: theme.ink,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  emptyHintSub: {
+    fontSize: 11,
+    color: theme.inkSoft,
+    letterSpacing: 0.3,
+    lineHeight: 18,
+  },
+  // 醒目的初始化按钮：实心 accent + 白字，跟下方说明文字明确区分
+  seedBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: theme.accent,
+    shadowColor: theme.accent,
+    shadowOpacity: 0.22,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  seedBtnDisabled: {
+    opacity: 0.55,
+  },
+  // 主标题 + 括号副字同一 Text，确保单行排列；副字小一号 + 半透明白
+  seedBtnTitle: {
+    fontSize: 16,
+    color: '#FFF',
+    fontWeight: '700',
+    letterSpacing: 0.6,
+  },
+  seedBtnSub: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.78)',
+    fontWeight: '500',
+    letterSpacing: 0.3,
   },
   pickerWrap: {
     flexDirection: 'row',

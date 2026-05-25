@@ -193,7 +193,7 @@ http://127.0.0.1:9222/json/version
 
 ### Mobile 客户端
 
-位于 `clients/mobile/`。React Native 0.85，纯 RN（零原生依赖），Android + iOS 共享 TS 代码。开发分支 `feat/mobile`，主开发目标先做 Android，iOS 后续补。
+位于 `clients/mobile/`。React Native 0.85，自家 native module（SoloDb / Updater / Perception / Sync），不引第三方"非必要"的 native 包；可视化基础设施类的（`react-native-svg`、`react-native-safe-area-context` 等）按需引入。Android + iOS 共享 TS 代码。开发分支 `feat/mobile`，主开发目标先做 Android，iOS 后续补。
 
 **包名：** `com.sololevelingsystemmobile`（入口 `MainActivity`）
 
@@ -423,7 +423,7 @@ python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
 
 ## Mobile 架构概览
 
-`clients/mobile/`（RN + TS，纯 RN 零原生依赖）
+`clients/mobile/`（RN + TS，自家 native module + `react-native-svg` / `react-native-safe-area-context` 等可视化基础包）
 
 - `App.tsx` — SafeAreaProvider + StatusBar + TabBar，切换 `DayNightScreen` / `ChatScreen`
 - `src/theme.ts` — 浅色克制主题；`categoryColors` 给活动分类配色；`alpha()` 助手

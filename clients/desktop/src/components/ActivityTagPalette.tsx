@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Check, MoreHorizontal, Palette, Pencil, Plus, Search, Tag as TagIcon, Trash2, X } from 'lucide-react'
+import { Check, MoreHorizontal, Palette, Pencil, Plus, Search, Tag as TagIcon, Trash2, X, Zap } from 'lucide-react'
 import type { ActivityCategory, ActivityTag, ActivityPalette } from '../types'
 import {
   addActivityCategory, deleteActivityCategory, updateActivityCategory,
@@ -33,11 +33,10 @@ const COLOR_PALETTE = [
   '#FB7185', '#A78BFA', '#84CC16', '#60A5FA', '#F472B6', '#2DD4BF',
 ] as const
 
-// 一键初始化的默认分类 + 标签（偏向通用，编程作为特色保留）
+// 一键初始化的默认分类 + 标签（偏向通用，不预置编程 — 不是所有人都适合）
 const DEFAULT_PALETTE: ReadonlyArray<{ name: string; color: string; tags: ReadonlyArray<string> }> = [
   { name: '工作', color: '#38BDF8', tags: ['会议', '写文档', '日报周报', '沟通协调'] },
   { name: '学习', color: '#22C55E', tags: ['看书', '看视频课', '做笔记', '复盘'] },
-  { name: '编程', color: '#A78BFA', tags: ['写代码', '调试', '看文档', '设计架构'] },
   { name: '生活', color: '#F97316', tags: ['做饭', '吃饭', '洗漱', '采购', '通勤'] },
   { name: '运动健康', color: '#14B8A6', tags: ['跑步', '健身', '散步', '冥想'] },
   { name: '休息娱乐', color: '#FB7185', tags: ['睡觉', '看视频', '玩游戏', '刷手机'] },
@@ -211,7 +210,8 @@ export default function ActivityTagPalette({
   }, [])
 
   const handleCreateTag = useCallback(async () => {
-    const raw = searchQuery.trim().replace(/^,+|,+$/g, '')
+    // 兜底再 normalize 中文逗号一次（粘贴 / 输入法快速切换可能漏过 onChange）
+    const raw = searchQuery.replace(/,/g, ',').trim().replace(/^,+|,+$/g, '')
     if (!raw) return
     const segs = raw.split(',').map((s) => s.trim()).filter(Boolean)
     if (segs.length < 2) {
@@ -336,7 +336,8 @@ export default function ActivityTagPalette({
           </Tooltip>
           <SearchBox
             query={searchQuery}
-            onChange={setSearchQuery}
+            // 中文逗号 → 英文逗号，让用户输入法切换无烦（搜索/新建都兜底）
+            onChange={(v) => setSearchQuery(v.replace(/,/g, ','))}
             addMode={addMode}
             onSubmitAdd={handleCreateTag}
             onCancelAdd={exitAddMode}
@@ -869,31 +870,78 @@ function EmptyHint({
     return <div style={emptyHintStyle}>没有匹配的标签</div>
   }
   if (!hasCategories || !hasAny) {
+    // 三行居中布局（对齐 mobile DayNightScreen 空 palette 风格）：
+    //   ① 醒目按钮  ② LAN 同步说明  ③ + 自建说明
     return (
       <div style={{
         width: '100%',
-        padding: '52px 8px 28px',
+        padding: '40px 16px 28px',
         fontFamily: theme.fontBody,
-        fontSize: 12,
+        fontSize: 11.5,
         color: theme.textSecondary,
         lineHeight: 1.9,
         textAlign: 'center',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 12,
       }}>
-        <div>
-          点击 <InlinePlusButton onClick={onEnterAddMode} /> 按钮添加标签
+        <div style={{ color: theme.textPrimary, fontWeight: 600, letterSpacing: 0.4 }}>
+          还没有标签 · 以下任一方式开始
         </div>
-        {!hasCategories && (
-          <div style={{ marginTop: 4 }}>
-            或{' '}
-            <InlineAction onClick={onSeed} disabled={seeding}>
-              {seeding ? '载入中…' : '载入预置'}
-            </InlineAction>
-          </div>
-        )}
+        <SeedDefaultsButton onClick={onSeed} disabled={seeding} />
+        <div>
+          也可以从其他电脑端 / 手机端 <strong style={{ color: theme.electricBlue }}>局域网同步</strong> 过来
+        </div>
+        <div>
+          或点 <InlinePlusButton onClick={onEnterAddMode} /> 自己输入 <strong style={{ color: theme.electricBlue }}>分类,标签</strong> 新建
+        </div>
       </div>
     )
   }
   return null
+}
+
+/** 一键初始化按钮：HUD 风格（accent 描边 + accent 实心填充 + Zap 图标）。 */
+function SeedDefaultsButton({ onClick, disabled }: { onClick: () => void; disabled: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '8px 16px',
+        background: disabled ? 'rgba(0,229,255,0.18)' : theme.electricBlue,
+        border: `1px solid ${theme.electricBlue}`,
+        color: disabled ? theme.textSecondary : '#001018',
+        fontFamily: theme.fontBody,
+        fontWeight: 700,
+        fontSize: 12.5,
+        letterSpacing: 0.6,
+        cursor: disabled ? 'wait' : 'pointer',
+        boxShadow: disabled ? 'none' : `0 0 12px ${theme.electricBlue}55`,
+      }}
+    >
+      <Zap size={13} strokeWidth={2.4} />
+      <span>
+        {disabled ? '初始化中…' : '一键初始化'}
+        {!disabled && (
+          <span style={{
+            marginLeft: 8,
+            fontSize: 10.5,
+            fontWeight: 500,
+            opacity: 0.78,
+            letterSpacing: 0.2,
+          }}>
+            (5 分类 + 22 常用标签)
+          </span>
+        )}
+      </span>
+    </button>
+  )
 }
 
 // 复用顶栏「+」按钮同款样式（缩小一档以贴合行内）
@@ -914,35 +962,6 @@ function InlinePlusButton({ onClick }: { onClick: () => void }) {
       }}
     >
       <Plus size={11} />
-    </button>
-  )
-}
-
-function InlineAction({ onClick, disabled, children }: {
-  onClick: () => void
-  disabled?: boolean
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        display: 'inline',
-        background: 'transparent',
-        border: 'none',
-        padding: 0,
-        margin: 0,
-        font: 'inherit',
-        color: disabled ? theme.textMuted : theme.electricBlue,
-        textDecoration: 'underline',
-        textDecorationStyle: 'dotted',
-        textUnderlineOffset: 3,
-        cursor: disabled ? 'wait' : 'pointer',
-      }}
-    >
-      {children}
     </button>
   )
 }

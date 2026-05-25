@@ -1,5 +1,7 @@
-- 修：强制更新（min_supported_code > 当前版本码）路径下载/安装失败后弹窗
-  会消失，用户能回到旧版本继续用。现在 runDownloadAndInstall() 强制时不在
-  下载开始前关闭弹窗，catch 失败分支再次 setConfirmUpdateOpen(true) 兜底
-  (AUDIT-021)
-- 非强制更新行为不变（下载开始关弹窗，进度看通知栏）
+- 昼夜表标签 picker 大改造（对齐 desktop）：
+  - 搜索栏左侧加 "+" 按钮，切换"新建模式"
+  - 新建模式下点击下方标签 = 把 fullPath 回填到搜索框当父路径
+  - 中文逗号 → 英文逗号自动 normalize（输入 / 粘贴都识别）
+  - 空 palette 引导改为三行居中：醒目 ⚡"一键初始化"按钮 + 局域网同步说明 + + 自建说明
+  - "一键初始化"按钮内嵌 5 分类 22 标签（不预置编程，更通用）
+- 引入 react-native-svg，闪电图标用 lucide Zap path
