@@ -18,8 +18,7 @@ import { getFeatureModel, listModelFreeQuotas, setFeatureModel } from '../lib/mo
 import { MODEL_SELECT_POPUP_WIDTH, modelSelectOption } from '../lib/model-display'
 
 type FairyPayload = { state: FairyState; text: string }
-type FairyChatMode = 'regular' | 'omni'
-type FairyConfigPayload = { scale?: number; aiMode?: FairyChatMode }
+type FairyConfigPayload = { scale?: number }
 type FairyActionPayload =
   | { action: 'hide' }
   | { action: 'open-settings' }
@@ -151,7 +150,6 @@ export default function FairyWindow() {
   const [scale, setScale] = useState(DEFAULT_SCALE)
   const [panel, setPanel] = useState<FairyPanel | null>(null)
   const [miniInput, setMiniInput] = useState('')
-  const [miniMode, setMiniMode] = useState<FairyChatMode>('regular')
   const [models, setModels] = useState<ModelDef[]>([])
   const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
@@ -248,10 +246,10 @@ export default function FairyWindow() {
   const handleMiniSubmit = useCallback(() => {
     const trimmed = miniInput.trim()
     if (!trimmed) return
-    emit('fairy-chat-submit', { text: trimmed, mode: miniMode }).catch(() => {})
+    emit('fairy-chat-submit', { text: trimmed }).catch(() => {})
     setMiniInput('')
     closePanel()
-  }, [closePanel, miniInput, miniMode])
+  }, [closePanel, miniInput])
 
   const handleFairyContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -286,9 +284,6 @@ export default function FairyWindow() {
     })
     const c = listen<FairyConfigPayload>('fairy-config', e => {
       if (e.payload?.scale !== undefined) setScale(clampScale(e.payload.scale))
-      if (e.payload?.aiMode === 'regular' || e.payload?.aiMode === 'omni') {
-        setMiniMode(e.payload.aiMode)
-      }
     })
 
     // 通知主窗口：fairy listener 已就绪，可以重发当前状态
@@ -703,9 +698,7 @@ export default function FairyWindow() {
             {panel.mode === 'chat' && (
               <FairyMiniChat
                 value={miniInput}
-                mode={miniMode}
                 onChange={setMiniInput}
-                onModeChange={setMiniMode}
                 onBack={() => openPanel('menu')}
                 onSubmit={handleMiniSubmit}
               />
@@ -755,16 +748,12 @@ function FairyQuickMenu({
 
 function FairyMiniChat({
   value,
-  mode,
   onChange,
-  onModeChange,
   onBack,
   onSubmit,
 }: {
   readonly value: string
-  readonly mode: FairyChatMode
   readonly onChange: (value: string) => void
-  readonly onModeChange: (mode: FairyChatMode) => void
   readonly onBack: () => void
   readonly onSubmit: () => void
 }) {
@@ -777,28 +766,7 @@ function FairyMiniChat({
   return (
     <>
       <PanelHeader title="MINI CHAT" onBack={onBack} />
-      <div className="fairy-context-subtitle">直接把一句话交给 Fairy，并选择本轮对话管线。</div>
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: 6,
-        margin: '0 0 8px',
-      }}>
-        <MiniModeButton
-          active={mode === 'regular'}
-          color={theme.electricBlue}
-          label="普通对话"
-          meta="TEXT"
-          onClick={() => onModeChange('regular')}
-        />
-        <MiniModeButton
-          active={mode === 'omni'}
-          color={theme.shadowPurple}
-          label="全模态"
-          meta="OMNI"
-          onClick={() => onModeChange('omni')}
-        />
-      </div>
+      <div className="fairy-context-subtitle">直接把一句话交给 Fairy，不切回主界面。</div>
       <div
         className="fairy-mini-input-wrap"
         style={{
@@ -866,50 +834,6 @@ function FairyMiniChat({
         </div>
       </div>
     </>
-  )
-}
-
-function MiniModeButton({
-  active,
-  color,
-  label,
-  meta,
-  onClick,
-}: {
-  readonly active: boolean
-  readonly color: string
-  readonly label: string
-  readonly meta: string
-  readonly onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        height: 28,
-        padding: '0 8px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 6,
-        background: active ? `${color}18` : 'rgba(255,255,255,0.025)',
-        border: `1px solid ${active ? `${color}AA` : theme.hudFrameSoft}`,
-        color: active ? color : theme.textSecondary,
-        clipPath: hud.chamfer8,
-        WebkitClipPath: hud.chamfer8,
-        cursor: 'pointer',
-        fontFamily: theme.fontBody,
-        fontSize: 11,
-        fontWeight: 700,
-        letterSpacing: 0.4,
-        boxShadow: active ? `inset 0 0 10px ${color}22, 0 0 8px ${color}33` : 'none',
-        transition: 'all 0.14s ease',
-      }}
-    >
-      <span>{label}</span>
-      <span style={{ fontFamily: theme.fontMono, fontSize: 8, opacity: 0.72 }}>{meta}</span>
-    </button>
   )
 }
 
