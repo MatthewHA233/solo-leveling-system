@@ -343,8 +343,7 @@ solo-leveling/android/
 4. **🚨 Claude 跑 `python3 scripts/release_mobile.py --build-only`**（background，3~8 分钟首次 / ~30s 增量）—— 这会 build APK 并写新鲜度 stamp（git HEAD + dirty 状态）；`--build-only` 不走 OSS 网络，不怕 Clash 代理
 5. build 完成后用 `aapt dump badging app-release.apk` 校验内嵌 versionCode/versionName == VERSION（必做，结果必须出现在 Claude 对话里给用户看到）
 6. **校验通过后**才 `open -R clients/mobile/release.command` 用 Finder 选中显示
-7. **由用户双击 .command** 启动 Terminal 跑上传；脚本会清 Clash 代理 env、读 changelog、校验 APK 版本 + stamp HEAD 匹配后上传
-8. 跑完用户回到对话告诉 Claude 结果（贴最后几行）
+7. **由用户双击 .command** 启动 Terminal 跑上传；脚本会清 Clash 代理 env、读 changelog、校验 APK 版本 + stamp HEAD 匹配后上传（一般不出错，无需用户回贴日志，除非用户主动说有问题）
 
 > 🚨🚨🚨 **第 4 步绝不可省略 —— 惨痛血泪教训**：
 >
