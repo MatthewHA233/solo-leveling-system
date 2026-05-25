@@ -77,3 +77,6 @@ yarn-error.log
 # Solo Leveling 本地配置（OSS endpoint / bucket / 路径前缀），勿入 git
 sls.properties
 
+# 发布 changelog 草稿，每次发布前手动改，留着不入库
+CHANGELOG.next.md
+
