@@ -240,28 +240,45 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
         {onOpenSessions && (
           <HistoryToggle on={!!sessionsOpen} onClick={onOpenSessions} />
         )}
-        <span style={{
-          fontSize: 12, fontWeight: 700,
-          fontFamily: theme.fontDisplay,
-          color: theme.electricBlue, letterSpacing: 2.5,
-          textShadow: `0 0 10px ${theme.electricBlue}AA, 0 0 20px ${theme.electricBlue}44`,
+        <div style={{
+          height: 24,
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 8,
+          flexShrink: 0,
         }}>
-          暗影系统
-        </span>
-        {/* 状态徽章：ONLINE（切角） */}
-        <span style={{
-          fontSize: 8.5, fontWeight: 700,
-          letterSpacing: 1.6,
-          color: theme.expGreen,
-          padding: '2px 7px',
-          border: `1px solid ${theme.expGreen}55`,
-          clipPath: clip4,
-          background: `${theme.expGreen}14`,
-          fontFamily: theme.fontMono,
-          textShadow: `0 0 6px ${theme.expGreen}88`,
-        }}>
-          ONLINE
-        </span>
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            height: 16,
+            fontSize: 12.5, fontWeight: 800,
+            lineHeight: '16px',
+            fontFamily: "'Microsoft YaHei UI', 'Noto Sans SC', sans-serif",
+            color: theme.electricBlue, letterSpacing: 2.5,
+            textShadow: `0 0 10px ${theme.electricBlue}AA, 0 0 20px ${theme.electricBlue}44`,
+            transform: 'translateY(-1px)',
+          }}>
+            暗影系统
+          </span>
+          {/* 状态徽章：ONLINE（切角） */}
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            height: 17,
+            fontSize: 8.5, fontWeight: 700,
+            lineHeight: 1,
+            letterSpacing: 1.6,
+            color: theme.expGreen,
+            padding: '0 7px',
+            border: `1px solid ${theme.expGreen}55`,
+            clipPath: clip4,
+            background: `${theme.expGreen}14`,
+            fontFamily: theme.fontMono,
+            textShadow: `0 0 6px ${theme.expGreen}88`,
+          }}>
+            ONLINE
+          </span>
+        </div>
         {/* 右侧按钮组 */}
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
           {/* TTS 开关 */}

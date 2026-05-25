@@ -51,6 +51,10 @@ export interface AgentConfig {
   readonly miniBarPosition: 'right' | 'left'
   readonly ttsEnabled: boolean
 
+  // ── Fairy Window ──
+  readonly fairyWindowEnabled: boolean
+  readonly fairyWindowScale: number
+
   // ── AI 人设 ──
   readonly agentName: string
   readonly agentPersona: string
@@ -116,6 +120,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
   overlayEnabled: true,
   miniBarPosition: 'right',
   ttsEnabled: false,
+  fairyWindowEnabled: true,
+  fairyWindowScale: 0.8,
 
   agentName: 'Fairy',
   agentPersona: `你是 Fairy，万能管家，算力充沛。回复极简，通常一到两句，绝不独白，不加任何格式装饰。
@@ -150,6 +156,12 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
 // ── Load / Save ──
 
+function clampFairyWindowScale(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(n)) return DEFAULT_CONFIG.fairyWindowScale
+  return Math.min(1, Math.max(0.4, n))
+}
+
 export function loadConfig(): AgentConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -174,6 +186,8 @@ export function loadConfig(): AgentConfig {
         openaiApiKey: migrated.openaiApiKey ?? dashscopeApiKey,
         omniApiKey: migrated.omniApiKey ?? null,
         asrApiKey: migrated.asrApiKey ?? null,
+        fairyWindowEnabled: migrated.fairyWindowEnabled ?? DEFAULT_CONFIG.fairyWindowEnabled,
+        fairyWindowScale: clampFairyWindowScale(migrated.fairyWindowScale),
       }
     }
   } catch {
@@ -215,6 +229,12 @@ export function updateConfig(
   updates: Partial<AgentConfig>,
 ): AgentConfig {
   const next = { ...current, ...updates }
+  if (updates.fairyWindowScale !== undefined) {
+    next.fairyWindowScale = clampFairyWindowScale(updates.fairyWindowScale)
+  }
+  if (updates.fairyWindowEnabled !== undefined) {
+    next.fairyWindowEnabled = updates.fairyWindowEnabled
+  }
   if (updates.dashscopeApiKey !== undefined) {
     next.openaiApiKey = updates.dashscopeApiKey
   }

@@ -10,6 +10,8 @@ export type FairyState = 'idle' | 'listening' | 'thinking' | 'speaking'
 interface Props {
   readonly state: FairyState
   readonly text?: string
+  readonly scale?: number
+  readonly onContextMenu?: (event: React.MouseEvent<HTMLDivElement>) => void
 }
 
 const styles = `
@@ -254,7 +256,7 @@ const styles = `
 
 `
 
-export default function FairyHUD({ state, text = '' }: Props) {
+export default function FairyHUD({ state, text = '', scale = 1, onContextMenu }: Props) {
   // ── Element refs ──
   const gyroRef = useRef<HTMLDivElement>(null)
   const ballRotatorRef = useRef<HTMLDivElement>(null)
@@ -582,6 +584,7 @@ export default function FairyHUD({ state, text = '' }: Props) {
   }
 
   const bubbleText = state === 'speaking' ? text : ''
+  const visualScale = Math.min(1, Math.max(0.4, scale))
 
   return (
     <div className="fairy-overlay">
@@ -592,7 +595,12 @@ export default function FairyHUD({ state, text = '' }: Props) {
           {bubbleText && <div className="fairy-bubble-text">{bubbleText}</div>}
         </div>
       )}
-      <div className="fairy-core" onMouseDown={handleDrag}>
+      <div
+        className="fairy-core"
+        onMouseDown={handleDrag}
+        onContextMenu={onContextMenu}
+        style={{ transform: `scale(${0.7 * visualScale})` }}
+      >
         <div ref={glowRef} className="abs-center layer-glow-halo" />
         <div ref={glowHalo2Ref} className="abs-center layer-glow-halo2" />
         <div ref={glowRingRef} className="abs-center layer-glow-ring" />

@@ -17,6 +17,8 @@ import HudSelect from './HudSelect'
 
 interface Props {
   readonly open: boolean
+  readonly initialSection?: string
+  readonly initialSectionTick?: number
   readonly config: AgentConfig
   readonly onUpdate: (updates: Partial<AgentConfig>) => void
   readonly onClose: () => void
@@ -64,7 +66,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`
 }
 
-export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose }: Props) {
+export default function SettingsPanel({ open: isOpen, initialSection, initialSectionTick = 0, config, onUpdate, onClose }: Props) {
   // ── Local draft state (不实时写入，点确认才生效) ──
   const [draft, setDraft] = useState({
     aiMode: config.aiMode,
@@ -88,6 +90,8 @@ export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose 
     biliAutoCreate: config.biliAutoCreate,
     biliDownloadPath: config.biliDownloadPath,
     biliDownloadQuality: config.biliDownloadQuality,
+    fairyWindowEnabled: config.fairyWindowEnabled,
+    fairyWindowScale: config.fairyWindowScale,
     agentName: config.agentName,
     agentPersona: config.agentPersona,
     agentCallUser: config.agentCallUser,
@@ -121,6 +125,10 @@ export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose 
 
   // ── 左侧栏当前选中分组 ──
   const [activeSection, setActiveSection] = useState<string>('persona')
+
+  useEffect(() => {
+    if (isOpen && initialSection) setActiveSection(initialSection)
+  }, [initialSection, initialSectionTick, isOpen])
 
   useEffect(() => {
     if (!isOpen) return
@@ -231,7 +239,7 @@ export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose 
     }
   }, [])
 
-  const update = useCallback((field: string, value: string) => {
+  const update = useCallback((field: keyof typeof draft, value: string | number | boolean) => {
     setDraft((prev) => ({ ...prev, [field]: value }))
     setDirty(true)
     setSaved(false)
@@ -257,6 +265,8 @@ export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose 
       biliAutoCreate: draft.biliAutoCreate,
       biliDownloadPath: draft.biliDownloadPath || 'E:\\BiliDownloads',
       biliDownloadQuality: draft.biliDownloadQuality,
+      fairyWindowEnabled: draft.fairyWindowEnabled,
+      fairyWindowScale: draft.fairyWindowScale,
       agentName: draft.agentName || 'Fairy',
       agentPersona: draft.agentPersona,
       agentCallUser: draft.agentCallUser || '主人',
@@ -456,6 +466,90 @@ export default function SettingsPanel({ open: isOpen, config, onUpdate, onClose 
             >
               {saved ? '已应用 ✓' : '保存'}
             </MagneticButton>
+          </div>
+        </Section>
+        )}
+
+        {activeSection === 'fairy' && (
+        <Section title="Fairy 窗口" icon={Eye}>
+          <div style={{ display: 'grid', gap: 12 }}>
+            <HudCheckbox
+              checked={draft.fairyWindowEnabled}
+              onChange={(checked) => update('fairyWindowEnabled', checked)}
+              label="显示桌面 Fairy"
+            >
+              <div style={{ fontSize: 10, color: theme.textMuted, marginTop: 2, lineHeight: 1.45 }}>
+                关闭后 Fairy 子窗口会隐藏；需要重新召回时，在这里开启并保存。
+              </div>
+            </HudCheckbox>
+
+            <div style={{
+              background: 'rgba(255,255,255,0.03)',
+              border: `1px solid ${theme.glassBorder}`,
+              borderRadius: 4,
+              padding: '10px 12px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+                <label style={{ ...labelStyle, marginBottom: 0 }}>窗口大小</label>
+                <span style={{
+                  fontFamily: theme.fontMono,
+                  fontSize: 12,
+                  color: theme.electricBlue,
+                  textShadow: `0 0 8px ${theme.electricBlue}66`,
+                }}>
+                  {Math.round(draft.fairyWindowScale * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={40}
+                max={100}
+                step={5}
+                value={Math.round(draft.fairyWindowScale * 100)}
+                onChange={(e) => update('fairyWindowScale', Number(e.target.value) / 100)}
+                style={{
+                  width: '100%',
+                  accentColor: theme.electricBlue,
+                  cursor: 'pointer',
+                }}
+              />
+              <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+                {[40, 60, 80, 100].map((pct) => (
+                  <button
+                    key={pct}
+                    type="button"
+                    onClick={() => update('fairyWindowScale', pct / 100)}
+                    style={{
+                      padding: '4px 9px',
+                      background: Math.round(draft.fairyWindowScale * 100) === pct
+                        ? 'rgba(0,229,255,0.14)'
+                        : 'rgba(255,255,255,0.035)',
+                      border: `1px solid ${Math.round(draft.fairyWindowScale * 100) === pct ? theme.electricBlue : theme.glassBorder}`,
+                      color: Math.round(draft.fairyWindowScale * 100) === pct ? theme.electricBlue : theme.textSecondary,
+                      borderRadius: 3,
+                      cursor: 'pointer',
+                      fontFamily: theme.fontMono,
+                      fontSize: 11,
+                    }}
+                  >
+                    {pct}%
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 8, lineHeight: 1.5 }}>
+                大小会同步调整 Fairy 的可点击圆形区域，避免视觉和交互半径错位。
+              </div>
+            </div>
+
+            <div>
+              <MagneticButton
+                onClick={handleApply}
+                color={dirty ? theme.expGreen : theme.textSecondary}
+                disabled={!dirty}
+              >
+                {saved ? '已应用 ✓' : '保存'}
+              </MagneticButton>
+            </div>
           </div>
         </Section>
         )}
@@ -910,6 +1004,7 @@ const IS_WINDOWS = typeof navigator !== 'undefined' && navigator.userAgent.inclu
 
 const SECTION_LIST: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'persona',    label: 'AI 人设',  icon: Bot },
+  { id: 'fairy',      label: 'Fairy',    icon: Eye },
   { id: 'voice',      label: '语音',     icon: Mic },
   { id: 'privacy',    label: '隐私',     icon: Lock },
   { id: 'tracking',   label: '追踪',     icon: Activity },

@@ -201,6 +201,7 @@ export default function HudSelect<T extends string>({
       {open && pos && createPortal(
         <div
           ref={popRef}
+          className="hud-select-popup"
           style={{
             position: 'fixed',
             left: pos.left,

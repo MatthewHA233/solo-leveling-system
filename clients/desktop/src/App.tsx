@@ -116,6 +116,20 @@ export interface ChatMessage {
   readonly usage?: ModelCallLog                   // 该 AI 回复对应的模型调用审计快照
 }
 
+type FairyActionPayload =
+  | { action: 'hide' }
+  | { action: 'open-settings' }
+  | { action: 'set-scale'; scale?: number }
+
+type FairyChatSubmitPayload = { text?: string }
+type ModelFeatureBindingPayload = { feature?: string; modelId?: string }
+
+function clampFairyScale(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(n)) return 0.8
+  return Math.min(1, Math.max(0.4, n))
+}
+
 // ── Session 持久化：格式转换 ──
 
 function sessionMessagesToChatMessages(msgs: readonly SessionMessage[], audioDir = ''): ChatMessage[] {
@@ -287,6 +301,8 @@ export default function App() {
 
   // ── Layout ──
   const [showSettings, setShowSettings] = useState(false)
+  const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined)
+  const [settingsInitialSectionTick, setSettingsInitialSectionTick] = useState(0)
   const [showBili, setShowBili] = useState(false)
   const [showModels, setShowModels] = useState(false)
   const [showSync, setShowSync] = useState(false)
@@ -566,17 +582,24 @@ export default function App() {
   const fairyWinRef = useRef<import('@tauri-apps/api/webviewWindow').WebviewWindow | null>(null)
 
   useEffect(() => {
+    if (!config.fairyWindowEnabled) {
+      fairyWinRef.current?.close().catch(() => {})
+      fairyWinRef.current = null
+      return
+    }
+
     let cancelled = false
     const init = async () => {
       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
       if (cancelled) return
       const url = window.location.href.replace(/#.*$/, '') + '#fairy'
+      const initialSize = Math.round(280 * clampFairyScale(config.fairyWindowScale))
       try {
         const win = new WebviewWindow('fairy-window', {
           url,
           title: 'Fairy',
-          width: 280,
-          height: 280,
+          width: initialSize,
+          height: initialSize,
           alwaysOnTop: true,
           decorations: false,
           resizable: true,
@@ -598,7 +621,18 @@ export default function App() {
       fairyWinRef.current?.close().catch(() => {})
       fairyWinRef.current = null
     }
+  }, [config.fairyWindowEnabled])
+
+  const emitFairyConfig = useCallback((scale: number) => {
+    import('@tauri-apps/api/event').then(({ emitTo }) => {
+      emitTo('fairy-window', 'fairy-config', { scale: clampFairyScale(scale) }).catch(() => {})
+    })
   }, [])
+
+  useEffect(() => {
+    if (!config.fairyWindowEnabled) return
+    emitFairyConfig(config.fairyWindowScale)
+  }, [config.fairyWindowEnabled, config.fairyWindowScale, emitFairyConfig])
 
   const emitFairy = useCallback((state: FairyState, text = '') => {
     fairyStateRef.current = state
@@ -613,10 +647,11 @@ export default function App() {
     import('@tauri-apps/api/event').then(({ listen: listenEvent }) => {
       listenEvent('fairy-window-ready', () => {
         emitFairy(fairyStateRef.current)
+        emitFairyConfig(configRef.current.fairyWindowScale)
       }).then(fn => { unlisten = fn })
     })
     return () => { unlisten?.() }
-  }, [emitFairy])
+  }, [emitFairy, emitFairyConfig])
 
   // ── Fetch Activities + Perception Spans ──
   const isToday = useCallback((date: Date) => {
@@ -1772,6 +1807,59 @@ export default function App() {
     })
   }, [])
 
+  const toggleFairyWindow = useCallback(() => {
+    handleConfigUpdate({ fairyWindowEnabled: !configRef.current.fairyWindowEnabled })
+  }, [closeBiliDialog, handleConfigUpdate])
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+
+    import('@tauri-apps/api/event').then(({ listen: listenEvent }) => {
+      listenEvent<FairyActionPayload>('fairy-action', (e) => {
+        const payload = e.payload
+        if (payload.action === 'hide') {
+          handleConfigUpdate({ fairyWindowEnabled: false })
+          return
+        }
+
+        if (payload.action === 'open-settings') {
+          setSettingsInitialSection('fairy')
+          setSettingsInitialSectionTick((v) => v + 1)
+          setShowSettings(true)
+          closeBiliDialog()
+          setShowModels(false)
+          import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+            getCurrentWindow().setFocus().catch(() => {})
+          })
+          return
+        }
+
+        if (payload.action === 'set-scale') {
+          handleConfigUpdate({ fairyWindowScale: clampFairyScale(payload.scale) })
+          return
+        }
+      }).then(fn => { unlisten = fn })
+    })
+
+    return () => { unlisten?.() }
+  }, [handleConfigUpdate])
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+
+    import('@tauri-apps/api/event').then(({ listen: listenEvent }) => {
+      listenEvent<ModelFeatureBindingPayload>('model-feature-binding-updated', (e) => {
+        const { feature, modelId } = e.payload ?? {}
+        if (!feature || !modelId) return
+        window.dispatchEvent(new CustomEvent('model-feature-binding-updated', {
+          detail: { feature, modelId },
+        }))
+      }).then(fn => { unlisten = fn })
+    })
+
+    return () => { unlisten?.() }
+  }, [])
+
   // ── System Prompt Builder（两套协议共用） ──
   const refreshSystemPrompt = useCallback(async () => {
     const cfg = configRef.current
@@ -2210,6 +2298,20 @@ export default function App() {
     setIsProcessing(false)
   }, [config, chatMessages])
 
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+
+    import('@tauri-apps/api/event').then(({ listen: listenEvent }) => {
+      listenEvent<FairyChatSubmitPayload>('fairy-chat-submit', (e) => {
+        const text = e.payload?.text?.trim()
+        if (!text) return
+        handleSend(text).catch(() => {})
+      }).then(fn => { unlisten = fn })
+    })
+
+    return () => { unlisten?.() }
+  }, [handleSend])
+
   // ── 切换 / 新建会话 ──
   const switchSession = useCallback(async (sessionId: string, jumpToTimestamp?: string) => {
     const performJump = () => {
@@ -2352,6 +2454,26 @@ export default function App() {
               SLS-V{__APP_VERSION__.replace(/\./g, '-')}
             </span>
           </div>
+          <Tooltip content={config.fairyWindowEnabled ? '隐藏 Fairy 桌面窗口' : '启动 Fairy 桌面窗口'}>
+            <button
+              type="button"
+              onClick={toggleFairyWindow}
+              style={{
+                ...navBtn,
+                minWidth: 0,
+                height: 24,
+                marginLeft: 2,
+                padding: '4px 10px',
+                color: config.fairyWindowEnabled ? theme.expGreen : theme.warningOrange,
+                border: `1px solid ${config.fairyWindowEnabled ? theme.expGreen + '66' : theme.warningOrange + '66'}`,
+                background: config.fairyWindowEnabled ? `${theme.expGreen}10` : `${theme.warningOrange}10`,
+                cursor: 'pointer',
+                textShadow: `0 0 6px ${config.fairyWindowEnabled ? theme.expGreen : theme.warningOrange}88`,
+              }}
+            >
+              {config.fairyWindowEnabled ? '隐藏Fairy窗口' : '启动Fairy窗口'}
+            </button>
+          </Tooltip>
         </div>
 
         <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 6px' }} />
@@ -2625,6 +2747,7 @@ export default function App() {
         <Tooltip content="设置">
           <button
             onClick={() => {
+              setSettingsInitialSection(undefined)
               setShowSettings(!showSettings)
               if (!showSettings) { closeBiliDialog(); setShowModels(false) }
             }}
@@ -3094,6 +3217,8 @@ export default function App() {
 
       <SettingsPanel
         open={showSettings}
+        initialSection={settingsInitialSection}
+        initialSectionTick={settingsInitialSectionTick}
         config={config}
         onUpdate={handleConfigUpdate}
         onClose={() => setShowSettings(false)}

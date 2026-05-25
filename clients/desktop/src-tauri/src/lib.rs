@@ -20,7 +20,8 @@ mod gpu_pref;
 #[cfg(windows)]
 mod hotkey;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock};
 use fish_tts::{FishTTSConfig, FishTTSConnection};
 use db::Database;
@@ -36,6 +37,25 @@ struct AppState {
     omni: qwen_omni::OmniState,
     db: Arc<RwLock<Option<Arc<Database>>>>,
     db_path: Arc<RwLock<String>>,
+}
+
+const FAIRY_CURSOR_RADIUS_DEFAULT: f64 = 126.0;
+static FAIRY_CURSOR_RADIUS_BITS: OnceLock<Arc<AtomicU64>> = OnceLock::new();
+static FAIRY_CURSOR_MENU_OPEN: AtomicBool = AtomicBool::new(false);
+static FAIRY_CURSOR_MONITOR_RUNNING: AtomicBool = AtomicBool::new(false);
+
+fn fairy_cursor_radius_state() -> Arc<AtomicU64> {
+    FAIRY_CURSOR_RADIUS_BITS
+        .get_or_init(|| Arc::new(AtomicU64::new(FAIRY_CURSOR_RADIUS_DEFAULT.to_bits())))
+        .clone()
+}
+
+fn sanitize_fairy_cursor_radius(radius: f64) -> f64 {
+    if radius.is_finite() {
+        radius.clamp(70.0, 220.0)
+    } else {
+        FAIRY_CURSOR_RADIUS_DEFAULT
+    }
 }
 
 // ── Tauri 命令 ──
@@ -1252,9 +1272,26 @@ fn restart_app(_app: tauri::AppHandle) -> Result<(), String> {
 /// JS 创建完 fairy-window 后调用此命令，启动 Rust 侧光标监控
 /// （JS 创建保证 Tauri IPC bridge 正常注入，Rust 监控保证点击穿透精准）
 #[tauri::command]
-async fn setup_fairy(app: tauri::AppHandle) -> Result<(), String> {
+async fn update_fairy_cursor_radius(radius: f64) -> Result<(), String> {
+    let radius = sanitize_fairy_cursor_radius(radius);
+    fairy_cursor_radius_state().store(radius.to_bits(), Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_fairy_cursor_menu_open(open: bool) -> Result<(), String> {
+    FAIRY_CURSOR_MENU_OPEN.store(open, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+async fn setup_fairy(app: tauri::AppHandle, radius: Option<f64>) -> Result<(), String> {
     let win = app.get_webview_window("fairy-window")
         .ok_or_else(|| "fairy-window not found".to_string())?;
+    let radius_state = fairy_cursor_radius_state();
+    if let Some(radius) = radius {
+        radius_state.store(sanitize_fairy_cursor_radius(radius).to_bits(), Ordering::Relaxed);
+    }
 
     log::info!("[Fairy] setup_fairy 已调用，启动光标监控");
     #[cfg(not(windows))]
@@ -1262,7 +1299,16 @@ async fn setup_fairy(app: tauri::AppHandle) -> Result<(), String> {
 
     #[cfg(windows)]
     {
+        if FAIRY_CURSOR_MONITOR_RUNNING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            log::info!("[Fairy] 光标监控已在运行，仅更新半径");
+            return Ok(());
+        }
+
         let win_clone = win.clone();
+        let radius_state = radius_state.clone();
         let _ = win_clone.set_ignore_cursor_events(true);
         tauri::async_runtime::spawn(async move {
             let mut prev_ignore = true;
@@ -1275,21 +1321,27 @@ async fn setup_fairy(app: tauri::AppHandle) -> Result<(), String> {
                     _ => break, // 窗口已关闭
                 };
 
-                // 窗口 252×252 logical，fairy-core 400×400 缩放 0.7，外圈 360×0.7 = 252px
-                // 圆心 = (126, 126) logical px from window origin，r = 126
-                let fairy_cx = outer.x as f64 + 126.0 * sf;
-                let fairy_cy = outer.y as f64 + 126.0 * sf;
-                let fairy_r  = 126.0 * sf;
+                // fairy 的视觉大小由前端配置驱动；Rust 只保留“圆心 + 半径”的点击穿透模型。
+                let fairy_r_logical = f64::from_bits(radius_state.load(Ordering::Relaxed));
+                let fairy_cx = outer.x as f64 + fairy_r_logical * sf;
+                let fairy_cy = outer.y as f64 + fairy_r_logical * sf;
+                let fairy_r  = fairy_r_logical * sf;
 
                 let dx = cx as f64 - fairy_cx;
                 let dy = cy as f64 - fairy_cy;
-                let should_ignore = dx * dx + dy * dy > fairy_r * fairy_r;
+                let should_ignore = if FAIRY_CURSOR_MENU_OPEN.load(Ordering::Relaxed) {
+                    false
+                } else {
+                    dx * dx + dy * dy > fairy_r * fairy_r
+                };
 
                 if should_ignore != prev_ignore {
                     prev_ignore = should_ignore;
                     let _ = win_clone.set_ignore_cursor_events(should_ignore);
                 }
             }
+            FAIRY_CURSOR_MONITOR_RUNNING.store(false, Ordering::SeqCst);
+            FAIRY_CURSOR_MENU_OPEN.store(false, Ordering::Relaxed);
             log::info!("[Fairy] 光标监控退出");
         });
     }
@@ -1738,6 +1790,8 @@ pub fn run() {
             save_audio_file,
             get_audio_dir,
             setup_fairy,
+            update_fairy_cursor_radius,
+            set_fairy_cursor_menu_open,
             #[cfg(windows)] get_gpu_pref_status,
             #[cfg(windows)] set_gpu_pref_high_performance,
             restart_app,
