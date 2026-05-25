@@ -124,6 +124,30 @@ type FairyActionPayload =
 type ChatMode = AgentConfig['aiMode']
 type FairyChatSubmitPayload = { text?: string; mode?: ChatMode }
 type ModelFeatureBindingPayload = { feature?: string; modelId?: string }
+type TauriEventHandler<T> = (event: { payload: T }) => void
+type HandleSend = (text: string, fromVoice?: boolean, modeOverride?: ChatMode) => Promise<void>
+
+function listenTauriEventStrict<T>(event: string, handler: TauriEventHandler<T>): () => void {
+  let disposed = false
+  let unlisten: (() => void) | null = null
+
+  import('@tauri-apps/api/event').then(({ listen }) => {
+    if (disposed) return
+    listen<T>(event, handler).then((fn) => {
+      if (disposed) {
+        fn()
+        return
+      }
+      unlisten = fn
+    }).catch(() => {})
+  }).catch(() => {})
+
+  return () => {
+    disposed = true
+    unlisten?.()
+    unlisten = null
+  }
+}
 
 function clampFairyScale(value: unknown): number {
   const n = typeof value === 'number' ? value : Number(value)
@@ -426,6 +450,7 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false)
   // LLM 对话历史（新类型系统），与 UI 展示的 chatMessages 分离
   const conversationRef = useRef<Message[]>([])
+  const handleSendRef = useRef<HandleSend | null>(null)
 
   // ── Session 持久化 ──
   const sessionIdRef = useRef<string | null>(null)
@@ -647,14 +672,10 @@ export default function App() {
 
   // fairy window listener 就绪时重发当前状态，修复启动后前几次 Alt 无反应
   useEffect(() => {
-    let unlisten: (() => void) | null = null
-    import('@tauri-apps/api/event').then(({ listen: listenEvent }) => {
-      listenEvent('fairy-window-ready', () => {
+    return listenTauriEventStrict<unknown>('fairy-window-ready', () => {
         emitFairy(fairyStateRef.current)
         emitFairyConfig(configRef.current.fairyWindowScale, configRef.current.aiMode)
-      }).then(fn => { unlisten = fn })
     })
-    return () => { unlisten?.() }
   }, [emitFairy, emitFairyConfig])
 
   // ── Fetch Activities + Perception Spans ──
@@ -1684,9 +1705,6 @@ export default function App() {
 
   // ── Right Alt Long-Press → Voice Chat（全局热键，无需窗口聚焦）──
   useEffect(() => {
-    let unlistenDown: (() => void) | null = null
-    let unlistenUp:   (() => void) | null = null
-
     let lastDownMs = 0
     const onDown = () => {
       if (pressingRef.current) return
@@ -1760,25 +1778,31 @@ export default function App() {
     window.addEventListener('keydown', onDomDown)
     window.addEventListener('keyup',   onDomUp)
 
-    let unlistenCancel: (() => void) | null = null
+    let disposed = false
+    const eventUnlisteners: Array<() => void> = []
     import('@tauri-apps/api/event').then(({ listen }) => {
+      if (disposed) return
       Promise.all([
         listen('ralt-keydown', onDown),
         listen('ralt-keyup',   onUp),
         listen('voice-cancel', onCancel),
       ]).then(([u1, u2, u3]) => {
-        unlistenDown = u1
-        unlistenUp   = u2
-        unlistenCancel = u3
-      })
+        if (disposed) {
+          u1()
+          u2()
+          u3()
+          return
+        }
+        eventUnlisteners.push(u1, u2, u3)
+      }).catch(() => {})
     })
 
     return () => {
+      disposed = true
       window.removeEventListener('keydown', onDomDown)
       window.removeEventListener('keyup',   onDomUp)
-      unlistenDown?.()
-      unlistenUp?.()
-      unlistenCancel?.()
+      eventUnlisteners.forEach((fn) => fn())
+      eventUnlisteners.length = 0
     }
   }, [getVoiceService, emitFairy])
 
@@ -1816,52 +1840,40 @@ export default function App() {
   }, [closeBiliDialog, handleConfigUpdate])
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null
+    return listenTauriEventStrict<FairyActionPayload>('fairy-action', (e) => {
+      const payload = e.payload
+      if (payload.action === 'hide') {
+        handleConfigUpdate({ fairyWindowEnabled: false })
+        return
+      }
 
-    import('@tauri-apps/api/event').then(({ listen: listenEvent }) => {
-      listenEvent<FairyActionPayload>('fairy-action', (e) => {
-        const payload = e.payload
-        if (payload.action === 'hide') {
-          handleConfigUpdate({ fairyWindowEnabled: false })
-          return
-        }
+      if (payload.action === 'open-settings') {
+        setSettingsInitialSection('fairy')
+        setSettingsInitialSectionTick((v) => v + 1)
+        setShowSettings(true)
+        closeBiliDialog()
+        setShowModels(false)
+        import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+          getCurrentWindow().setFocus().catch(() => {})
+        })
+        return
+      }
 
-        if (payload.action === 'open-settings') {
-          setSettingsInitialSection('fairy')
-          setSettingsInitialSectionTick((v) => v + 1)
-          setShowSettings(true)
-          closeBiliDialog()
-          setShowModels(false)
-          import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
-            getCurrentWindow().setFocus().catch(() => {})
-          })
-          return
-        }
-
-        if (payload.action === 'set-scale') {
-          handleConfigUpdate({ fairyWindowScale: clampFairyScale(payload.scale) })
-          return
-        }
-      }).then(fn => { unlisten = fn })
+      if (payload.action === 'set-scale') {
+        handleConfigUpdate({ fairyWindowScale: clampFairyScale(payload.scale) })
+        return
+      }
     })
-
-    return () => { unlisten?.() }
   }, [handleConfigUpdate])
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null
-
-    import('@tauri-apps/api/event').then(({ listen: listenEvent }) => {
-      listenEvent<ModelFeatureBindingPayload>('model-feature-binding-updated', (e) => {
-        const { feature, modelId } = e.payload ?? {}
-        if (!feature || !modelId) return
-        window.dispatchEvent(new CustomEvent('model-feature-binding-updated', {
-          detail: { feature, modelId },
-        }))
-      }).then(fn => { unlisten = fn })
+    return listenTauriEventStrict<ModelFeatureBindingPayload>('model-feature-binding-updated', (e) => {
+      const { feature, modelId } = e.payload ?? {}
+      if (!feature || !modelId) return
+      window.dispatchEvent(new CustomEvent('model-feature-binding-updated', {
+        detail: { feature, modelId },
+      }))
     })
-
-    return () => { unlisten?.() }
   }, [])
 
   // ── System Prompt Builder（两套协议共用） ──
@@ -2305,19 +2317,21 @@ export default function App() {
   }, [config, chatMessages])
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null
-
-    import('@tauri-apps/api/event').then(({ listen: listenEvent }) => {
-      listenEvent<FairyChatSubmitPayload>('fairy-chat-submit', (e) => {
-        const text = e.payload?.text?.trim()
-        if (!text) return
-        const mode = e.payload?.mode
-        handleSend(text, false, mode === 'regular' || mode === 'omni' ? mode : undefined).catch(() => {})
-      }).then(fn => { unlisten = fn })
-    })
-
-    return () => { unlisten?.() }
+    handleSendRef.current = handleSend
   }, [handleSend])
+
+  useEffect(() => {
+    return listenTauriEventStrict<FairyChatSubmitPayload>('fairy-chat-submit', (e) => {
+      const text = e.payload?.text?.trim()
+      if (!text) return
+      const mode = e.payload?.mode
+      handleSendRef.current?.(
+        text,
+        false,
+        mode === 'regular' || mode === 'omni' ? mode : undefined,
+      ).catch(() => {})
+    })
+  }, [])
 
   // ── 切换 / 新建会话 ──
   const switchSession = useCallback(async (sessionId: string, jumpToTimestamp?: string) => {
