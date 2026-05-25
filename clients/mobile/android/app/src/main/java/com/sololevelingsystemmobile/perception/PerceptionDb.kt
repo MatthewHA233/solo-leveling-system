@@ -335,10 +335,14 @@ class PerceptionDb(context: Context) :
     val db = readableDatabase
     val cap = limit.coerceIn(1, 200)
     val out = ArrayList<WindowEventSnapshot>(cap)
+    // AUDIT-031：SQL 层先过滤旧版本写入的 SLS 自身窗口脏数据，让 LIMIT 计数正确
+    // （client 侧 continue 会让结果数 < 期望 cap）。跟 windowEventsInRange/purge
+    // 用的同一个 LIKE 模式保持一致
     db.rawQuery(
       """
       SELECT id, start_at, data_json FROM perception_events_android
       WHERE bucket_id = 'sls-watcher-window_android'
+        AND data_json NOT LIKE '%"package_name":"com.sololevelingsystemmobile"%'
       ORDER BY id DESC LIMIT ?
       """.trimIndent(),
       arrayOf(cap.toString()),
@@ -349,11 +353,14 @@ class PerceptionDb(context: Context) :
         val raw = c.getString(2) ?: continue
         try {
           val obj = org.json.JSONObject(raw)
+          val pkg = obj.optString("package_name")
+          // 二次兜底：极少数情况 LIKE 没匹配（json 转义边界）
+          if (pkg == "com.sololevelingsystemmobile") continue
           out.add(
             WindowEventSnapshot(
               rowId = rowId,
               startAt = startAt,
-              packageName = obj.optString("package_name"),
+              packageName = pkg,
               className = obj.optString("class_name"),
               appLabel = obj.optString("app_label"),
               windowTitle = obj.optString("window_title"),
