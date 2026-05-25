@@ -1529,11 +1529,11 @@ export default function DayNightScreen() {
         </Pressable>
       </View>
 
-      {/* 概览 —— 点击弹出分类/标签明细 */}
-      <Pressable
-        style={styles.summary}
-        onPress={() => summary.rows.length > 0 && setStatsOpen(true)}
-      >
+      {/* 概览 —— 文字 + 条形点击弹明细；chips 是横向 ScrollView 滑动看更多分类 */}
+      <View style={styles.summary}>
+        <Pressable
+          onPress={() => summary.rows.length > 0 && setStatsOpen(true)}
+        >
         <Text style={styles.summaryText}>
           已记录 <Text style={styles.summaryStrong}>{fmtHM(summary.total)}</Text>
           {summary.rows.length > 0 ? ` · ${summary.rows.length} 类` : ''}
@@ -1559,9 +1559,14 @@ export default function DayNightScreen() {
             <View style={{ flex: 1440 - summary.total, backgroundColor: theme.line }} />
           )}
         </View>
-        {/* 兜底分类 chips：色块太小时也能看到门类名（永远显示） */}
+        </Pressable>
+        {/* 兜底分类 chips：横向滚（分类多时一行装不下也不换行，左右滑动看） */}
         {summary.rows.length > 0 && (
-          <View style={styles.sumChips}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.sumChips}
+          >
             {summary.rows.map((r) => (
               <View key={r.cat.id} style={styles.sumChip}>
                 <View style={[styles.sumChipDot, { backgroundColor: r.cat.color }]} />
@@ -1571,9 +1576,9 @@ export default function DayNightScreen() {
                 </Text>
               </View>
             ))}
-          </View>
+          </ScrollView>
         )}
-      </Pressable>
+      </View>
 
       {/* 整行按钮：idle 状态显示居中的"编辑"主按钮；编辑模式下同位置一组小按钮 */}
       {palette && (
@@ -2428,10 +2433,9 @@ const styles = StyleSheet.create({
   },
   sumChips: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    rowGap: 5,
-    marginTop: 2,
+    gap: 12,
+    paddingRight: 18,
+    paddingVertical: 2,
   },
   sumChip: {
     flexDirection: 'row',
