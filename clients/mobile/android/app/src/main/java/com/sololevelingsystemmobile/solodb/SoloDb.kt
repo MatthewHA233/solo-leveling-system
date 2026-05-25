@@ -414,20 +414,74 @@ class SoloDb(context: Context) :
     return tagsAffected
   }
 
-  /** 改分类名 + 颜色。空字符串 = 不改该字段。返回受影响行数。 */
+  /** 改分类名 + 颜色。空字符串 = 不改该字段。返回受影响行数。
+   *  AUDIT-030：分类名变化时必须级联更新该分类下所有未删 tags 的 full_path 首段，
+   *  否则 buildTagTree 用 `tag.fullPath.split(',')[0]` 查不到分类、子标签全消失；
+   *  LAN 同步导出也会数据不一致。整个流程放在单一 transaction，并 bump tag.updated_at
+   *  让增量 exportSync(since) 能传播路径修正。 */
   fun renameCategory(categoryId: Long, newName: String?, newColor: String?): Int {
+    if (newName.isNullOrEmpty() && newColor.isNullOrEmpty()) return 0
     val now = nowIso()
-    val sets = mutableListOf<String>()
-    val args = mutableListOf<Any>()
-    if (!newName.isNullOrEmpty()) { sets += "name = ?"; args += newName }
-    if (!newColor.isNullOrEmpty()) { sets += "color = ?"; args += newColor }
-    if (sets.isEmpty()) return 0
-    sets += "updated_at = ?"; args += now
-    args += categoryId
-    val sql = "UPDATE activity_categories SET ${sets.joinToString(", ")} WHERE id = ? AND deleted_at IS NULL"
     val db = writableDatabase
-    db.execSQL(sql, args.toTypedArray())
-    return db.rawQuery("SELECT changes()", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+    db.beginTransaction()
+    try {
+      // 1) 读旧分类名（仅在改名时需要）
+      var oldName: String? = null
+      val nameChanging = !newName.isNullOrEmpty()
+      if (nameChanging) {
+        db.rawQuery(
+          "SELECT name FROM activity_categories WHERE id = ? AND deleted_at IS NULL",
+          arrayOf(categoryId.toString()),
+        ).use { c ->
+          if (c.moveToFirst()) oldName = c.getString(0)
+        }
+        if (oldName == null) return 0  // 分类不存在 / 已软删
+      }
+      // 2) 更新 categories 自身
+      val sets = mutableListOf<String>()
+      val args = mutableListOf<Any>()
+      if (nameChanging) { sets += "name = ?"; args += newName!! }
+      if (!newColor.isNullOrEmpty()) { sets += "color = ?"; args += newColor }
+      sets += "updated_at = ?"; args += now
+      args += categoryId
+      db.execSQL(
+        "UPDATE activity_categories SET ${sets.joinToString(", ")} WHERE id = ? AND deleted_at IS NULL",
+        args.toTypedArray(),
+      )
+      val catChanged = db.rawQuery("SELECT changes()", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+      // 3) 名字变了 → 级联更新该分类下所有 tag.full_path（首段 oldName → newName）
+      //    注意：full_path 半角逗号分隔（createTag 路径），所以替换首段时按精确前缀做
+      if (nameChanging && oldName != newName && catChanged > 0) {
+        // 用 SUBSTR + length 替换首段，避免误改 "成长,学习" 这种内含的字符串
+        // 公式：CASE
+        //   WHEN full_path = oldName THEN newName
+        //   WHEN full_path LIKE oldName||',%' THEN newName || SUBSTR(full_path, length(oldName)+1)
+        //   ELSE full_path END
+        db.execSQL(
+          """
+          UPDATE activity_tags
+          SET full_path = CASE
+            WHEN full_path = ? THEN ?
+            WHEN full_path LIKE ? || ',%' THEN ? || SUBSTR(full_path, LENGTH(?) + 1)
+            ELSE full_path
+          END,
+          updated_at = ?
+          WHERE category_id = ? AND deleted_at IS NULL
+            AND (full_path = ? OR full_path LIKE ? || ',%')
+          """.trimIndent(),
+          arrayOf(
+            oldName!!, newName!!,                    // CASE 1: 完全等于旧名
+            oldName!!, newName!!, oldName!!,         // CASE 2: 旧名+","+剩余 → 新名+剩余
+            now, categoryId,
+            oldName!!, oldName!!,                    // WHERE 限定只更新需要的行
+          ),
+        )
+      }
+      db.setTransactionSuccessful()
+      return catChanged
+    } finally {
+      db.endTransaction()
+    }
   }
 
   /** 改标签完整路径 newFullPath（含首段分类名，如 "学习,英语,新概念3"）。
