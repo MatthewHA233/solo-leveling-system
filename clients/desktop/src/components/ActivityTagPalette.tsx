@@ -1018,4 +1018,3 @@ const emptyHintStyle: CSSProperties = {
   padding: '12px 8px',
   lineHeight: 1.5,
 }
-
