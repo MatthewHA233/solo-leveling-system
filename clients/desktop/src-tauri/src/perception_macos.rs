@@ -268,25 +268,44 @@ pub async fn run_screenshot_watcher() {
                     .flatten()
                     .map(|s| matches_blacklist(&s, &blacklist))
                     .unwrap_or(false);
-                let mut capture_settings = settings.clone();
-                if blacklisted && capture_settings.capture_target == "active_window" {
-                    capture_settings.capture_target = "all_screens".to_string();
-                    log::debug!(
-                        "[Perception/macOS] foreground blacklisted, fallback to full screen"
-                    );
-                }
-                let capture_result = tokio::task::spawn_blocking(move || {
-                    let path = capture_screenshot_now(&capture_settings)?;
-                    enforce_retention(&capture_settings)?;
-                    Ok::<PathBuf, String>(path)
-                })
-                .await;
-                match capture_result {
-                    Ok(Ok(path)) => {
-                        log::debug!("[Perception/macOS] screenshot captured: {:?}", path)
+                // AUDIT-019: 命中黑名单 = 用户在 UI 上勾了"以后忽视这个窗口（不
+                // 记录、不截图）"。原实现把 active_window 降级成 all_screens 后
+                // 继续截图，违反"不截图"承诺；改为本轮跳过截图，但仍跑 retention
+                // 清理旧文件（避免黑名单一直命中时旧截图永远不被回收）
+                if blacklisted {
+                    let capture_settings = settings.clone();
+                    let retention_result = tokio::task::spawn_blocking(move || {
+                        enforce_retention(&capture_settings)
+                    })
+                    .await;
+                    match retention_result {
+                        Ok(Ok(_)) => log::debug!(
+                            "[Perception/macOS] foreground blacklisted, skip capture, retention enforced"
+                        ),
+                        Ok(Err(err)) => log::warn!(
+                            "[Perception/macOS] blacklisted retention failed: {}",
+                            err
+                        ),
+                        Err(err) => log::warn!(
+                            "[Perception/macOS] blacklisted retention task failed: {}",
+                            err
+                        ),
                     }
-                    Ok(Err(err)) => log::warn!("[Perception/macOS] screenshot failed: {}", err),
-                    Err(err) => log::warn!("[Perception/macOS] screenshot task failed: {}", err),
+                } else {
+                    let capture_settings = settings.clone();
+                    let capture_result = tokio::task::spawn_blocking(move || {
+                        let path = capture_screenshot_now(&capture_settings)?;
+                        enforce_retention(&capture_settings)?;
+                        Ok::<PathBuf, String>(path)
+                    })
+                    .await;
+                    match capture_result {
+                        Ok(Ok(path)) => {
+                            log::debug!("[Perception/macOS] screenshot captured: {:?}", path)
+                        }
+                        Ok(Err(err)) => log::warn!("[Perception/macOS] screenshot failed: {}", err),
+                        Err(err) => log::warn!("[Perception/macOS] screenshot task failed: {}", err),
+                    }
                 }
             }
         }
