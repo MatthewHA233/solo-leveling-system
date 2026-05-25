@@ -386,7 +386,7 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 - `Updater` NativeModule（`clients/mobile/android/.../updater/`）+ `src/lib/updater.ts`
 - 启动 PerceptionScreen 时静默 `checkForUpdate()` 拉 latest.json 对比 BuildConfig.SLS_VERSION_CODE
 - 有新版本弹 ConfirmDialog（用户可"稍后"）；手动按"检查更新"也走同一路径
-- 点确认 → `DownloadManager` 下到 `getExternalFilesDir("updates")/sls-latest.apk`
+- 点确认 → `DownloadManager` 下到 `getExternalFilesDir("updates")/{远端APK文件名}`，不要固定 `sls-latest.apk`，否则部分 OEM 安装器会按 FileProvider `content://` URI 缓存旧 APK 元数据
 - 完成后 FileProvider 包装 → `ACTION_VIEW application/vnd.android.package-archive` 拉系统安装器
 - 用户首次需要在系统设置允许"未知来源安装"；Android 不允许完全无感更新
 - 权限：manifest 加了 `REQUEST_INSTALL_PACKAGES`，FileProvider authorities=`${applicationId}.fileprovider`，paths 配 `external-files-path name="updates" path="updates/"`

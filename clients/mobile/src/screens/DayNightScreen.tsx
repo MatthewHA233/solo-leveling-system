@@ -42,7 +42,7 @@ const R_EMPTY = 5
 
 // 4 档 zoom：cols = 每个 full row 的格子数（cell 永远 5min）
 // 全档统一总行数 = 24（focus rows + 上下 tier 行），zoom 切换时行高不变
-//   12 → 1 行 60 分钟 / focus 18h / 上下各 3 层 compressed（每行 1 hour）
+//   12 → 1 行 60 分钟 / focus 24h / 无 compressed（一行一小时刚好全天平铺，不需要折叠）
 //    6 → 1 行 30 分钟 / focus 8h  / 上下各 4 层（每行 2 hour）
 //    4 → 1 行 20 分钟 / focus 6h  / 上下各 3 层（每行 3 hour）
 //    3 → 1 行 15 分钟 / focus 4h  / 上下各 4 层（每行 ~3 hour）
@@ -50,7 +50,7 @@ const R_EMPTY = 5
 type ZoomCols = 12 | 6 | 4 | 3
 const ZOOM_LEVELS: readonly ZoomCols[] = [12, 6, 4, 3] as const
 const ZOOM_CONFIG: Record<ZoomCols, { rows: number; tiers: number }> = {
-  12: { rows: 18, tiers: 3 },
+  12: { rows: 24, tiers: 0 },
   6:  { rows: 16, tiers: 4 },
   4:  { rows: 18, tiers: 3 },
   3:  { rows: 16, tiers: 4 },
@@ -58,16 +58,6 @@ const ZOOM_CONFIG: Record<ZoomCols, { rows: number; tiers: number }> = {
 function zoomFocusHours(cols: ZoomCols): number {
   const cfg = ZOOM_CONFIG[cols]
   return Math.round((cfg.rows * cols * 5) / 60)
-}
-function totalRowCount(cols: ZoomCols): number {
-  // 全屏 grid 总行数 = focus 行 + 上下 compressed tier；用于 axisPan rowH 推算
-  const cfg = ZOOM_CONFIG[cols]
-  const focusH = zoomFocusHours(cols)
-  // 上下 compressed tier 行数（注意：实际可能因 focusStart 边界减少；用最大值估算行高即可）
-  const restHours = 24 - focusH
-  const topTiers = restHours > 0 ? cfg.tiers : 0
-  const botTiers = restHours > 0 ? cfg.tiers : 0
-  return cfg.rows + topTiers + botTiers
 }
 
 interface Span {
@@ -766,6 +756,9 @@ export default function DayNightScreen() {
   // zoom 同步 ref（PanResponder 回调拿最新值）
   const zoomColsRef = useRef<ZoomCols>(12)
   zoomColsRef.current = zoomCols
+  // 真实 rows.length（focusStart 贴边时 tier 行少 push）；axisPan 用它算 rowH 才准
+  // 用 totalRowCount() 估算最大值会导致拖动步进偏小（AUDIT-025）
+  const rowsLenRef = useRef(24)
   // pinch 手势状态：起始两指距离 + 起始 zoom 档
   const pinchRef = useRef({ initialDist: 0, startCols: 12 as ZoomCols })
 
@@ -1131,6 +1124,7 @@ export default function DayNightScreen() {
 
   const isToday = isSameDay(new Date(), selectedDate)
   const rows = useMemo(() => buildRows(focusStart, zoomCols), [focusStart, zoomCols])
+  rowsLenRef.current = rows.length
 
   // 同步 refs
   interactionRef.current = { editMode, selectedTagId, rows, blocks, blockByMinute, spans, selectedDate }
@@ -1362,7 +1356,9 @@ export default function DayNightScreen() {
         focusBaseRef.current = focusStartRef.current
       },
       onPanResponderMove: (_, g) => {
-        const total = totalRowCount(zoomColsRef.current)
+        // 用真实渲染 rows.length 算 rowH（AUDIT-025）—— 之前用 totalRowCount() 估算
+        // 最大值，focusStart 贴边时实际行数更少，rowH 算偏小导致拖动步进慢
+        const total = rowsLenRef.current || 1
         const rowH = gridHRef.current > 0 ? gridHRef.current / total : 40
         const focusH = zoomFocusHours(zoomColsRef.current)
         const next = clamp(focusBaseRef.current + Math.round(-g.dy / rowH), 0, 24 - focusH)
@@ -1688,9 +1684,10 @@ export default function DayNightScreen() {
             {rows.map((row, i) => {
               // 整点 → 加粗 + 更黑（compressed 一定整点；full 行只 startMin % 60 === 0）
               const isHourMark = row.kind === 'compressed' || row.startMin % 60 === 0
+              const isCompressed = row.kind === 'compressed'
               return (
-                <View key={i} style={styles.axisCell}>
-                  <Text style={[styles.axisText, isHourMark && styles.axisTextHour]}>
+                <View key={i} style={[styles.axisCell, isCompressed && styles.axisCellCompressed]}>
+                  <Text style={[styles.axisText, isHourMark && styles.axisTextHour, isCompressed && styles.axisTextCompressed]}>
                     {row.kind === 'full'
                       ? fmtMinute(row.startMin)
                       : row.hours.length === 1
@@ -1713,7 +1710,7 @@ export default function DayNightScreen() {
             {rows.map((row, i) => {
               if (row.kind === 'compressed') {
                 return (
-                  <View key={i} style={styles.cellRow}>
+                  <View key={i} style={[styles.cellRow, styles.cellRowCompressed]}>
                     {row.hours.map((h) => {
                       // hour 内按 5min 块合并成 runs，按时间比例铺色
                       const hourRuns: { mins: number; tag: number | null }[] = []
@@ -2541,11 +2538,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // compressed 行 axis 加浅灰底，跟 cellRowCompressed 视觉对齐
+  axisCellCompressed: {
+    backgroundColor: theme.lineSoft,
+  },
   axisText: {
     fontSize: 10,
     color: theme.inkSoft,
     letterSpacing: 0.3,
     fontWeight: '500',
+  },
+  // compressed 行 axis 文字弱化（提示"折叠预览，不可编辑"）
+  axisTextCompressed: {
+    color: theme.inkFaint,
+    fontWeight: '400',
   },
   // 整点（含 compressed 区间）加粗 + 更黑，让 zoom=6/4/3 时半点/三分点更弱
   axisTextHour: {
@@ -2558,6 +2564,10 @@ const styles = StyleSheet.create({
   cellRow: {
     flex: 1,
     flexDirection: 'row',
+  },
+  // compressed 行整行浅灰底，提示"折叠预览区，不响应编辑"
+  cellRowCompressed: {
+    backgroundColor: theme.lineSoft,
   },
   cellSlot: {
     flex: 1,

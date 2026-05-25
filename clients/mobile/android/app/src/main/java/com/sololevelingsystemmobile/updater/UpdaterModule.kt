@@ -19,7 +19,8 @@ import java.io.File
  *
  * - getCurrentVersion()：返回本地 versionName / versionCode（BuildConfig 注入）
  * - downloadApk(url)：用系统 DownloadManager 下到 getExternalFilesDir("updates")
- *   覆盖式（每次更新只保留最新一个 APK，与 OSS "只 latest" 策略一致）
+ *   文件名跟随远端 APK 名称。不要固定成 sls-latest.apk：部分 OEM 安装器会按
+ *   content:// URI 缓存 APK 元数据，同一个 URI 覆盖新字节后仍显示旧版本。
  * - installApk(localPath)：FileProvider 包装路径，ACTION_VIEW 拉系统安装器
  *
  * 不引入第三方 HTTP / Compose / WorkManager 依赖。安装器需要用户手动确认。
@@ -56,7 +57,7 @@ class UpdaterModule(private val ctx: ReactApplicationContext) : ReactContextBase
     }
   }
 
-  /** 下载 APK 到应用私有 external files 目录 / updates / sls-latest.apk。
+  /** 下载 APK 到应用私有 external files 目录 / updates / {remote-apk-name}。
    *  返回本地绝对路径（成功）或 reject（失败）。覆盖旧文件。 */
   @ReactMethod
   fun downloadApk(url: String, promise: Promise) {
@@ -66,7 +67,11 @@ class UpdaterModule(private val ctx: ReactApplicationContext) : ReactContextBase
       }
       // 清掉旧 APK，避免占空间（OSS 只 latest 策略对齐）
       updatesDir.listFiles()?.forEach { it.delete() }
-      val target = File(updatesDir, "sls-latest.apk")
+      val remoteName = Uri.parse(url).lastPathSegment
+        ?.takeIf { it.endsWith(".apk", ignoreCase = true) }
+        ?.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        ?: "sls-update-${System.currentTimeMillis()}.apk"
+      val target = File(updatesDir, remoteName)
 
       val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
 
@@ -83,7 +88,7 @@ class UpdaterModule(private val ctx: ReactApplicationContext) : ReactContextBase
         // ROM 上下载过程通知行为不一致，下载完成另开一条通知；用 VISIBLE
         // 时进度条会随下载更新，完成后通知自动消失，体验更稳
         .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
-        .setDestinationInExternalFilesDir(ctx, "updates", "sls-latest.apk")
+        .setDestinationInExternalFilesDir(ctx, "updates", remoteName)
         .setAllowedOverMetered(true)
         .setAllowedOverRoaming(true)
       val id = dm.enqueue(req)
