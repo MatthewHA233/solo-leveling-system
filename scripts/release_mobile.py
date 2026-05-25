@@ -253,12 +253,26 @@ def main() -> int:
     step_done(t)
 
     # ── 步骤 3：APK 准备 ──
+    # 决策：现有 APK 内嵌版本 == VERSION → 直接复用（build 一次几分钟，太贵）；
+    # APK 不存在 / 版本不一致 / 用户显式 --build → 才跑 gradlew assembleRelease。
+    # 上传前再 verify_apk_version 兜底，确保跳过 build 的路径也安全。
     t = step("准备 release APK")
-    if args.build or not APK_PATH.exists():
+    need_build = args.build or not APK_PATH.exists()
+    if not need_build:
+        try:
+            apk_name, apk_code = read_apk_version(APK_PATH)
+            if apk_name == version_name and apk_code == version_code:
+                info(f"  复用现有 APK（版本匹配 {apk_name} vc{apk_code}）: {APK_PATH}")
+            else:
+                info(f"  现有 APK 版本 {apk_name} vc{apk_code} ≠ VERSION {version_name} vc{version_code}，需重建")
+                need_build = True
+        except SystemExit:
+            # aapt 找不到 / 读 APK 失败 → 保险起见重建
+            info("  现有 APK 版本读取失败，需重建")
+            need_build = True
+    if need_build:
         info("  → 跑 gradlew assembleRelease …")
         assemble_release()
-    else:
-        info(f"  复用现有 APK: {APK_PATH}")
     if not APK_PATH.exists():
         raise SystemExit(f"    ✗ APK 不存在: {APK_PATH}")
     size = APK_PATH.stat().st_size

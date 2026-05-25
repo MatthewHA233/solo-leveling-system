@@ -51,8 +51,10 @@ echo "$CHANGELOG"
 echo "----------------"
 echo ""
 
-# 不再问"确认开始" —— 双击即构建并上传；不需要的话 Ctrl-C 立即中断
-python3 "$REPO_ROOT/scripts/release_mobile.py" --build --changelog "$CHANGELOG"
+# 不再问"确认开始" —— 双击即上传；不需要的话 Ctrl-C 立即中断
+# 不带 --build：脚本会用 aapt 校验现有 APK 版本，匹配则跳过 build（省 3~8min），
+# 不匹配 / APK 不存在才重建。强制 clean build 用 `python3 release_mobile.py --build`。
+python3 "$REPO_ROOT/scripts/release_mobile.py" --changelog "$CHANGELOG"
 RC=$?
 
 # 不再问"是否清空 CHANGELOG.next.md" —— 文件已 gitignore，留着不会污染 git，
