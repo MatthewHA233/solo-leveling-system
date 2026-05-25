@@ -1819,6 +1819,8 @@ export default function DayNightScreen() {
                               )
                             })}
                           </View>
+                          {/* 折叠 hour 标记：左上角"N点"，告诉用户每格代表第几小时 */}
+                          <Text style={styles.compressedHourMark}>{h}点</Text>
                         </View>
                       )
                     })}
@@ -2664,6 +2666,15 @@ const styles = StyleSheet.create({
   // compressed 行 cell 文字弱化（alpha 色块上白字对比变弱时切深字反而清楚）
   cellLabelCompressed: {
     color: 'rgba(255,255,255,0.92)',
+    fontWeight: '500',
+  },
+  // compressed 行：每个 hour cell 左上角的"N 点"标记，黑色半透明
+  compressedHourMark: {
+    position: 'absolute',
+    left: 4,
+    top: 1,
+    fontSize: 10,
+    color: 'rgba(0,0,0,0.5)',
     fontWeight: '500',
   },
   // —— 顶部操作槽位：固定高度，idle = 整行居中编辑按钮，editing = 横排小按钮 ——
