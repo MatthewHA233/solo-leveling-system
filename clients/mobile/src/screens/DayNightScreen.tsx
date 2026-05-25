@@ -659,9 +659,10 @@ export default function DayNightScreen() {
   // 否则 measureInWindow 拿到的是 inset=0 时的旧值 → 拖拽落点漂移到上方。
   const insets = useSafeAreaInsets()
   const { height: winH } = useWindowDimensions()
-  // sheet 顶部到 status bar 留 24 缓冲，确保再多内容也不会超出屏幕（maxHeight 用
-  // 百分比在 RN flex/Modal 下计算不稳；改用绝对像素更可靠）
-  const sheetMaxHeight = winH - insets.top - 24
+  // sheet 顶部除了 status bar，还要给顶部"已记录"统计条留出 ~150px 露出空间
+  // （日期行 50 + summary 100，让用户能看到当前在哪个日期）。
+  // maxHeight 用百分比在 RN flex/Modal 下计算不稳；改用绝对像素更可靠。
+  const sheetMaxHeight = winH - insets.top - 150
   const [selectedDate, setSelectedDate] = useState(() => new Date())
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
@@ -922,6 +923,42 @@ export default function DayNightScreen() {
     ])
       .then(async ([evs, pwrs]) => {
         if (!alive) return
+        // DEV: 模拟器/没 Accessibility 权限时 probe 总是空，撑不出 sheet 滚动场景；
+        // 注入 40 条假 window event + 4 条假 power event 让 detail sheet 内容溢出
+        if (__DEV__ && evs.length < 3) {
+          const fakeApps = [
+            { pkg: 'com.tencent.mm', label: '微信' },
+            { pkg: 'com.alibaba.android.rimet', label: '钉钉' },
+            { pkg: 'com.android.chrome', label: 'Chrome' },
+            { pkg: 'com.netease.cloudmusic', label: '网易云音乐' },
+            { pkg: 'com.tencent.mobileqq', label: 'QQ' },
+            { pkg: 'tv.danmaku.bili', label: 'B 站' },
+            { pkg: 'com.ss.android.ugc.aweme', label: '抖音' },
+            { pkg: 'com.taobao.taobao', label: '淘宝' },
+            { pkg: 'com.jetbrains.intellij', label: 'IntelliJ' },
+            { pkg: 'com.google.android.apps.docs', label: 'Drive' },
+          ]
+          const span = Math.max(endMs - startMs, 1)
+          evs = Array.from({ length: 40 }, (_, i) => {
+            const app = fakeApps[i % fakeApps.length]
+            const ts = startMs + Math.floor((span / 40) * i)
+            return {
+              rowId: 1_000_000 + i,
+              startAt: new Date(ts).toISOString(),
+              packageName: app.pkg,
+              className: `${app.pkg}.MainActivity`,
+              appLabel: app.label,
+              windowTitle: `${app.label} · 模拟标题 ${i + 1}`,
+              eventTimeMs: ts,
+            }
+          })
+          pwrs = [
+            { rowId: 9_000_001, startAt: new Date(startMs + span * 0.2).toISOString(), event: 'screen_off', eventTimeMs: startMs + span * 0.2 },
+            { rowId: 9_000_002, startAt: new Date(startMs + span * 0.3).toISOString(), event: 'screen_on', eventTimeMs: startMs + span * 0.3 },
+            { rowId: 9_000_003, startAt: new Date(startMs + span * 0.5).toISOString(), event: 'unlocked', eventTimeMs: startMs + span * 0.5 },
+            { rowId: 9_000_004, startAt: new Date(startMs + span * 0.7).toISOString(), event: 'screen_off', eventTimeMs: startMs + span * 0.7 },
+          ]
+        }
         setProbeEvents(evs)
         setPowerEvents(pwrs)
         // 异步把还没缓存的 pkg 图标拉过来
@@ -1823,14 +1860,15 @@ export default function DayNightScreen() {
 
       {/* 时段详情 */}
       <Modal visible={!!detail} transparent animationType="fade" onRequestClose={() => setDetail(null)}>
-        <Pressable style={styles.backdrop} onPress={() => setDetail(null)}>
-          {/* 内层用 View + onStartShouldSetResponder：阻止 touch 冒泡到外层 backdrop
-              （免得 ScrollView swipe 被误判为"点 backdrop 关闭"），同时避免
-              Pressable 跟 ScrollView 竞争 press/swipe 手势导致滚不动 */}
-          <View
-            style={[styles.sheet, { maxHeight: sheetMaxHeight }]}
-            onStartShouldSetResponder={() => true}
-          >
+        {/* 结构：backdrop 普通 View（不抢手势）；点空白关闭挪到下层 absoluteFill
+            Pressable；sheet 普通 View 在 Pressable 之上 → 命中 sheet 区域时 touch
+            直达 ScrollView，ScrollView 能正常滚动 */}
+        <View style={styles.backdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setDetail(null)}
+          />
+          <View style={[styles.sheet, { maxHeight: sheetMaxHeight }]}>
             {detail && (
               <>
                 {/* 头部固定 —— handle + dot/name/dur + time + path + note */}
@@ -1955,7 +1993,7 @@ export default function DayNightScreen() {
               </>
             )}
           </View>
-        </Pressable>
+        </View>
       </Modal>
 
       {/* zoom toast：pinch 切档时屏幕正中悬浮显示 cols × rows */}
@@ -1984,11 +2022,12 @@ export default function DayNightScreen() {
         animationType="fade"
         onRequestClose={() => setStatsOpen(false)}
       >
-        <Pressable style={styles.backdrop} onPress={() => setStatsOpen(false)}>
-          <View
-            style={[styles.sheet, { maxHeight: sheetMaxHeight }]}
-            onStartShouldSetResponder={() => true}
-          >
+        <View style={styles.backdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setStatsOpen(false)}
+          />
+          <View style={[styles.sheet, { maxHeight: sheetMaxHeight }]}>
             <View style={styles.sheetHead}>
               <View style={styles.sheetHandle} />
               <View style={styles.sheetTop}>
@@ -2052,7 +2091,7 @@ export default function DayNightScreen() {
               })}
             </ScrollView>
           </View>
-        </Pressable>
+        </View>
       </Modal>
 
       {/* 月历选日期面板 —— 每个 cell 背景环显示当日记录时段 */}
