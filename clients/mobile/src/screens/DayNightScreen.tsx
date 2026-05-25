@@ -16,6 +16,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native'
 import type { LayoutChangeEvent } from 'react-native'
@@ -657,6 +658,10 @@ export default function DayNightScreen() {
   // 所以 insets.top 变化时 cellArea 的屏幕 y 偏移也跟着变，必须重 measure，
   // 否则 measureInWindow 拿到的是 inset=0 时的旧值 → 拖拽落点漂移到上方。
   const insets = useSafeAreaInsets()
+  const { height: winH } = useWindowDimensions()
+  // sheet 顶部到 status bar 留 24 缓冲，确保再多内容也不会超出屏幕（maxHeight 用
+  // 百分比在 RN flex/Modal 下计算不稳；改用绝对像素更可靠）
+  const sheetMaxHeight = winH - insets.top - 24
   const [selectedDate, setSelectedDate] = useState(() => new Date())
   const [calendarOpen, setCalendarOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
@@ -1819,7 +1824,13 @@ export default function DayNightScreen() {
       {/* 时段详情 */}
       <Modal visible={!!detail} transparent animationType="fade" onRequestClose={() => setDetail(null)}>
         <Pressable style={styles.backdrop} onPress={() => setDetail(null)}>
-          <Pressable style={styles.sheet} onPress={() => {}}>
+          {/* 内层用 View + onStartShouldSetResponder：阻止 touch 冒泡到外层 backdrop
+              （免得 ScrollView swipe 被误判为"点 backdrop 关闭"），同时避免
+              Pressable 跟 ScrollView 竞争 press/swipe 手势导致滚不动 */}
+          <View
+            style={[styles.sheet, { maxHeight: sheetMaxHeight }]}
+            onStartShouldSetResponder={() => true}
+          >
             {detail && (
               <>
                 {/* 头部固定 —— handle + dot/name/dur + time + path + note */}
@@ -1943,7 +1954,7 @@ export default function DayNightScreen() {
 
               </>
             )}
-          </Pressable>
+          </View>
         </Pressable>
       </Modal>
 
@@ -1974,7 +1985,10 @@ export default function DayNightScreen() {
         onRequestClose={() => setStatsOpen(false)}
       >
         <Pressable style={styles.backdrop} onPress={() => setStatsOpen(false)}>
-          <Pressable style={styles.sheet} onPress={() => {}}>
+          <View
+            style={[styles.sheet, { maxHeight: sheetMaxHeight }]}
+            onStartShouldSetResponder={() => true}
+          >
             <View style={styles.sheetHead}>
               <View style={styles.sheetHandle} />
               <View style={styles.sheetTop}>
@@ -2037,7 +2051,7 @@ export default function DayNightScreen() {
                 )
               })}
             </ScrollView>
-          </Pressable>
+          </View>
         </Pressable>
       </Modal>
 
