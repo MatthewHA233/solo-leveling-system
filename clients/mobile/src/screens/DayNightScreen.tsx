@@ -41,18 +41,19 @@ const R_ACTIVITY = 14
 const R_EMPTY = 5
 
 // 4 档 zoom：cols = 每个 full row 的格子数（cell 永远 5min）
-//   12 → 1 行 60 分钟 / focus 18h / 上下各 1 层 compressed
-//    6 → 1 行 30 分钟 / focus 8h  / 上下各 2 层
-//    4 → 1 行 20 分钟 / focus 6h  / 上下各 3 层
-//    3 → 1 行 15 分钟 / focus 5h  / 上下各 3 层
-// focus 总是整小时（rows 跟 cols 联动调整）
+// 全档统一总行数 = 24（focus rows + 上下 tier 行），zoom 切换时行高不变
+//   12 → 1 行 60 分钟 / focus 18h / 上下各 3 层 compressed（每行 1 hour）
+//    6 → 1 行 30 分钟 / focus 8h  / 上下各 4 层（每行 2 hour）
+//    4 → 1 行 20 分钟 / focus 6h  / 上下各 3 层（每行 3 hour）
+//    3 → 1 行 15 分钟 / focus 4h  / 上下各 4 层（每行 ~3 hour）
+// focus 总是整小时（rows × cols / 12 必须整数）
 type ZoomCols = 12 | 6 | 4 | 3
 const ZOOM_LEVELS: readonly ZoomCols[] = [12, 6, 4, 3] as const
 const ZOOM_CONFIG: Record<ZoomCols, { rows: number; tiers: number }> = {
-  12: { rows: 18, tiers: 1 },
-  6:  { rows: 16, tiers: 2 },
+  12: { rows: 18, tiers: 3 },
+  6:  { rows: 16, tiers: 4 },
   4:  { rows: 18, tiers: 3 },
-  3:  { rows: 20, tiers: 3 },
+  3:  { rows: 16, tiers: 4 },
 }
 function zoomFocusHours(cols: ZoomCols): number {
   const cfg = ZOOM_CONFIG[cols]
@@ -1687,7 +1688,9 @@ export default function DayNightScreen() {
                   <Text style={[styles.axisText, isHourMark && styles.axisTextHour]}>
                     {row.kind === 'full'
                       ? fmtMinute(row.startMin)
-                      : `${row.hours[0]}~${row.hours[row.hours.length - 1]}`}
+                      : row.hours.length === 1
+                        ? fmtMinute(row.hours[0] * 60)
+                        : `${row.hours[0]}~${row.hours[row.hours.length - 1]}`}
                   </Text>
                 </View>
               )
@@ -2535,7 +2538,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   axisText: {
-    fontSize: 12,
+    fontSize: 10,
     color: theme.inkSoft,
     letterSpacing: 0.3,
     fontWeight: '500',
@@ -2578,7 +2581,7 @@ const styles = StyleSheet.create({
   },
   cellLabel: {
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '600',
     letterSpacing: 0.3,
     textAlign: 'center',
