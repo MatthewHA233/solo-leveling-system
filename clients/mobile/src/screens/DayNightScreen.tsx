@@ -2157,7 +2157,7 @@ export default function DayNightScreen() {
               <TextInput
                 ref={searchInputRef}
                 value={tagQuery}
-                onChangeText={(t) => setTagQuery(t.replace(/,/g, ','))}
+                onChangeText={(t) => setTagQuery(t.replace(/，/g, ','))}
                 placeholder={addMode ? '新标签完整路径，如「编程,氛围编程,xxx」' : '搜索标签 / 分类...'}
                 placeholderTextColor={theme.inkSoft}
                 autoFocus={pickerMode === 'search'}
@@ -2240,7 +2240,7 @@ export default function DayNightScreen() {
             )}
             {(() => {
               // 中文逗号 onChangeText 已 normalize；这里再兜底一次 + 去首尾逗号
-              const trimmed = tagQuery.replace(/,/g, ',').trim().replace(/^,+|,+$/g, '')
+              const trimmed = tagQuery.replace(/，/g, ',').trim().replace(/^,+|,+$/g, '')
               const segs = trimmed.split(',').map((s) => s.trim()).filter(Boolean)
               // addMode 下：1 段也允许（用户准备打首段分类名时也展示创建按钮）
               // 非 addMode：保留旧行为，至少 2 段才出"新建"按钮

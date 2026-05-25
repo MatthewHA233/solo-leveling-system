@@ -211,7 +211,7 @@ export default function ActivityTagPalette({
 
   const handleCreateTag = useCallback(async () => {
     // 兜底再 normalize 中文逗号一次（粘贴 / 输入法快速切换可能漏过 onChange）
-    const raw = searchQuery.replace(/,/g, ',').trim().replace(/^,+|,+$/g, '')
+    const raw = searchQuery.replace(/，/g, ',').trim().replace(/^,+|,+$/g, '')
     if (!raw) return
     const segs = raw.split(',').map((s) => s.trim()).filter(Boolean)
     if (segs.length < 2) {
@@ -337,7 +337,7 @@ export default function ActivityTagPalette({
           <SearchBox
             query={searchQuery}
             // 中文逗号 → 英文逗号，让用户输入法切换无烦（搜索/新建都兜底）
-            onChange={(v) => setSearchQuery(v.replace(/,/g, ','))}
+            onChange={(v) => setSearchQuery(v.replace(/，/g, ','))}
             addMode={addMode}
             onSubmitAdd={handleCreateTag}
             onCancelAdd={exitAddMode}
