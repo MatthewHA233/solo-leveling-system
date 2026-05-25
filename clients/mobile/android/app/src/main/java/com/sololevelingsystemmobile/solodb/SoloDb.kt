@@ -414,6 +414,48 @@ class SoloDb(context: Context) :
     return tagsAffected
   }
 
+  /** 改分类名 + 颜色。空字符串 = 不改该字段。返回受影响行数。 */
+  fun renameCategory(categoryId: Long, newName: String?, newColor: String?): Int {
+    val now = nowIso()
+    val sets = mutableListOf<String>()
+    val args = mutableListOf<Any>()
+    if (!newName.isNullOrEmpty()) { sets += "name = ?"; args += newName }
+    if (!newColor.isNullOrEmpty()) { sets += "color = ?"; args += newColor }
+    if (sets.isEmpty()) return 0
+    sets += "updated_at = ?"; args += now
+    args += categoryId
+    val sql = "UPDATE activity_categories SET ${sets.joinToString(", ")} WHERE id = ? AND deleted_at IS NULL"
+    val db = writableDatabase
+    db.execSQL(sql, args.toTypedArray())
+    return db.rawQuery("SELECT changes()", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+  }
+
+  /** 改标签完整路径 newFullPath（含首段分类名，如 "学习,英语,新概念3"）。
+   *  首段必须等于已有分类（不存在则抛错，避免误改）；不级联到共享前缀的兄弟 tag。 */
+  fun renameTagPath(tagId: Long, newFullPath: String): Int {
+    val segs = newFullPath.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    if (segs.isEmpty()) return 0
+    val newCategoryName = segs[0]
+    val newLeafName = segs[segs.size - 1]
+    val newPathStored = segs.joinToString(",")
+    val newDepth = segs.size
+    val db = writableDatabase
+    // 找首段分类（不存在 → 抛错；改类别 = 必须先建分类）
+    val newCategoryId = db.rawQuery(
+      "SELECT id FROM activity_categories WHERE name = ? AND deleted_at IS NULL",
+      arrayOf(newCategoryName),
+    ).use { c -> if (c.moveToFirst()) c.getLong(0) else -1L }
+    if (newCategoryId < 0) {
+      throw IllegalStateException("分类「$newCategoryName」不存在，请先创建该分类再改路径")
+    }
+    val now = nowIso()
+    db.execSQL(
+      "UPDATE activity_tags SET category_id = ?, full_path = ?, leaf_name = ?, depth = ?, updated_at = ? WHERE id = ?",
+      arrayOf(newCategoryId, newPathStored, newLeafName, newDepth, now, tagId),
+    )
+    return db.rawQuery("SELECT changes()", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+  }
+
   /** Erase：soft delete + bump updated_at（LWW 同步时另一端能看到删除）。 */
   fun eraseBlocks(date: String, minutes: IntArray) {
     if (minutes.isEmpty()) return

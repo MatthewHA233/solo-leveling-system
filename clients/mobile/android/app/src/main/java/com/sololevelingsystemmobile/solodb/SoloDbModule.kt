@@ -177,6 +177,22 @@ class SoloDbModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun renameCategory(categoryId: Double, newName: String?, newColor: String?, promise: Promise) {
+    try {
+      val n = db.renameCategory(categoryId.toLong(), newName, newColor)
+      promise.resolve(n.toDouble())
+    } catch (e: Throwable) { promise.reject("SOLODB_RENAME_CAT_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun renameTagPath(tagId: Double, newFullPath: String, promise: Promise) {
+    try {
+      val n = db.renameTagPath(tagId.toLong(), newFullPath)
+      promise.resolve(n.toDouble())
+    } catch (e: Throwable) { promise.reject("SOLODB_RENAME_TAG_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
   fun paintBlocks(date: String, minutes: ReadableArray, tagId: Double, promise: Promise) {
     try {
       val arr = IntArray(minutes.size()) { minutes.getInt(it) }

@@ -18,6 +18,8 @@ import { mockReply } from './mock'
 import {
   soloDeleteCategory,
   soloDeleteTag,
+  soloRenameCategory,
+  soloRenameTagPath,
   soloEraseBlocks,
   soloListBlocksForDate,
   soloListCategories,
@@ -128,6 +130,21 @@ export async function deleteTag(tagId: number): Promise<ActivityPalette> {
 
 export async function deleteCategory(categoryId: number): Promise<ActivityPalette> {
   await soloDeleteCategory(categoryId)
+  return fetchPalette()
+}
+
+export async function renameCategory(
+  categoryId: number,
+  newName: string | null,
+  newColor: string | null,
+): Promise<ActivityPalette> {
+  await soloRenameCategory(categoryId, newName, newColor)
+  return fetchPalette()
+}
+
+/** newFullPath 含首段分类名，如 "学习,英语,新概念3"；首段必须等于已有分类。 */
+export async function renameTagPath(tagId: number, newFullPath: string): Promise<ActivityPalette> {
+  await soloRenameTagPath(tagId, newFullPath)
   return fetchPalette()
 }
 

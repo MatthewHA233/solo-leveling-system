@@ -31,7 +31,7 @@ import type {
   ActivityPalette,
   ActivityTag,
 } from '../types'
-import { createTag, deleteCategory, deleteTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks } from '../lib/api'
+import { createTag, deleteCategory, deleteTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks, renameCategory, renameTagPath } from '../lib/api'
 import { addDays, fmtDateLabel, fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
 import { getAppIcons, getPowerEventsInRange, getWindowEventsInRange, type PowerEvent, type WindowEvent } from '../lib/perception'
 
@@ -804,6 +804,24 @@ export default function DayNightScreen() {
   const zoomToastOpacity = useRef(new Animated.Value(0)).current
   const zoomToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // 长按标签 / 分类 → 先弹"操作菜单"（修改 / 删除），用户选了再走对应路径
+  const [tagAction, setTagAction] = useState<
+    | { kind: 'tag'; id: number; label: string; leafName: string }
+    | { kind: 'category'; id: number; label: string; color: string }
+    | null
+  >(null)
+  // "修改"路径：编辑完整路径 / 名字 + 颜色（标签编辑 fullPath 可换分类；分类才有 color）
+  const [tagEdit, setTagEdit] = useState<
+    | { kind: 'tag'; id: number; name: string; original: string }
+    | { kind: 'category'; id: number; name: string; color: string; original: string; originalColor: string }
+    | null
+  >(null)
+  // 修改保存前再确认一次（避免误改重要标签 / 分类）
+  const [pendingRename, setPendingRename] = useState<
+    | { kind: 'tag'; id: number; original: string; newFullPath: string }
+    | { kind: 'category'; id: number; original: string; newName: string; newColor: string }
+    | null
+  >(null)
   // 长按标签 / 分类 → 弹确认框删除
   const [confirmDelete, setConfirmDelete] = useState<
     { kind: 'tag' | 'category'; id: number; label: string } | null
@@ -2171,6 +2189,171 @@ export default function DayNightScreen() {
         onSelect={setSelectedDate}
         onClose={() => setCalendarOpen(false)}
       />
+      {/* 标签 / 分类长按 → 操作菜单（修改 / 删除） */}
+      <Modal
+        visible={tagAction != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTagAction(null)}
+      >
+        <View style={styles.actionBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setTagAction(null)}
+          />
+          {tagAction && (
+            <View style={styles.actionSheet}>
+              <Text style={styles.actionSheetTitle} numberOfLines={1}>
+                {tagAction.kind === 'category' ? '分类' : '标签'}「{tagAction.label}」
+              </Text>
+              <Pressable
+                style={styles.actionItem}
+                onPress={() => {
+                  if (tagAction.kind === 'tag') {
+                    // 用 fullPath 做初值，让用户能改前面的部分（包括换分类）
+                    setTagEdit({ kind: 'tag', id: tagAction.id, name: tagAction.label, original: tagAction.label })
+                  } else {
+                    setTagEdit({ kind: 'category', id: tagAction.id, name: tagAction.label, color: tagAction.color, original: tagAction.label, originalColor: tagAction.color })
+                  }
+                  setTagAction(null)
+                }}
+              >
+                <Text style={styles.actionItemText}>修改</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.actionItem, styles.actionItemDanger]}
+                onPress={() => {
+                  setConfirmDelete({ kind: tagAction.kind, id: tagAction.id, label: tagAction.label })
+                  setTagAction(null)
+                }}
+              >
+                <Text style={[styles.actionItemText, styles.actionItemTextDanger]}>删除</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.actionItem, styles.actionItemCancel]}
+                onPress={() => setTagAction(null)}
+              >
+                <Text style={styles.actionItemTextCancel}>取消</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+      </Modal>
+
+      {/* 标签 / 分类 修改 modal */}
+      <Modal
+        visible={tagEdit != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTagEdit(null)}
+      >
+        <View style={styles.actionBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setTagEdit(null)}
+          />
+          {tagEdit && (
+            <View style={styles.editSheet}>
+              <Text style={styles.editSheetTitle}>
+                修改{tagEdit.kind === 'category' ? '分类' : '标签'}
+              </Text>
+              <Text style={styles.editFieldLabel}>
+                {tagEdit.kind === 'category' ? '名称' : '完整路径（含分类，逗号分隔）'}
+              </Text>
+              <TextInput
+                style={styles.editInput}
+                value={tagEdit.name}
+                onChangeText={(v) =>
+                  setTagEdit((cur) => (cur ? { ...cur, name: v.replace(/，/g, ',') } as typeof cur : cur))
+                }
+                placeholder={tagEdit.kind === 'category' ? '分类名' : '如 学习,英语,新概念3'}
+                placeholderTextColor={theme.inkFaint}
+              />
+              {tagEdit.kind === 'category' && (
+                <>
+                  <Text style={styles.editFieldLabel}>颜色</Text>
+                  <View style={styles.editColorRow}>
+                    {['#5B9BFF', '#39C7B6', '#F8AE3C', '#EF6677', '#B16BFA', '#56C271', '#FF8A65', '#7686A6'].map((c) => (
+                      <Pressable
+                        key={c}
+                        onPress={() =>
+                          setTagEdit((cur) =>
+                            cur && cur.kind === 'category' ? { ...cur, color: c } : cur,
+                          )
+                        }
+                        style={[
+                          styles.editColorChip,
+                          { backgroundColor: c },
+                          tagEdit.color === c && styles.editColorChipActive,
+                        ]}
+                      />
+                    ))}
+                  </View>
+                </>
+              )}
+              <View style={styles.editActions}>
+                <Pressable style={styles.editBtnGhost} onPress={() => setTagEdit(null)}>
+                  <Text style={styles.editBtnGhostText}>取消</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.editBtnPrimary}
+                  onPress={() => {
+                    if (!tagEdit) return
+                    const trimmed = tagEdit.name.trim()
+                    if (!trimmed) return
+                    // 没改动 → 直接关闭，不弹确认（避免无意义二次点击）
+                    const noChange = tagEdit.kind === 'tag'
+                      ? trimmed === tagEdit.original
+                      : trimmed === tagEdit.original && tagEdit.color === tagEdit.originalColor
+                    if (noChange) {
+                      setTagEdit(null)
+                      return
+                    }
+                    if (tagEdit.kind === 'tag') {
+                      setPendingRename({ kind: 'tag', id: tagEdit.id, original: tagEdit.original, newFullPath: trimmed })
+                    } else {
+                      setPendingRename({ kind: 'category', id: tagEdit.id, original: tagEdit.original, newName: trimmed, newColor: tagEdit.color })
+                    }
+                    setTagEdit(null)
+                  }}
+                >
+                  <Text style={styles.editBtnPrimaryText}>保存</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+        </View>
+      </Modal>
+
+      {/* 修改确认（rename 保存前再问一次，避免误改 LWW 同步会传到其他端） */}
+      <ConfirmDialog
+        open={pendingRename != null}
+        title={pendingRename?.kind === 'category' ? '修改分类' : '修改标签'}
+        body={
+          pendingRename?.kind === 'category'
+            ? `分类「${pendingRename.original}」→「${pendingRename.newName}」\n颜色 ${pendingRename.newColor}`
+            : pendingRename
+              ? `标签「${pendingRename.original}」→「${pendingRename.newFullPath}」`
+              : ''
+        }
+        confirmText="保存"
+        cancelText="取消"
+        onCancel={() => setPendingRename(null)}
+        onConfirm={async () => {
+          if (!pendingRename) return
+          const item = pendingRename
+          setPendingRename(null)
+          try {
+            const next = item.kind === 'tag'
+              ? await renameTagPath(item.id, item.newFullPath)
+              : await renameCategory(item.id, item.newName, item.newColor)
+            setPalette(next)
+          } catch (e) {
+            console.warn('[rename] failed', e)
+          }
+        }}
+      />
+
       {/* 删除确认框 */}
       <ConfirmDialog
         open={confirmDelete != null}
@@ -2303,7 +2486,7 @@ export default function DayNightScreen() {
                   ? '新建模式 · 点下方标签 = 把它当父路径回填到输入框，再续写子节点'
                   : tagQuery
                     ? `匹配 ${filteredTags.length} / ${palette.tags.length} 个`
-                    : `全部 ${palette.tags.length} 个标签 · 输入过滤 · 点 + 新建 · 长按标签删除`}
+                    : `全部 ${palette.tags.length} 个标签 · 输入过滤 · 点 + 新建 · 长按 修改 / 删除`}
               </Text>
             )}
             {(() => {
@@ -2379,11 +2562,11 @@ export default function DayNightScreen() {
                       }
                     }}
                     onLongPressTag={(t) =>
-                      setConfirmDelete({ kind: 'tag', id: t.id, label: t.fullPath })
+                      setTagAction({ kind: 'tag', id: t.id, label: t.fullPath, leafName: t.leafName })
                     }
                     onLongPressCategory={(name) => {
                       const cat = palette.categories.find((c) => c.name === name)
-                      if (cat) setConfirmDelete({ kind: 'category', id: cat.id, label: name })
+                      if (cat) setTagAction({ kind: 'category', id: cat.id, label: name, color: cat.color })
                     }}
                   />
                 ))
@@ -3115,6 +3298,136 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(20,20,24,0.18)',
     justifyContent: 'flex-end',
+  },
+  // 操作菜单 / 编辑 modal：居中显示（跟从底弹的 sheet 区分）
+  actionBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(20,20,24,0.32)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  actionSheet: {
+    backgroundColor: theme.surface,
+    borderRadius: 14,
+    width: '100%',
+    maxWidth: 340,
+    paddingVertical: 10,
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    elevation: 14,
+  },
+  actionSheetTitle: {
+    fontSize: 12,
+    color: theme.inkSoft,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.line,
+  },
+  actionItem: {
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+  },
+  actionItemDanger: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.line,
+  },
+  actionItemCancel: {
+    borderTopWidth: 6,
+    borderTopColor: theme.bg,
+    backgroundColor: theme.surface,
+  },
+  actionItemText: {
+    fontSize: 15,
+    color: theme.ink,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  actionItemTextDanger: {
+    color: '#D14848',
+  },
+  actionItemTextCancel: {
+    fontSize: 15,
+    color: theme.inkSoft,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  // 修改 modal
+  editSheet: {
+    backgroundColor: theme.surface,
+    borderRadius: 14,
+    width: '100%',
+    maxWidth: 360,
+    padding: 18,
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    elevation: 14,
+  },
+  editSheetTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: theme.ink,
+    marginBottom: 14,
+  },
+  editFieldLabel: {
+    fontSize: 12,
+    color: theme.inkSoft,
+    marginBottom: 6,
+    marginTop: 8,
+  },
+  editInput: {
+    borderWidth: 1,
+    borderColor: theme.line,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    color: theme.ink,
+  },
+  editColorRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  editColorChip: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  editColorChipActive: {
+    borderColor: theme.ink,
+  },
+  editActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 18,
+  },
+  editBtnGhost: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  editBtnGhostText: {
+    fontSize: 14,
+    color: theme.inkSoft,
+    fontWeight: '500',
+  },
+  editBtnPrimary: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: theme.accent,
+  },
+  editBtnPrimaryText: {
+    fontSize: 14,
+    color: '#FFF',
+    fontWeight: '600',
   },
   sheet: {
     backgroundColor: 'rgba(255,255,255,0.94)',

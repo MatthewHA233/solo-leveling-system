@@ -158,6 +158,8 @@ interface SoloDbNative {
   eraseBlocks(date: string, minutes: number[]): Promise<number>
   deleteTag(tagId: number): Promise<number>
   deleteCategory(categoryId: number): Promise<number>
+  renameCategory(categoryId: number, newName: string, newColor: string): Promise<number>
+  renameTagPath(tagId: number, newFullPath: string): Promise<number>
   exportSync(since: string | null): Promise<SyncExport>
   importSync(payload: SyncExport): Promise<SyncImportResult>
 }
@@ -236,6 +238,20 @@ export async function soloDeleteTag(tagId: number): Promise<number> {
 export async function soloDeleteCategory(categoryId: number): Promise<number> {
   if (!Native) return 0
   return Native.deleteCategory(categoryId)
+}
+
+export async function soloRenameCategory(
+  categoryId: number,
+  newName: string | null,
+  newColor: string | null,
+): Promise<number> {
+  if (!Native) return 0
+  return Native.renameCategory(categoryId, newName ?? '', newColor ?? '')
+}
+
+export async function soloRenameTagPath(tagId: number, newFullPath: string): Promise<number> {
+  if (!Native) return 0
+  return Native.renameTagPath(tagId, newFullPath)
 }
 
 /**
