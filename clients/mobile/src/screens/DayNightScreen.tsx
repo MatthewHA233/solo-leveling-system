@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Animated,
   Image,
+  Keyboard,
   Modal,
   PanResponder,
   Pressable,
@@ -2406,22 +2407,34 @@ export default function DayNightScreen() {
       />
 
       {/* 标签云浮层：absolute 紧贴 toolbar 下方 + 自适应贴 DayNightScreen 底部
-          DayNightScreen 是 flex:1 占 TabBar 以上空间，bottom:8 即贴近 TabBar 上沿 */}
+          DayNightScreen 是 flex:1 占 TabBar 以上空间，bottom:8 即贴近 TabBar 上沿
+          全屏 backdrop Pressable：点 picker 外区域 = dismiss 键盘 + 关 picker */}
       {editMode && tagPickerOpen && palette && (
-        <View
-          style={[
-            styles.pickerFloat,
-            { top: actionSlotBottom + 4 },
-          ]}
-          pointerEvents="box-none"
-        >
+        <>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              Keyboard.dismiss()
+              setPickerMode(null)
+            }}
+          />
+          <View
+            style={[
+              styles.pickerFloat,
+              { top: actionSlotBottom + 4 },
+            ]}
+            pointerEvents="box-none"
+          >
           <View style={styles.pickerCloud}>
             {/* 搜索框 + 左侧 "+" 按钮 = 新建模式入口（对齐 desktop）。
                 addMode=true 时同一输入框语义变成"新标签完整路径"，下方 tag 列表
                 点击 = 回填路径，节省手打父节点。
                 onChangeText 把中文逗号 → 英文逗号 normalize，避免用户输入法切换烦。
                 × 只清空 query，不关 picker —— 关 picker 由 toolbar 上的按钮负责 */}
-            <View style={styles.searchBoxInCloud}>
+            <Pressable
+              style={styles.searchBoxInCloud}
+              onPress={() => searchInputRef.current?.focus()}
+            >
               <Pressable
                 hitSlop={8}
                 onPress={() => {
@@ -2457,12 +2470,17 @@ export default function DayNightScreen() {
                   <Text style={styles.searchCloseText}>×</Text>
                 </Pressable>
               )}
-            </View>
+            </Pressable>
             {/* recent 5 个常用，单独一行常驻在标签云顶部，给"老用户回到熟悉标签"用。
                 addMode 下点击 = 回填 fullPath+ "," 到搜索框（当父路径） */}
             {recentTags.length > 0 && (
               <View style={styles.recentRowInCloud}>
                 <Text style={styles.recentLabel}>{addMode ? '父路径' : '最近'}</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.recentChips}
+                >
                 {recentTags.map((tag) => {
                   const on = tag.id === selectedTagId
                   const c = colorOf(tag.id)
@@ -2491,6 +2509,7 @@ export default function DayNightScreen() {
                     </Pressable>
                   )
                 })}
+                </ScrollView>
               </View>
             )}
             {palette.tags.length === 0 ? (
@@ -2607,7 +2626,8 @@ export default function DayNightScreen() {
               )}
             </ScrollView>
           </View>
-        </View>
+          </View>
+        </>
       )}
     </View>
   )
@@ -3070,10 +3090,13 @@ const styles = StyleSheet.create({
     margin: 0,
   },
   searchClose: {
-    width: 22,
-    height: 22,
+    width: 28,
+    height: 28,
+    marginLeft: 10,             // 跟 input 右沿留 10px 空隙，防误触
     alignItems: 'center',
     justifyContent: 'center',
+    borderRadius: 14,
+    backgroundColor: alpha(theme.inkSoft, 0.08),  // 微底色让 × 看起来是独立按钮
   },
   searchCloseText: {
     fontSize: 18,
@@ -3195,12 +3218,18 @@ const styles = StyleSheet.create({
   recentRowInCloud: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
     gap: 6,
     marginBottom: 10,
     paddingBottom: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.line,
+  },
+  // chips 在 ScrollView 内横向排列 + padding 右留 + 不 wrap
+  recentChips: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingRight: 12,
   },
   recentLabel: {
     fontSize: 11,
