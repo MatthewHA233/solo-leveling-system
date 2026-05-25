@@ -1834,6 +1834,8 @@ export default function DayNightScreen() {
             {...cellPan.panHandlers}
           >
             {rows.map((row, i) => {
+              // chipBelow：focus 第一行（前面没 full row）时 chip 朝下，避免顶到屏幕外
+              const chipBelow = row.kind === 'full' && !rows.slice(0, i).some((r) => r.kind === 'full')
               if (row.kind === 'compressed') {
                 return (
                   <View key={i} style={[styles.cellRow, styles.cellRowCompressed]}>
@@ -1993,18 +1995,42 @@ export default function DayNightScreen() {
                     if (rowStart === 960) console.log('[cursor-check]', { rowStart, rowMinutes, nowMinute, isToday, inRow })
                     return null
                   })()}
-                  {/* 当前时间游标：仅 isToday + nowMinute 落在本 row 内才画
+                  {/* 当前时间游标：I 形，上下小帽穿出色块上下边沿，时间标贴 cursor 上方
                       位置按秒级精度 = (nowMin - rowStart) + sec/60，占行宽比例
-                      不响应手势（pointerEvents none），盖在色块之上让用户能看见 */}
+                      仅 isToday + nowMinute 落在本 row 内才画 */}
                   {isToday && nowMinute >= rowStart && nowMinute < rowStart + rowMinutes && (() => {
                     const subSec = nowDate.getSeconds()
                     const offsetMin = (nowMinute - rowStart) + subSec / 60
                     const leftPct = (offsetMin / rowMinutes) * 100
+                    const hh = String(nowDate.getHours()).padStart(2, '0')
+                    const mm = String(nowDate.getMinutes()).padStart(2, '0')
                     return (
                       <View
                         pointerEvents="none"
-                        style={[styles.nowCursor, { left: `${leftPct}%` }]}
-                      />
+                        style={[
+                          styles.nowCursorWrap,
+                          chipBelow && styles.nowCursorWrapBelow,
+                          { left: `${leftPct}%` },
+                        ]}
+                      >
+                        {chipBelow ? (
+                          <>
+                            <View style={styles.nowCursorCap} />
+                            <View style={styles.nowCursorStem} />
+                            <View style={styles.nowCursorTimeChip}>
+                              <Text style={styles.nowCursorTime}>{hh}:{mm}</Text>
+                            </View>
+                          </>
+                        ) : (
+                          <>
+                            <View style={styles.nowCursorTimeChip}>
+                              <Text style={styles.nowCursorTime}>{hh}:{mm}</Text>
+                            </View>
+                            <View style={styles.nowCursorStem} />
+                            <View style={styles.nowCursorCap} />
+                          </>
+                        )}
+                      </View>
                     )
                   })()}
                 </View>
@@ -2901,17 +2927,48 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row',
   },
-  // 当前时间游标：短竖线，行高 80% 居中，accent 色 + 圆角
-  // marginLeft -1.5 让 3px 居中在 leftPct
-  nowCursor: {
+  // 锤子形游标 wrap：chip 紧贴色块上沿，cap 紧贴色块下沿
+  // 色块视觉边沿 = cellRow 上下各内缩 GAP/2 (= 2px)
+  // wrap top = -(chipH - GAP/2) ≈ -12，让 chip 底落在色块上沿
+  // wrap bottom = -(capH - GAP/2) = 0，让 cap 顶落在色块下沿
+  nowCursorWrap: {
     position: 'absolute',
-    top: '8%',
-    bottom: '8%',
-    width: 3,
-    marginLeft: -1.5,
-    backgroundColor: theme.accent,
-    borderRadius: 1.5,
+    top: -12,
+    bottom: 0,
+    width: 50,
+    marginLeft: -25,
+    alignItems: 'center',
     zIndex: 10,
+  },
+  // focus 第一行：chip 朝下，cap 朝上，上下偏移反过来
+  nowCursorWrapBelow: {
+    top: 0,
+    bottom: -12,
+  },
+  nowCursorTimeChip: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+    backgroundColor: theme.accent,
+  },
+  nowCursorTime: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#FFF',
+    letterSpacing: 0.3,
+    fontVariant: ['tabular-nums'],
+    includeFontPadding: false,
+  },
+  nowCursorCap: {
+    width: 10,
+    height: 2,
+    backgroundColor: theme.accent,
+    borderRadius: 1,
+  },
+  nowCursorStem: {
+    flex: 1,
+    width: 2,
+    backgroundColor: theme.accent,
   },
   // compressed 行整行浅灰底，提示"折叠预览区，不响应编辑"
   cellRowCompressed: {
