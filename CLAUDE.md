@@ -335,19 +335,28 @@ solo-leveling/android/
 
 **标准发布流程（双击 .command，Claude 不直接跑 python）**：
 
-`clients/mobile/release.command` 是 mac Finder 双击入口（已 chmod +x）。Claude 的角色：
-1. 改 `clients/mobile/VERSION`（手动 bump 两个值）
-2. 写本次 changelog 到 `clients/mobile/CHANGELOG.next.md`
-3. `open -R clients/mobile/release.command` 用 Finder 选中显示
-4. **由用户双击 .command** 启动 Terminal 跑发布；脚本会清 Clash 代理 env、读 changelog、按需重建 APK 后上传
-5. 跑完用户回到对话告诉 Claude 结果（贴最后几行）
+`clients/mobile/release.command` 是 mac Finder 双击入口（已 chmod +x）。Claude 的角色，**严格按顺序，每一步都不可省略**：
 
-> ⚠️ **绝不能用旧 APK 假冒新版本**：bump VERSION 后必须确保 APK 内嵌的 versionName/versionCode 等于 VERSION。否则上传的是"穿了新衣的旧 APK"——manifest 写 vc9，APK 内部还是 vc8，手机检测到更新、下载安装却还是旧版本，4~8 小时假性自愈（OEM 包管理 + CDN 缓存叠加）让排查极困难。
+1. 改 `clients/mobile/VERSION`（手动 bump 两个值 versionName + versionCode）
+2. 写本次 changelog 到 `clients/mobile/CHANGELOG.next.md`
+3. **🚨 Claude 立即跑 `cd clients/mobile/android && ./gradlew assembleRelease` 重新构建 APK**（background，3~8 分钟）—— **不可跳过、不可推迟、不可指望"双击 .command 时脚本自己 build"**
+4. build 完成后用 `aapt dump badging app-release.apk` 校验内嵌 versionCode/versionName == VERSION（必做，必须出现在 Claude 对话里给用户看到）
+5. **校验通过后**才 `open -R clients/mobile/release.command` 用 Finder 选中显示
+6. **由用户双击 .command** 启动 Terminal 跑发布；脚本会清 Clash 代理 env、读 changelog、再次校验 APK 版本后上传
+7. 跑完用户回到对话告诉 Claude 结果（贴最后几行）
+
+> 🚨🚨🚨 **第 3 步绝不可省略 —— 惨痛血泪教训**：
 >
-> - **脚本 [3/8] 用 `aapt dump badging` 读 APK 内嵌版本**：等于 VERSION → 跳过 build 直接复用（省 3~8min）；不等于 / APK 不存在 → 自动 `gradlew assembleRelease` 重建。上传前再 verify 一次兜底。
-> - **首次发布 / 改了 native 代码 / build cache 坏了** → 双击 .command 会自动 build，首次 3~8 分钟，**期间不要 Ctrl-C**。
-> - **强制 clean build**：`python3 scripts/release_mobile.py --build`（绕过 .command 的代理隔离，仅当确实要重建时用）。
-> - **绝对禁止 Claude 自己直接跑 `python3 release_mobile.py`** 走正常发布 —— 那条路径丢代理隔离会被 Clash 拦到 OSS 国内域 502。
+> 0.0.0.8 那次发布事故的真实根因 = Claude **直接跳到第 5 步**让用户双击 .command，没在第 3 步预 build。脚本里有 fallback build，但当时 release.command 不带 `--build`，python 脚本看到 `app-release.apk` 已存在（vc7 的旧产物）就**复用上传**了，于是 manifest 写 vc8 / APK 内部还是 vc7，手机检测到更新但装的是旧版，CDN 还缓存 4~8 小时无法刷新，排查耗了一整下午。
+>
+> **修复后的双层防护（不要因此放松第 3 步）**：
+> - `release.command` 现在依然不带 `--build`（为了省每次都重建的 3~8min）
+> - 脚本 [3/8] 用 `aapt dump badging` 读 APK 内嵌版本：== VERSION → 复用；!= → 自动重建
+> - 但**这层 fallback 只是兜底**。Claude 必须自己先 build + 校验，把"APK 是新的"这个事实在双击 .command **之前**就锁死，不能依赖脚本兜底（脚本失败、ANDROID_HOME 没设、aapt 找不到 ... 任何一环出问题都会重蹈覆辙）
+>
+> **强制 clean build**：`cd clients/mobile/android && ./gradlew clean assembleRelease`（缓存出问题时用）
+>
+> **绝对禁止 Claude 自己直接跑 `python3 release_mobile.py`** 走正常上传 —— Claude 的后台 Bash 继承 Clash 代理，OSS 国内域会 502 / 超慢；上传必须由用户双击 .command 走（脚本里 unset 了代理 env）
 
 **为什么不让 Claude 直接 `python3 scripts/release_mobile.py`：**
 - Claude 的后台 Bash 继承 mac 全局代理（Clash 等），OSS 国内域被代理走会 502 / 超慢
