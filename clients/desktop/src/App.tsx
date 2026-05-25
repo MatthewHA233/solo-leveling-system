@@ -121,7 +121,8 @@ type FairyActionPayload =
   | { action: 'open-settings' }
   | { action: 'set-scale'; scale?: number }
 
-type FairyChatSubmitPayload = { text?: string }
+type ChatMode = AgentConfig['aiMode']
+type FairyChatSubmitPayload = { text?: string; mode?: ChatMode }
 type ModelFeatureBindingPayload = { feature?: string; modelId?: string }
 
 function clampFairyScale(value: unknown): number {
@@ -623,16 +624,19 @@ export default function App() {
     }
   }, [config.fairyWindowEnabled])
 
-  const emitFairyConfig = useCallback((scale: number) => {
+  const emitFairyConfig = useCallback((scale: number, aiMode: ChatMode) => {
     import('@tauri-apps/api/event').then(({ emitTo }) => {
-      emitTo('fairy-window', 'fairy-config', { scale: clampFairyScale(scale) }).catch(() => {})
+      emitTo('fairy-window', 'fairy-config', {
+        scale: clampFairyScale(scale),
+        aiMode,
+      }).catch(() => {})
     })
   }, [])
 
   useEffect(() => {
     if (!config.fairyWindowEnabled) return
-    emitFairyConfig(config.fairyWindowScale)
-  }, [config.fairyWindowEnabled, config.fairyWindowScale, emitFairyConfig])
+    emitFairyConfig(config.fairyWindowScale, config.aiMode)
+  }, [config.aiMode, config.fairyWindowEnabled, config.fairyWindowScale, emitFairyConfig])
 
   const emitFairy = useCallback((state: FairyState, text = '') => {
     fairyStateRef.current = state
@@ -647,7 +651,7 @@ export default function App() {
     import('@tauri-apps/api/event').then(({ listen: listenEvent }) => {
       listenEvent('fairy-window-ready', () => {
         emitFairy(fairyStateRef.current)
-        emitFairyConfig(configRef.current.fairyWindowScale)
+        emitFairyConfig(configRef.current.fairyWindowScale, configRef.current.aiMode)
       }).then(fn => { unlisten = fn })
     })
     return () => { unlisten?.() }
@@ -1915,7 +1919,7 @@ export default function App() {
   }, [refreshSystemPrompt])
 
   // ── Send Message ──
-  const handleSend = useCallback(async (text: string, fromVoice = false) => {
+  const handleSend = useCallback(async (text: string, fromVoice = false, modeOverride?: ChatMode) => {
     if (!text.trim()) return
 
     // 文字输入：添加用户气泡（语音输入的气泡在 onUserAudio 已添加，不重复）
@@ -1933,8 +1937,10 @@ export default function App() {
     // D2 + D4 — 构建 system prompt（两套协议共用，结果缓存在 systemPromptRef）
     const systemPrompt = await refreshSystemPrompt()
 
+    const aiMode = modeOverride ?? configRef.current.aiMode
+
     // ── Omni 全模态：文字输入直接走 WS，返回音频+文本，不走独立 LLM ──
-    if (configRef.current.aiMode === 'omni') {
+    if (aiMode === 'omni') {
       const cfg = configRef.current
       const omniApiKey = getOmniApiKey(cfg)
       if (!omniApiKey) {
@@ -2305,7 +2311,8 @@ export default function App() {
       listenEvent<FairyChatSubmitPayload>('fairy-chat-submit', (e) => {
         const text = e.payload?.text?.trim()
         if (!text) return
-        handleSend(text).catch(() => {})
+        const mode = e.payload?.mode
+        handleSend(text, false, mode === 'regular' || mode === 'omni' ? mode : undefined).catch(() => {})
       }).then(fn => { unlisten = fn })
     })
 

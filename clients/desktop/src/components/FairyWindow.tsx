@@ -5,7 +5,7 @@
 // ══════════════════════════════════════════════
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Send } from 'lucide-react'
+import { MessageSquare, Radio, Send } from 'lucide-react'
 import { emit, listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow, LogicalSize, PhysicalPosition } from '@tauri-apps/api/window'
@@ -18,7 +18,8 @@ import { getFeatureModel, listModelFreeQuotas, setFeatureModel } from '../lib/mo
 import { MODEL_SELECT_POPUP_WIDTH, modelSelectOption } from '../lib/model-display'
 
 type FairyPayload = { state: FairyState; text: string }
-type FairyConfigPayload = { scale?: number }
+type FairyChatMode = 'regular' | 'omni'
+type FairyConfigPayload = { scale?: number; aiMode?: FairyChatMode }
 type FairyActionPayload =
   | { action: 'hide' }
   | { action: 'open-settings' }
@@ -150,6 +151,7 @@ export default function FairyWindow() {
   const [scale, setScale] = useState(DEFAULT_SCALE)
   const [panel, setPanel] = useState<FairyPanel | null>(null)
   const [miniInput, setMiniInput] = useState('')
+  const [miniMode, setMiniMode] = useState<FairyChatMode>('regular')
   const [models, setModels] = useState<ModelDef[]>([])
   const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
@@ -246,10 +248,10 @@ export default function FairyWindow() {
   const handleMiniSubmit = useCallback(() => {
     const trimmed = miniInput.trim()
     if (!trimmed) return
-    emit('fairy-chat-submit', { text: trimmed }).catch(() => {})
+    emit('fairy-chat-submit', { text: trimmed, mode: miniMode }).catch(() => {})
     setMiniInput('')
     closePanel()
-  }, [closePanel, miniInput])
+  }, [closePanel, miniInput, miniMode])
 
   const handleFairyContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -284,6 +286,9 @@ export default function FairyWindow() {
     })
     const c = listen<FairyConfigPayload>('fairy-config', e => {
       if (e.payload?.scale !== undefined) setScale(clampScale(e.payload.scale))
+      if (e.payload?.aiMode === 'regular' || e.payload?.aiMode === 'omni') {
+        setMiniMode(e.payload.aiMode)
+      }
     })
 
     // 通知主窗口：fairy listener 已就绪，可以重发当前状态
@@ -698,7 +703,9 @@ export default function FairyWindow() {
             {panel.mode === 'chat' && (
               <FairyMiniChat
                 value={miniInput}
+                mode={miniMode}
                 onChange={setMiniInput}
+                onModeChange={setMiniMode}
                 onBack={() => openPanel('menu')}
                 onSubmit={handleMiniSubmit}
               />
@@ -748,16 +755,21 @@ function FairyQuickMenu({
 
 function FairyMiniChat({
   value,
+  mode,
   onChange,
+  onModeChange,
   onBack,
   onSubmit,
 }: {
   readonly value: string
+  readonly mode: FairyChatMode
   readonly onChange: (value: string) => void
+  readonly onModeChange: (mode: FairyChatMode) => void
   readonly onBack: () => void
   readonly onSubmit: () => void
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const isOmniMode = mode === 'omni'
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -805,7 +817,32 @@ function FairyMiniChat({
             resize: 'none',
           }}
         />
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 6, marginTop: 8 }}>
+          <button
+            type="button"
+            title={isOmniMode ? '当前：Omni 全模态，点击切换普通聊天' : '当前：普通聊天，点击切换 Omni 全模态'}
+            onClick={() => onModeChange(isOmniMode ? 'regular' : 'omni')}
+            style={{
+              background: isOmniMode ? `${theme.shadowPurple}18` : `${theme.electricBlue}12`,
+              border: `1px solid ${isOmniMode ? theme.shadowPurple + '88' : theme.electricBlue + '66'}`,
+              padding: 0,
+              width: 26,
+              height: 26,
+              color: isOmniMode ? '#C9A8FF' : theme.electricBlue,
+              boxShadow: isOmniMode
+                ? `0 0 8px ${theme.shadowPurple}66, inset 0 0 4px ${theme.shadowPurple}33`
+                : `0 0 8px ${theme.electricBlue}44, inset 0 0 4px ${theme.electricBlue}22`,
+              cursor: 'pointer',
+              transition: 'all 0.15s ease',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              clipPath: hud.chamfer8,
+              WebkitClipPath: hud.chamfer8,
+            }}
+          >
+            {isOmniMode ? <Radio size={12} /> : <MessageSquare size={12} />}
+          </button>
           <button
             className="send-btn"
             type="button"
