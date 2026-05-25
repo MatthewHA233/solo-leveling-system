@@ -122,6 +122,42 @@ def assemble_release() -> None:
     )
 
 
+# APK 新鲜度 stamp：跟 APK 同目录的 .stamp.json，记录这个 APK 是从哪个 git
+# HEAD + 工作区状态 build 出来的。光看 APK 内嵌版本号无法证明源码没变（用户
+# 可能 bump VERSION 后改了 JS / 没改 VERSION 也改了 JS），所以再加 stamp。
+APK_STAMP_PATH = APK_PATH.with_suffix(".apk.stamp.json")
+
+
+def current_git_state() -> tuple[str, bool]:
+    """返回 (HEAD short hash, working tree dirty)。"""
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True
+    ).strip()
+    dirty = subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=REPO_ROOT, text=True
+    ).strip() != ""
+    return head, dirty
+
+
+def write_apk_stamp() -> None:
+    head, dirty = current_git_state()
+    APK_STAMP_PATH.write_text(
+        json.dumps(
+            {"git_head": head, "git_dirty": dirty, "built_at": int(time.time())},
+            indent=2,
+        )
+    )
+
+
+def read_apk_stamp() -> dict | None:
+    if not APK_STAMP_PATH.exists():
+        return None
+    try:
+        return json.loads(APK_STAMP_PATH.read_text())
+    except Exception:
+        return None
+
+
 def find_aapt() -> str | None:
     candidates = []
     for env_name in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
@@ -221,7 +257,12 @@ def public_url_for_manifest(key: str, bucket_name: str, endpoint: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", action="store_true", help="发布前重建 release APK")
+    parser.add_argument("--build", action="store_true", help="发布前强制重建 release APK")
+    parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="只构建 release APK 并写新鲜度 stamp，不上传 OSS（Claude 预 build 用，不走网络所以不怕 Clash 代理）",
+    )
     parser.add_argument("--changelog", default="", help="改动说明（多行用 \\n）")
     parser.add_argument("--min-supported", type=int, default=None, help="强制更新最低 versionCode")
     parser.add_argument("--dry-run", action="store_true", help="不真正上传，只 dump 计划")
@@ -230,11 +271,11 @@ def main() -> int:
     _t_global[0] = time.time()
     print(f"=== Solo Leveling mobile release ===   (开始 {datetime.now().strftime('%H:%M:%S')})", flush=True)
 
-    # ── 步骤 1：环境变量 ──
+    # ── 步骤 1：环境变量（--build-only 不上传，跳过 OSS 凭证检查） ──
     t = step("加载 .env")
     info(f"  从 {LOCAL_ENV} 读 OSS 凭证 + 端点 + CNAME")
     load_env()
-    if not (os.getenv("OSS_ACCESS_KEY_ID") and os.getenv("OSS_ACCESS_KEY_SECRET")):
+    if not args.build_only and not (os.getenv("OSS_ACCESS_KEY_ID") and os.getenv("OSS_ACCESS_KEY_SECRET")):
         raise SystemExit("    ✗ 缺少 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，停止")
     info(f"  bucket          = {os.getenv('OSS_BUCKET_NAME', 'lingflow')}")
     info(f"  endpoint        = {os.getenv('OSS_ENDPOINT', 'oss-cn-heyuan.aliyuncs.com')}")
@@ -253,19 +294,36 @@ def main() -> int:
     step_done(t)
 
     # ── 步骤 3：APK 准备 ──
-    # 决策：现有 APK 内嵌版本 == VERSION → 直接复用（build 一次几分钟，太贵）；
-    # APK 不存在 / 版本不一致 / 用户显式 --build → 才跑 gradlew assembleRelease。
-    # 上传前再 verify_apk_version 兜底，确保跳过 build 的路径也安全。
+    # 复用现有 APK 的条件（任何一条不满足都要重建，AUDIT-023）：
+    #   1) APK 文件存在
+    #   2) APK 内嵌版本 == VERSION
+    #   3) stamp 存在且 stamp.git_head == 当前 HEAD（证明 build 后没新 commit）
+    #   4) stamp.git_dirty == False 且当前工作区也 clean（dirty 时不能证明源码 == build 时源码）
+    #   5) 用户没传 --build 强制重建
+    # 上传前 verify_apk_version 再兜底一次。
     t = step("准备 release APK")
     need_build = args.build or not APK_PATH.exists()
+    reuse_reason = None
     if not need_build:
         try:
             apk_name, apk_code = read_apk_version(APK_PATH)
-            if apk_name == version_name and apk_code == version_code:
-                info(f"  复用现有 APK（版本匹配 {apk_name} vc{apk_code}）: {APK_PATH}")
-            else:
+            stamp = read_apk_stamp()
+            head, dirty = current_git_state()
+            if apk_name != version_name or apk_code != version_code:
                 info(f"  现有 APK 版本 {apk_name} vc{apk_code} ≠ VERSION {version_name} vc{version_code}，需重建")
                 need_build = True
+            elif stamp is None:
+                info("  现有 APK 没有 stamp（来源不明 / 未经本脚本 build），需重建")
+                need_build = True
+            elif stamp.get("git_head") != head:
+                info(f"  现有 APK 对应 HEAD {(stamp.get('git_head') or '?')[:8]} ≠ 当前 {head[:8]}，需重建")
+                need_build = True
+            elif stamp.get("git_dirty") or dirty:
+                info("  build 时或当前工作区 dirty，无法证明源码未变，需重建")
+                need_build = True
+            else:
+                reuse_reason = f"版本+HEAD 都匹配 {head[:8]}"
+                info(f"  复用现有 APK（{reuse_reason}）: {APK_PATH}")
         except SystemExit:
             # aapt 找不到 / 读 APK 失败 → 保险起见重建
             info("  现有 APK 版本读取失败，需重建")
@@ -273,12 +331,19 @@ def main() -> int:
     if need_build:
         info("  → 跑 gradlew assembleRelease …")
         assemble_release()
+        write_apk_stamp()
+        info(f"  ✓ 已写 stamp: {APK_STAMP_PATH.name}")
     if not APK_PATH.exists():
         raise SystemExit(f"    ✗ APK 不存在: {APK_PATH}")
     size = APK_PATH.stat().st_size
     info(f"  大小 {size / 1024 / 1024:.2f} MB")
     verify_apk_version(APK_PATH, version_name, version_code)
     step_done(t)
+
+    # --build-only：只构建 + 写 stamp，不上传（Claude 流程的预 build 用）
+    if args.build_only:
+        print("\n✓ build-only 完成（已跳过 SHA256 / OSS 上传）")
+        return 0
 
     # ── 步骤 4：SHA256 ──
     t = step("计算 SHA256")

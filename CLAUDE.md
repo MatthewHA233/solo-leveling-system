@@ -339,24 +339,27 @@ solo-leveling/android/
 
 1. 改 `clients/mobile/VERSION`（手动 bump 两个值 versionName + versionCode）
 2. 写本次 changelog 到 `clients/mobile/CHANGELOG.next.md`
-3. **🚨 Claude 立即跑 `cd clients/mobile/android && ./gradlew assembleRelease` 重新构建 APK**（background，3~8 分钟）—— **不可跳过、不可推迟、不可指望"双击 .command 时脚本自己 build"**
-4. build 完成后用 `aapt dump badging app-release.apk` 校验内嵌 versionCode/versionName == VERSION（必做，必须出现在 Claude 对话里给用户看到）
-5. **校验通过后**才 `open -R clients/mobile/release.command` 用 Finder 选中显示
-6. **由用户双击 .command** 启动 Terminal 跑发布；脚本会清 Clash 代理 env、读 changelog、再次校验 APK 版本后上传
-7. 跑完用户回到对话告诉 Claude 结果（贴最后几行）
+3. **commit 所有相关改动**（VERSION、源码等）—— commit 后工作区 clean，stamp 会记录干净 HEAD；否则脚本第 [3/8] 步会判 dirty 强制重 build
+4. **🚨 Claude 跑 `python3 scripts/release_mobile.py --build-only`**（background，3~8 分钟首次 / ~30s 增量）—— 这会 build APK 并写新鲜度 stamp（git HEAD + dirty 状态）；`--build-only` 不走 OSS 网络，不怕 Clash 代理
+5. build 完成后用 `aapt dump badging app-release.apk` 校验内嵌 versionCode/versionName == VERSION（必做，结果必须出现在 Claude 对话里给用户看到）
+6. **校验通过后**才 `open -R clients/mobile/release.command` 用 Finder 选中显示
+7. **由用户双击 .command** 启动 Terminal 跑上传；脚本会清 Clash 代理 env、读 changelog、校验 APK 版本 + stamp HEAD 匹配后上传
+8. 跑完用户回到对话告诉 Claude 结果（贴最后几行）
 
-> 🚨🚨🚨 **第 3 步绝不可省略 —— 惨痛血泪教训**：
+> 🚨🚨🚨 **第 4 步绝不可省略 —— 惨痛血泪教训**：
 >
-> 0.0.0.8 那次发布事故的真实根因 = Claude **直接跳到第 5 步**让用户双击 .command，没在第 3 步预 build。脚本里有 fallback build，但当时 release.command 不带 `--build`，python 脚本看到 `app-release.apk` 已存在（vc7 的旧产物）就**复用上传**了，于是 manifest 写 vc8 / APK 内部还是 vc7，手机检测到更新但装的是旧版，CDN 还缓存 4~8 小时无法刷新，排查耗了一整下午。
+> 0.0.0.8 那次发布事故的真实根因 = Claude **直接跳到第 6 步**让用户双击 .command，没预 build。脚本里有 fallback build，但当时 release.command 不带 `--build`，python 脚本看到 `app-release.apk` 已存在（vc7 的旧产物）就**复用上传**了，于是 manifest 写 vc8 / APK 内部还是 vc7，手机检测到更新但装的是旧版，CDN 还缓存 4~8 小时无法刷新，排查耗了一整下午。
 >
-> **修复后的双层防护（不要因此放松第 3 步）**：
-> - `release.command` 现在依然不带 `--build`（为了省每次都重建的 3~8min）
-> - 脚本 [3/8] 用 `aapt dump badging` 读 APK 内嵌版本：== VERSION → 复用；!= → 自动重建
-> - 但**这层 fallback 只是兜底**。Claude 必须自己先 build + 校验，把"APK 是新的"这个事实在双击 .command **之前**就锁死，不能依赖脚本兜底（脚本失败、ANDROID_HOME 没设、aapt 找不到 ... 任何一环出问题都会重蹈覆辙）
+> **三层防护（不要因此放松第 4 步）**：
+> - **`--build-only` 写 stamp**：APK 旁边写 `app-release.apk.stamp.json` 记录 `git_head + git_dirty + built_at`
+> - **脚本 [3/8] 复用条件（任一不满足都重 build）**：APK 存在 + 内嵌版本 == VERSION + stamp 存在 + stamp.git_head == 当前 HEAD + stamp.git_dirty == false + 当前工作区 clean
+> - **上传前 verify_apk_version 兜底**：aapt 再读一次内嵌版本
 >
-> **强制 clean build**：`cd clients/mobile/android && ./gradlew clean assembleRelease`（缓存出问题时用）
+> 这三层中只要 stamp 校验是核心 —— 它捕获"VERSION 没变但源码变了"的场景（AUDIT-023）。Claude 必须先 commit 再 build，让 stamp 锚定干净 HEAD。
 >
-> **绝对禁止 Claude 自己直接跑 `python3 release_mobile.py`** 走正常上传 —— Claude 的后台 Bash 继承 Clash 代理，OSS 国内域会 502 / 超慢；上传必须由用户双击 .command 走（脚本里 unset 了代理 env）
+> **强制 clean build**：`cd clients/mobile/android && ./gradlew clean` 然后再跑 `--build-only`（缓存出问题时用）
+>
+> **绝对禁止 Claude 自己直接跑 `python3 release_mobile.py`（不带 --build-only）走正常上传** —— Claude 的后台 Bash 继承 Clash 代理，OSS 国内域会 502 / 超慢；上传必须由用户双击 .command 走（脚本里 unset 了代理 env）
 
 **为什么不让 Claude 直接 `python3 scripts/release_mobile.py`：**
 - Claude 的后台 Bash 继承 mac 全局代理（Clash 等），OSS 国内域被代理走会 502 / 超慢
