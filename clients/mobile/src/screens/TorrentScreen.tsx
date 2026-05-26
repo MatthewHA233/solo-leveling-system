@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   FlatList,
+  Modal,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -37,7 +38,22 @@ const PACKAGE_LABEL: Record<string, string> = {
   'tv.danmaku.bili': 'B 站',
 }
 
-type ViewMode = 'raw' | 'feed'
+type ViewMode = 'raw' | 'feed' | 'action'
+type SortOrder = 'desc' | 'asc'
+
+// 【DEV-only】卡片对照调试：把范围设成 ['HH:MM:SS', 'HH:MM:SS']
+// 限定只看这段时间的 raw → 单独研究某一卡片，不污染 UI
+// 提交前必须设回 null
+const DEV_TIME_RANGE: [string, string] | null = null
+
+// HH:MM:SS → 当天毫秒（用 items 中任意一条的本地日期作为基准日）
+function hhmmssToMs(hhmmss: string, items: TorrentCapture[]): number {
+  if (items.length === 0) return 0
+  const ref = new Date(items[0].eventTimeMs)
+  const [h, m, s] = hhmmss.split(':').map(Number)
+  ref.setHours(h, m, s, 0)
+  return ref.getTime()
+}
 
 // B 站 feed item 解析：从 contentDescription 聚合行抽出标题 / UP / 播放数 / 时长 / 弹幕
 // 格式（无障碍读屏文本，B 站会主动暴露给 a11y）：
@@ -59,6 +75,16 @@ interface BiliFeedItem {
 
 // 同时认半角 / 全角逗号（home feed 用半角，详情页相关推荐用全角）
 const FEED_PATTERN = /^(视频|竖版视频|专栏|会员购|动态|直播)[,，]/
+
+// 横幅广告 / 合作活动 banner 候选：a11y 抓到的【XXX】开头长文本
+// （feed item 用 FEED_PATTERN 识别，已被 parseBiliFeedItem 进 set 排除掉）
+function isBannerCandidate(t: string): boolean {
+  if (!t) return false
+  // 必须以 【 开头，至少含一个 】，且总长 > 10
+  if (!/^【[^】]+】/.test(t)) return false
+  if (t.length < 10) return false
+  return true
+}
 
 // 视频详情页主视频解析（与 home feed 相关推荐区分）
 // 关键：主视频卡的几个字段在整个详情页 a11y 树里都是唯一的指纹
@@ -328,7 +354,24 @@ export default function TorrentScreen() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('feed')
+  const [sortOrder, setSortOrder] = useState<SortOrder>('desc')
+  const [jumpTarget, setJumpTarget] = useState<number | null>(null)
+  const [highlightKey, setHighlightKey] = useState<string | null>(null)
+  const [helpOpen, setHelpOpen] = useState(false)
   const liveRef = useRef(true)
+
+  // 跨视图跳转：从动作行点 → 切到 feed 跳到对应卡片；从卡头点 → 切到 action 跳到对应行
+  const onCrossJump = useCallback((targetVm: ViewMode, ts: number) => {
+    setViewMode(targetVm)
+    // 切 viewMode 后下一帧 listItems 会重新计算，effect 监听 jumpTarget 触发 scroll
+    setTimeout(() => setJumpTarget(ts), 50)
+  }, [])
+
+  // 闪烁高亮目标（jumpTarget 不为空 → 滚动结束后高亮 1.6s）
+  const onJumpHighlight = useCallback((key: string) => {
+    setHighlightKey(key)
+    setTimeout(() => setHighlightKey(null), 1600)
+  }, [])
 
   const refresh = useCallback(async () => {
     try {
@@ -384,6 +427,9 @@ export default function TorrentScreen() {
               <Text style={styles.clearBtnText}>清空</Text>
             </Pressable>
           )}
+          <Pressable onPress={() => setHelpOpen(true)} style={styles.helpBtn}>
+            <Text style={styles.helpBtnText}>?</Text>
+          </Pressable>
         </View>
         {!a11yOn && (
           <Pressable
@@ -394,17 +440,25 @@ export default function TorrentScreen() {
           </Pressable>
         )}
         <View style={styles.modeRow}>
-          {(['feed', 'raw'] as ViewMode[]).map((m) => (
+          {(['feed', 'action', 'raw'] as ViewMode[]).map((m) => (
             <Pressable
               key={m}
               onPress={() => setViewMode(m)}
               style={[styles.modeChip, viewMode === m && styles.modeChipOn]}
             >
               <Text style={[styles.modeChipText, viewMode === m && styles.modeChipTextOn]}>
-                {m === 'feed' ? '还原卡片' : '原始时间线'}
+                {m === 'feed' ? '还原卡片' : m === 'action' ? '还原动作' : '原始时间线'}
               </Text>
             </Pressable>
           ))}
+          <Pressable
+            onPress={() => setSortOrder((s) => s === 'desc' ? 'asc' : 'desc')}
+            style={styles.sortBtn}
+          >
+            <Text style={styles.sortBtnText}>
+              {sortOrder === 'desc' ? '新→旧 ↓' : '旧→新 ↑'}
+            </Text>
+          </Pressable>
         </View>
       </View>
 
@@ -424,19 +478,60 @@ export default function TorrentScreen() {
         <RenderList
           items={items}
           viewMode={viewMode}
+          sortOrder={sortOrder}
           refreshing={refreshing}
           onRefresh={() => {
             setRefreshing(true)
             refresh()
           }}
+          jumpTarget={jumpTarget}
+          onJumpDone={(targetKey) => {
+            setJumpTarget(null)
+            if (targetKey) onJumpHighlight(targetKey)
+          }}
+          onCrossJump={onCrossJump}
+          highlightKey={highlightKey}
         />
       )}
+      <Modal visible={helpOpen} transparent animationType="fade" onRequestClose={() => setHelpOpen(false)}>
+        <Pressable style={styles.helpBackdrop} onPress={() => setHelpOpen(false)}>
+          <Pressable style={styles.helpCard} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.helpTitle}>洪流域 · 使用说明</Text>
+            <Text style={styles.helpSection}>三个视图</Text>
+            <Text style={styles.helpText}>
+              · <Text style={{fontWeight:'700'}}>还原卡片</Text>：把 a11y 抓到的文本聚合还原成 B 站界面卡（主页 / 视频播放 / 评论区）{'\n'}
+              · <Text style={{fontWeight:'700'}}>还原动作</Text>：识别用户操作链（开屏 → 主页 → 进视频 → 评论…），含时间范围 + 停留时长{'\n'}
+              · <Text style={{fontWeight:'700'}}>原始时间线</Text>：未加工的 a11y 文本快照
+            </Text>
+            <Text style={styles.helpSection}>互相跳转</Text>
+            <Text style={styles.helpText}>
+              · 点 <Text style={{fontWeight:'700'}}>卡片头</Text>（B 站主页/视频播放/评论区标题区）→ 切到对应动作行{'\n'}
+              · 点 <Text style={{fontWeight:'700'}}>动作行</Text>整行 → 切到对应卡片{'\n'}
+              · 跳转到的目标会高亮闪烁 1.6s
+            </Text>
+            <Text style={styles.helpSection}>排序</Text>
+            <Text style={styles.helpText}>
+              右上 "新→旧 ↓ / 旧→新 ↑" 按钮：三个视图共用；卡片内子项（视频 item / 评论 / raw 文本）也同步翻转
+            </Text>
+            <Text style={styles.helpSection}>清空</Text>
+            <Text style={styles.helpText}>
+              清掉本地 torrent_capture 表所有数据（不影响 perception 历史数据）
+            </Text>
+            <Pressable onPress={() => setHelpOpen(false)} style={styles.helpClose}>
+              <Text style={styles.helpCloseText}>知道了</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   )
 }
 
 // 列表 item 类型联合：FlatList 一次只渲染可见 + buffer，几万条不卡
 type SubGroup = { ts: number; items: BiliFeedItem[] }
+// 一个 home 段内出现过的视频卡（按 title 去重）；记录首末出现 + 次数
+// firstSeenRowId：保留 a11y 原始位置作排序锚点（同秒内 ts 相等会乱）
+type HomeFeedItem = BiliFeedItem & { firstSeenTs: number; lastSeenTs: number; firstSeenRowId: number; seenCount: number }
 interface CommentItem {
   rowId: number
   author: string | null
@@ -447,28 +542,70 @@ interface CommentItem {
   replyCount: string | null
 }
 type ListItem =
-  | { kind: 'home'; key: string; tsStart: number; tsEnd: number; subgroups: SubGroup[] }
+  | { kind: 'home'; key: string; tsStart: number; tsEnd: number; feedItems: HomeFeedItem[]; sweepCount: number }
   | { kind: 'detail'; key: string; tsStart: number; tsEnd: number; detail: BiliVideoDetail }
   | { kind: 'comments'; key: string; tsStart: number; tsEnd: number; comments: CommentItem[]; totalCount: number | null }
+  | { kind: 'actionLine'; key: string; ts: number; endTs?: number; act: BiliActionKind; title?: string; upName?: string; meta?: string }
   | { kind: 'rawSnapshot'; key: string; ts: number; packageName: string; windowClass: string; texts: { rowId: number; text: string; sourceClass: string }[] }
 
-function buildFeedListItems(items: TorrentCapture[]): ListItem[] {
-  // 1a) 按秒分组 home feed items
-  const homeSubs: SubGroup[] = []
+// "还原动作" — 从 raw 时间序列识别用户操作
+type BiliActionKind =
+  | 'splash'         // 开屏广告（出现 "跳过 N" 倒计时）
+  | 'home'           // B 站主页（MainActivityV2 + feed item 出现）
+  | 'video_intro'    // 进入视频简介（新 UP 行 + 标题）
+  | 'fullscreen'     // 进入全屏播放（windowClass = ViewGroup + "倍速" 控件）
+  | 'comments'       // 评论 tab（"热门评论" 出现）
+  | 'comment_detail' // 评论详情（"评论详情" 出现）
+
+function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
+  // items 从 native 来是 ORDER BY id DESC（新→旧），按时间序处理前先排成 ASC
+  const items = [...itemsIn].sort((a, b) => a.rowId - b.rowId)
+  // pre-pass：收 feed item title 集合，避免 banner 识别误抓 feed item 的标题独立行
+  const feedTitlesInHome = new Set<string>()
   for (const c of items) {
     if (c.packageName !== 'tv.danmaku.bili') continue
     if (c.captureType !== 'a11y-view') continue
-    const parsed = parseBiliFeedItem(c.rowId, c.eventTimeMs, c.text)
-    if (!parsed) continue
-    if (parsed.kind !== '视频' && parsed.kind !== '竖版视频' && parsed.kind !== '横幅视频') continue
+    const p = parseBiliFeedItem(c.rowId, c.eventTimeMs, c.text)
+    if (p) feedTitlesInHome.add(p.title)
+  }
+  // 1a) 按秒分组 home feed items
+  const homeSubs: SubGroup[] = []
+  const pushHomeItem = (c: TorrentCapture, item: BiliFeedItem) => {
     const sec = Math.floor(c.eventTimeMs / 1000)
     const lastSub = homeSubs[homeSubs.length - 1]
     if (lastSub && Math.floor(lastSub.ts / 1000) === sec) {
-      if (!lastSub.items.some((x) => x.title === parsed.title)) {
-        lastSub.items.push(parsed)
+      if (!lastSub.items.some((x) => x.title === item.title)) {
+        lastSub.items.push(item)
       }
     } else {
-      homeSubs.push({ ts: c.eventTimeMs, items: [parsed] })
+      homeSubs.push({ ts: c.eventTimeMs, items: [item] })
+    }
+  }
+  // home surface 严格过滤：windowClass 必须是 B 站主页相关
+  // （MainActivityV2 / 主页 ScrollView），排除 UnitedBiz / Story 等 detail 页
+  // detail 页相关推荐也是 '视频,XXX,UP主xxx,...' 格式，不过滤会被误识为 home
+  const isHomeSurface = (wc: string): boolean => {
+    if (wc.includes('UnitedBiz') || wc.includes('StoryVideo')) return false
+    // ViewGroup 是 detail 内部 fullscreen/评论的 windowClass，不算 home
+    return wc.includes('MainActivityV2') || wc.endsWith('ScrollView')
+      || wc === 'android.widget.FrameLayout'  // splash 期开屏
+  }
+  for (const c of items) {
+    if (c.packageName !== 'tv.danmaku.bili') continue
+    if (c.captureType !== 'a11y-view') continue
+    if (!isHomeSurface(c.windowClass)) continue
+    const parsed = parseBiliFeedItem(c.rowId, c.eventTimeMs, c.text)
+    if (parsed && (parsed.kind === '视频' || parsed.kind === '竖版视频' || parsed.kind === '横幅视频')) {
+      pushHomeItem(c, parsed)
+      continue
+    }
+    const t = c.text.trim()
+    if (isBannerCandidate(t) && !feedTitlesInHome.has(t)) {
+      pushHomeItem(c, {
+        rowId: c.rowId, ts: c.eventTimeMs, kind: '横幅视频',
+        title: t, upName: null, views: null, danmaku: null,
+        duration: null, followed: false, raw: t,
+      })
     }
   }
   // 1b) 视频详情页 buckets
@@ -498,14 +635,13 @@ function buildFeedListItems(items: TorrentCapture[]): ListItem[] {
       })
     }
   }
-  // 评论也按 < 60s 合并（评论内容用 author+body 去重）
-  commentItems.sort((a, b) => (b.kind === 'comments' && a.kind === 'comments' ? b.tsEnd - a.tsEnd : 0))
+  // 评论 ASC + 相邻 < 60s 合并（合并时按 body 去重）
+  commentItems.sort((a, b) => (a.kind === 'comments' && b.kind === 'comments' ? a.tsStart - b.tsStart : 0))
   const mergedCommentItems: ListItem[] = []
   for (const ci of commentItems) {
     if (ci.kind !== 'comments') continue
     const last = mergedCommentItems[mergedCommentItems.length - 1]
-    if (last && last.kind === 'comments' && last.tsStart - ci.tsEnd < 60_000) {
-      // 合并 comments（按 body 去重）
+    if (last && last.kind === 'comments' && ci.tsStart - last.tsEnd < 60_000) {
       const seen = new Set(last.comments.map((c) => c.body))
       for (const c of ci.comments) {
         if (!seen.has(c.body)) {
@@ -513,38 +649,63 @@ function buildFeedListItems(items: TorrentCapture[]): ListItem[] {
           seen.add(c.body)
         }
       }
-      last.tsStart = Math.min(last.tsStart, ci.tsStart)
+      last.tsEnd = Math.max(last.tsEnd, ci.tsEnd)
     } else {
       mergedCommentItems.push(ci)
     }
   }
-  // 2) home 相邻 < 60s 合并
+  // 2) home 相邻 < 60s = 同一段浏览：合并 subgroups 内 items
+  //    按 title 去重 → 一个 home 段 = 一张大卡 + 范围内所有不重复视频
+  //    每张视频 item 记 firstSeen / lastSeen / seenCount（刷过几次）
   const MERGE_WINDOW_MS = 60 * 1000
-  const homeItems: ListItem[] = []
+  type HomeAcc = { tsStart: number; tsEnd: number; map: Map<string, HomeFeedItem>; sweeps: number }
+  const homeAccs: HomeAcc[] = []
   for (const sg of homeSubs) {
     if (sg.items.length === 0) continue
-    const last = homeItems[homeItems.length - 1]
-    if (last && last.kind === 'home' && last.tsStart - sg.ts < MERGE_WINDOW_MS) {
-      last.subgroups.push(sg)
-      last.tsStart = Math.min(last.tsStart, sg.ts)
+    const last = homeAccs[homeAccs.length - 1]
+    let acc: HomeAcc
+    if (last && sg.ts - last.tsEnd < MERGE_WINDOW_MS) {
+      acc = last
+      acc.tsEnd = Math.max(acc.tsEnd, sg.ts)
+      acc.sweeps += 1
     } else {
-      homeItems.push({ kind: 'home', key: `h-${sg.ts}`, tsStart: sg.ts, tsEnd: sg.ts, subgroups: [sg] })
+      acc = { tsStart: sg.ts, tsEnd: sg.ts, map: new Map(), sweeps: 1 }
+      homeAccs.push(acc)
+    }
+    for (const it of sg.items) {
+      const existing = acc.map.get(it.title)
+      if (existing) {
+        existing.lastSeenTs = sg.ts
+        existing.seenCount += 1
+      } else {
+        acc.map.set(it.title, { ...it, firstSeenTs: sg.ts, lastSeenTs: sg.ts, firstSeenRowId: it.rowId, seenCount: 1 })
+      }
     }
   }
-  // detail 同 title + < 60s 合并
-  detailItems.sort((a, b) => (b.kind === 'detail' && a.kind === 'detail' ? b.tsEnd - a.tsEnd : 0))
+  const homeItems: ListItem[] = homeAccs.map((a) => ({
+    kind: 'home',
+    key: `h-${a.tsStart}`,
+    tsStart: a.tsStart,
+    tsEnd: a.tsEnd,
+    // 按 firstSeenRowId ASC 排 — 保留 a11y 首帧的原始位置（banner 在最顶
+    // 因为它 rowId 最小；feed 视频按真实自顶向下顺序）
+    feedItems: Array.from(a.map.values()).sort((x, y) => x.firstSeenRowId - y.firstSeenRowId),
+    sweepCount: a.sweeps,
+  }))
+  // detail ASC + 相邻同 title + < 60s 才合并（不同视频不合）
+  detailItems.sort((a, b) => (a.kind === 'detail' && b.kind === 'detail' ? a.tsStart - b.tsStart : 0))
   const mergedDetailItems: ListItem[] = []
   for (const ds of detailItems) {
     if (ds.kind !== 'detail') continue
     const last = mergedDetailItems[mergedDetailItems.length - 1]
     if (last && last.kind === 'detail' && last.detail.title === ds.detail.title
-      && last.tsStart - ds.tsEnd < MERGE_WINDOW_MS) {
-      last.tsStart = Math.min(last.tsStart, ds.tsStart)
+      && ds.tsStart - last.tsEnd < MERGE_WINDOW_MS) {
+      last.tsEnd = Math.max(last.tsEnd, ds.tsEnd)
     } else {
       mergedDetailItems.push(ds)
     }
   }
-  // 3) 合并到统一时间线
+  // 3) 合并到统一时间线（默认倒序：新→旧；UI 可切换正序）
   return [...homeItems, ...mergedDetailItems, ...mergedCommentItems].sort((a, b) => {
     const at = a.kind === 'home' || a.kind === 'detail' || a.kind === 'comments' ? a.tsEnd : 0
     const bt = b.kind === 'home' || b.kind === 'detail' || b.kind === 'comments' ? b.tsEnd : 0
@@ -552,7 +713,138 @@ function buildFeedListItems(items: TorrentCapture[]): ListItem[] {
   })
 }
 
-function buildRawListItems(items: TorrentCapture[]): ListItem[] {
+/**
+ * "还原动作" — 从 raw 时间序列重建用户操作链
+ * 识别信号：
+ *  - "跳过 N" → splash
+ *  - windowClass MainActivityV2 + feed item raw → home
+ *  - 新出现的 `up主XXX，N粉丝，M视频` UP 行 → video_intro（标题取邻近 "互动视频/视频, XXX"）
+ *  - "倍速" + windowClass ViewGroup → fullscreen（B 站全屏播放器特征）
+ *  - "热门评论" → comments
+ *  - "评论详情" → comment_detail
+ * 合并：同 kind 在 3s 内合成一条；记录 endTs
+ */
+function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
+  // items 默认 DESC，按时间序识别动作必须先排 ASC
+  const items = [...itemsIn].sort((a, b) => a.rowId - b.rowId)
+
+  // 信号推断：把单条 raw → 动作 kind + 上下文
+  // 返回 null 表示该 raw 不携带动作信号（如标题独立行、空文本等）
+  type Sig = { kind: BiliActionKind; title?: string; upName?: string; meta?: string }
+  const inferSig = (c: TorrentCapture, ctx: { upName: string | null; title: string | null }): Sig | null => {
+    const t = c.text.trim()
+    if (!t) return null
+    const wc = c.windowClass
+    // splash 倒计时
+    const splashM = t.match(/^跳过\s*(\d+)$/)
+    if (splashM) return { kind: 'splash', meta: `跳过 ${splashM[1]}` }
+    // 全屏：ViewGroup + 倍速控件
+    if (wc === 'android.view.ViewGroup' && t === '倍速') {
+      return { kind: 'fullscreen', title: ctx.title ?? undefined, upName: ctx.upName ?? undefined }
+    }
+    // 评论详情
+    if (t === '评论详情') return { kind: 'comment_detail', title: ctx.title ?? undefined, upName: ctx.upName ?? undefined }
+    // 评论 tab
+    if (t === '热门评论') return { kind: 'comments', title: ctx.title ?? undefined, upName: ctx.upName ?? undefined }
+    // 视频详情：UP 行（主视频指纹）
+    const upM = t.match(/^up主(.+?)[,，](.+?)粉丝[,，](\d+)视频/)
+    if (upM) return { kind: 'video_intro', upName: upM[1].trim() }
+    // 主页：home windowClass + feed item / banner
+    if (wc.includes('MainActivityV2') || wc.endsWith('ScrollView')) {
+      if (FEED_PATTERN.test(t) || isBannerCandidate(t)) return { kind: 'home' }
+    }
+    return null
+  }
+
+  // Pass 1：先扫所有 raw，回填 ctx.title + 收所有 signal events
+  type EvSig = { ts: number; rowId: number; sig: { kind: BiliActionKind; title?: string; upName?: string } }
+  const events: EvSig[] = []
+  const ctx = { upName: null as string | null, title: null as string | null }
+  for (const c of items) {
+    if (c.packageName !== 'tv.danmaku.bili') continue
+    // 标题行 → 更新 ctx（不入 events）
+    const titleM = c.text.trim().match(/^(?:互动视频|视频|竖版视频), ([^,]+)$/)
+    if (titleM) {
+      ctx.title = titleM[1].trim()
+      continue
+    }
+    const sig = inferSig(c, ctx)
+    if (!sig) continue
+    if (sig.kind === 'video_intro' && sig.upName) {
+      if (sig.upName !== ctx.upName) ctx.title = null
+      ctx.upName = sig.upName
+    }
+    events.push({ ts: c.eventTimeMs, rowId: c.rowId, sig })
+  }
+
+  type Cur = { startTs: number; endTs: number; kind: BiliActionKind; title?: string; upName?: string; meta?: string }
+  const acts: Cur[] = []
+
+  // Pass 2：splash 段独立识别（splash 期间 home feed 已 layout，但 splash 才是主体）
+  const splashEvs = events.filter((e) => e.sig.kind === 'splash')
+  const splashEnd = splashEvs.length > 0 ? splashEvs[splashEvs.length - 1].ts : 0
+  if (splashEvs.length > 0) {
+    acts.push({
+      startTs: splashEvs[0].ts,
+      endTs: splashEnd,
+      kind: 'splash',
+    })
+  }
+
+  // Pass 3：剩余非 splash signals 走状态机
+  let cur: Cur | null = null
+  for (const e of events) {
+    if (e.sig.kind === 'splash') continue
+    // splash 期间的 home 信号丢弃（splash 段已覆盖）
+    if (e.sig.kind === 'home' && e.ts <= splashEnd) continue
+    const sig = e.sig
+    if (cur) {
+      // detail 页内部 tab/层（fullscreen / comments / comment_detail）期间，
+      // 同 UP 主的 video_intro 信号属于"detail tree 还在被抓"，吸收
+      const DETAIL_INNER: BiliActionKind[] = ['fullscreen', 'comments', 'comment_detail']
+      if (DETAIL_INNER.includes(cur.kind) && sig.kind === 'video_intro'
+          && sig.upName && sig.upName === cur.upName) {
+        cur.endTs = e.ts
+        continue
+      }
+      const sameKind = cur.kind === sig.kind
+      const sameVideo = sig.kind !== 'video_intro' || !sig.upName || sig.upName === cur.upName
+      if (sameKind && sameVideo) {
+        cur.endTs = e.ts
+        if (sig.title && !cur.title) cur.title = sig.title
+        if (sig.upName && !cur.upName) cur.upName = sig.upName
+        continue
+      }
+      acts.push(cur)
+    }
+    cur = {
+      startTs: e.ts,
+      endTs: e.ts,
+      kind: sig.kind,
+      title: sig.title,
+      upName: sig.upName,
+    }
+  }
+  if (cur) acts.push(cur)
+  acts.sort((a, b) => a.startTs - b.startTs)
+
+  // 转 ListItem（默认 desc：新→旧；UI 可切 asc）
+  return acts.map((a, i) => ({
+    kind: 'actionLine' as const,
+    key: `act-${a.startTs}-${i}`,
+    ts: a.startTs,
+    endTs: a.endTs,
+    act: a.kind,
+    title: a.title,
+    upName: a.upName,
+    meta: a.meta,
+  })).reverse()
+}
+
+function buildRawListItems(itemsIn: TorrentCapture[]): ListItem[] {
+  // items 默认 DESC，但要按"同秒同窗 → 同 group"分组必须按 rowId ASC 处理，
+  // 让 group.texts[0] 是该秒最早 = a11y 树最顶端 = 视觉自顶向下顺序
+  const items = [...itemsIn].sort((a, b) => a.rowId - b.rowId)
   type Group = ListItem & { kind: 'rawSnapshot' }
   const groups: Group[] = []
   for (const c of items) {
@@ -576,20 +868,36 @@ function buildRawListItems(items: TorrentCapture[]): ListItem[] {
       })
     }
   }
-  return groups
+  return groups.reverse()  // 默认 desc，跟 feed/action 语义一致；UI 可切 asc
 }
 
 function RenderList({
-  items, viewMode, refreshing, onRefresh,
+  items, viewMode, sortOrder, refreshing, onRefresh, jumpTarget, onJumpDone, onCrossJump, highlightKey,
 }: {
   items: TorrentCapture[]
   viewMode: ViewMode
+  sortOrder: SortOrder
   refreshing: boolean
   onRefresh: () => void
+  jumpTarget: number | null
+  onJumpDone: (targetKey: string | null) => void
+  onCrossJump: (targetViewMode: ViewMode, ts: number) => void
+  highlightKey: string | null
 }) {
+  // 【DEV-only】按时间戳范围过滤 raw items（卡片对照调试）
+  const filteredItems = useMemo(() => {
+    if (!DEV_TIME_RANGE) return items
+    const [from, to] = DEV_TIME_RANGE.map((t) => hhmmssToMs(t, items))
+    return items.filter((c) => c.eventTimeMs >= from && c.eventTimeMs <= to)
+  }, [items])
   const listItems = useMemo(() => {
-    return viewMode === 'feed' ? buildFeedListItems(items) : buildRawListItems(items)
-  }, [items, viewMode])
+    let base: ListItem[]
+    if (viewMode === 'feed') base = buildFeedListItems(filteredItems)
+    else if (viewMode === 'action') base = buildActionListItems(filteredItems)
+    else base = buildRawListItems(filteredItems)
+    // build 函数们默认 desc（新→旧）；切 asc 时整体 reverse
+    return sortOrder === 'asc' ? [...base].reverse() : base
+  }, [filteredItems, viewMode, sortOrder])
 
   if (listItems.length === 0) {
     return (
@@ -602,11 +910,43 @@ function RenderList({
     )
   }
 
+  const listRef = useRef<FlatList<ListItem>>(null)
+  // 跳转：找到 ts 最近的 item index 并 scrollToIndex
+  useEffect(() => {
+    if (jumpTarget == null) return
+    const getTs = (it: ListItem) => {
+      if (it.kind === 'home' || it.kind === 'detail' || it.kind === 'comments') return it.tsStart
+      if (it.kind === 'actionLine') return it.ts
+      return it.ts
+    }
+    let bestIdx = -1, bestDelta = Infinity
+    for (let i = 0; i < listItems.length; i++) {
+      const d = Math.abs(getTs(listItems[i]) - jumpTarget)
+      if (d < bestDelta) { bestDelta = d; bestIdx = i }
+    }
+    if (bestIdx >= 0) {
+      try {
+        listRef.current?.scrollToIndex({ index: bestIdx, animated: true, viewPosition: 0.1 })
+      } catch {}
+      onJumpDone(listItems[bestIdx].key)
+    } else {
+      onJumpDone(null)
+    }
+  }, [jumpTarget, listItems, onJumpDone])
+
   return (
     <FlatList
+      ref={listRef}
       data={listItems}
       keyExtractor={(it) => it.key}
-      renderItem={({ item }) => <ListItemView item={item} />}
+      renderItem={({ item }) => (
+        <ListItemView
+          item={item}
+          sortOrder={sortOrder}
+          onCrossJump={onCrossJump}
+          highlighted={highlightKey === item.key}
+        />
+      )}
       style={styles.list}
       contentContainerStyle={styles.listContent}
       refreshControl={
@@ -616,140 +956,143 @@ function RenderList({
       maxToRenderPerBatch={6}
       windowSize={11}
       removeClippedSubviews
+      onScrollToIndexFailed={(info) => {
+        // 列表还没渲染到目标位置，等一帧再尝试
+        setTimeout(() => {
+          listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: true })
+        }, 100)
+      }}
     />
   )
 }
 
-function ListItemView({ item }: { item: ListItem }) {
+function ListItemView({ item, sortOrder, onCrossJump, highlighted }: { item: ListItem; sortOrder: SortOrder; onCrossJump: (vm: ViewMode, ts: number) => void; highlighted: boolean }) {
   if (item.kind === 'home') {
-    return <HomeSnapView item={item} />
+    return <HomeSnapView item={item} sortOrder={sortOrder} onCrossJump={onCrossJump} highlighted={highlighted} />
   }
   if (item.kind === 'detail') {
-    return <DetailSnapView item={item} />
+    return <DetailSnapView item={item} onCrossJump={onCrossJump} highlighted={highlighted} />
   }
   if (item.kind === 'comments') {
-    return <CommentsSnapView item={item} />
+    return <CommentsSnapView item={item} sortOrder={sortOrder} onCrossJump={onCrossJump} highlighted={highlighted} />
   }
-  return <RawSnapshotView item={item} />
+  if (item.kind === 'actionLine') {
+    return <ActionLineView item={item} onCrossJump={onCrossJump} highlighted={highlighted} />
+  }
+  return <RawSnapshotView item={item} sortOrder={sortOrder} />
 }
 
-function HomeSnapView({ item: s }: { item: Extract<ListItem, { kind: 'home' }> }) {
-  const totalItems = s.subgroups.reduce((n, g) => n + g.items.length, 0)
+function HomeSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'home' }>; sortOrder: SortOrder; onCrossJump: (vm: ViewMode, ts: number) => void; highlighted: boolean }) {
+  // 卡头点击 → 跳到对应动作
+  const onHeadPress = () => onCrossJump('action', s.tsStart)
+  // feedItems 默认按 firstSeenTs ASC（视觉自顶向下）；desc 时反转
+  const orderedItems = sortOrder === 'desc' ? [...s.feedItems].reverse() : s.feedItems
+  // 拆行：横幅独占；视频/竖版视频 2 列瀑布流
+  type Row = { kind: 'banner'; item: HomeFeedItem } | { kind: 'pair'; items: HomeFeedItem[] }
+  const rows: Row[] = []
+  let pairBuf: HomeFeedItem[] = []
+  const flushPair = () => {
+    if (pairBuf.length > 0) { rows.push({ kind: 'pair', items: pairBuf }); pairBuf = [] }
+  }
+  for (const it of orderedItems) {
+    if (it.kind === '横幅视频') { flushPair(); rows.push({ kind: 'banner', item: it }) }
+    else { pairBuf.push(it); if (pairBuf.length === 2) flushPair() }
+  }
+  flushPair()
   const tsLabel = s.tsStart === s.tsEnd
     ? fmtTime(s.tsEnd)
     : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
+  const dur = Math.round((s.tsEnd - s.tsStart) / 1000)
   return (
-                  <View style={styles.snapCard}>
-                    <View style={styles.snapCardHead}>
-                      <View style={styles.snapCardAccentBar} />
-                      <View style={styles.snapCardHeadText}>
-                        <Text style={styles.snapCardTitle}>B 站主页</Text>
-                        <Text style={styles.snapCardSubtitle}>
-                          {tsLabel} · {totalItems} 条视频
-                          {s.subgroups.length > 1 ? ` · 滑动 ${s.subgroups.length} 屏` : ''}
-                        </Text>
-                      </View>
-                    </View>
-                    <View style={styles.snapCardBody}>
-                      {s.subgroups.map((g, gi) => {
-                        // B 站首页布局：横幅视频单列铺满；视频/竖版视频 2 列瀑布流
-                        // 把 items 按 kind 切成行：横幅独占一行，其他俩俩成对
-                        type Row =
-                          | { kind: 'banner'; item: BiliFeedItem }
-                          | { kind: 'pair'; items: BiliFeedItem[] }
-                        const rows: Row[] = []
-                        let pairBuf: BiliFeedItem[] = []
-                        const flushPair = () => {
-                          if (pairBuf.length > 0) {
-                            rows.push({ kind: 'pair', items: pairBuf })
-                            pairBuf = []
-                          }
-                        }
-                        for (const it of g.items) {
-                          if (it.kind === '横幅视频') {
-                            flushPair()
-                            rows.push({ kind: 'banner', item: it })
-                          } else {
-                            pairBuf.push(it)
-                            if (pairBuf.length === 2) flushPair()
-                          }
-                        }
-                        flushPair()
-                        return (
-                          <View key={g.ts} style={[styles.subGroupBlock, gi > 0 && styles.subGroupBlockGap]}>
-                            {s.subgroups.length > 1 && (
-                              <View style={styles.subGroupHead}>
-                                <View style={styles.subGroupDot} />
-                                <Text style={styles.subGroupTime}>{fmtTime(g.ts)}</Text>
-                                <Text style={styles.subGroupCount}>{g.items.length} 条</Text>
-                              </View>
-                            )}
-                            {rows.map((r, ri) => {
-                              if (r.kind === 'banner') {
-                                const f = r.item
-                                return (
-                                  <View key={`b${ri}-${f.rowId}`} style={styles.gridBanner}>
-                                    <View style={styles.feedKindRow}>
-                                      <Text style={styles.feedKindTag}>{f.kind}</Text>
-                                    </View>
-                                    <Text style={styles.feedTitle}>{f.title}</Text>
-                                    <View style={styles.feedMeta}>
-                                      {f.duration && <Text style={styles.feedMetaText}>{f.duration}</Text>}
-                                      {f.views && <Text style={styles.feedDot}>·</Text>}
-                                      {f.views && <Text style={styles.feedMetaText}>{f.views} 播放</Text>}
-                                    </View>
-                                  </View>
-                                )
-                              }
-                              return (
-                                <View key={`p${ri}`} style={styles.gridRow}>
-                                  {r.items.map((f) => (
-                                    <View key={f.rowId} style={styles.gridCell}>
-                                      <View style={styles.feedKindRow}>
-                                        <Text style={styles.feedKindTag}>{f.kind}</Text>
-                                        {f.followed && <Text style={styles.feedFollowedTag}>已关注</Text>}
-                                      </View>
-                                      <Text style={styles.feedTitleCompact} numberOfLines={2}>{f.title}</Text>
-                                      <Text style={styles.feedUpCompact} numberOfLines={1}>
-                                        {f.upName ? `@${f.upName}` : ''}
-                                      </Text>
-                                      <View style={styles.feedMetaCompact}>
-                                        {f.duration && <Text style={styles.feedMetaTextSm}>{f.duration}</Text>}
-                                        {f.views && <Text style={styles.feedMetaTextSm}>{f.views}播</Text>}
-                                        {f.danmaku && <Text style={styles.feedMetaTextSm}>{f.danmaku}弹</Text>}
-                                      </View>
-                                    </View>
-                                  ))}
-                                  {/* 落单时占位让左侧不撑满 */}
-                                  {r.items.length === 1 && <View style={styles.gridCell} />}
-                                </View>
-                              )
-                            })}
-                          </View>
-                        )
-                      })}
-                    </View>
+    <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
+      <Pressable onPress={onHeadPress}>
+      <View style={styles.snapCardHead}>
+        <View style={styles.snapCardAccentBar} />
+        <View style={styles.snapCardHeadText}>
+          <View style={styles.snapCardTitleRow}>
+            <Text style={styles.snapCardTitle}>B 站主页</Text>
+            <Text style={styles.jumpHint}>→ 动作</Text>
+          </View>
+          <Text style={styles.snapCardSubtitle}>
+            {tsLabel}{dur > 0 ? ` · 停留 ${dur}s` : ''} · 看到 {s.feedItems.length} 条视频
+            {s.sweepCount > 1 ? ` · 刷 ${s.sweepCount} 次` : ''}
+          </Text>
+        </View>
+      </View>
+      </Pressable>
+      <View style={styles.snapCardBody}>
+        {rows.map((r, ri) => {
+          if (r.kind === 'banner') {
+            const f = r.item
+            return (
+              <View key={`b${ri}-${f.rowId}`} style={styles.gridBanner}>
+                <View style={styles.feedKindRow}>
+                  <Text style={styles.feedKindTag}>{f.kind}</Text>
+                  {f.seenCount > 1 && <Text style={styles.feedSeenCount}>×{f.seenCount}</Text>}
+                </View>
+                <Text style={styles.feedTitle}>{f.title}</Text>
+                <View style={styles.feedMeta}>
+                  {f.duration && <Text style={styles.feedMetaText}>{f.duration}</Text>}
+                  {f.views && <Text style={styles.feedDot}>·</Text>}
+                  {f.views && <Text style={styles.feedMetaText}>{f.views} 播放</Text>}
+                </View>
+              </View>
+            )
+          }
+          return (
+            <View key={`p${ri}`} style={styles.gridRow}>
+              {r.items.map((f) => (
+                <View key={f.rowId} style={styles.gridCell}>
+                  <View style={styles.feedKindRow}>
+                    <Text style={styles.feedKindTag}>{f.kind}</Text>
+                    {f.seenCount > 1 && <Text style={styles.feedSeenCount}>×{f.seenCount}</Text>}
                   </View>
+                  <Text style={styles.feedTitleCompact} numberOfLines={2}>{f.title}</Text>
+                  <View style={styles.feedUpRowCompact}>
+                    {f.followed && <Text style={styles.followedCheck}>✓ 已关注</Text>}
+                    {f.upName && <Text style={styles.feedUpName} numberOfLines={1}>{f.upName}</Text>}
+                  </View>
+                  <View style={styles.feedMetaCompact}>
+                    {f.duration && <Text style={styles.feedMetaTextSm}>{f.duration}</Text>}
+                    {f.views && <Text style={styles.feedMetaTextSm}>{f.views}播</Text>}
+                    {f.danmaku && <Text style={styles.feedMetaTextSm}>{f.danmaku}弹</Text>}
+                  </View>
+                </View>
+              ))}
+              {r.items.length === 1 && <View style={styles.gridCell} />}
+            </View>
+          )
+        })}
+      </View>
+    </View>
   )
 }
 
-function DetailSnapView({ item: s }: { item: Extract<ListItem, { kind: 'detail' }> }) {
+function DetailSnapView({ item: s, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'detail' }>; onCrossJump: (vm: ViewMode, ts: number) => void; highlighted: boolean }) {
+  const onHeadPress = () => onCrossJump('action', s.tsStart)
+  // 相关推荐目前按 a11y 抓取顺序，跟时间顺序无关 — 不跟 sortOrder 翻
+  // 评论数用 d.related 自身；主视频信息没有时间维度
   const d = s.detail
   const tsLabel = s.tsStart === s.tsEnd
     ? fmtTime(s.tsEnd)
     : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
   return (
-    <View style={styles.snapCard}>
+    <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
+      <Pressable onPress={onHeadPress}>
       <View style={[styles.snapCardHead, styles.snapCardHeadDetail]}>
         <View style={[styles.snapCardAccentBar, { backgroundColor: '#00AEEC' }]} />
         <View style={styles.snapCardHeadText}>
-          <Text style={styles.snapCardTitle}>视频播放界面</Text>
+          <View style={styles.snapCardTitleRow}>
+            <Text style={styles.snapCardTitle}>视频播放界面</Text>
+            <Text style={styles.jumpHint}>→ 动作</Text>
+          </View>
           <Text style={styles.snapCardSubtitle}>
             {tsLabel} · 在看
             {d.related.length > 0 ? ` · 相关推荐 ${d.related.length} 条` : ''}
           </Text>
         </View>
       </View>
+      </Pressable>
       <View style={styles.snapCardBody}>
         {/* 主视频 */}
         <View style={styles.detailMainBlock}>
@@ -818,24 +1161,32 @@ function DetailSnapView({ item: s }: { item: Extract<ListItem, { kind: 'detail' 
 
 const COMMENTS_ACCENT = '#FBB04C'
 
-function CommentsSnapView({ item: s }: { item: Extract<ListItem, { kind: 'comments' }> }) {
+function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'comments' }>; sortOrder: SortOrder; onCrossJump: (vm: ViewMode, ts: number) => void; highlighted: boolean }) {
+  const onHeadPress = () => onCrossJump('action', s.tsStart)
+  // 评论默认按 raw 出现顺序（视觉自顶向下）；desc 时反转
+  const comments: CommentItem[] = sortOrder === 'desc' ? [...s.comments].reverse() : s.comments
   const tsLabel = s.tsStart === s.tsEnd
     ? fmtTime(s.tsEnd)
     : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
   return (
-    <View style={styles.snapCard}>
+    <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
+      <Pressable onPress={onHeadPress}>
       <View style={[styles.snapCardHead, { backgroundColor: alpha(COMMENTS_ACCENT, 0.08), borderBottomColor: alpha(COMMENTS_ACCENT, 0.2) }]}>
         <View style={[styles.snapCardAccentBar, { backgroundColor: COMMENTS_ACCENT }]} />
         <View style={styles.snapCardHeadText}>
-          <Text style={styles.snapCardTitle}>评论区</Text>
+          <View style={styles.snapCardTitleRow}>
+            <Text style={styles.snapCardTitle}>评论区</Text>
+            <Text style={styles.jumpHint}>→ 动作</Text>
+          </View>
           <Text style={styles.snapCardSubtitle}>
-            {tsLabel} · 看到 {s.comments.length} 条评论
+            {tsLabel} · 看到 {comments.length} 条评论
           </Text>
         </View>
       </View>
+      </Pressable>
       <View style={styles.snapCardBody}>
-        {s.comments.map((c, i) => (
-          <View key={`${c.rowId}-${i}`} style={[styles.commentItem, i === s.comments.length - 1 && { borderBottomWidth: 0, marginBottom: 0, paddingBottom: 0 }]}>
+        {comments.map((c, i) => (
+          <View key={`${c.rowId}-${i}`} style={[styles.commentItem, i === comments.length - 1 && { borderBottomWidth: 0, marginBottom: 0, paddingBottom: 0 }]}>
             <View style={styles.commentHead}>
               {c.author && <Text style={styles.commentAuthor}>{c.author}</Text>}
               {c.badges.map((b, bi) => (
@@ -857,8 +1208,58 @@ function CommentsSnapView({ item: s }: { item: Extract<ListItem, { kind: 'commen
   )
 }
 
-function RawSnapshotView({ item: g }: { item: Extract<ListItem, { kind: 'rawSnapshot' }> }) {
+// 哪些动作有对应卡片可跳：home → home 卡 / video_intro → detail 卡 / comments, comment_detail → comments 卡
+const ACTION_HAS_CARD: Record<BiliActionKind, boolean> = {
+  splash: false, home: true, video_intro: true, fullscreen: false,
+  comments: true, comment_detail: true,
+}
+
+function ActionLineView({ item: a, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'actionLine' }>; onCrossJump: (vm: ViewMode, ts: number) => void; highlighted: boolean }) {
+  const cfg = ACTION_CFG[a.act]
+  const lasted = a.endTs ? Math.round((a.endTs - a.ts) / 1000) : 0
+  const timeRange = lasted >= 1
+    ? `${fmtTime(a.ts)} → ${fmtTime(a.endTs!)}`
+    : fmtTime(a.ts)
+  const canJump = ACTION_HAS_CARD[a.act]
+  return (
+    <Pressable
+      onPress={canJump ? () => onCrossJump('feed', a.ts) : undefined}
+      disabled={!canJump}
+      style={[styles.actionRow, highlighted && styles.actionRowHighlight]}
+    >
+      <View style={[styles.actionDot, { backgroundColor: cfg.color }]} />
+      <View style={styles.actionBody}>
+        <View style={styles.actionHead}>
+          <Text style={[styles.actionKind, { color: cfg.color }]}>{cfg.label}</Text>
+          {canJump && <Text style={styles.jumpHint}>→ 卡片</Text>}
+          {lasted >= 1 && <Text style={styles.actionLasted}>停留 {lasted}s</Text>}
+        </View>
+        <Text style={styles.actionTime}>{timeRange}</Text>
+        {(a.title || a.upName || a.meta) && (
+          <Text style={styles.actionDetail} numberOfLines={2}>
+            {a.title ? `《${a.title}》` : ''}
+            {a.upName ? ` @${a.upName}` : ''}
+            {a.meta ? `  ${a.meta}` : ''}
+          </Text>
+        )}
+      </View>
+    </Pressable>
+  )
+}
+
+const ACTION_CFG: Record<BiliActionKind, { label: string; color: string }> = {
+  splash:         { label: '开屏广告',     color: '#9CA3AF' },
+  home:           { label: '进入主页',     color: '#FB7299' },
+  video_intro:    { label: '进入视频简介', color: '#00AEEC' },
+  fullscreen:     { label: '进入全屏播放', color: '#6366F1' },
+  comments:       { label: '进入评论',     color: '#FBB04C' },
+  comment_detail: { label: '进入评论详情', color: '#F59E0B' },
+}
+
+function RawSnapshotView({ item: g, sortOrder }: { item: Extract<ListItem, { kind: 'rawSnapshot' }>; sortOrder: SortOrder }) {
   const winShort = g.windowClass ? g.windowClass.split('.').pop() : ''
+  // raw 文本按 rowId 顺序（自顶向下）；desc 反转
+  const texts = sortOrder === 'desc' ? [...g.texts].reverse() : g.texts
   return (
     <View style={styles.snapshot}>
       <View style={styles.snapshotHead}>
@@ -866,11 +1267,11 @@ function RawSnapshotView({ item: g }: { item: Extract<ListItem, { kind: 'rawSnap
         <Text style={styles.snapshotMeta} numberOfLines={1}>
           {PACKAGE_LABEL[g.packageName] ?? g.packageName}
           {winShort ? ` · ${winShort}` : ''}
-          {' · '}{g.texts.length} 条
+          {' · '}{texts.length} 条
         </Text>
       </View>
       <View style={styles.snapshotBody}>
-        {g.texts.map((t) => (
+        {texts.map((t) => (
           <Text key={t.rowId} style={styles.snapshotText} numberOfLines={3}>
             {t.text}
           </Text>
@@ -902,6 +1303,51 @@ const styles = StyleSheet.create({
     backgroundColor: theme.surface,
   },
   clearBtnText: { fontSize: 12, color: theme.inkSoft, fontWeight: '500' },
+  helpBtn: {
+    width: 28, height: 28, borderRadius: 14,
+    borderWidth: 1, borderColor: theme.line,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: theme.surface,
+  },
+  helpBtnText: { fontSize: 14, color: theme.inkSoft, fontWeight: '700' },
+  helpBackdrop: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center', justifyContent: 'center',
+    padding: 24,
+  },
+  helpCard: {
+    backgroundColor: theme.surface, borderRadius: 12, padding: 20,
+    width: '100%', maxWidth: 420,
+  },
+  helpTitle: { fontSize: 16, fontWeight: '700', color: theme.ink, marginBottom: 12 },
+  helpSection: { fontSize: 13, fontWeight: '700', color: theme.accent, marginTop: 10, marginBottom: 4 },
+  helpText: { fontSize: 12, color: theme.ink, lineHeight: 20 },
+  helpClose: {
+    marginTop: 16, alignSelf: 'flex-end',
+    paddingHorizontal: 14, paddingVertical: 6,
+    backgroundColor: theme.accent, borderRadius: 6,
+  },
+  helpCloseText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+  snapCardHighlight: {
+    borderWidth: 2, borderColor: theme.accent,
+    shadowColor: theme.accent, shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
+  },
+  actionRowHighlight: {
+    backgroundColor: alpha(theme.accent, 0.12),
+    borderLeftWidth: 3, borderLeftColor: theme.accent,
+  },
+  snapCardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  jumpHint: {
+    fontSize: 9,
+    color: theme.accent,
+    fontWeight: '700',
+    backgroundColor: alpha(theme.accent, 0.12),
+    borderRadius: 3,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    overflow: 'hidden',
+  },
   openA11yBtn: {
     marginTop: 10,
     paddingVertical: 8,
@@ -926,6 +1372,16 @@ const styles = StyleSheet.create({
   },
   modeChipText: { fontSize: 12, color: theme.inkSoft, fontWeight: '500' },
   modeChipTextOn: { color: '#FFF', fontWeight: '600' },
+  sortBtn: {
+    marginLeft: 'auto',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.lineSoft,
+    backgroundColor: theme.bg,
+  },
+  sortBtnText: { fontSize: 11, color: theme.inkSoft, fontWeight: '600' },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   emptyInline: { paddingTop: 60, alignItems: 'center', paddingHorizontal: 24 },
   emptyHint: { fontSize: 13, color: theme.inkSoft, textAlign: 'center', lineHeight: 22 },
@@ -1167,6 +1623,47 @@ const styles = StyleSheet.create({
   },
   commentFoot: { flexDirection: 'row', gap: 12, marginTop: 2 },
   commentFootText: { fontSize: 11, color: theme.inkSoft },
+  // 还原动作 — 时间线行
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    backgroundColor: theme.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.lineSoft,
+  },
+  actionDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginTop: 6,
+    marginRight: 12,
+  },
+  actionBody: { flex: 1 },
+  actionHead: { flexDirection: 'row', alignItems: 'baseline', gap: 10, marginBottom: 4 },
+  actionTime: {
+    fontSize: 11,
+    color: theme.inkFaint,
+    fontVariant: ['tabular-nums'],
+    fontWeight: '500',
+    marginBottom: 2,
+  },
+  actionKind: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  actionLasted: {
+    fontSize: 11,
+    color: theme.inkSoft,
+    fontVariant: ['tabular-nums'],
+    marginLeft: 'auto',
+  },
+  actionDetail: {
+    fontSize: 12,
+    color: theme.ink,
+    lineHeight: 16,
+  },
   feedKindRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
   feedKindTag: {
     fontSize: 10,
@@ -1199,6 +1696,7 @@ const styles = StyleSheet.create({
   feedUp: { fontSize: 11, color: theme.accent, fontWeight: '500' },
   feedDot: { fontSize: 11, color: theme.inkFaint },
   feedMetaText: { fontSize: 11, color: theme.inkSoft },
+  feedSeenCount: { fontSize: 10, color: theme.inkFaint, marginLeft: 'auto', fontVariant: ['tabular-nums'] },
   // 2 列瀑布流网格
   gridRow: {
     flexDirection: 'row',
@@ -1228,6 +1726,22 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: theme.accent,
     marginBottom: 4,
+  },
+  feedUpRowCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+  followedCheck: {
+    fontSize: 10,
+    color: '#F69900',
+    fontWeight: '700',
+  },
+  feedUpName: {
+    fontSize: 10,
+    color: theme.inkSoft,
+    flexShrink: 1,
   },
   feedMetaCompact: {
     flexDirection: 'row',

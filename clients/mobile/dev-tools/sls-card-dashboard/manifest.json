@@ -1,0 +1,62 @@
+{
+  "video_meta": {
+    "file": "Record_2026-05-26-10-16-50.MP4",
+    "start_real_ts": "10:16:50",
+    "duration_s": 112,
+    "fps": 3,
+    "note": "帧号 N → 视频秒 = N/3 → 真实时刻 = 10:16:50 + N/3s"
+  },
+  "compare_units": [
+    {
+      "id": "card-home",
+      "title": "卡片 #1 · B 站主页大卡",
+      "real_time_range": "10:17:09 ~ 10:17:19（开屏广告结束 → 进入第一个视频前）",
+      "real_frames": [
+        { "src": "frames/f0060.jpg", "caption": "+20s / 10:17:09 推荐 tab 首屏" },
+        { "src": "frames/f0075.jpg", "caption": "+25s / 10:17:14 滑动后" }
+      ],
+      "sls_shots": [
+        { "src": "shots/card-home-v3-asc.png", "caption": "v3（旧→新）：横幅在顶 + 已关注橙色 + 顺序一致 + 时间范围卡头" }
+      ],
+      "issues": [
+        { "code": "A", "level": "fixed", "text": "feed item 顺序乱：3 个 build 函数遍历的是 native 默认 DESC items，识别逻辑反着跑", "fix": "build 函数开头先 sort by rowId ASC" },
+        { "code": "B", "level": "fixed", "text": "漏掉顶部横幅广告卡《碧蓝航线 9 周年》", "fix": "isBannerCandidate：/^【…】/ 开头长 > 10 + 不在 feed title 集合 → 当横幅视频 push" },
+        { "code": "C", "level": "fixed", "text": "每秒生成相同主页大卡，重复堆积", "fix": "home 段（gap < 60s）合并成一张大卡 + by-title 去重 + seenCount 记录被刷次数" },
+        { "code": "D", "level": "fixed", "text": "已关注没显示 / 位置不对", "fix": "挪到 @UP 同行；橙 ✓ 已关注 + 灰 UP 名" },
+        { "code": "POS", "level": "fixed", "text": "feed items 在卡内位置乱（同秒 firstSeenTs 相等导致排序不稳定）", "fix": "排序锚点改 firstSeenRowId ASC（保留 a11y 原始视觉位置）" },
+        { "code": "E", "level": "skip", "text": "没还原顶部 tab（直播/推荐/热门/动画/影视/新征程）", "fix": "navigation chrome，不属于 feed" },
+        { "code": "F", "level": "skip", "text": "没还原底部 tab（首页/关注/发布/会员购/我的）", "fix": "同上" }
+      ],
+      "status": "fixed"
+    },
+    {
+      "id": "action-line",
+      "title": "卡片 #2 · 还原动作时间线",
+      "real_time_range": "10:17:04 ~ 10:18:34（整段 B 站浏览）",
+      "real_frames": [
+        { "src": "frames/f0045.jpg", "caption": "+15s 10:17:04 开屏广告（跳过 5）" },
+        { "src": "frames/f0060.jpg", "caption": "+20s 10:17:09 主页 推荐" },
+        { "src": "frames/f0105.jpg", "caption": "+35s 10:17:24 进入 Cursor 视频简介" },
+        { "src": "frames/f0120.jpg", "caption": "+40s 10:17:29 进入全屏" },
+        { "src": "frames/f0150.jpg", "caption": "+50s 10:17:40 退全屏" },
+        { "src": "frames/f0165.jpg", "caption": "+55s 10:17:45 进入评论 8" },
+        { "src": "frames/f0210.jpg", "caption": "+70s 10:18:00 进入 Pi Agent 视频" },
+        { "src": "frames/f0225.jpg", "caption": "+75s 10:18:05 进入评论 185" },
+        { "src": "frames/f0270.jpg", "caption": "+90s 10:18:20 进入 Workflow 视频" },
+        { "src": "frames/f0300.jpg", "caption": "+100s 10:18:30 进入评论 366" }
+      ],
+      "sls_shots": [
+        { "src": "shots/action-v7.png", "caption": "v7 前半（开屏-主页-Cursor 简介-全屏-评论-评论详情）" },
+        { "src": "shots/action-v7-scroll.png", "caption": "v7 后半（Pi Agent-评论 / Workflow-评论）" }
+      ],
+      "issues": [
+        { "code": "A", "level": "fixed", "text": "splash 和 home 在同帧抓到，状态机反复切两条/秒", "fix": "splash 段独立识别（Pass 2），splash 期间 home 信号丢弃" },
+        { "code": "B", "level": "fixed", "text": "评论/全屏期间 UP 行持续被抓，video_intro 反复触发", "fix": "DETAIL_INNER（fullscreen/comments/comment_detail）期间同 UP 主的 video_intro 信号吸收" },
+        { "code": "C", "level": "fixed", "text": "时间范围语义：HH:MM:SS → HH:MM:SS + 停留 Xs", "fix": "ActionLineView 双行显示" },
+        { "code": "D", "level": "fixed", "text": "splash meta 不要带 '跳过 1' 数字", "fix": "splash 段不带 meta" },
+        { "code": "E", "level": "pending", "text": "动作小面板点击跳转到对应卡片（动作 ↔ 卡片双向）", "fix": "下一轮做：FlatList ref + scrollToIndex + viewMode 切换" }
+      ],
+      "status": "pending"
+    }
+  ]
+}

@@ -1,5 +1,30 @@
 # Solo Leveling System — Claude Code 项目指南
 
+<!-- TEMP（提交前撤）：洪流域"还原动作"标签设计 -->
+<!--
+录屏样本 `Record_2026-05-26-10-16-50.MP4`（10:16:50 起，1:52 长），
+对照 raw 数据时段 10:17:04 ~ 10:18:34。
+
+新标签"还原动作"思路：在时间线上单独一条动作序列，每个动作 = 一个小面板，
+点击小面板可跳到对应"还原卡片"，反过来从卡片可返回到对应动作面板。
+
+样本动作序列（用户给的口述版）：
+- 打开哔哩哔哩
+- 等待首屏广告
+- 进入主页
+- 滑动主页
+- 进入视频·简介《cursor 完胜 claude code》
+- 进入全屏《cursor 完胜 claude code》
+- 回到视频·简介《cursor 完胜 claude code》
+- 进入视频·评论《cursor 完胜 claude code》
+- 进入 XX 人评论详情
+- 返回
+- 回到视频·简介《cursor 完胜 claude code》
+- （点击下方推送视频《pi agent...ai 工具》后）进入视频·简介《pi agent...ai 工具》
+- 进入视频·评论《pi agent...ai 工具》
+- ...
+-->
+
 ## 仓库结构
 
 - `clients/desktop/` — Tauri 桌面端（Windows + macOS 跨平台），主开发目标
