@@ -1306,21 +1306,12 @@ function RenderList({
     return sortOrder === 'asc' ? [...base].reverse() : base
   }, [filteredItems, viewMode, sortOrder])
 
-  if (listItems.length === 0) {
-    return (
-      <View style={styles.emptyInline}>
-        <Text style={styles.emptyHint}>
-          暂无{viewMode === 'feed' ? '视频卡片' : '快照'}{'\n\n'}
-          打开 B 站刷一刷，这里会列出当时看到的内容
-        </Text>
-      </View>
-    )
-  }
-
+  // AUDIT-038：useRef / useEffect 必须无条件调用（React Hooks rules）。
+  // 之前 listItems.length===0 提前 return 会让 Hooks 在空列表→非空切换时顺序错乱。
   const listRef = useRef<FlatList<ListItem>>(null)
-  // 跳转：找到 ts 最近的 item index 并 scrollToIndex
   useEffect(() => {
     if (jumpTarget == null) return
+    if (listItems.length === 0) { onJumpDone(null); return }
     const getTs = (it: ListItem) => {
       if ('tsStart' in it) return it.tsStart
       if ('ts' in it) return it.ts
@@ -1340,6 +1331,17 @@ function RenderList({
       onJumpDone(null)
     }
   }, [jumpTarget, listItems, onJumpDone])
+
+  if (listItems.length === 0) {
+    return (
+      <View style={styles.emptyInline}>
+        <Text style={styles.emptyHint}>
+          暂无{viewMode === 'feed' ? '视频卡片' : '快照'}{'\n\n'}
+          打开 B 站刷一刷，这里会列出当时看到的内容
+        </Text>
+      </View>
+    )
+  }
 
   return (
     <FlatList
