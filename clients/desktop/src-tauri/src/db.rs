@@ -179,10 +179,14 @@ pub struct SyncExport {
 pub struct SyncModelApiKey {
     pub id: String,
     pub label: String,
+    /// AUDIT-036：tombstone 行（deleted_at IS NOT NULL）的 api_key 在 export
+    /// 时会被强制清成空串，不把明文 key 复制到其他设备
     pub api_key: String,
     pub is_active: i32,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1049,13 +1053,16 @@ impl Database {
             );
 
             -- 百炼 API Key 库（本地保存，调用日志按 id 归属）
+            -- AUDIT-036：deleted_at 作为 tombstone，让删除可被同步传播；
+            -- 软删时 api_key 字段会被清成空串（不泄露明文给对端）
             CREATE TABLE IF NOT EXISTS model_api_keys (
                 id TEXT PRIMARY KEY,
                 label TEXT NOT NULL,
                 api_key TEXT NOT NULL,
                 is_active INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                deleted_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_model_api_keys_active ON model_api_keys(is_active);
 
@@ -1106,6 +1113,8 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE model_call_log ADD COLUMN free_quota_tokens INTEGER NOT NULL DEFAULT 0");
         let _ = conn.execute_batch("ALTER TABLE model_call_log ADD COLUMN free_quota_saved_cny REAL NOT NULL DEFAULT 0");
         let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_call_api_key ON model_call_log(api_key_id, started_at DESC)");
+        // AUDIT-036：旧库的 model_api_keys 补 deleted_at（tombstone）
+        let _ = conn.execute_batch("ALTER TABLE model_api_keys ADD COLUMN deleted_at TEXT");
         migrate_legacy_perception_tables(&conn)?;
 
         // 首次启动写入百炼模型库与默认绑定种子（已存在则跳过，幂等）
@@ -1941,17 +1950,22 @@ impl Database {
           .collect::<Vec<_>>();
 
         // ── 模型相关 4 张表 ──
+        // AUDIT-036：export 含 deleted_at（让 tombstone 跨端同步），tombstone
+        // 的 api_key 字段在 payload 层清成空串避免明文 key 复制到对端
         let mut stmt = conn.prepare(
-            "SELECT id, label, api_key, is_active, created_at, updated_at FROM model_api_keys"
+            "SELECT id, label, api_key, is_active, created_at, updated_at, deleted_at FROM model_api_keys"
         ).map_err(|e| e.to_string())?;
         let model_api_keys = stmt.query_map([], |row| {
+            let deleted_at: Option<String> = row.get(6)?;
+            let api_key: String = row.get(2)?;
             Ok(SyncModelApiKey {
                 id: row.get(0)?,
                 label: row.get(1)?,
-                api_key: row.get(2)?,
+                api_key: if deleted_at.is_some() { String::new() } else { api_key },
                 is_active: row.get(3)?,
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
+                deleted_at,
             })
         }).map_err(|e| e.to_string())?
           .filter_map(|r| r.ok())
@@ -2232,6 +2246,12 @@ impl Database {
         }
 
         // ── 模型 API Keys：LWW by updated_at，PK=id ──
+        // AUDIT-036：
+        // - 接受 deleted_at（tombstone）：本地保留行作为 tombstone，
+        //   api_key 字段强制清空（即使对端发了明文也不存）
+        // - active 全局唯一：当 import 一个活的 is_active=1 行后，事务内
+        //   把其他所有 is_active=1 的行降为 0 + bump updated_at = row.updated_at
+        //   让对端下一轮同步能拿到 inactive 状态
         for row in payload.model_api_keys {
             let local_updated: Option<String> = conn.query_row(
                 "SELECT updated_at FROM model_api_keys WHERE id = ?",
@@ -2242,14 +2262,29 @@ impl Database {
                 result.skipped += 1;
                 continue;
             }
+            let is_tombstone = row.deleted_at.is_some();
+            // tombstone 写入：清明文 api_key，保留 label + deleted_at
+            let api_key_to_store: &str = if is_tombstone { "" } else { row.api_key.as_str() };
+            let is_active_to_store: i32 = if is_tombstone { 0 } else { row.is_active };
             conn.execute(
-                "INSERT INTO model_api_keys (id, label, api_key, is_active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)
+                "INSERT INTO model_api_keys (id, label, api_key, is_active, created_at, updated_at, deleted_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                    label=excluded.label, api_key=excluded.api_key, is_active=excluded.is_active,
-                   created_at=excluded.created_at, updated_at=excluded.updated_at",
-                params![&row.id, &row.label, &row.api_key, row.is_active, &row.created_at, &row.updated_at],
+                   created_at=excluded.created_at, updated_at=excluded.updated_at,
+                   deleted_at=excluded.deleted_at",
+                params![&row.id, &row.label, api_key_to_store, is_active_to_store,
+                        &row.created_at, &row.updated_at, &row.deleted_at],
             ).map_err(|e| e.to_string())?;
+            // active 归一化：刚 import 的活 active 行存在时，其他 active 全 降级
+            if !is_tombstone && row.is_active == 1 {
+                conn.execute(
+                    "UPDATE model_api_keys
+                     SET is_active = 0, updated_at = ?
+                     WHERE id != ? AND is_active = 1 AND deleted_at IS NULL",
+                    params![&row.updated_at, &row.id],
+                ).map_err(|e| e.to_string())?;
+            }
             result.model_api_keys += 1;
         }
 
@@ -4345,9 +4380,11 @@ impl Database {
 
     pub async fn list_model_api_keys(&self) -> Result<Vec<ModelApiKey>, String> {
         let conn = self.conn.lock().await;
+        // AUDIT-036：过滤 tombstone（deleted_at IS NULL）
         let mut stmt = conn.prepare(
             "SELECT id, label, api_key, is_active, created_at, updated_at
              FROM model_api_keys
+             WHERE deleted_at IS NULL
              ORDER BY is_active DESC, updated_at DESC"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok(ModelApiKey {
@@ -4366,7 +4403,7 @@ impl Database {
         let result = conn.query_row(
             "SELECT id, label, api_key, is_active, created_at, updated_at
              FROM model_api_keys
-             WHERE is_active = 1
+             WHERE is_active = 1 AND deleted_at IS NULL
              ORDER BY updated_at DESC
              LIMIT 1",
             [],
@@ -4399,24 +4436,32 @@ impl Database {
 
         let now = Utc::now().to_rfc3339();
         let should_activate = req.is_active || {
-            let count: i64 = conn.query_row("SELECT COUNT(*) FROM model_api_keys WHERE is_active = 1", [], |r| r.get(0))
-                .unwrap_or(0);
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM model_api_keys WHERE is_active = 1 AND deleted_at IS NULL",
+                [], |r| r.get(0),
+            ).unwrap_or(0);
             count == 0
         };
 
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         if should_activate {
-            tx.execute("UPDATE model_api_keys SET is_active = 0", [])
-                .map_err(|e| e.to_string())?;
+            // AUDIT-036：把其他 active 行 bump updated_at = now，让对端 LWW
+            // 能拿到 inactive 状态（之前不 bump，会让对端继续以为本地是 active）
+            tx.execute(
+                "UPDATE model_api_keys SET is_active = 0, updated_at = ?
+                 WHERE is_active = 1 AND deleted_at IS NULL",
+                params![&now],
+            ).map_err(|e| e.to_string())?;
         }
         tx.execute(
-            "INSERT INTO model_api_keys (id, label, api_key, is_active, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)
+            "INSERT INTO model_api_keys (id, label, api_key, is_active, created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, NULL)
              ON CONFLICT(id) DO UPDATE SET
                label=excluded.label,
                api_key=excluded.api_key,
                is_active=excluded.is_active,
-               updated_at=excluded.updated_at",
+               updated_at=excluded.updated_at,
+               deleted_at=NULL",
             params![&id, &label, &api_key, if should_activate { 1 } else { 0 }, &now, &now],
         ).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
@@ -4433,26 +4478,37 @@ impl Database {
 
     pub async fn set_active_model_api_key(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
+        // AUDIT-036：tombstone 行不可被 activate
         let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM model_api_keys WHERE id = ?",
+            "SELECT COUNT(*) FROM model_api_keys WHERE id = ? AND deleted_at IS NULL",
             rusqlite::params![id],
             |r| r.get(0),
         ).unwrap_or(0);
         if exists == 0 {
             return Err("API Key 不存在".to_string());
         }
+        // AUDIT-036：所有未删的 key 都 bump updated_at（既 set 也 unset），
+        // 让对端 LWW 能拿到完整 active 状态变化；之前只 bump 目标 key 的
+        // updated_at，被置 inactive 的其他 key 不动，导致两端各自切 active 后
+        // 同步会出现多个 is_active=1 的脏数据
+        let now = Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE model_api_keys SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END,
-                    updated_at = CASE WHEN id = ? THEN ? ELSE updated_at END",
-            rusqlite::params![id, id, Utc::now().to_rfc3339()],
+            "UPDATE model_api_keys
+             SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END,
+                 updated_at = ?
+             WHERE deleted_at IS NULL",
+            rusqlite::params![id, &now],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
     pub async fn delete_model_api_key(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
+        // AUDIT-036：改软删 — 写 deleted_at + 清明文 api_key + is_active=0，
+        // 保留 row 作为 tombstone 让对端同步时知道这个 id 已删，不会再把
+        // 明文 key 重新 push 回来；call_log 仍硬删（不属于 sync 范围）
         let was_active: bool = conn.query_row(
-            "SELECT is_active FROM model_api_keys WHERE id = ?",
+            "SELECT is_active FROM model_api_keys WHERE id = ? AND deleted_at IS NULL",
             rusqlite::params![id],
             |r| Ok(r.get::<_, i64>(0)? != 0),
         ).unwrap_or(false);
@@ -4460,19 +4516,33 @@ impl Database {
         conn.execute("DELETE FROM model_call_log WHERE api_key_id = ?", rusqlite::params![id])
             .map_err(|e| e.to_string())?;
 
-        conn.execute("DELETE FROM model_api_keys WHERE id = ?", rusqlite::params![id])
-            .map_err(|e| e.to_string())?;
+        let now = Utc::now().to_rfc3339();
+        let changed = conn.execute(
+            "UPDATE model_api_keys
+             SET deleted_at = ?, api_key = '', is_active = 0, updated_at = ?
+             WHERE id = ? AND deleted_at IS NULL",
+            rusqlite::params![&now, &now, id],
+        ).map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Ok(());  // 已被删 / 不存在，幂等
+        }
 
         if was_active {
+            // 找一个最近的活 key 顶上 active
             let next_id: Option<String> = conn.query_row(
-                "SELECT id FROM model_api_keys ORDER BY updated_at DESC LIMIT 1",
+                "SELECT id FROM model_api_keys
+                 WHERE deleted_at IS NULL
+                 ORDER BY updated_at DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             ).ok();
             if let Some(next_id) = next_id {
                 conn.execute(
-                    "UPDATE model_api_keys SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END",
-                    rusqlite::params![next_id],
+                    "UPDATE model_api_keys
+                     SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END,
+                         updated_at = ?
+                     WHERE deleted_at IS NULL",
+                    rusqlite::params![next_id, &now],
                 ).map_err(|e| e.to_string())?;
             }
         }
