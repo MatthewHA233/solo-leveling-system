@@ -36,10 +36,12 @@ const COLOR_PALETTE = [
 // 一键初始化的默认分类 + 标签（偏向通用，不预置编程 — 不是所有人都适合）
 const DEFAULT_PALETTE: ReadonlyArray<{ name: string; color: string; tags: ReadonlyArray<string> }> = [
   { name: '工作', color: '#38BDF8', tags: ['会议', '写文档', '日报周报', '沟通协调'] },
-  { name: '学习', color: '#22C55E', tags: ['看书', '看视频课', '做笔记', '复盘'] },
+  { name: '学习', color: '#2DD4BF', tags: ['看书', '看视频课', '做笔记', '复盘'] },
   { name: '生活', color: '#F97316', tags: ['做饭', '吃饭', '洗漱', '采购', '通勤'] },
-  { name: '运动健康', color: '#14B8A6', tags: ['跑步', '健身', '散步', '冥想'] },
-  { name: '休息娱乐', color: '#FB7185', tags: ['睡觉', '看视频', '玩游戏', '刷手机'] },
+  { name: '运动', color: '#14B8A6', tags: ['跑步', '健身', '散步'] },
+  { name: '休息', color: '#84CC16', tags: ['睡觉', '午休', '小憩', '冥想'] },
+  { name: '娱乐', color: '#FB7185', tags: ['看视频', '玩游戏', '刷手机'] },
+  { name: '杂项', color: '#F97316', tags: ['临时事项', '等待', '整理'] },
 ]
 
 type TagMenu = { tag: ActivityTag; x: number; y: number; mode: 'menu' | 'color' }
@@ -936,7 +938,7 @@ function SeedDefaultsButton({ onClick, disabled }: { onClick: () => void; disabl
             opacity: 0.78,
             letterSpacing: 0.2,
           }}>
-            (5 分类 + 22 常用标签)
+            (7 分类 + 26 常用标签)
           </span>
         )}
       </span>

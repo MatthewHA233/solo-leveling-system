@@ -84,7 +84,7 @@ export async function fetchPalette(): Promise<ActivityPalette> {
  * 首段未匹配现有 category 时自动新建 category（desktop 尚不支持，手机端先做）。
  * 返回更新后的完整 palette，方便前端 setState 不需要二次 fetch。
  */
-export async function createTag(fullPath: string): Promise<ActivityPalette> {
+export async function createTag(fullPath: string, categoryColor?: string): Promise<ActivityPalette> {
   const segs = fullPath.split(',').map((s) => s.trim()).filter(Boolean)
   if (segs.length === 0) return fetchPalette()
   const normalized = segs.join(',')
@@ -94,7 +94,7 @@ export async function createTag(fullPath: string): Promise<ActivityPalette> {
   let cat = cats.find((c) => c.name === segs[0])
   if (!cat) {
     const usedColors = new Set(cats.map((c) => c.color))
-    const color = CATEGORY_PALETTE_COLORS.find((c) => !usedColors.has(c)) ??
+    const color = categoryColor ?? CATEGORY_PALETTE_COLORS.find((c) => !usedColors.has(c)) ??
       CATEGORY_PALETTE_COLORS[cats.length % CATEGORY_PALETTE_COLORS.length]
     const nextSort = (Math.max(0, ...cats.map((c) => c.sortOrder)) || 0) + 1
     const newId = await soloUpsertCategory({
