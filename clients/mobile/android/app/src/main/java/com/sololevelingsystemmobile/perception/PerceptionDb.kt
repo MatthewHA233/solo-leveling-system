@@ -109,12 +109,14 @@ class PerceptionDb(context: Context) :
   }
 
   override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-    // Phase 1：尚无线上数据，破坏式升级即可
-    db.execSQL("DROP TABLE IF EXISTS perception_events_android")
-    db.execSQL("DROP TABLE IF EXISTS perception_buckets_android")
-    db.execSQL("DROP TABLE IF EXISTS app_catalog_android")
-    db.execSQL("DROP TABLE IF EXISTS torrent_capture_android")
-    onCreate(db)
+    // AUDIT-034：增量迁移，保留 perception_events_android / perception_buckets_android
+    // / app_catalog_android 历史数据，不再破坏式 DROP（v0.0.0.17 之前的 onUpgrade
+    // 会清掉用户感知历史）。
+    // v1 → v3：torrent_capture_android 当时还不存在，补建即可
+    // v2 → v3：torrent_capture_android 已存在且 column 集合兼容（v2 阶段多过一个
+    //   idx_torrent_dedupe 索引，新代码不依赖它、留着也无害），createTorrentTables
+    //   的 IF NOT EXISTS 兜底不会破坏数据
+    createTorrentTables(db)
   }
 
   /** 确保 bucket 存在；返回 bucket id。 */
