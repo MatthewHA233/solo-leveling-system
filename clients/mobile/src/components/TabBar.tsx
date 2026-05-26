@@ -7,7 +7,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native'
 import Svg, { Circle, Path, Rect } from 'react-native-svg'
 import { theme } from '../theme'
 
-export type TabKey = 'daynight' | 'chat' | 'perception' | 'torrent'
+export type TabKey = 'daynight' | 'chat' | 'protocol' | 'torrent' | 'perception'
 
 interface TabDef {
   key: TabKey
@@ -76,11 +76,22 @@ function IconWaves({ color, size = 22 }: IconProps) {
   )
 }
 
+/** lucide Scroll —— "协议志"（卷轴/档案隐喻） */
+function IconScroll({ color, size = 22 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M8 21h12a2 2 0 0 0 2-2v-2H10v2a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v3h4" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M19 17V5a2 2 0 0 0-2-2H4" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  )
+}
+
 const TABS: TabDef[] = [
   { key: 'daynight', label: '昼夜表', Icon: IconCalendar },
-  { key: 'chat', label: '暗影聊天', Icon: IconMessage },
   { key: 'torrent', label: '洪流域', Icon: IconWaves },
-  { key: 'perception', label: '感知', Icon: IconEye },
+  { key: 'perception', label: '感知层', Icon: IconEye },
+  { key: 'chat', label: '暗影体', Icon: IconMessage },
+  { key: 'protocol', label: '协议志', Icon: IconScroll },
 ]
 
 export default function TabBar({

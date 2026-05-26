@@ -1,6 +1,6 @@
 /**
  * Solo Leveling System — 手机端
- * 昼夜表 + 暗影多模态聊天
+ * 昼夜表 / 暗影体 / 洪流域 / 协议志 / 感知
  */
 
 import { useState } from 'react'
@@ -12,6 +12,7 @@ import DayNightScreen from './src/screens/DayNightScreen'
 import ChatScreen from './src/screens/ChatScreen'
 import PerceptionScreen from './src/screens/PerceptionScreen'
 import TorrentScreen from './src/screens/TorrentScreen'
+import ProtocolScreen from './src/screens/ProtocolScreen'
 import { theme } from './src/theme'
 
 function App() {
@@ -36,6 +37,8 @@ function AppContent() {
           <ChatScreen />
         ) : tab === 'torrent' ? (
           <TorrentScreen />
+        ) : tab === 'protocol' ? (
+          <ProtocolScreen />
         ) : (
           <PerceptionScreen />
         )}
