@@ -49,6 +49,9 @@ const PACKAGE_LABEL: Record<string, string> = {
 
 type ViewMode = 'raw' | 'feed' | 'action'
 type SortOrder = 'desc' | 'asc'
+type JumpKind = 'home' | 'detail' | 'story' | 'fullscreen' | 'comments'
+type JumpTarget = { ts: number; preferKind?: JumpKind }
+type CrossJump = (targetViewMode: ViewMode, ts: number, preferKind?: JumpKind) => void
 
 // 【DEV-only】卡片对照调试：把范围设成 ['HH:MM:SS', 'HH:MM:SS']
 // 限定只看这段时间的 raw → 单独研究某一卡片，不污染 UI
@@ -318,6 +321,81 @@ const COLLECTION_PROGRESS_PATTERN = /^(\d+\/\d+)$/
 // "00:06/37:30" 播放进度
 const PROGRESS_PATTERN = /^(\d{1,2}):(\d{2})\/(\d{1,3}):(\d{2})$/
 
+// Story 卡片块的 a11y 树结构（按观察）：
+//   1. UP 名（短独立行）
+//   2. N粉丝（"\d+(\.\d+)?[万亿千百]?粉丝"）
+//   3. 标题 + 播放数（"标题  ‎N播放" 或 "标题  ‎N播放  创作推广/广告"）
+//   4. (可选) tag 行（"搜索·..." / "热搜·..." / "合集 · ..."）
+//   5. 5 个互动数字（点赞/评论/投币/收藏/分享 — 顺序固定）
+//   6. "发弹幕" 收尾
+const STORY_FANS = /^([\d.]+[万亿千百]?)粉丝$/
+// 标题尾部：双空格 + U+200E + N播放（可选后跟 "创作推广" 或 "广告" 等推广标）
+const STORY_TITLE_TAIL = /\s{2,}‎?([\d.]+[万亿千百]?播放)(?:\s+(创作推广|广告))?$/
+const STORY_COMMENT_HEADER = /^评论[（(]([\d.万亿千百]+)[）)]$/
+// 用一组 5 个数字 + 发弹幕 锁定一个完整 story item 块
+function isStoryFans(t: string): boolean { return STORY_FANS.test(t) }
+function isPlayCountLine(t: string): RegExpMatchArray | null {
+  const m = t.match(STORY_TITLE_TAIL)
+  return m
+}
+function findStoryCommentCount(rawLines: { text: string }[]): string | null {
+  for (const l of rawLines) {
+    const m = l.text.trim().match(STORY_COMMENT_HEADER)
+    if (m) return m[1]
+  }
+  return null
+}
+function isShortNum(t: string): boolean {
+  return /^[\d.]+[万亿千百]?$/.test(t) && t.length <= 8
+}
+
+// 拆 Story 段 raw → 多个 StoryItem
+// 启发式状态机：连续抓到 [UP名, N粉丝, 标题+N播放] 视为新 item 起点
+function parseStoryItems(rawLines: { rowId: number; text: string; ts: number }[]): StoryItem[] {
+  const items: StoryItem[] = []
+  // 块识别：用 "N粉丝" 锚点上下抓 author/title/tag/数字
+  const trimmed = rawLines.map((l) => l.text.trim())
+  for (let i = 0; i < trimmed.length; i++) {
+    if (!isStoryFans(trimmed[i])) continue
+    // 上一行是 UP 名
+    const upName = i >= 1 ? trimmed[i - 1] : ''
+    if (!upName || upName.length > 30) continue
+    const upFans = trimmed[i].replace('粉丝', '')
+    // 下一行：标题+播放
+    const titleLn = i + 1 < trimmed.length ? trimmed[i + 1] : ''
+    const playM = isPlayCountLine(titleLn)
+    if (!playM) continue
+    const title = titleLn.replace(STORY_TITLE_TAIL, '').trim()
+    if (title.length < 2) continue
+    const views = playM[1]
+    const isAd = playM[2] === '创作推广' || playM[2] === '广告'
+    // 下一行（可选）tag
+    let cursor = i + 2
+    let tag: string | null = null
+    if (cursor < trimmed.length) {
+      const t = trimmed[cursor]
+      if (/^(搜索·|热搜·|合集\s*·)/.test(t)) { tag = t; cursor++ }
+    }
+    // 接下来收 5 个短数字（互动数据）
+    const nums: string[] = []
+    while (cursor < trimmed.length && nums.length < 5) {
+      const t = trimmed[cursor]
+      if (isShortNum(t)) { nums.push(t); cursor++ }
+      else break
+    }
+    items.push({
+      upName, upFans, title, views, isAd, tag,
+      firstSeenTs: rawLines[i].ts, lastSeenTs: rawLines[i].ts, seenCount: 1,
+      likes: nums[0] ?? null,
+      comments: nums[1] ?? null,
+      coins: nums[2] ?? null,
+      favorites: nums[3] ?? null,
+      shares: nums[4] ?? null,
+    })
+  }
+  return items
+}
+
 function parseBiliVideoDetail(rawLines: { rowId: number; text: string; ts: number }[]): BiliVideoDetail | null {
   const v: BiliVideoDetail = {
     title: null, upName: null, upFans: null, upVideoCount: null,
@@ -457,7 +535,20 @@ function parseBiliFeedItem(rowId: number, ts: number, raw: string): BiliFeedItem
 
 const HOME_ACCENT = '#FB7299'
 
-export default function TorrentScreen() {
+export type TorrentScreenDevData = {
+  items: TorrentCapture[]
+  total: number
+  a11yOn: boolean
+}
+
+export type TorrentScreenDevSource = {
+  pollMs?: number
+  load: () => Promise<TorrentScreenDevData>
+  clear?: () => Promise<void>
+  openAccessibilitySettings?: () => void
+}
+
+export default function TorrentScreen({ devSource }: { devSource?: TorrentScreenDevSource } = {}) {
   const [items, setItems] = useState<TorrentCapture[]>([])
   const [total, setTotal] = useState(0)
   const [a11yOn, setA11yOn] = useState(false)
@@ -465,16 +556,15 @@ export default function TorrentScreen() {
   const [refreshing, setRefreshing] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('feed')
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc')
-  const [jumpTarget, setJumpTarget] = useState<number | null>(null)
+  const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null)
   const [highlightKey, setHighlightKey] = useState<string | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   const liveRef = useRef(true)
 
   // 跨视图跳转：从动作行点 → 切到 feed 跳到对应卡片；从卡头点 → 切到 action 跳到对应行
-  const onCrossJump = useCallback((targetVm: ViewMode, ts: number) => {
+  const onCrossJump = useCallback<CrossJump>((targetVm, ts, preferKind) => {
     setViewMode(targetVm)
-    // 切 viewMode 后下一帧 listItems 会重新计算，effect 监听 jumpTarget 触发 scroll
-    setTimeout(() => setJumpTarget(ts), 50)
+    setTimeout(() => setJumpTarget({ ts, preferKind }), 50)
   }, [])
 
   // 闪烁高亮目标（jumpTarget 不为空 → 滚动结束后高亮 1.6s）
@@ -487,11 +577,13 @@ export default function TorrentScreen() {
     try {
       // 默认拉 5000 条（约几天数据）；FlatList virtualize 只渲染可见区，
       // 几千万条理论也不卡（实际需求加 cursor 分页再说）
-      const [list, n, on] = await Promise.all([
-        getRecentTorrentCaptures(50000),
-        countTorrentCaptures(),
-        isAccessibilityEnabled(),
-      ])
+      const [list, n, on] = devSource
+        ? await devSource.load().then((data) => [data.items, data.total, data.a11yOn] as const)
+        : await Promise.all([
+            getRecentTorrentCaptures(50000),
+            countTorrentCaptures(),
+            isAccessibilityEnabled(),
+          ])
       if (!liveRef.current) return
       setItems(list)
       setTotal(n)
@@ -504,17 +596,17 @@ export default function TorrentScreen() {
         setRefreshing(false)
       }
     }
-  }, [])
+  }, [devSource])
 
   useEffect(() => {
     liveRef.current = true
     refresh()
-    const id = setInterval(refresh, 3000)
+    const id = setInterval(refresh, devSource?.pollMs ?? 3000)
     return () => {
       liveRef.current = false
       clearInterval(id)
     }
-  }, [refresh])
+  }, [refresh, devSource?.pollMs])
 
   return (
     <View style={styles.root}>
@@ -529,7 +621,8 @@ export default function TorrentScreen() {
           {total > 0 && (
             <Pressable
               onPress={async () => {
-                await clearTorrentCaptures()
+                if (devSource?.clear) await devSource.clear()
+                else await clearTorrentCaptures()
                 refresh()
               }}
               style={styles.clearBtn}
@@ -543,7 +636,7 @@ export default function TorrentScreen() {
         </View>
         {!a11yOn && (
           <Pressable
-            onPress={() => openAccessibilitySettings()}
+            onPress={() => devSource?.openAccessibilitySettings ? devSource.openAccessibilitySettings() : openAccessibilitySettings()}
             style={styles.openA11yBtn}
           >
             <Text style={styles.openA11yText}>去系统设置开启 SLS 辅助功能</Text>
@@ -651,12 +744,35 @@ interface CommentItem {
   likes: string | null
   replyCount: string | null
 }
+// 竖屏 Story 视频卡 — windowClass = StoryVideoActivity，无 SeekBar
+// 一个 Story 段 = 用户在 StoryVideoActivity 上的一段连续浏览
+// 每段记录"看过"的视频列表（去重，按 firstSeenTs）+ 切换次数
+interface StoryItem {
+  upName: string
+  upFans: string
+  title: string
+  views: string | null      // "8.1万播放"
+  isAd: boolean             // "创作推广" / "广告" 标识
+  tag: string | null        // "搜索·xxx" / "热搜·xxx" / "合集·xxx"
+  firstSeenTs: number
+  lastSeenTs: number
+  seenCount: number
+  // 5 个互动数字（点赞/评论/投币/收藏/分享），存在性可能不全
+  likes: string | null
+  comments: string | null
+  coins: string | null
+  favorites: string | null
+  shares: string | null
+}
+
 type ListItem =
   | { kind: 'home'; key: string; tsStart: number; tsEnd: number; feedItems: HomeFeedItem[]; sweepCount: number }
   | { kind: 'detail'; key: string; tsStart: number; tsEnd: number; detail: BiliVideoDetail }
+  // Story 单视频父卡（每个独立视频一张），跟 detail 平级
+  | { kind: 'story'; key: string; tsStart: number; tsEnd: number; story: StoryItem }
   | { kind: 'comments'; key: string; tsStart: number; tsEnd: number; comments: CommentItem[]; totalCount: number | null; videoTitle: string | null; videoUp: string | null; commentDetailSegs: { startTs: number; endTs: number }[] }
   | { kind: 'fullscreen'; key: string; tsStart: number; tsEnd: number; watch: WatchSummary; samples: PlayProgressSample[]; videoTitle: string | null; videoUp: string | null }
-  | { kind: 'actionLine'; key: string; ts: number; endTs?: number; act: BiliActionKind; title?: string; upName?: string; meta?: string; tabSeq?: VideoSubTabSeg[] }
+  | { kind: 'actionLine'; key: string; ts: number; endTs?: number; act: BiliActionKind; title?: string; upName?: string; meta?: string; tabSeq?: VideoSubTabSeg[]; isStory?: boolean }
   | { kind: 'rawSnapshot'; key: string; ts: number; packageName: string; windowClass: string; texts: { rowId: number; text: string; sourceClass: string }[] }
 
 // 视频播放界面内的 tab 切换段（video_intro 父动作下的子序列）
@@ -691,6 +807,18 @@ type BiliActionKind =
 function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
   // items 从 native 来是 ORDER BY id DESC（新→旧），按时间序处理前先排成 ASC
   const items = [...itemsIn].sort((a, b) => a.rowId - b.rowId)
+  const storyRaw = items.filter((c) =>
+    c.packageName === 'tv.danmaku.bili'
+    && c.captureType !== 'a11y-click'
+    && c.windowClass.includes('StoryVideoActivity'))
+  const storyAllLines = storyRaw.map((c) => ({ rowId: c.rowId, text: c.text, ts: c.eventTimeMs }))
+  const allStoryItems = parseStoryItems(storyAllLines)
+  const storyByCommentCount = new Map<string, StoryItem>()
+  for (const it of allStoryItems) {
+    if (it.comments && !storyByCommentCount.has(it.comments)) {
+      storyByCommentCount.set(it.comments, it)
+    }
+  }
   // pre-pass：收 feed item title 集合，避免 banner 识别误抓 feed item 的标题独立行
   const feedTitlesInHome = new Set<string>()
   for (const c of items) {
@@ -739,18 +867,17 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
       })
     }
   }
-  // 1b) 视频详情页 buckets
+  // 1b) 视频详情页 buckets（含 Story 浮层）
   const detailBuckets = new Map<number, { ts: number; lines: { rowId: number; text: string; ts: number }[] }>()
   for (const c of items) {
     if (c.packageName !== 'tv.danmaku.bili') continue
     if (c.captureType !== 'a11y-view') continue
-    // 严格 detail surface：UnitedBiz / StoryVideo
-    // 加 ViewGroup：B 站的全屏 / 评论 tab / 评论详情都用 ViewGroup 浮层包；
-    //   排除主页 MainActivityV2 和 ScrollView（home surface）就够了
     const wc = c.windowClass
+    // UnitedBiz / StoryVideo / 评论浮层 / 全屏 ViewGroup —— 都进 detail bucket
     const isDetail =
-      wc.includes('UnitedBiz') || wc.includes('StoryVideo') ||
-      wc === 'android.view.ViewGroup'
+      wc.includes('UnitedBiz') || wc.includes('StoryVideo')
+      || wc.includes('bilibili.video.story.view')  // Story 评论浮层
+      || wc === 'android.view.ViewGroup'
     if (!isDetail) continue
     const sec = Math.floor(c.eventTimeMs / 1000)
     if (!detailBuckets.has(sec)) detailBuckets.set(sec, { ts: c.eventTimeMs, lines: [] })
@@ -767,9 +894,22 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
     const d = parseBiliVideoDetail(b.lines)
     if (d) {
       detailItems.push({ kind: 'detail', key: `d-${b.ts}`, tsStart: b.ts, tsEnd: b.ts, detail: d })
-      // 更新当前视频上下文（评论可能在 detail 之后才出现，沿用最近一个 detail 的 video）
       if (d.title) recentVideoTitle = d.title
       if (d.upName) recentVideoUp = d.upName
+    }
+    // Story 视频上下文：bucket 内 raw 命中 parseStoryItems → 取第一条作为 context
+    // 比 detail 优先（同 bucket 同时有 detail+story raw 时以最新出现的为准）
+    const sItems = parseStoryItems(b.lines)
+    if (sItems.length > 0) {
+      const top = sItems[0]
+      recentVideoTitle = top.title
+      recentVideoUp = top.upName
+    }
+    const storyCommentCount = findStoryCommentCount(b.lines)
+    const storyByCount = storyCommentCount ? storyByCommentCount.get(storyCommentCount) : null
+    if (storyByCount) {
+      recentVideoTitle = storyByCount.title
+      recentVideoUp = storyByCount.upName
     }
     const cm = parseBiliComments(b.lines)
     if (cm) {
@@ -958,6 +1098,28 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
     // 扩展 tsEnd
     if (c.eventTimeMs > target.tsEnd) target.tsEnd = c.eventTimeMs
   }
+  // 2d) Story 竖屏视频：windowClass = StoryVideoActivity
+  // 每个 StoryItem（by title 去重）= 一张独立父卡，跟 detail 平级
+  // 评论浮层 windowClass = bilibili.video.story.view.n，挂到对应 story 父卡作子卡
+  // 全局聚合所有 story raw → 解析 → by title 合并
+  const storyMap = new Map<string, StoryItem>()
+  for (const it of allStoryItems) {
+    const exist = storyMap.get(it.title)
+    if (exist) {
+      exist.lastSeenTs = Math.max(exist.lastSeenTs, it.firstSeenTs)
+      exist.seenCount += 1
+    } else {
+      storyMap.set(it.title, it)
+    }
+  }
+  const storyItems: ListItem[] = Array.from(storyMap.values()).map((it) => ({
+    kind: 'story' as const,
+    key: `story-${it.title}-${it.firstSeenTs}`,
+    tsStart: it.firstSeenTs,
+    tsEnd: it.lastSeenTs,
+    story: it,
+  }))
+
   // 2e) 从动作识别的 video_intro.tabSeq 里抽：
   //   - fullscreen 段 → 按视频 by-title 合并成一张 fullscreen 卡（多次全屏 = 多段 samples 拼起来）
   //   - comment_detail 段 → 不独立成卡，挂到同视频 comments 卡的 commentDetailSegs
@@ -1016,6 +1178,8 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
         )
         if (target) {
           target.commentDetailSegs.push({ startTs: seg.startTs, endTs: seg.endTs })
+          target.tsStart = Math.min(target.tsStart, seg.startTs)
+          target.tsEnd = Math.max(target.tsEnd, seg.endTs)
         }
       }
     }
@@ -1029,13 +1193,32 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
   //    asc 时只翻组级别，组内顺序保持
   type Group = { sortTs: number; items: ListItem[] }
   const groups: Group[] = []
+  const storyActionByTitle = new Map<string, Extract<ListItem, { kind: 'actionLine' }>>()
+  for (const ai of actionItems) {
+    if (ai.kind === 'actionLine' && ai.act === 'video_intro' && ai.isStory && ai.title) {
+      if (!storyActionByTitle.has(ai.title)) storyActionByTitle.set(ai.title, ai)
+    }
+  }
   for (const h of homeItems) {
     if (h.kind === 'home') groups.push({ sortTs: h.tsStart, items: [h] })
   }
-  // 同 title detail 可能有多个（间隔 > 60s 没合并），fs/cmt 卡只能挂第一个 group
-  // 防止同子卡进多个 group → 重复 key + 视觉重复
+  // 同 title detail/story 可能有多次进入，子卡只挂第一个 group 防重复
   const consumedFsKeys = new Set<string>()
   const consumedCmtKeys = new Set<string>()
+  // Story 父卡 + 同标题 comments 子卡（先处理，避免被 detail 抢走）
+  for (const sv of storyItems) {
+    if (sv.kind !== 'story') continue
+    const storyAction = storyActionByTitle.get(sv.story.title)
+    if (!storyAction) continue
+    sv.tsStart = storyAction.ts
+    sv.tsEnd = storyAction.endTs ?? storyAction.ts
+    const groupItems: ListItem[] = [sv]
+    const cmts = mergedCommentItems.filter((c): c is Extract<ListItem, { kind: 'comments' }> =>
+      c.kind === 'comments' && c.videoTitle === sv.story.title && !consumedCmtKeys.has(c.key))
+    cmts.forEach((c) => consumedCmtKeys.add(c.key))
+    groupItems.push(...cmts)
+    groups.push({ sortTs: sv.tsStart, items: groupItems })
+  }
   for (const d of mergedDetailItems) {
     if (d.kind !== 'detail') continue
     const groupItems: ListItem[] = [d]
@@ -1093,13 +1276,16 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
     if (wc === 'android.view.ViewGroup' && t === '倍速') {
       return { kind: 'fullscreen', title: ctx.title ?? undefined, upName: ctx.upName ?? undefined }
     }
-    // 评论详情
+    // 评论详情 / 评论 tab：永远是 video_intro 内的子段（不独立成动作）
+    // 注：state machine 里 video_intro.tabSeq 会处理这些 signal；这里产生的 sig 不会
+    // 单独 push 成动作行（Pass 3 内 video_intro 父在跑就被吸收成子段；不在跑则丢弃）
     if (t === '评论详情') return { kind: 'comment_detail', title: ctx.title ?? undefined, upName: ctx.upName ?? undefined }
-    // 评论 tab
     if (t === '热门评论') return { kind: 'comments', title: ctx.title ?? undefined, upName: ctx.upName ?? undefined }
     // 视频详情：UP 行（主视频指纹）
     const upM = t.match(/^up主(.+?)[,，](.+?)粉丝[,，](\d+)视频/)
     if (upM) return { kind: 'video_intro', upName: upM[1].trim() }
+    // Story 不在 inferSig 触发 video_intro（每秒同时抓 3 个相邻 story 会反复切换）
+    // Story 段单独 pass，按"当前在看视频"识别一次
     // 主页：home windowClass + feed item / banner
     if (wc.includes('MainActivityV2') || wc.endsWith('ScrollView')) {
       if (FEED_PATTERN.test(t) || isBannerCandidate(t)) return { kind: 'home' }
@@ -1108,15 +1294,35 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
   }
 
   // Pass 1：先扫所有 raw，回填 ctx.title + 收所有 signal events
-  type EvSig = { ts: number; rowId: number; sig: { kind: BiliActionKind; title?: string; upName?: string } }
+  type EvSig = { ts: number; rowId: number; windowClass: string; sig: { kind: BiliActionKind; title?: string; upName?: string } }
   const events: EvSig[] = []
   const ctx = { upName: null as string | null, title: null as string | null }
+  // Story raw 上下文：上一行 UP 名 + 当前行粉丝 = 锁定 ctx.upName
+  // 下一行（含 STORY_TITLE_TAIL）= 锁定 ctx.title
+  let prevStoryText = ''
   for (const c of items) {
     if (c.packageName !== 'tv.danmaku.bili') continue
+    const t = c.text.trim()
+    // Story 上下文回填
+    if (c.windowClass.includes('StoryVideoActivity')) {
+      const fansM = t.match(STORY_FANS)
+      if (fansM && prevStoryText && prevStoryText.length <= 30) {
+        ctx.upName = prevStoryText
+        ctx.title = null
+      }
+      const ptailM = t.match(STORY_TITLE_TAIL)
+      if (ptailM) {
+        const title = t.replace(STORY_TITLE_TAIL, '').trim()
+        if (title.length >= 2) ctx.title = title
+      }
+      prevStoryText = t
+    } else {
+      prevStoryText = ''
+    }
     // 标题行 → 更新 ctx（不入 events）
-    const titleM = isDetailTitleMatch(c.text.trim())
+    const titleM = isDetailTitleMatch(t)
     if (titleM) {
-      ctx.title = titleM[1].trim()
+      ctx.title = titleM[2].trim()
       continue
     }
     const sig = inferSig(c, ctx)
@@ -1125,7 +1331,7 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
       if (sig.upName !== ctx.upName) ctx.title = null
       ctx.upName = sig.upName
     }
-    events.push({ ts: c.eventTimeMs, rowId: c.rowId, sig })
+    events.push({ ts: c.eventTimeMs, rowId: c.rowId, windowClass: c.windowClass, sig })
   }
 
   type Cur = {
@@ -1133,6 +1339,8 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
     kind: BiliActionKind;
     title?: string; upName?: string; meta?: string;
     tabSeq?: VideoSubTabSeg[]  // 仅 video_intro 用：界面内 tab 切换序列
+    isStory?: boolean          // 仅 video_intro 用：是否 Story 竖屏视频
+    storyCommentCount?: string | null
   }
   const acts: Cur[] = []
 
@@ -1151,6 +1359,7 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
   const kindToSubTab: Record<string, VideoSubTab> = {
     fullscreen: 'fullscreen', comments: 'comments', comment_detail: 'comment_detail',
   }
+  const ACTION_MERGE_GAP_MS = 60_000
   // 在 video_intro 上追加子段（同子段连续就 extend，不同就 push 新段）
   const pushSubTab = (parent: Cur, tab: VideoSubTab, ts: number) => {
     if (!parent.tabSeq) parent.tabSeq = []
@@ -1172,18 +1381,21 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
 
     // 子动作 → 吸收为父 video_intro 的 tabSeq
     if (cur && cur.kind === 'video_intro' && SUB_TAB_KINDS.has(sig.kind)) {
-      // 子动作不要求 sig.upName 匹配 — 评论 tab 抓不到 upName
       initIntroTab(cur)
-      // 把上一个 intro/sub 段 end 推到当前 ts
       const last = cur.tabSeq![cur.tabSeq!.length - 1]
       last.endTs = e.ts
       pushSubTab(cur, kindToSubTab[sig.kind], e.ts)
       cur.endTs = e.ts
       continue
     }
+    // 不在 video_intro 父下：comments / comment_detail / fullscreen 信号一律丢弃
+    // （它们只能作为 video_intro 的子段存在，不能独立成动作行）
+    // Story 视频通过 Pass 3.6 单独识别，不在 event 流，这里没父也丢
+    if (SUB_TAB_KINDS.has(sig.kind)) continue
     // 在 video_intro 下，遇到同 UP 的 video_intro 信号 = 用户切回简介 tab
     if (cur && cur.kind === 'video_intro' && sig.kind === 'video_intro'
-        && sig.upName && sig.upName === cur.upName) {
+        && sig.upName && sig.upName === cur.upName
+        && e.ts - cur.endTs < ACTION_MERGE_GAP_MS) {
       initIntroTab(cur)
       const last = cur.tabSeq![cur.tabSeq!.length - 1]
       last.endTs = e.ts
@@ -1200,7 +1412,8 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
     if (cur) {
       const sameKind = cur.kind === sig.kind
       const sameVideo = sig.kind !== 'video_intro' || !sig.upName || sig.upName === cur.upName
-      if (sameKind && sameVideo) {
+      const closeEnough = e.ts - cur.endTs < ACTION_MERGE_GAP_MS
+      if (sameKind && sameVideo && closeEnough) {
         cur.endTs = e.ts
         if (sig.title && !cur.title) cur.title = sig.title
         if (sig.upName && !cur.upName) cur.upName = sig.upName
@@ -1211,7 +1424,188 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
     cur = { startTs: e.ts, endTs: e.ts, kind: sig.kind, title: sig.title, upName: sig.upName }
   }
   if (cur) acts.push(cur)
-  acts.sort((a, b) => a.startTs - b.startTs)
+
+  // Pass 3.6：Story 竖屏 video_intro 单独识别
+  // Story 段 raw 每秒同时抓到当前 + 相邻预加载视频，不能把所有 title 都当成进入动作。
+  // 用评论浮层的 "评论（N）" 做强证据；两个强证据标题夹住的中间标题视作划过；
+  // 没有强证据的 Story 段，只取每段首个主块，避免同秒预加载导致成对重复。
+  const parsedStoryItems = parseStoryItems(items
+    .filter((c) => c.packageName === 'tv.danmaku.bili' && c.windowClass.includes('StoryVideoActivity'))
+    .map((c) => ({ rowId: c.rowId, text: c.text, ts: c.eventTimeMs })))
+  const storyMetaByTitle = new Map<string, StoryItem>()
+  for (const it of parsedStoryItems) {
+    if (!storyMetaByTitle.has(it.title)) storyMetaByTitle.set(it.title, it)
+  }
+  type StorySecond = { sec: number; ts: number; titles: string[] }
+  const storySecs = new Map<number, { ts: number; lines: { rowId: number; text: string; ts: number }[] }>()
+  for (const c of items) {
+    if (c.packageName !== 'tv.danmaku.bili') continue
+    if (!c.windowClass.includes('StoryVideoActivity')) continue
+    const sec = Math.floor(c.eventTimeMs / 1000)
+    if (!storySecs.has(sec)) storySecs.set(sec, { ts: c.eventTimeMs, lines: [] })
+    storySecs.get(sec)!.lines.push({ rowId: c.rowId, text: c.text, ts: c.eventTimeMs })
+  }
+  const storySeconds: StorySecond[] = []
+  for (const [sec, g] of storySecs) {
+    const titles: string[] = []
+    const seen = new Set<string>()
+    for (const it of parseStoryItems(g.lines)) {
+      if (!seen.has(it.title)) {
+        seen.add(it.title)
+        titles.push(it.title)
+      }
+    }
+    if (titles.length > 0) storySeconds.push({ sec, ts: g.ts, titles })
+  }
+  storySeconds.sort((a, b) => a.ts - b.ts)
+
+  const storyTitleByCommentCount = new Map<string, StoryItem>()
+  for (const it of parsedStoryItems) {
+    if (it.comments && !storyTitleByCommentCount.has(it.comments)) {
+      storyTitleByCommentCount.set(it.comments, it)
+    }
+  }
+  const commentProofs: { count: string; title: string; firstTs: number; lastTs: number }[] = []
+  const storyCommentCountBySec = new Map<number, string>()
+  for (const c of items) {
+    if (c.packageName !== 'tv.danmaku.bili') continue
+    if (!c.windowClass.includes('bilibili.video.story.view')) continue
+    const count = findStoryCommentCount([{ text: c.text }])
+    if (!count) continue
+    storyCommentCountBySec.set(Math.floor(c.eventTimeMs / 1000), count)
+    const meta = storyTitleByCommentCount.get(count)
+    if (!meta) continue
+    const lastProof = commentProofs[commentProofs.length - 1]
+    if (lastProof && lastProof.count === count && c.eventTimeMs - lastProof.lastTs < 10_000) {
+      lastProof.lastTs = c.eventTimeMs
+    } else {
+      commentProofs.push({ count, title: meta.title, firstTs: c.eventTimeMs, lastTs: c.eventTimeMs })
+    }
+  }
+  commentProofs.sort((a, b) => a.firstTs - b.firstTs)
+
+  const makeStoryAction = (title: string, startTs: number, endTs: number, storyCommentCount?: string | null): Cur | null => {
+    const meta = storyMetaByTitle.get(title)
+    if (!meta) return null
+    return {
+      startTs,
+      endTs,
+      kind: 'video_intro',
+      title,
+      upName: meta.upName,
+      isStory: true,
+      storyCommentCount: storyCommentCount ?? meta.comments,
+      tabSeq: [{ tab: 'intro', startTs, endTs: startTs }],
+    }
+  }
+  const storyActionsByKey = new Map<string, Cur>()
+  const addStoryAction = (title: string, startTs: number, endTs: number, storyCommentCount?: string | null) => {
+    for (const existing of storyActionsByKey.values()) {
+      if (existing.title === title && startTs <= existing.endTs + 10_000 && endTs >= existing.startTs - 10_000) {
+        existing.startTs = Math.min(existing.startTs, startTs)
+        existing.endTs = Math.max(existing.endTs, endTs)
+        if (storyCommentCount) existing.storyCommentCount = storyCommentCount
+        const intro = existing.tabSeq?.[0]
+        if (intro && intro.tab === 'intro') {
+          intro.startTs = existing.startTs
+          intro.endTs = Math.max(intro.endTs, existing.startTs)
+        }
+        return existing
+      }
+    }
+    const key = `${title}@${Math.floor(startTs / 1000)}`
+    const existing = storyActionsByKey.get(key)
+    if (existing) {
+      existing.endTs = Math.max(existing.endTs, endTs)
+      if (storyCommentCount) existing.storyCommentCount = storyCommentCount
+      return existing
+    }
+    const act = makeStoryAction(title, startTs, endTs, storyCommentCount)
+    if (!act) return null
+    storyActionsByKey.set(key, act)
+    return act
+  }
+  const earliestPrimaryTs = (title: string, beforeTs: number): number | null => {
+    for (const s of storySeconds) {
+      if (s.ts > beforeTs) break
+      if (s.titles[0] === title) return s.ts
+    }
+    return null
+  }
+  for (let i = 0; i < commentProofs.length; i++) {
+    const p = commentProofs[i]
+    const primaryTs = earliestPrimaryTs(p.title, p.firstTs)
+    const startTs = primaryTs != null && p.firstTs - primaryTs < 30_000 ? primaryTs : p.firstTs
+    addStoryAction(p.title, startTs, p.lastTs, p.count)
+  }
+  for (let i = 0; i < commentProofs.length - 1; i++) {
+    const prev = commentProofs[i]
+    const next = commentProofs[i + 1]
+    for (const s of storySeconds) {
+      if (s.ts <= prev.lastTs || s.ts >= next.firstTs) continue
+      const prevIdx = s.titles.indexOf(prev.title)
+      const nextIdx = s.titles.indexOf(next.title)
+      if (prevIdx < 0 || nextIdx <= prevIdx + 1) continue
+      for (const title of s.titles.slice(prevIdx + 1, nextIdx)) {
+        addStoryAction(title, s.ts, next.firstTs)
+      }
+    }
+  }
+  // 没有评论强证据的 Story 段，保留每段首个主块；这类段无法从 a11y 判断相邻预加载。
+  let segStartIdx = 0
+  for (let i = 0; i <= storySeconds.length; i++) {
+    const prev = storySeconds[i - 1]
+    const curSec = storySeconds[i]
+    const isBreak = i === storySeconds.length || (prev && curSec && curSec.ts - prev.ts > 10_000)
+    if (!isBreak) continue
+    const seg = storySeconds.slice(segStartIdx, i)
+    segStartIdx = i
+    if (seg.length === 0) continue
+    const segStart = seg[0].ts
+    const segEnd = seg[seg.length - 1].ts
+    const overlapsExisting = Array.from(storyActionsByKey.values()).some((a) =>
+      a.startTs <= segEnd && a.endTs >= segStart)
+    const nearCommentProof = commentProofs.some((p) =>
+      segStart >= p.firstTs && segStart <= p.lastTs + 10_000)
+    if (!overlapsExisting && !nearCommentProof) addStoryAction(seg[0].titles[0], segStart, segEnd)
+  }
+
+  const storyVideoActs = Array.from(storyActionsByKey.values()).sort((a, b) => a.startTs - b.startTs)
+  for (const v of storyVideoActs) {
+    initIntroTab(v)
+  }
+  for (const e of events) {
+    if (!e.windowClass.includes('bilibili.video.story.view')) continue
+    if (!SUB_TAB_KINDS.has(e.sig.kind)) continue
+    if (e.sig.kind === 'fullscreen') continue
+    const count = storyCommentCountBySec.get(Math.floor(e.ts / 1000))
+    let target: Cur | undefined
+    if (count) {
+      for (const v of storyVideoActs) {
+        if (v.storyCommentCount === count && e.ts >= v.startTs && (!target || v.startTs > target.startTs)) {
+          target = v
+        }
+      }
+    }
+    if (!target) {
+      for (const v of storyVideoActs) {
+        if (e.ts >= v.startTs && (!target || v.startTs > target.startTs)) target = v
+      }
+    }
+    if (!target) continue
+    const last = target.tabSeq![target.tabSeq!.length - 1]
+    last.endTs = e.ts
+    pushSubTab(target, kindToSubTab[e.sig.kind], e.ts)
+    target.endTs = Math.max(target.endTs, e.ts)
+  }
+  for (const v of storyVideoActs) {
+    delete v.storyCommentCount
+    acts.push(v)
+  }
+
+  // 动作是时间段，"新→旧"按结束时间更符合视觉时间线：
+  // 例如 home 19:33→19:42 应排在 19:33→19:34 的视频之上。
+  acts.sort((a, b) => a.endTs - b.endTs || a.startTs - b.startTs)
 
   // Pass 3.5：video_intro 标题回填
   // UP 行先于标题行出现，inferSig 的 sig.title 永远 undefined
@@ -1284,6 +1678,7 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
     upName: a.upName,
     meta: a.meta,
     tabSeq: a.tabSeq,
+    isStory: a.isStory,
   })).reverse()
 }
 
@@ -1325,9 +1720,9 @@ function RenderList({
   sortOrder: SortOrder
   refreshing: boolean
   onRefresh: () => void
-  jumpTarget: number | null
+  jumpTarget: JumpTarget | null
   onJumpDone: (targetKey: string | null) => void
-  onCrossJump: (targetViewMode: ViewMode, ts: number) => void
+  onCrossJump: CrossJump
   highlightKey: string | null
 }) {
   // 【DEV-only】按时间戳范围过滤 raw items（卡片对照调试）
@@ -1364,15 +1759,35 @@ function RenderList({
   useEffect(() => {
     if (jumpTarget == null) return
     if (listItems.length === 0) { onJumpDone(null); return }
+    const targetTs = jumpTarget.ts
+    const preferKind = jumpTarget.preferKind
     const getTs = (it: ListItem) => {
       if ('tsStart' in it) return it.tsStart
       if ('ts' in it) return it.ts
       return 0
     }
+    // 1) 优先匹配 preferKind 且 ts 在范围内的 item（用于动作子段精确跳到对应卡）
     let bestIdx = -1, bestDelta = Infinity
-    for (let i = 0; i < listItems.length; i++) {
-      const d = Math.abs(getTs(listItems[i]) - jumpTarget)
-      if (d < bestDelta) { bestDelta = d; bestIdx = i }
+    if (preferKind) {
+      for (let i = 0; i < listItems.length; i++) {
+        const it = listItems[i]
+        if (it.kind !== preferKind) continue
+        const tsStart = 'tsStart' in it ? it.tsStart : getTs(it)
+        const tsEnd = 'tsEnd' in it ? it.tsEnd : tsStart
+        // ts 落在范围内直接命中
+        if (targetTs >= tsStart && targetTs <= tsEnd) { bestIdx = i; break }
+        // 否则按距离最近 pref item
+        const d = Math.min(Math.abs(tsStart - targetTs), Math.abs(tsEnd - targetTs))
+        if (d < bestDelta) { bestDelta = d; bestIdx = i }
+      }
+    }
+    // 2) 兜底：找 ts 最近的任意 item
+    if (bestIdx < 0) {
+      bestDelta = Infinity
+      for (let i = 0; i < listItems.length; i++) {
+        const d = Math.abs(getTs(listItems[i]) - targetTs)
+        if (d < bestDelta) { bestDelta = d; bestIdx = i }
+      }
     }
     if (bestIdx >= 0) {
       try {
@@ -1427,7 +1842,48 @@ function RenderList({
   )
 }
 
-function ListItemView({ item, sortOrder, onCrossJump, highlighted }: { item: ListItem; sortOrder: SortOrder; onCrossJump: (vm: ViewMode, ts: number) => void; highlighted: boolean }) {
+function StorySnapView({ item: s, highlighted }: { item: Extract<ListItem, { kind: 'story' }>; highlighted: boolean }) {
+  const it = s.story
+  const tsLabel = s.tsStart === s.tsEnd
+    ? fmtTime(s.tsEnd)
+    : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
+  return (
+    <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
+      <View style={[styles.snapCardHead, styles.snapCardHeadDetail]}>
+        <View style={[styles.snapCardAccentBar, { backgroundColor: '#00AEEC' }]} />
+        <View style={styles.snapCardHeadText}>
+          <Text style={styles.snapCardTitle}>视频播放界面（竖屏）</Text>
+          <Text style={styles.snapCardSubtitle}>{tsLabel}{it.seenCount > 1 ? ` · 看 ${it.seenCount} 次` : ''}</Text>
+        </View>
+      </View>
+      <View style={styles.snapCardBody}>
+        <View style={styles.detailMainBlock}>
+          <View style={styles.storyTitleRow}>
+            {it.isAd && <Text style={styles.storyAdTag}>广告</Text>}
+            <Text style={styles.detailTitle}>{it.title}</Text>
+          </View>
+          <View style={styles.detailUpRow}>
+            <Text style={styles.detailUp}>@{it.upName}</Text>
+            <Text style={styles.detailUpMeta}>{it.upFans} 粉丝</Text>
+            {it.views && <Text style={styles.detailUpMeta}>{it.views}</Text>}
+          </View>
+          {it.tag && <Text style={styles.storyTag} numberOfLines={1}>{it.tag}</Text>}
+          {(it.likes || it.comments || it.coins || it.favorites || it.shares) && (
+            <View style={styles.detailStatsRow}>
+              {it.likes && <Text style={styles.detailStat}>👍 {it.likes}</Text>}
+              {it.comments && <Text style={styles.detailStat}>💬 {it.comments}</Text>}
+              {it.coins && <Text style={styles.detailStat}>🪙 {it.coins}</Text>}
+              {it.favorites && <Text style={styles.detailStat}>⭐ {it.favorites}</Text>}
+              {it.shares && <Text style={styles.detailStat}>↗ {it.shares}</Text>}
+            </View>
+          )}
+        </View>
+      </View>
+    </View>
+  )
+}
+
+function ListItemView({ item, sortOrder, onCrossJump, highlighted }: { item: ListItem; sortOrder: SortOrder; onCrossJump: CrossJump; highlighted: boolean }) {
   // 视频组子卡：fullscreen / comments 且 _groupIdx > 0 = 子层级
   const groupIdx = (item as any)._groupIdx ?? 0
   const isChild = groupIdx > 0 && (item.kind === 'fullscreen' || item.kind === 'comments')
@@ -1437,6 +1893,8 @@ function ListItemView({ item, sortOrder, onCrossJump, highlighted }: { item: Lis
     inner = <HomeSnapView item={item} sortOrder={sortOrder} onCrossJump={onCrossJump} highlighted={highlighted} />
   } else if (item.kind === 'detail') {
     inner = <DetailSnapView item={item} onCrossJump={onCrossJump} highlighted={highlighted} />
+  } else if (item.kind === 'story') {
+    inner = <StorySnapView item={item} highlighted={highlighted} />
   } else if (item.kind === 'comments') {
     inner = <CommentsSnapView item={item} sortOrder={sortOrder} onCrossJump={onCrossJump} highlighted={highlighted} />
   } else if (item.kind === 'fullscreen') {
@@ -1461,7 +1919,7 @@ function ListItemView({ item, sortOrder, onCrossJump, highlighted }: { item: Lis
   return inner
 }
 
-function HomeSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'home' }>; sortOrder: SortOrder; onCrossJump: (vm: ViewMode, ts: number) => void; highlighted: boolean }) {
+function HomeSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'home' }>; sortOrder: SortOrder; onCrossJump: CrossJump; highlighted: boolean }) {
   // 卡头点击 → 跳到对应动作
   const onHeadPress = () => onCrossJump('action', s.tsStart)
   // feedItems 默认按 firstSeenTs ASC（视觉自顶向下）；desc 时反转
@@ -1547,7 +2005,7 @@ function HomeSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { item: 
   )
 }
 
-function DetailSnapView({ item: s, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'detail' }>; onCrossJump: (vm: ViewMode, ts: number) => void; highlighted: boolean }) {
+function DetailSnapView({ item: s, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'detail' }>; onCrossJump: CrossJump; highlighted: boolean }) {
   const onHeadPress = () => onCrossJump('action', s.tsStart)
   // 相关推荐目前按 a11y 抓取顺序，跟时间顺序无关 — 不跟 sortOrder 翻
   // 评论数用 d.related 自身；主视频信息没有时间维度
@@ -1729,7 +2187,7 @@ function PlayProgressStrip({ samples }: { samples: PlayProgressSample[] }) {
 
 const COMMENTS_ACCENT = '#FBB04C'
 
-function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'comments' }>; sortOrder: SortOrder; onCrossJump: (vm: ViewMode, ts: number) => void; highlighted: boolean }) {
+function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'comments' }>; sortOrder: SortOrder; onCrossJump: CrossJump; highlighted: boolean }) {
   const onHeadPress = () => onCrossJump('action', s.tsStart)
   // 评论默认按 raw 出现顺序（视觉自顶向下）；desc 时反转
   const comments: CommentItem[] = sortOrder === 'desc' ? [...s.comments].reverse() : s.comments
@@ -1799,14 +2257,16 @@ function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { it
   )
 }
 
-// 哪些动作有对应卡片可跳：home → home 卡 / video_intro → detail 卡 / comments, comment_detail → comments 卡
-const ACTION_HAS_CARD: Record<BiliActionKind, boolean> = {
-  splash: false, home: true, video_intro: true, fullscreen: false,
-  comments: true, comment_detail: true,
+function getActionJumpKind(a: Extract<ListItem, { kind: 'actionLine' }>): JumpKind | null {
+  if (a.act === 'home') return 'home'
+  if (a.act === 'video_intro') return a.isStory ? 'story' : 'detail'
+  if (a.act === 'fullscreen') return 'fullscreen'
+  if (a.act === 'comments' || a.act === 'comment_detail') return 'comments'
+  return null
 }
 
 // 全屏播放子卡 — video_intro 的 fullscreen 段独立成卡
-function FullscreenSnapView({ item: s, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'fullscreen' }>; onCrossJump: (vm: ViewMode, ts: number) => void; highlighted: boolean }) {
+function FullscreenSnapView({ item: s, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'fullscreen' }>; onCrossJump: CrossJump; highlighted: boolean }) {
   const onHeadPress = () => onCrossJump('action', s.tsStart)
   const tsLabel = s.tsStart === s.tsEnd ? fmtTime(s.tsEnd) : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
   const FS_COLOR = SUB_TAB_LABEL.fullscreen.color
@@ -1832,23 +2292,24 @@ function FullscreenSnapView({ item: s, onCrossJump, highlighted }: { item: Extra
 }
 
 // 评论详情子卡 — video_intro 的 comment_detail 段独立成卡
-function ActionLineView({ item: a, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'actionLine' }>; onCrossJump: (vm: ViewMode, ts: number) => void; highlighted: boolean }) {
+function ActionLineView({ item: a, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'actionLine' }>; onCrossJump: CrossJump; highlighted: boolean }) {
   const cfg = ACTION_CFG[a.act]
   const lasted = a.endTs ? Math.round((a.endTs - a.ts) / 1000) : 0
   const timeRange = lasted >= 1
     ? `${fmtTime(a.ts)} → ${fmtTime(a.endTs!)}`
     : fmtTime(a.ts)
-  const canJump = ACTION_HAS_CARD[a.act]
+  const jumpKind = getActionJumpKind(a)
+  const canJump = jumpKind != null
   return (
     <Pressable
-      onPress={canJump ? () => onCrossJump('feed', a.ts) : undefined}
+      onPress={jumpKind ? () => onCrossJump('feed', a.ts, jumpKind) : undefined}
       disabled={!canJump}
       style={[styles.actionRow, highlighted && styles.actionRowHighlight]}
     >
       <View style={[styles.actionDot, { backgroundColor: cfg.color }]} />
       <View style={styles.actionBody}>
         <View style={styles.actionHead}>
-          <Text style={[styles.actionKind, { color: cfg.color }]}>{a.act === 'video_intro' ? '进入视频播放界面' : cfg.label}</Text>
+          <Text style={[styles.actionKind, { color: cfg.color }]}>{a.act === 'video_intro' ? `进入视频播放界面${a.isStory ? '（竖屏）' : ''}` : cfg.label}</Text>
           {canJump && <Text style={styles.jumpHint}>→ 卡片</Text>}
           {lasted >= 1 && <Text style={styles.actionLasted}>停留 {lasted}s</Text>}
         </View>
@@ -1870,7 +2331,11 @@ function ActionLineView({ item: a, onCrossJump, highlighted }: { item: Extract<L
               const sub = SUB_TAB_LABEL[seg.tab]
               const dur = Math.round((seg.endTs - seg.startTs) / 1000)
               const hasCard = seg.tab !== 'intro'
-              const onSegPress = hasCard ? () => onCrossJump('feed', seg.startTs) : undefined
+              const segJumpKind: JumpKind = seg.tab === 'fullscreen' ? 'fullscreen' : 'comments'
+              const onSegPress = hasCard ? (e: any) => {
+                e?.stopPropagation?.()
+                onCrossJump('feed', seg.startTs, segJumpKind)
+              } : undefined
               const w = seg.tab === 'fullscreen' ? seg.watch : null
               return (
                 <View key={i} style={styles.subTabSegRow}>
@@ -2519,6 +2984,24 @@ const styles = StyleSheet.create({
   feedDot: { fontSize: 11, color: theme.inkFaint },
   feedMetaText: { fontSize: 11, color: theme.inkSoft },
   feedSeenCount: { fontSize: 10, color: theme.inkFaint, marginLeft: 'auto', fontVariant: ['tabular-nums'] },
+  // Story 竖屏视频卡
+  storyRow: {
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.lineSoft,
+  },
+  storyTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
+  storyAdTag: {
+    fontSize: 10, fontWeight: '700', color: '#F59E0B',
+    backgroundColor: alpha('#F59E0B', 0.12),
+    paddingHorizontal: 4, paddingVertical: 1,
+    borderRadius: 3, overflow: 'hidden',
+  },
+  storyTitle: { flex: 1, fontSize: 13, color: theme.ink, fontWeight: '600', lineHeight: 18 },
+  storyUp: { fontSize: 11, color: theme.inkSoft, marginBottom: 4 },
+  storyTag: { fontSize: 11, color: '#8B5CF6', marginBottom: 4 },
+  storyStats: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 2 },
+  storyStat: { fontSize: 11, color: theme.inkSoft, fontVariant: ['tabular-nums'] },
   // 2 列瀑布流网格
   gridRow: {
     flexDirection: 'row',

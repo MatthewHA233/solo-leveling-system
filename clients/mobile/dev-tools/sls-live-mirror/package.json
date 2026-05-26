@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node dev.mjs",
+    "api": "node mirror-server.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "6.0.2",
+    "react-dom": "19.2.3",
+    "react-native-web": "0.21.2",
+    "vite": "8.0.14"
+  },
+  "devDependencies": {}
+}
