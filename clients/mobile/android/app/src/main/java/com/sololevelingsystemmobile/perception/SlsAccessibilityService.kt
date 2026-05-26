@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.Log
@@ -15,6 +17,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -71,6 +74,77 @@ class SlsAccessibilityService : AccessibilityService() {
 
   @Volatile private var lastTorrentSampleTs: Long = 0L
 
+  // 1Hz 强制轮询 — 用户进入 TORRENT_PACKAGES app 时启动，离开时停止
+  // 解决浮层期（如 B 站评论详情）用户静静看不触发 a11y event → 0 采样问题
+  private val mainHandler = Handler(Looper.getMainLooper())
+  private val pollingActive = AtomicBoolean(false)
+  @Volatile private var pollingForPkg: String? = null
+  private val pollingRunnable = object : Runnable {
+    override fun run() {
+      if (!pollingActive.get()) return
+      val pkg = pollingForPkg ?: return
+      // 检查 rootInActiveWindow 是否还是目标 app（用户切走了就停）
+      val root = try { rootInActiveWindow } catch (_: Throwable) { null }
+      val rootPkg = root?.packageName?.toString()
+      if (rootPkg != pkg) {
+        // 用户切到别的 app，停轮询
+        pollingActive.set(false)
+        pollingForPkg = null
+        Log.d(TAG, "torrent poll stop: rootPkg=$rootPkg != $pkg")
+        return
+      }
+      forceSampleTorrent(pkg, root)
+      mainHandler.postDelayed(this, POLLING_INTERVAL_MS)
+    }
+  }
+  private fun startTorrentPolling(pkg: String) {
+    if (pollingActive.compareAndSet(false, true)) {
+      pollingForPkg = pkg
+      Log.d(TAG, "torrent poll start: $pkg")
+      mainHandler.postDelayed(pollingRunnable, POLLING_INTERVAL_MS)
+    } else if (pollingForPkg != pkg) {
+      // 切到同白名单内的另一个 app，更新目标
+      pollingForPkg = pkg
+    }
+  }
+  private fun stopTorrentPolling() {
+    pollingActive.set(false)
+    pollingForPkg = null
+    mainHandler.removeCallbacks(pollingRunnable)
+  }
+
+  /** 1Hz 轮询版采样：不依赖 event，直接 dump 当前 root 树。
+   *  跟 maybeSampleTorrent 共用 throttle —— 1s 内 event 已采过就跳过 */
+  private fun forceSampleTorrent(pkg: String, root: AccessibilityNodeInfo) {
+    val now = System.currentTimeMillis()
+    if (now - lastTorrentSampleTs < TORRENT_THROTTLE_MS) return
+    lastTorrentSampleTs = now
+    val windowClass = lastClass ?: ""
+    val texts = ArrayList<Pair<String, String>>()
+    collectTexts(root, texts, depth = 0, maxNodes = 600)
+    if (texts.isEmpty()) return
+    executor.execute {
+      try {
+        var inserted = 0
+        for ((text, srcCls) in texts) {
+          val trimmed = text.trim()
+          if (trimmed.length < 2) continue
+          if (db.insertTorrentCapture(
+              eventTimeMs = now,
+              packageName = pkg,
+              windowClass = windowClass,
+              captureType = "a11y-poll",  // 标记 poll 来源便于排查
+              text = trimmed,
+              sourceClass = srcCls,
+            )) inserted++
+        }
+        if (inserted > 0) Log.d(TAG, "torrent POLL pkg=$pkg cls=$windowClass +$inserted")
+      } catch (ex: Throwable) {
+        Log.w(TAG, "torrent poll insert failed", ex)
+      }
+    }
+  }
+
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     val e = event ?: return
     // 诊断：B 站 a11y event 全打，看点视频时具体触发什么类型
@@ -84,6 +158,12 @@ class SlsAccessibilityService : AccessibilityService() {
       AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
         handleWindowState(e)
         maybeSampleTorrent(e, throttle = false)
+        // 进入 / 切换到白名单 app → 启 1Hz 轮询；离开 → 停
+        if (pkg in TORRENT_PACKAGES) {
+          startTorrentPolling(pkg)
+        } else {
+          stopTorrentPolling()
+        }
       }
       AccessibilityEvent.TYPE_VIEW_CLICKED -> handleClick(e)
       AccessibilityEvent.TYPE_VIEW_SCROLLED,
@@ -307,6 +387,7 @@ class SlsAccessibilityService : AccessibilityService() {
 
   override fun onDestroy() {
     instanceRunning = false
+    stopTorrentPolling()
     if (powerReceiverRegistered) {
       try { unregisterReceiver(powerReceiver) } catch (_: Throwable) {}
       powerReceiverRegistered = false
@@ -328,6 +409,7 @@ class SlsAccessibilityService : AccessibilityService() {
     // "洪流域"抓取白名单 + 节流。Phase 1 先 B 站
     private val TORRENT_PACKAGES = setOf("tv.danmaku.bili")
     private const val TORRENT_THROTTLE_MS = 500L
+    private const val POLLING_INTERVAL_MS = 1000L  // 1Hz 强制轮询，浮层静态期兜底
 
     @Volatile
     private var instanceRunning: Boolean = false

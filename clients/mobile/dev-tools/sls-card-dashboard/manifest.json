@@ -9,6 +9,7 @@
   "compare_units": [
     {
       "id": "card-home",
+      "category": "card",
       "title": "卡片 #1 · B 站主页大卡",
       "real_time_range": "10:17:09 ~ 10:17:19（开屏广告结束 → 进入第一个视频前）",
       "real_frames": [
@@ -19,7 +20,7 @@
         { "src": "shots/card-home-v3-asc.png", "caption": "v3（旧→新）：横幅在顶 + 已关注橙色 + 顺序一致 + 时间范围卡头" }
       ],
       "issues": [
-        { "code": "A", "level": "fixed", "text": "feed item 顺序乱：3 个 build 函数遍历的是 native 默认 DESC items，识别逻辑反着跑", "fix": "build 函数开头先 sort by rowId ASC" },
+        { "code": "A", "level": "fixed", "text": "feed item 顺序乱：build 函数遍历的是 native 默认 DESC items，识别逻辑反着跑", "fix": "build 函数开头先 sort by rowId ASC" },
         { "code": "B", "level": "fixed", "text": "漏掉顶部横幅广告卡《碧蓝航线 9 周年》", "fix": "isBannerCandidate：/^【…】/ 开头长 > 10 + 不在 feed title 集合 → 当横幅视频 push" },
         { "code": "C", "level": "fixed", "text": "每秒生成相同主页大卡，重复堆积", "fix": "home 段（gap < 60s）合并成一张大卡 + by-title 去重 + seenCount 记录被刷次数" },
         { "code": "D", "level": "fixed", "text": "已关注没显示 / 位置不对", "fix": "挪到 @UP 同行；橙 ✓ 已关注 + 灰 UP 名" },
@@ -30,8 +31,80 @@
       "status": "fixed"
     },
     {
-      "id": "action-line",
-      "title": "卡片 #2 · 还原动作时间线",
+      "id": "card-detail",
+      "category": "card",
+      "title": "卡片 #2 · 视频播放界面大卡",
+      "real_time_range": "10:17:24 ~ 10:17:51（Cursor 视频简介页 + 全屏）",
+      "real_frames": [
+        { "src": "frames/f0105.jpg", "caption": "+35s 10:17:24 Cursor 视频简介" },
+        { "src": "frames/f0120.jpg", "caption": "+40s 10:17:29 进入全屏" }
+      ],
+      "sls_shots": [],
+      "issues": [
+        { "code": "A", "level": "pending", "text": "互动视频 / 普通视频图标区分", "fix": "待定" },
+        { "code": "B", "level": "pending", "text": "主视频区域 vs 相关推荐分组样式", "fix": "待定" }
+      ],
+      "status": "pending"
+    },
+    {
+      "id": "card-comments",
+      "category": "card",
+      "title": "卡片 #3 · 评论区大卡",
+      "real_time_range": "10:17:42 ~ 10:17:51（Cursor 评论 8）",
+      "real_frames": [
+        { "src": "frames/f0165.jpg", "caption": "+55s 10:17:45 进入评论 tab" }
+      ],
+      "sls_shots": [],
+      "issues": [
+        { "code": "A", "level": "pending", "text": "评论楼主 / 红方 / 已投 等徽章", "fix": "待定" },
+        { "code": "B", "level": "pending", "text": "评论合并条件（不同视频的评论应分卡）", "fix": "待定" }
+      ],
+      "status": "pending"
+    },
+    {
+      "id": "action-cursor-detail",
+      "category": "action",
+      "title": "动作 · Cursor 段逐帧拆解（金标）",
+      "real_time_range": "10:17:24 ~ 10:17:58（34 秒）· 每秒一帧 → 滚相关推荐 → 进 Pi Agent",
+      "real_frames": [
+        { "src": "frames/f0102.jpg", "caption": "+34s / 10:17:24 进入 Cursor 简介页（骨架加载中）" },
+        { "src": "frames/f0108.jpg", "caption": "+36s / 10:17:26 简介页加载完成 · 看顶部播放器 + 互动按钮 + 合集" },
+        { "src": "frames/f0114.jpg", "caption": "+38s / 10:17:28 简介页停留（无滚动）" },
+        { "src": "frames/f0120.jpg", "caption": "+40s / 10:17:30 ★ 切到全屏播放（视频内 00:06）" },
+        { "src": "frames/f0126.jpg", "caption": "+42s / 10:17:32 全屏播放（字幕 'and it was focused...'）" },
+        { "src": "frames/f0132.jpg", "caption": "+44s / 10:17:34 全屏播放（字幕 'it wasnt Gemini 3.5 Flash'）" },
+        { "src": "frames/f0138.jpg", "caption": "+46s / 10:17:36 全屏播放（无字幕）" },
+        { "src": "frames/f0144.jpg", "caption": "+48s / 10:17:38 全屏 + 控件显示（00:15/37:30 · 暂停/选集/倍速）" },
+        { "src": "frames/f0150.jpg", "caption": "+50s / 10:17:40 ★ 退全屏 → 回简介页（视频内 00:18）" },
+        { "src": "frames/f0156.jpg", "caption": "+52s / 10:17:42 ★ 切到评论 tab（评论列表骨架）" },
+        { "src": "frames/f0162.jpg", "caption": "+54s / 10:17:44 评论加载完成 · 看 cursor/kimi 评论" },
+        { "src": "frames/f0168.jpg", "caption": "+56s / 10:17:46 ★ 进入评论详情（智利车厘子 → 已成 hater）" },
+        { "src": "frames/f0174.jpg", "caption": "+58s / 10:17:48 评论详情（看回复）" },
+        { "src": "frames/f0180.jpg", "caption": "+60s / 10:17:50 ★ 返回评论列表" },
+        { "src": "frames/f0186.jpg", "caption": "+62s / 10:17:52 ★ 切回简介 tab（播放器恢复 + 简介区加载）" },
+        { "src": "frames/f0189.jpg", "caption": "+63s / 10:17:53 ★ 滚相关推荐（露出 Pi Agent / 陶哲轩）" },
+        { "src": "frames/f0192.jpg", "caption": "+64s / 10:17:54 继续滚（露出 Cursor 使用教程）" },
+        { "src": "frames/f0195.jpg", "caption": "+65s / 10:17:55 滚停（推荐列表深处）" },
+        { "src": "frames/f0198.jpg", "caption": "+66s / 10:17:56 停留" },
+        { "src": "frames/f0201.jpg", "caption": "+67s / 10:17:57 ★ 点 Pi Agent 卡片（卡片淡出态）" },
+        { "src": "frames/f0204.jpg", "caption": "+68s / 10:17:58 ★ 进入 Pi Agent 简介页（加载骨架）" }
+      ],
+      "sls_shots": [],
+      "issues": [
+        { "code": "REL-MORE", "level": "fixed", "text": "10:17:53~55 滚相关推荐 → 真实 6 条。原 SLS 只显示 1 条，因为 ViewGroup windowClass 不进 detail bucket。修：2d) 单独扫所有 raw 的 feed item，按 ts 归属到对应 detail item。现已识别 Cursor Composer 2.5 / Pi Agent / 陶哲轩 / Cursor 使用教程 4 条。'嗨海'特殊推荐位无 UP 过滤掉；'追溯伪知识'在推送条不在相关推荐", "fix": "已在 buildFeedListItems 加 2d) 相关推荐归属逻辑" },
+        { "code": "CLICK-REL", "level": "high", "text": "10:17:57 点 Pi Agent 推荐卡 = '从推荐进入下一视频'，这个跳转链路是 video → next-video 的关键关联（不只是新动作）", "fix": "动作行加 '来自 推荐列表' 标签（fromRelated）" },
+        { "code": "TAB-BACK-INTRO", "level": "mid", "text": "10:17:52 从评论列表切回简介 — tabSeq 应有 intro 回退段", "fix": "已支持（同 UP 的 video_intro 信号 → 回 intro 段）但要 verify" },
+        { "code": "FS-IN-OUT", "level": "fixed", "text": "10:17:30 进全屏 / 10:17:40 退全屏 — fullscreen 段已识别（windowClass ViewGroup ↔ UnitedBiz 切换）", "fix": "已支持" },
+        { "code": "FS-WATCH", "level": "fixed", "text": "全屏期视频内 00:06 → 00:18 = 12s（倍速）", "fix": "PlayProgressStrip 已能反映" },
+        { "code": "TAB-SWITCH", "level": "fixed", "text": "10:17:42 切评论 / 10:17:52 切回简介 — tabSeq 子 chip 已支持", "fix": "ActionLineView" },
+        { "code": "CMT-DETAIL-CARD", "level": "pending", "text": "10:17:46~50 评论详情独立页 — SLS 应独立卡显示这条详情（智利车厘子的评论 + hater 回复）", "fix": "评论详情独立卡待做" }
+      ],
+      "status": "pending"
+    },
+    {
+      "id": "action-overview",
+      "category": "action",
+      "title": "动作 · 整段时间线",
       "real_time_range": "10:17:04 ~ 10:18:34（整段 B 站浏览）",
       "real_frames": [
         { "src": "frames/f0045.jpg", "caption": "+15s 10:17:04 开屏广告（跳过 5）" },
@@ -54,9 +127,40 @@
         { "code": "B", "level": "fixed", "text": "评论/全屏期间 UP 行持续被抓，video_intro 反复触发", "fix": "DETAIL_INNER（fullscreen/comments/comment_detail）期间同 UP 主的 video_intro 信号吸收" },
         { "code": "C", "level": "fixed", "text": "时间范围语义：HH:MM:SS → HH:MM:SS + 停留 Xs", "fix": "ActionLineView 双行显示" },
         { "code": "D", "level": "fixed", "text": "splash meta 不要带 '跳过 1' 数字", "fix": "splash 段不带 meta" },
-        { "code": "E", "level": "pending", "text": "动作小面板点击跳转到对应卡片（动作 ↔ 卡片双向）", "fix": "下一轮做：FlatList ref + scrollToIndex + viewMode 切换" }
+        { "code": "E", "level": "fixed", "text": "动作小面板点击跳转到对应卡片（动作 ↔ 卡片双向）", "fix": "FlatList ref + scrollToIndex + onCrossJump + 1.6s 高亮 + → 卡片/→ 动作 标签" },
+        { "code": "F", "level": "pending", "text": "全屏退出信号弱（B 站从横屏回竖屏没有可靠 a11y 事件）", "fix": "用 raw 间隔 + ScrollView class 变化推断 ≠ 实际退出时刻" },
+        { "code": "G", "level": "pending", "text": "切回简介 tab vs 进评论详情 区分（信号弱）", "fix": "待定" }
       ],
       "status": "pending"
+    },
+    {
+      "id": "action-splash",
+      "category": "action",
+      "title": "动作段 · 开屏广告",
+      "real_time_range": "10:17:04 ~ 10:17:10",
+      "real_frames": [
+        { "src": "frames/f0045.jpg", "caption": "+15s 10:17:04 跳过 5" }
+      ],
+      "sls_shots": [],
+      "issues": [
+        { "code": "A", "level": "skip", "text": "无对应卡片可跳", "fix": "已禁用 splash 行的跳转标签 + Pressable" }
+      ],
+      "status": "fixed"
+    },
+    {
+      "id": "action-fullscreen",
+      "category": "action",
+      "title": "动作段 · 进入全屏播放",
+      "real_time_range": "10:17:29 ~ 10:17:40",
+      "real_frames": [
+        { "src": "frames/f0120.jpg", "caption": "+40s 10:17:29 横屏" }
+      ],
+      "sls_shots": [],
+      "issues": [
+        { "code": "A", "level": "fixed", "text": "全屏内 UP 行还在抓导致 video_intro 反复触发", "fix": "DETAIL_INNER 吸收同 UP 行" },
+        { "code": "B", "level": "skip", "text": "无对应卡片（全屏播放无独立卡）", "fix": "禁用跳转" }
+      ],
+      "status": "fixed"
     }
   ]
 }

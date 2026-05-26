@@ -16,8 +16,13 @@ header { padding:18px 28px; border-bottom:1px solid var(--line); background:var(
 header h1 { margin:0; font-size:18px; font-weight:700; }
 header .meta { color:var(--ink-soft); font-size:12px; }
 header .meta b { color:var(--ink); }
-header .refresh { margin-left:auto; padding:6px 14px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; }
+header .refresh { padding:6px 14px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; }
 header .refresh:hover { opacity:.85; }
+.tabs { display:flex; gap:8px; margin-left:auto; }
+.tab { padding:6px 14px; background:transparent; color:var(--ink-soft); border:1px solid var(--line); border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; }
+.tab.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+.tab:hover:not(.on) { color:var(--ink); border-color:var(--ink-soft); }
+.tab-count { opacity:.7; margin-left:6px; font-weight:500; }
 main { padding:24px 28px; max-width:1600px; }
 .unit { background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:24px; }
 .unit-head { display:flex; align-items:baseline; gap:16px; margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line); }
@@ -59,8 +64,9 @@ main { padding:24px 28px; max-width:1600px; }
 </head>
 <body>
 <header>
-  <h1>SLS 卡片对照 Dashboard</h1>
+  <h1>SLS 卡片对照</h1>
   <div class="meta">视频 <b id="video-file">-</b> · 起 <b id="video-start">-</b> · 时长 <b id="video-dur">-</b>s</div>
+  <div class="tabs" id="tabs"></div>
   <button class="refresh" onclick="load()">⟳ 刷新</button>
 </header>
 <main id="root">
@@ -72,18 +78,52 @@ main { padding:24px 28px; max-width:1600px; }
 const STATUS_LABEL = { pending:'未修', fixed:'已修' };
 const LEVEL_LABEL = { high:'高', mid:'中', low:'低', skip:'跳过', fixed:'已修' };
 
+const TAB_DEFS = [
+  { key:'card',   label:'还原卡片对照',     match:(u)=>u.category==='card'   || u.id?.startsWith('card-') },
+  { key:'action', label:'还原动作时间线',   match:(u)=>u.category==='action' || u.id?.startsWith('action') },
+];
+
+let CURRENT_TAB = localStorage.getItem('sls-dash-tab') || 'card';
+let LAST_MANIFEST = null;
+
 async function load() {
   const m = await fetch('manifest.json?' + Date.now()).then(r => r.json());
+  LAST_MANIFEST = m;
   document.getElementById('video-file').textContent = m.video_meta.file;
   document.getElementById('video-start').textContent = m.video_meta.start_real_ts;
   document.getElementById('video-dur').textContent = m.video_meta.duration_s;
+  renderTabs();
+  renderBody();
+}
 
+function renderTabs() {
+  const tabs = document.getElementById('tabs');
+  const units = LAST_MANIFEST?.compare_units || [];
+  tabs.innerHTML = TAB_DEFS.map(t => {
+    const n = units.filter(t.match).length;
+    return `<button class="tab ${CURRENT_TAB===t.key?'on':''}" data-tab="${t.key}">${t.label}<span class="tab-count">${n}</span></button>`;
+  }).join('');
+  tabs.querySelectorAll('button').forEach(btn => {
+    btn.onclick = () => {
+      CURRENT_TAB = btn.dataset.tab;
+      localStorage.setItem('sls-dash-tab', CURRENT_TAB);
+      renderTabs();
+      renderBody();
+    };
+  });
+}
+
+function renderBody() {
   const root = document.getElementById('root');
-  if (!m.compare_units || m.compare_units.length === 0) {
-    root.innerHTML = '<div class="empty">暂无对照单元。在 manifest.json 里加 compare_units[]。</div>';
+  const all = LAST_MANIFEST?.compare_units || [];
+  const tabDef = TAB_DEFS.find(t => t.key === CURRENT_TAB) || TAB_DEFS[0];
+  const filtered = all.filter(tabDef.match);
+  if (filtered.length === 0) {
+    root.innerHTML = `<div class="empty">「${tabDef.label}」暂无对照单元。在 manifest.json 加 unit，注明 "category":"${tabDef.key}"。</div>`;
     return;
   }
-  root.innerHTML = m.compare_units.map(renderUnit).join('');
+  // 按 manifest 原顺序展示
+  root.innerHTML = filtered.map(renderUnit).join('');
   document.querySelectorAll('.shot img').forEach(img => {
     img.onclick = () => {
       document.getElementById('lightbox-img').src = img.src;
