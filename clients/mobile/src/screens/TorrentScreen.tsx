@@ -133,7 +133,21 @@ interface PlayProgressSample {
 }
 
 // title 允许全角逗号（中文标题常用），只禁止半角逗号（avoid 与 "视频,标题,UP主xxx,..." home feed 冲突）
-const TITLE_PATTERN = /^(互动视频|视频|竖版视频), ([^,]+)$/
+// B 站 detail 主视频标题前缀：
+//   互动视频, XXX   — 老版（2026-05 之前）
+//   活动,     XXX   — 新版（前缀后多空格）
+//   视频, XXX / 竖版视频, XXX
+// 标题本身可能含半角逗号（如"娜波摩木偶,不然少玩五毛"），用 .+ 而不是 [^,]+
+// 但要避免误识 home feed 的 "视频,标题,UP主xxx,观看,弹幕..." 多字段格式
+const TITLE_PATTERN = /^(互动视频|活动|视频|竖版视频),\s+(.+)$/
+// detail 主标题 vs home feed item 区分：home feed 含 "UP主" / "观看" / "弹幕" 字段
+function isDetailTitleMatch(t: string): RegExpMatchArray | null {
+  const m = t.match(TITLE_PATTERN)
+  if (!m) return null
+  const body = m[2]
+  if (body.includes('UP主') || body.includes('观看') || body.includes('弹幕')) return null
+  return m
+}
 const UP_PATTERN = /^up主(.+?)[,，](.+?)粉丝[,，](\d+)视频/
 const PLAYS_PATTERN = /^([\d.万亿千百]+)播放$/
 const DANMAKU_PATTERN = /^(\d+)条弹幕$/
@@ -323,9 +337,9 @@ function parseBiliVideoDetail(rawLines: { rowId: number; text: string; ts: numbe
   for (const ln of rawLines) {
     const t = ln.text.trim()
     if (!t) continue
-    // 主视频标题：只 1 个半角逗号 + 不含其他半角逗号（中文逗号 OK）
+    // 主视频标题：detail 主标题（排除 home feed 那种 "视频,标题,UP主...观看,弹幕" 格式）
     if (!v.title) {
-      const titleM = t.match(TITLE_PATTERN)
+      const titleM = isDetailTitleMatch(t)
       if (titleM) {
         if (titleM[1] === '互动视频') v.isInteractive = true
         v.title = titleM[2].trim()
@@ -945,27 +959,58 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
     if (c.eventTimeMs > target.tsEnd) target.tsEnd = c.eventTimeMs
   }
   // 2e) 从动作识别的 video_intro.tabSeq 里抽：
-  //   - fullscreen 段 → 独立 fullscreen 卡
-  //   - comment_detail 段 → 不独立成卡，挂到同视频的 comments item 的 commentDetailSegs（卡内可展开）
+  //   - fullscreen 段 → 按视频 by-title 合并成一张 fullscreen 卡（多次全屏 = 多段 samples 拼起来）
+  //   - comment_detail 段 → 不独立成卡，挂到同视频 comments 卡的 commentDetailSegs
   const actionItems = buildActionListItems(itemsIn)
-  const subCards: ListItem[] = []
+  // fullscreen 按视频合并
+  const fsByVideo = new Map<string, Extract<ListItem, { kind: 'fullscreen' }>>()
   for (const ai of actionItems) {
     if (ai.kind !== 'actionLine' || ai.act !== 'video_intro' || !ai.tabSeq) continue
-    for (let i = 0; i < ai.tabSeq.length; i++) {
-      const seg = ai.tabSeq[i]
+    for (const seg of ai.tabSeq) {
       if (seg.tab === 'fullscreen' && seg.watch) {
-        subCards.push({
-          kind: 'fullscreen',
-          key: `fs-${seg.startTs}-${i}`,
-          tsStart: seg.startTs, tsEnd: seg.endTs,
-          watch: seg.watch,
-          samples: seg.watchSamples ?? [],
-          videoTitle: ai.title ?? null,
-          videoUp: ai.upName ?? null,
-        })
+        const titleKey = ai.title ?? '__no_title__'
+        let card = fsByVideo.get(titleKey)
+        if (!card) {
+          card = {
+            kind: 'fullscreen',
+            key: `fs-${titleKey}-${seg.startTs}`,
+            tsStart: seg.startTs, tsEnd: seg.endTs,
+            watch: seg.watch,
+            samples: seg.watchSamples ? [...seg.watchSamples] : [],
+            videoTitle: ai.title ?? null,
+            videoUp: ai.upName ?? null,
+          }
+          fsByVideo.set(titleKey, card)
+        } else {
+          // 合并：扩时间区间，append samples，watch 取最新一段（或重算累计）
+          card.tsStart = Math.min(card.tsStart, seg.startTs)
+          card.tsEnd = Math.max(card.tsEnd, seg.endTs)
+          if (seg.watchSamples) card.samples.push(...seg.watchSamples)
+          // watch summary 重算：first/last sample + 累计 watched
+          if (card.samples.length > 0) {
+            // 按 currSec 切段重算 watchedSec
+            const segs: PlayProgressSample[][] = []
+            let cur: PlayProgressSample[] = []
+            for (const s of card.samples.sort((a, b) => a.ts - b.ts)) {
+              if (cur.length === 0) { cur.push(s); continue }
+              const prev = cur[cur.length - 1]
+              if (s.currSec < prev.currSec) { segs.push(cur); cur = [s] }
+              else cur.push(s)
+            }
+            if (cur.length > 0) segs.push(cur)
+            const watchedSec = segs.reduce((n, sg) => n + (sg[sg.length - 1].currSec - sg[0].currSec), 0)
+            card.watch = {
+              startTs: card.samples[0].ts,
+              endTs: card.samples[card.samples.length - 1].ts,
+              videoFromSec: card.samples[0].currSec,
+              videoToSec: card.samples[card.samples.length - 1].currSec,
+              videoTotalSec: card.samples[card.samples.length - 1].totalSec,
+              watchedSec,
+            }
+          }
+        }
       }
       if (seg.tab === 'comment_detail') {
-        // 找同视频的 comments item 挂上去
         const target = mergedCommentItems.find((x): x is Extract<ListItem, { kind: 'comments' }> =>
           x.kind === 'comments' && x.videoTitle === (ai.title ?? null),
         )
@@ -975,6 +1020,7 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
       }
     }
   }
+  const subCards: ListItem[] = Array.from(fsByVideo.values())
   // 3) 父子层级编排：
   //    视频组 = detail (父) + 它的 fullscreen 子卡 + 它的 comments 子卡
   //    每组按 detail.tsStart 排在时间线上；组内固定 detail → fullscreen → comments
@@ -986,15 +1032,21 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
   for (const h of homeItems) {
     if (h.kind === 'home') groups.push({ sortTs: h.tsStart, items: [h] })
   }
+  // 同 title detail 可能有多个（间隔 > 60s 没合并），fs/cmt 卡只能挂第一个 group
+  // 防止同子卡进多个 group → 重复 key + 视觉重复
+  const consumedFsKeys = new Set<string>()
+  const consumedCmtKeys = new Set<string>()
   for (const d of mergedDetailItems) {
     if (d.kind !== 'detail') continue
     const groupItems: ListItem[] = [d]
     const fss = subCards.filter((s): s is Extract<ListItem, { kind: 'fullscreen' }> =>
-      s.kind === 'fullscreen' && s.videoTitle === d.detail.title)
+      s.kind === 'fullscreen' && s.videoTitle === d.detail.title && !consumedFsKeys.has(s.key))
       .sort((a, b) => a.tsStart - b.tsStart)
+    fss.forEach((s) => consumedFsKeys.add(s.key))
     groupItems.push(...fss)
     const cmts = mergedCommentItems.filter((c): c is Extract<ListItem, { kind: 'comments' }> =>
-      c.kind === 'comments' && c.videoTitle === d.detail.title)
+      c.kind === 'comments' && c.videoTitle === d.detail.title && !consumedCmtKeys.has(c.key))
+    cmts.forEach((c) => consumedCmtKeys.add(c.key))
     groupItems.push(...cmts)
     groups.push({ sortTs: d.tsStart, items: groupItems })
   }
@@ -1062,7 +1114,7 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
   for (const c of items) {
     if (c.packageName !== 'tv.danmaku.bili') continue
     // 标题行 → 更新 ctx（不入 events）
-    const titleM = c.text.trim().match(/^(?:互动视频|视频|竖版视频), ([^,]+)$/)
+    const titleM = isDetailTitleMatch(c.text.trim())
     if (titleM) {
       ctx.title = titleM[1].trim()
       continue
@@ -1170,7 +1222,7 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
     for (const c of items) {
       if (c.packageName !== 'tv.danmaku.bili') continue
       if (c.eventTimeMs < va.startTs || c.eventTimeMs > va.endTs) continue
-      const m = c.text.trim().match(TITLE_PATTERN)
+      const m = isDetailTitleMatch(c.text.trim())
       if (m) { va.title = m[2].trim(); break }
     }
   }
