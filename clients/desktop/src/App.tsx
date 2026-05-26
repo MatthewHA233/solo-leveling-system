@@ -906,12 +906,18 @@ export default function App() {
             // 之前缺这段：sync:finished 只刷设备列表，本端是发起方时
             // pull 到的对端数据要等下次手动 fetch 才显示，体验不对。
             const pulled = r?.pulled
+            // AUDIT-035：pulledCount 也必须包含模型 4 表，否则纯模型同步时
+            // pulledCount=0，下面的重渲染分支永远不会触发，前端永远拿不到新模型设置
             const pulledCount =
               (pulled?.activity_categories ?? 0) +
               (pulled?.activity_tags ?? 0) +
               (pulled?.activity_blocks ?? 0) +
               (pulled?.plan_nodes ?? 0) +
-              (pulled?.planned_blocks ?? 0)
+              (pulled?.planned_blocks ?? 0) +
+              (pulled?.model_api_keys ?? 0) +
+              (pulled?.model_call_log ?? 0) +
+              (pulled?.model_free_quota ?? 0) +
+              (pulled?.feature_bindings ?? 0)
             if (pulledCount > 0) {
               const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`
               Promise.all([

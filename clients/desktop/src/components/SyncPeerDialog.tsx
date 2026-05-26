@@ -275,10 +275,13 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
     setBusyLinkId(link.device_id)
     try {
       const result = await runSyncLink(link.device_id)
-      const total = result.pulled.activity_categories + result.pulled.activity_tags
-        + result.pulled.activity_blocks + result.pulled.plan_nodes + result.pulled.planned_blocks
-        + result.pushed.activity_categories + result.pushed.activity_tags
-        + result.pushed.activity_blocks + result.pushed.plan_nodes + result.pushed.planned_blocks
+      // AUDIT-035：旧 5 表 + 模型 4 表都要计入，否则模型-only 同步会显示"0 条变更"
+      const sumSide = (s: typeof result.pulled): number =>
+        (s.activity_categories ?? 0) + (s.activity_tags ?? 0) + (s.activity_blocks ?? 0)
+        + (s.plan_nodes ?? 0) + (s.planned_blocks ?? 0)
+        + (s.model_api_keys ?? 0) + (s.model_call_log ?? 0)
+        + (s.model_free_quota ?? 0) + (s.feature_bindings ?? 0)
+      const total = sumSide(result.pulled) + sumSide(result.pushed)
       setMessage(`与 ${link.alias} 同步完成 · ${total} 条变更`)
       refreshLinks()
     } catch (e) {

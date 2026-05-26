@@ -555,11 +555,17 @@ async fn sync_import(
     match state.db.import_sync(payload).await {
         Ok(result) => {
             // 通知前端：数据库被对端 import 改过了，全局重拉
+            // AUDIT-035：旧 5 表 + 模型 4 表都要算进 total，否则模型-only 同步
+            // 不会 emit sync:imported，前端日志和模型设置 UI 都不刷新
             let total = result.activity_categories
                 + result.activity_tags
                 + result.activity_blocks
                 + result.plan_nodes
-                + result.planned_blocks;
+                + result.planned_blocks
+                + result.model_api_keys
+                + result.model_call_log
+                + result.model_free_quota
+                + result.feature_bindings;
             if total > 0 {
                 let _ = state.app_handle.emit("sync:imported", serde_json::json!({
                     "from_device_id": from_device_id,
