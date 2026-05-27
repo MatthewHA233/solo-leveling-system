@@ -101,6 +101,16 @@ interface Span {
   note: string | null
 }
 
+type ProbeAppRun = {
+  key: string
+  packageName: string
+  appLabel: string
+  startMs: number
+  endMs: number
+  eventCount: number
+  titles: string[]
+}
+
 type Row =
   | { kind: 'full'; startMin: number; cols: number }
   | { kind: 'compressed'; hours: number[] }
@@ -231,6 +241,59 @@ function fmtHM(mins: number): string {
   if (h > 0 && m > 0) return `${h} 小时 ${m} 分`
   if (h > 0) return `${h} 小时`
   return `${m} 分`
+}
+
+function fmtMsDuration(ms: number): string {
+  if (ms < 60_000) return '<1 分'
+  return fmtHM(Math.max(1, Math.round(ms / 60_000)))
+}
+
+function compactTitles(events: WindowEvent[]): string[] {
+  const out: string[] = []
+  for (const ev of events) {
+    const label = ev.appLabel || ev.packageName
+    const title = ev.windowTitle?.trim()
+    if (!title || title === label || title === ev.packageName) continue
+    if (out[out.length - 1] !== title) out.push(title)
+  }
+  return out
+}
+
+function buildProbeAppRuns(events: WindowEvent[], segmentEndMs: number): ProbeAppRun[] {
+  const sorted = [...events].sort((a, b) => a.eventTimeMs - b.eventTimeMs || a.rowId - b.rowId)
+  const runs: ProbeAppRun[] = []
+  let currentEvents: WindowEvent[] = []
+  const flush = (nextStartMs?: number) => {
+    if (currentEvents.length === 0) return
+    const first = currentEvents[0]
+    const last = currentEvents[currentEvents.length - 1]
+    const endMs = Math.max(
+      last.eventTimeMs,
+      Math.min(nextStartMs ?? segmentEndMs, segmentEndMs),
+    )
+    runs.push({
+      key: `run-${first.rowId}-${last.rowId}`,
+      packageName: first.packageName,
+      appLabel: first.appLabel || first.packageName,
+      startMs: first.eventTimeMs,
+      endMs,
+      eventCount: currentEvents.length,
+      titles: compactTitles(currentEvents),
+    })
+    currentEvents = []
+  }
+
+  for (const ev of sorted) {
+    const last = currentEvents[currentEvents.length - 1]
+    if (!last || last.packageName === ev.packageName) {
+      currentEvents.push(ev)
+    } else {
+      flush(ev.eventTimeMs)
+      currentEvents.push(ev)
+    }
+  }
+  flush()
+  return runs
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -1212,42 +1275,6 @@ export default function DayNightScreen() {
     ])
       .then(async ([evs, pwrs]) => {
         if (!alive) return
-        // DEV: 模拟器/没 Accessibility 权限时 probe 总是空，撑不出 sheet 滚动场景；
-        // 注入 40 条假 window event + 4 条假 power event 让 detail sheet 内容溢出
-        if (__DEV__ && evs.length < 3) {
-          const fakeApps = [
-            { pkg: 'com.tencent.mm', label: '微信' },
-            { pkg: 'com.alibaba.android.rimet', label: '钉钉' },
-            { pkg: 'com.android.chrome', label: 'Chrome' },
-            { pkg: 'com.netease.cloudmusic', label: '网易云音乐' },
-            { pkg: 'com.tencent.mobileqq', label: 'QQ' },
-            { pkg: 'tv.danmaku.bili', label: 'B 站' },
-            { pkg: 'com.ss.android.ugc.aweme', label: '抖音' },
-            { pkg: 'com.taobao.taobao', label: '淘宝' },
-            { pkg: 'com.jetbrains.intellij', label: 'IntelliJ' },
-            { pkg: 'com.google.android.apps.docs', label: 'Drive' },
-          ]
-          const span = Math.max(endMs - startMs, 1)
-          evs = Array.from({ length: 40 }, (_, i) => {
-            const app = fakeApps[i % fakeApps.length]
-            const ts = startMs + Math.floor((span / 40) * i)
-            return {
-              rowId: 1_000_000 + i,
-              startAt: new Date(ts).toISOString(),
-              packageName: app.pkg,
-              className: `${app.pkg}.MainActivity`,
-              appLabel: app.label,
-              windowTitle: `${app.label} · 模拟标题 ${i + 1}`,
-              eventTimeMs: ts,
-            }
-          })
-          pwrs = [
-            { rowId: 9_000_001, startAt: new Date(startMs + span * 0.2).toISOString(), event: 'screen_off', eventTimeMs: startMs + span * 0.2 },
-            { rowId: 9_000_002, startAt: new Date(startMs + span * 0.3).toISOString(), event: 'screen_on', eventTimeMs: startMs + span * 0.3 },
-            { rowId: 9_000_003, startAt: new Date(startMs + span * 0.5).toISOString(), event: 'unlocked', eventTimeMs: startMs + span * 0.5 },
-            { rowId: 9_000_004, startAt: new Date(startMs + span * 0.7).toISOString(), event: 'screen_off', eventTimeMs: startMs + span * 0.7 },
-          ]
-        }
         setProbeEvents(evs)
         setPowerEvents(pwrs)
         // 异步把还没缓存的 pkg 图标拉过来
@@ -2368,14 +2395,18 @@ export default function DayNightScreen() {
                 >
                   <View style={styles.sheetProbe}>
                     {(() => {
-                      // 合并 window + power，按 eventTimeMs 正序展示
+                      const midnight = new Date(selectedDate)
+                      midnight.setHours(0, 0, 0, 0)
+                      const detailEndMs = midnight.getTime() + detail.endMin * 60_000
+                      const appRuns = buildProbeAppRuns(probeEvents, detailEndMs)
+                      // 合并 app run + power，按 eventTimeMs 正序展示
                       // power 事件用 chip 行渲染（screen_off / on / unlocked / service_started）
                       type Merged =
-                        | { kind: 'window'; key: string; ts: number; ev: WindowEvent }
+                        | { kind: 'app'; key: string; ts: number; run: ProbeAppRun }
                         | { kind: 'power'; key: string; ts: number; ev: PowerEvent }
                       const merged: Merged[] = [
-                        ...probeEvents.map((ev) => ({
-                          kind: 'window' as const, key: `w${ev.rowId}`, ts: ev.eventTimeMs, ev,
+                        ...appRuns.map((run) => ({
+                          kind: 'app' as const, key: run.key, ts: run.startMs, run,
                         })),
                         ...powerEvents.map((ev) => ({
                           kind: 'power' as const, key: `p${ev.rowId}`, ts: ev.eventTimeMs, ev,
@@ -2385,7 +2416,8 @@ export default function DayNightScreen() {
                         <>
                           <Text style={styles.sheetProbeLabel}>
                             在这段时间手机
-                            {merged.length > 0 ? ` · ${merged.length} 条` : ''}
+                            {appRuns.length > 0 ? ` · ${appRuns.length} 段应用` : ''}
+                            {probeEvents.length > appRuns.length ? ` / ${probeEvents.length} 条原始窗口事件` : ''}
                             {powerEvents.length > 0 ? ` （含 ${powerEvents.length} 条屏幕事件）` : ''}
                           </Text>
                           {probeLoading ? (
@@ -2398,41 +2430,36 @@ export default function DayNightScreen() {
                             merged.map((row) => {
                               if (row.kind === 'power') {
                                 const e = row.ev
-                                const label =
-                                  e.event === 'screen_off' ? '屏幕关闭'
-                                  : e.event === 'screen_on' ? '屏幕亮起'
-                                  : e.event === 'unlocked' ? '解锁'
-                                  : e.event === 'boot' ? '⏻ 开机'
-                                  : e.event === 'shutdown' ? '⏻ 关机'
-                                  : e.event === 'service_started' ? '感知 Service 启动'
-                                  : e.event
-                                const dim = e.event === 'screen_off' || e.event === 'shutdown'
-                                return (
-                                  <View key={row.key} style={styles.sheetPowerRow}>
-                                    <Text style={styles.sheetProbeTime}>{fmtHHMMms(e.eventTimeMs)}</Text>
-                                    <View
-                                      style={[
-                                        styles.sheetPowerDot,
-                                        { backgroundColor: dim ? '#888' : theme.accent },
-                                      ]}
-                                    />
-                                    <Text style={[styles.sheetPowerText, dim && { color: theme.inkSoft }]}>
-                                      {label}
-                                    </Text>
-                                  </View>
-                                )
+	                                const label =
+	                                  e.event === 'screen_off' ? '屏幕关闭'
+	                                  : e.event === 'screen_on' ? '屏幕亮起'
+	                                  : e.event === 'unlocked' ? '解锁'
+	                                  : e.event === 'boot' ? '开机'
+	                                  : e.event === 'shutdown' ? '关机'
+	                                  : e.event === 'service_started' ? '感知 Service 启动'
+	                                  : e.event
+	                                const dim = e.event === 'screen_off' || e.event === 'shutdown'
+	                                return (
+	                                  <View key={row.key} style={styles.sheetPowerRow}>
+	                                    <Text style={styles.sheetProbeTime}>{fmtHHMMms(e.eventTimeMs)}</Text>
+	                                    <Text style={[styles.sheetPowerText, dim && { color: theme.inkSoft }]}>
+	                                      {label}
+	                                    </Text>
+	                                  </View>
+	                                )
                               }
-                              const ev = row.ev
-                              const label = ev.appLabel || ev.packageName
-                              const subtitle =
-                                ev.windowTitle && ev.windowTitle !== label && ev.windowTitle !== ev.packageName
-                                  ? ev.windowTitle
-                                  : ''
-                              const b64 = iconCache[ev.packageName]
+                              const run = row.run
+                              const label = run.appLabel || run.packageName
+                              const subtitle = run.titles[run.titles.length - 1] ?? ''
+                              const b64 = iconCache[run.packageName]
                               const initial = (label || '?').slice(0, 1).toUpperCase()
+                              const dur = fmtMsDuration(run.endMs - run.startMs)
                               return (
                                 <View key={row.key} style={styles.sheetProbeRow}>
-                                  <Text style={styles.sheetProbeTime}>{fmtHHMMms(ev.eventTimeMs)}</Text>
+                                  <Text style={styles.sheetProbeTime}>
+                                    {fmtHHMMms(run.startMs)}
+                                    {run.endMs > run.startMs ? `\n${fmtHHMMms(run.endMs)}` : ''}
+                                  </Text>
                                   {b64 ? (
                                     <Image
                                       style={styles.sheetProbeIcon}
@@ -2444,7 +2471,12 @@ export default function DayNightScreen() {
                                     </View>
                                   )}
                                   <View style={styles.sheetProbeBody}>
-                                    <Text style={styles.sheetProbeApp} numberOfLines={1}>{label}</Text>
+                                    <View style={styles.sheetProbeAppHead}>
+                                      <Text style={styles.sheetProbeApp} numberOfLines={1}>{label}</Text>
+                                      <Text style={styles.sheetProbeMeta}>
+                                        {dur}{run.eventCount > 1 ? ` · ${run.eventCount} 次变化` : ''}
+                                      </Text>
+                                    </View>
                                     {!!subtitle && (
                                       <Text style={styles.sheetProbeSub} numberOfLines={1}>
                                         {subtitle}
@@ -4187,12 +4219,6 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     gap: 10,
   },
-  sheetPowerDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginHorizontal: 2,
-  },
   sheetPowerText: {
     fontSize: 13,
     color: theme.ink,
@@ -4239,10 +4265,21 @@ const styles = StyleSheet.create({
   sheetProbeBody: {
     flex: 1,
   },
+  sheetProbeAppHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   sheetProbeApp: {
+    flex: 1,
     fontSize: 14,
     color: theme.ink,
     fontWeight: '500',
+  },
+  sheetProbeMeta: {
+    fontSize: 11,
+    color: theme.inkSoft,
+    fontVariant: ['tabular-nums'],
   },
   sheetProbeSub: {
     fontSize: 11,
