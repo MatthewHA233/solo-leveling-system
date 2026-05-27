@@ -5,6 +5,7 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.sololevelingsystemmobile.solodb.SoloDb
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -46,7 +47,9 @@ class SyncServerModule(private val reactContext: ReactApplicationContext) :
       // 跑着别的端口先停
       server?.stop()
       broadcaster?.stop()
-      val s = SyncHttpServer(p, db, deviceAlias)
+      val s = SyncHttpServer(p, db, deviceAlias) { r ->
+        emitSoloDbChanged("sync-server", r)
+      }
       s.start(SOCKET_TIMEOUT_MS, false)  // daemon=false 让线程跟 app 进程
       server = s
       currentPort = p
@@ -96,6 +99,29 @@ class SyncServerModule(private val reactContext: ReactApplicationContext) :
     putArray("ipv4s", Arguments.createArray().apply {
       for (ip in lanIpv4Addresses()) pushString(ip)
     })
+  }
+
+  private fun emitSoloDbChanged(source: String, r: SoloDb.ImportResult) {
+    reactContext.runOnJSQueueThread {
+      try {
+        val payload = Arguments.createMap().apply {
+          putString("source", source)
+          putMap("changed", Arguments.createMap().apply {
+            putInt("activityCategories", r.activityCategories)
+            putInt("activityTags", r.activityTags)
+            putInt("activityBlocks", r.activityBlocks)
+            putInt("planNodes", r.planNodes)
+            putInt("plannedBlocks", r.plannedBlocks)
+            putInt("skipped", r.skipped)
+          })
+        }
+        reactContext
+          .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+          .emit("SoloDbChanged", payload)
+      } catch (_: Throwable) {
+        // JS runtime may be paused/destroyed; AppState refresh covers the next foreground.
+      }
+    }
   }
 
   /** 拉所有 active 网卡的 ipv4，过滤 loopback。让 UI 选/展示给用户。 */

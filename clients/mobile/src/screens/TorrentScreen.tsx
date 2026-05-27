@@ -106,6 +106,7 @@ function isBannerCandidate(t: string): boolean {
 // 关键：主视频卡的几个字段在整个详情页 a11y 树里都是唯一的指纹
 interface BiliVideoDetail {
   title: string | null
+  kindLabel: string | null
   upName: string | null
   upFans: string | null
   upVideoCount: string | null
@@ -186,11 +187,12 @@ function parsePromo(raw: string): { kind: string; text: string } | null {
 
 // 时间地点 pattern：评论锚点
 //   "5月7日 重庆" / "5月10日 山西" / "1小时前 广东" / "刚刚" / "昨天 19:19 陕西"
-const COMMENT_TIME_LOC = /^(刚刚|\d+分钟前|\d+小时前|昨天|前天|\d+天前|\d{1,2}月\d{1,2}日)(\s+\S+)?$/
+const COMMENT_TIME_LOC = /^(刚刚|\d+分钟前|\d+小时前|昨天|前天|\d+天前|\d{1,2}月\d{1,2}日)(?:\s+\S+){0,2}$/
 const COMMENT_NOISE = new Set([
   '热门评论', '按热度', '按时间', '评论详情', '回复', '相关推荐',
   '展开', '收起', '添加表情', '文本栏', '说点什么吧', '评论',
-  '简介', 'UP', '不喜欢', '更多', '更多操作', '相关回复',
+  '简介', 'UP', '不喜欢', '更多', '更多操作', '相关回复', '查看对话',
+  '勇敢滴少年啊快去创造热评~', '评论千万条，等你发一条',
 ])
 // 楼层号 / 评论 ID："CD." + "数字"（多行）
 function isCommentNoise(t: string): boolean {
@@ -201,6 +203,12 @@ function isCommentNoise(t: string): boolean {
   if (/^CD\.$/.test(t)) return true
   if (/^\d+$/.test(t) && t.length <= 6) return false  // 数字可能是点赞数，不噪音
   return false
+}
+function isCommentBadgeLine(t: string): boolean {
+  return t === 'UP主觉得很赞'
+    || t === '红方'
+    || /^已投/.test(t)
+    || /^LV\d+$/i.test(t)
 }
 
 function parseBiliComments(
@@ -226,7 +234,7 @@ function parseBiliComments(
   let commentSurfaceStart = 0
   for (let i = 0; i < rawLines.length; i++) {
     const t = rawLines[i].text.trim()
-    if (t === '热门评论' || t === '按热度' || /^相关回复共\d+条$/.test(t)) {
+    if (t === '热门评论' || t === '按热度' || t === '评论详情' || /^相关回复共\d+条$/.test(t)) {
       commentSurfaceStart = i
       break
     }
@@ -274,6 +282,7 @@ function parseBiliComments(
     // 下方：点赞数（≤4 位数字）+ 共N条回复
     let likes: string | null = null
     let replyCount: string | null = null
+    const lowerBadges: string[] = []
     const nextAi = i + 1 < anchors.length ? anchors[i + 1] : rawLines.length
     for (let j = ai + 1; j < nextAi; j++) {
       const t = rawLines[j].text.trim()
@@ -281,6 +290,7 @@ function parseBiliComments(
       const rcm = t.match(/^(?:UP主等人\s+)?共(\d+)条回复$/) || t.match(/^相关回复共(\d+)条$/)
       if (rcm) { replyCount = rcm[1]; continue }
       if (/^\d+$/.test(t) && t.length <= 4 && !likes) { likes = t; continue }
+      if (isCommentBadgeLine(t)) lowerBadges.push(t)
     }
     if (upperLines.length === 0) continue
     // body：第一个带零宽字符的行（U+200B 是 B 站评论正文稳定特征）
@@ -293,6 +303,7 @@ function parseBiliComments(
       }
     }
     const body = upperLines[bodyIdx].replace(/​/g, '')
+    if (body.trim().length === 0) continue
     // body 之前的行：author + badges（按 raw 顺序）
     // body 之后的行：通常没了（时间在锚点上）— 算徽章
     const before = upperLines.slice(0, bodyIdx)
@@ -305,6 +316,7 @@ function parseBiliComments(
       else badges.push(o)
     }
     for (const o of after) badges.push(o)
+    for (const o of lowerBadges) badges.push(o)
     comments.push({
       rowId: rawLines[ai].rowId,
       author,
@@ -317,6 +329,81 @@ function parseBiliComments(
   }
   if (comments.length === 0) return null
   return { comments, totalCount }
+}
+
+function parseBiliCommentDetails(
+  rawLines: { rowId: number; text: string; ts: number }[],
+): CommentDetailThread[] {
+  const out: CommentDetailThread[] = []
+  const starts: number[] = []
+  for (let i = 0; i < rawLines.length; i++) {
+    if (rawLines[i].text.trim() === '评论详情') starts.push(i)
+  }
+  for (const start of starts) {
+    let end = rawLines.length
+    for (let j = start + 1; j < rawLines.length; j++) {
+      const t = rawLines[j].text.trim()
+      if (t === '评论详情') { end = j; break }
+      // 横屏详情页会把评论详情和底层视频详情同秒抓在一起；遇到简介/评论 tab chrome 就收束。
+      if (j > start + 3 && t === '简介') { end = j; break }
+      if (j > start + 3 && t === '返回首页按钮') { end = j; break }
+    }
+    const lines = rawLines.slice(start, end)
+    if (lines.length < 4) continue
+
+    const replyMarker = lines.find((l) =>
+      /^相关回复共\d+条$/.test(l.text.trim()) || /^共\d+条回复$/.test(l.text.trim()),
+    )
+    const replyTotal = replyMarker
+      ? (replyMarker.text.trim().match(/^相关回复共(\d+)条$/)?.[1]
+        ?? replyMarker.text.trim().match(/^共(\d+)条回复$/)?.[1]
+        ?? null)
+      : null
+
+    const parsed = parseBiliComments(lines)
+    if (!parsed || parsed.comments.length === 0) continue
+    let root: CommentItem | null = null
+    let replies: CommentItem[] = []
+    if (replyMarker) {
+      const before = parsed.comments.filter((c) => c.rowId < replyMarker.rowId)
+      root = before[before.length - 1] ?? null
+      replies = parsed.comments.filter((c) => c.rowId > replyMarker.rowId)
+    } else {
+      // 详情页滚动到中段时，根评论和 "相关回复" 标题可能已离屏；保留为回复流。
+      replies = parsed.comments
+    }
+    if (!root && replies.length === 0) continue
+    out.push({
+      startTs: lines[0].ts,
+      endTs: lines[lines.length - 1].ts,
+      root,
+      replies,
+      replyTotal,
+    })
+  }
+  return out
+}
+
+function parseBiliCommentDetailFallback(
+  rawLines: { rowId: number; text: string; ts: number }[],
+  startTs: number,
+  endTs: number,
+): CommentDetailThread | null {
+  const parsed = parseBiliComments(rawLines)
+  if (!parsed || parsed.comments.length === 0) return null
+  // 旧版 B 站 / 某些浮层下，进入详情只抓到一次 "评论详情"，
+  // 随后几秒只有评论正文，没有详情 marker。用户点击的楼层通常是
+  // 进入前可见列表里最后一个带回复数的评论；没有回复数时取最后一条。
+  const withReplies = parsed.comments.filter((c) => c.replyCount)
+  const root = withReplies[withReplies.length - 1] ?? parsed.comments[parsed.comments.length - 1] ?? null
+  if (!root) return null
+  return {
+    startTs,
+    endTs: rawLines.length > 0 ? Math.max(endTs, rawLines[rawLines.length - 1].ts) : endTs,
+    root,
+    replies: [],
+    replyTotal: root.replyCount,
+  }
 }
 
 // "合集 · AI编程-2026" + 下一行 "246/248"
@@ -402,7 +489,7 @@ function parseStoryItems(rawLines: { rowId: number; text: string; ts: number }[]
 
 function parseBiliVideoDetail(rawLines: { rowId: number; text: string; ts: number }[]): BiliVideoDetail | null {
   const v: BiliVideoDetail = {
-    title: null, upName: null, upFans: null, upVideoCount: null,
+    title: null, kindLabel: null, upName: null, upFans: null, upVideoCount: null,
     duration: null, views: null, danmaku: null, publishedAt: null,
     watchingNow: null, likes: null, coins: null, favorites: null,
     shares: null, category: null, description: null, isInteractive: false,
@@ -423,6 +510,7 @@ function parseBiliVideoDetail(rawLines: { rowId: number; text: string; ts: numbe
     if (!v.title) {
       const titleM = isDetailTitleMatch(t)
       if (titleM) {
+        v.kindLabel = titleM[1].trim()
         if (titleM[1] === '互动视频') v.isInteractive = true
         v.title = titleM[2].trim()
         foundTitle = true
@@ -748,6 +836,13 @@ interface CommentItem {
   likes: string | null
   replyCount: string | null
 }
+interface CommentDetailThread {
+  startTs: number
+  endTs: number
+  root: CommentItem | null
+  replies: CommentItem[]
+  replyTotal: string | null
+}
 // 竖屏 Story 视频卡 — windowClass = StoryVideoActivity，无 SeekBar
 // 一个 Story 段 = 用户在 StoryVideoActivity 上的一段连续浏览
 // 每段记录"看过"的视频列表（去重，按 firstSeenTs）+ 切换次数
@@ -774,7 +869,7 @@ type ListItem =
   | { kind: 'detail'; key: string; tsStart: number; tsEnd: number; detail: BiliVideoDetail }
   // Story 单视频父卡（每个独立视频一张），跟 detail 平级
   | { kind: 'story'; key: string; tsStart: number; tsEnd: number; story: StoryItem }
-  | { kind: 'comments'; key: string; tsStart: number; tsEnd: number; comments: CommentItem[]; totalCount: number | null; videoTitle: string | null; videoUp: string | null; commentDetailSegs: { startTs: number; endTs: number }[] }
+  | { kind: 'comments'; key: string; tsStart: number; tsEnd: number; comments: CommentItem[]; totalCount: number | null; videoTitle: string | null; videoUp: string | null; commentDetailSegs: { startTs: number; endTs: number }[]; commentDetails: CommentDetailThread[] }
   | { kind: 'fullscreen'; key: string; tsStart: number; tsEnd: number; watch: WatchSummary; samples: PlayProgressSample[]; videoTitle: string | null; videoUp: string | null }
   | { kind: 'actionLine'; key: string; ts: number; endTs?: number; act: BiliActionKind; title?: string; upName?: string; meta?: string; tabSeq?: VideoSubTabSeg[]; isStory?: boolean }
   | { kind: 'rawSnapshot'; key: string; ts: number; packageName: string; windowClass: string; texts: { rowId: number; text: string; sourceClass: string }[] }
@@ -915,13 +1010,21 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
       recentVideoTitle = storyByCount.title
       recentVideoUp = storyByCount.upName
     }
+    const commentDetails = parseBiliCommentDetails(b.lines)
     const cm = parseBiliComments(b.lines)
-    if (cm) {
+    if (cm && commentDetails.length === 0) {
       commentItems.push({
         kind: 'comments', key: `c-${b.ts}`, tsStart: b.ts, tsEnd: b.ts,
         comments: cm.comments, totalCount: cm.totalCount,
         videoTitle: recentVideoTitle, videoUp: recentVideoUp,
-        commentDetailSegs: [],
+        commentDetailSegs: [], commentDetails: [],
+      })
+    } else if (commentDetails.length > 0) {
+      commentItems.push({
+        kind: 'comments', key: `cd-${b.ts}`, tsStart: b.ts, tsEnd: b.ts,
+        comments: [], totalCount: null,
+        videoTitle: recentVideoTitle, videoUp: recentVideoUp,
+        commentDetailSegs: [], commentDetails,
       })
     }
   }
@@ -933,13 +1036,38 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
   const byVideo = new Map<string, Extract<ListItem, { kind: 'comments' }>>()
   // 同 bucket 内 a11y 经常把评论列表重复抓 2 次（同 anchor 出现 2 次）
   // dedup body 跨所有 bucket（包括第一次 push）
+  const mergeCommentDetail = (target: Extract<ListItem, { kind: 'comments' }>, detail: CommentDetailThread) => {
+    const rootKey = detail.root?.body ?? null
+    let existing = rootKey
+      ? target.commentDetails.find((d) => d.root?.body === rootKey)
+      : target.commentDetails[target.commentDetails.length - 1]
+    if (!existing || (!rootKey && detail.startTs - existing.endTs > 15_000)) {
+      target.commentDetails.push({
+        ...detail,
+        replies: [...detail.replies],
+      })
+      return
+    }
+    existing.startTs = Math.min(existing.startTs, detail.startTs)
+    existing.endTs = Math.max(existing.endTs, detail.endTs)
+    if (!existing.root && detail.root) existing.root = detail.root
+    if (!existing.replyTotal && detail.replyTotal) existing.replyTotal = detail.replyTotal
+    const seenReplies = new Set(existing.replies.map((r) => `${r.author ?? ''}|${r.body}|${r.timeLocation}`))
+    for (const r of detail.replies) {
+      const key = `${r.author ?? ''}|${r.body}|${r.timeLocation}`
+      if (!seenReplies.has(key)) {
+        existing.replies.push(r)
+        seenReplies.add(key)
+      }
+    }
+  }
   for (const ci of commentItems) {
     if (ci.kind !== 'comments') continue
     const key = ci.videoTitle ?? '__no_video__'
     let existing = byVideo.get(key)
     if (!existing) {
       // 首次：建空壳，下面统一去重 push
-      existing = { ...ci, comments: [] }
+      existing = { ...ci, comments: [], commentDetails: [] }
       byVideo.set(key, existing)
       mergedCommentItems.push(existing)
     }
@@ -950,6 +1078,7 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
         seen.add(c.body)
       }
     }
+    for (const detail of ci.commentDetails) mergeCommentDetail(existing, detail)
     existing.tsStart = Math.min(existing.tsStart, ci.tsStart)
     existing.tsEnd = Math.max(existing.tsEnd, ci.tsEnd)
   }
@@ -1023,6 +1152,7 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
         }
       }
       // 互动数据 / 关注态：取最新一次的（已是 last 之后 ds）
+      if (ds.detail.kindLabel && !last.detail.kindLabel) last.detail.kindLabel = ds.detail.kindLabel
       if (ds.detail.likes) last.detail.likes = ds.detail.likes
       if (ds.detail.coins) last.detail.coins = ds.detail.coins
       if (ds.detail.favorites) last.detail.favorites = ds.detail.favorites
@@ -1182,8 +1312,22 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
         )
         if (target) {
           target.commentDetailSegs.push({ startTs: seg.startTs, endTs: seg.endTs })
+          const detailWindowLines = items
+            .filter((c) =>
+              c.packageName === 'tv.danmaku.bili'
+              && c.captureType !== 'a11y-click'
+              && c.eventTimeMs >= seg.startTs
+              && c.eventTimeMs <= seg.endTs + 5_000)
+            .map((c) => ({ rowId: c.rowId, text: c.text, ts: c.eventTimeMs }))
+          const parsedDetails = parseBiliCommentDetails(detailWindowLines)
+          if (parsedDetails.length > 0) {
+            for (const detail of parsedDetails) mergeCommentDetail(target, detail)
+          } else {
+            const fallback = parseBiliCommentDetailFallback(detailWindowLines, seg.startTs, seg.endTs)
+            if (fallback) mergeCommentDetail(target, fallback)
+          }
           target.tsStart = Math.min(target.tsStart, seg.startTs)
-          target.tsEnd = Math.max(target.tsEnd, seg.endTs)
+          target.tsEnd = Math.max(target.tsEnd, seg.endTs, detailWindowLines[detailWindowLines.length - 1]?.ts ?? seg.endTs)
         }
       }
     }
@@ -1624,14 +1768,50 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
       if (m) { va.title = m[2].trim(); break }
     }
   }
+  // Pass 3.6：从上一个视频的相关推荐进入下一个视频。
+  // 关键证据是：新 video_intro 出现前几秒，detail-like surface 里出现了同标题的 feed item。
+  for (const va of acts.filter((a) => a.kind === 'video_intro' && !a.isStory && a.title)) {
+    const fromRelated = items.some((c) => {
+      if (c.packageName !== 'tv.danmaku.bili') return false
+      if (c.eventTimeMs < va.startTs - 15_000 || c.eventTimeMs >= va.startTs) return false
+      const wc = c.windowClass
+      const isDetailLike = wc.includes('UnitedBiz') || wc.includes('StoryVideo') || wc === 'android.view.ViewGroup'
+      if (!isDetailLike) return false
+      const parsed = parseBiliFeedItem(c.rowId, c.eventTimeMs, c.text)
+      return !!parsed && parsed.title === va.title && (parsed.kind === '视频' || parsed.kind === '竖版视频')
+    })
+    if (fromRelated && !(va.meta ?? '').includes('来自推荐列表')) {
+      va.meta = va.meta ? `${va.meta} · 来自推荐列表` : '来自推荐列表'
+    }
+  }
 
   // Pass 4：播放进度只在全屏（SeekBar）期采样
+  // B 站全屏刚进入时经常只暴露 SeekBar 进度，不暴露 "倍速" 控件；
+  // 后续用户轻触出现控制条时才抓到 "倍速"。用首次 fullscreen 信号前的
+  // 临近进度采样回填子段起点，避免漏掉真正开始的几秒。
   // 归属到 video_intro.tabSeq 内的 fullscreen 子段（按 startTs~endTs 范围匹配）
   const videoActs = acts.filter((a) => a.kind === 'video_intro')
+  const FULLSCREEN_BACKFILL_MS = 15_000
   for (const va of videoActs) {
     if (!va.tabSeq) continue
-    for (const seg of va.tabSeq) {
+    for (let i = 0; i < va.tabSeq.length; i++) {
+      const seg = va.tabSeq[i]
       if (seg.tab !== 'fullscreen') continue
+      let firstPreControlProgressTs: number | null = null
+      for (const c of items) {
+        if (c.packageName !== 'tv.danmaku.bili') continue
+        if (c.eventTimeMs < va.startTs || c.eventTimeMs >= seg.startTs) continue
+        if (seg.startTs - c.eventTimeMs > FULLSCREEN_BACKFILL_MS) continue
+        if (!PROGRESS_PATTERN.test(c.text.trim())) continue
+        if (firstPreControlProgressTs == null || c.eventTimeMs < firstPreControlProgressTs) {
+          firstPreControlProgressTs = c.eventTimeMs
+        }
+      }
+      if (firstPreControlProgressTs != null && firstPreControlProgressTs < seg.startTs) {
+        seg.startTs = firstPreControlProgressTs
+        const prev = va.tabSeq[i - 1]
+        if (prev && prev.endTs > seg.startTs) prev.endTs = seg.startTs
+      }
       const samples: { ts: number; cur: number; tot: number }[] = []
       for (const c of items) {
         if (c.packageName !== 'tv.danmaku.bili') continue
@@ -2037,6 +2217,7 @@ function DetailSnapView({ item: s, onCrossJump, highlighted }: { item: Extract<L
       <View style={styles.snapCardBody}>
         {/* 主视频 */}
         <View style={styles.detailMainBlock}>
+          {d.kindLabel && <Text style={styles.detailKindTag}>{d.kindLabel}</Text>}
           {d.title && <Text style={styles.detailTitle}>{d.title}</Text>}
           {/* UP 主 + 关注/充电 按钮态（同行模拟真实 B 站布局） */}
           {d.upName && (
@@ -2195,6 +2376,8 @@ function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { it
   const onHeadPress = () => onCrossJump('action', s.tsStart)
   // 评论默认按 raw 出现顺序（视觉自顶向下）；desc 时反转
   const comments: CommentItem[] = sortOrder === 'desc' ? [...s.comments].reverse() : s.comments
+  const commentDetails = sortOrder === 'desc' ? [...s.commentDetails].reverse() : s.commentDetails
+  const hasCommentDetail = commentDetails.length > 0 || s.commentDetailSegs.length > 0
   const tsLabel = s.tsStart === s.tsEnd
     ? fmtTime(s.tsEnd)
     : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
@@ -2212,7 +2395,7 @@ function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { it
       </Pressable>
       <View style={styles.subCardBody}>
         {comments.map((c, i) => (
-          <View key={`${c.rowId}-${i}`} style={[styles.commentItem, i === comments.length - 1 && s.commentDetailSegs.length === 0 && { borderBottomWidth: 0, marginBottom: 0, paddingBottom: 0 }]}>
+          <View key={`${c.rowId}-${i}`} style={[styles.commentItem, i === comments.length - 1 && !hasCommentDetail && { borderBottomWidth: 0, marginBottom: 0, paddingBottom: 0 }]}>
             <View style={styles.commentHead}>
               {c.author && <Text style={styles.commentAuthor}>{c.author}</Text>}
               {c.badges.map((b, bi) => (
@@ -2230,16 +2413,60 @@ function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { it
           </View>
         ))}
         {/* 评论详情：默认收缩；点头开/关；跨视图跳转过来自动展开 */}
-        {s.commentDetailSegs.length > 0 && (
+        {hasCommentDetail && (
           <View style={styles.cdInline}>
             <Pressable onPress={() => setCdOpen((x) => !x)} style={styles.cdHead}>
               <Text style={[styles.cdLabel, { color: CD_COLOR }]}>评论详情</Text>
-              <Text style={[styles.cdCount, { color: CD_COLOR }]}>× {s.commentDetailSegs.length}</Text>
+              <Text style={[styles.cdCount, { color: CD_COLOR }]}>× {commentDetails.length || s.commentDetailSegs.length}</Text>
               <Text style={styles.cdToggle}>{detailsToShow ? '收起 ▴' : '展开 ▾'}</Text>
             </Pressable>
             {detailsToShow && (
               <View style={styles.cdBody}>
-                {s.commentDetailSegs.map((seg, i) => {
+                {commentDetails.length > 0 ? commentDetails.map((detail, i) => {
+                  const dur = Math.round((detail.endTs - detail.startTs) / 1000)
+                  return (
+                    <View key={`${detail.root?.rowId ?? 'reply'}-${i}`} style={[styles.cdThread, { borderLeftColor: CD_COLOR, backgroundColor: alpha(CD_COLOR, 0.06) }]}>
+                      <Text style={styles.cdSegTime}>
+                        {fmtTime(detail.startTs)} → {fmtTime(detail.endTs)}{dur >= 1 ? ` · 停留 ${dur}s` : ''}
+                        {detail.replyTotal ? ` · 相关回复 ${detail.replyTotal} 条` : ''}
+                      </Text>
+                      {detail.root && (
+                        <View style={styles.cdRoot}>
+                          <View style={styles.commentHead}>
+                            {detail.root.author && <Text style={styles.commentAuthor}>{detail.root.author}</Text>}
+                            {detail.root.badges.map((b, bi) => <Text key={bi} style={styles.commentBadge}>{b}</Text>)}
+                            <Text style={styles.commentTime}>{detail.root.timeLocation}</Text>
+                          </View>
+                          <Text style={styles.commentBody}>{detail.root.body}</Text>
+                          {(detail.root.likes || detail.root.replyCount) && (
+                            <View style={styles.commentFoot}>
+                              {detail.root.likes && <Text style={styles.commentFootText}>👍 {detail.root.likes}</Text>}
+                              {detail.root.replyCount && <Text style={styles.commentFootText}>💬 {detail.root.replyCount} 条回复</Text>}
+                            </View>
+                          )}
+                        </View>
+                      )}
+                      {detail.replies.length > 0 && (
+                        <View style={styles.cdReplies}>
+                          {detail.replies.slice(0, 5).map((r, ri) => (
+                            <View key={`${r.rowId}-${ri}`} style={[styles.cdReply, ri === detail.replies.length - 1 && { borderBottomWidth: 0, paddingBottom: 0 }]}>
+                              <View style={styles.commentHead}>
+                                {r.author && <Text style={styles.cdReplyAuthor}>{r.author}</Text>}
+                                {r.badges.map((b, bi) => <Text key={bi} style={styles.commentBadge}>{b}</Text>)}
+                                <Text style={styles.commentTime}>{r.timeLocation}</Text>
+                              </View>
+                              <Text style={styles.cdReplyBody}>{r.body}</Text>
+                              {r.likes && <Text style={styles.commentFootText}>👍 {r.likes}</Text>}
+                            </View>
+                          ))}
+                          {detail.replies.length > 5 && (
+                            <Text style={styles.cdMore}>还有 {detail.replies.length - 5} 条回复已折叠</Text>
+                          )}
+                        </View>
+                      )}
+                    </View>
+                  )
+                }) : s.commentDetailSegs.map((seg, i) => {
                   const dur = Math.round((seg.endTs - seg.startTs) / 1000)
                   return (
                     <View key={i} style={[styles.cdSeg, { borderLeftColor: CD_COLOR, backgroundColor: alpha(CD_COLOR, 0.06) }]}>
@@ -2247,7 +2474,7 @@ function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { it
                         {fmtTime(seg.startTs)} → {fmtTime(seg.endTs)}{dur >= 1 ? ` · 停留 ${dur}s` : ''}
                       </Text>
                       <Text style={styles.cdSegPlaceholder}>
-                        进入评论详情页（具体回复内容 a11y 抓不到 — 浮层 Canvas 渲染）
+                        进入评论详情页（本次采样未抓到正文）
                       </Text>
                     </View>
                   )
@@ -2870,8 +3097,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 6,
     borderLeftWidth: 3, borderRadius: 4,
   },
+  cdThread: {
+    paddingHorizontal: 10, paddingVertical: 8,
+    borderLeftWidth: 3, borderRadius: 4,
+  },
   cdSegTime: { fontSize: 11, color: theme.ink, fontVariant: ['tabular-nums'], fontWeight: '600' },
   cdSegPlaceholder: { fontSize: 11, color: theme.inkSoft, fontStyle: 'italic', marginTop: 2 },
+  cdRoot: {
+    marginTop: 7, paddingBottom: 7,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: alpha(COMMENTS_ACCENT, 0.18),
+  },
+  cdReplies: { marginTop: 6, gap: 5 },
+  cdReply: {
+    paddingBottom: 5,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: alpha(COMMENTS_ACCENT, 0.12),
+  },
+  cdReplyAuthor: { fontSize: 12, color: theme.ink, fontWeight: '700' },
+  cdReplyBody: { fontSize: 12, color: theme.ink, lineHeight: 18, marginTop: 1 },
+  cdMore: { fontSize: 11, color: theme.inkSoft, marginTop: 1 },
   // 还原动作 — 时间线行
   actionRow: {
     flexDirection: 'row',

@@ -8,6 +8,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Animated,
+  AppState,
+  DeviceEventEmitter,
   Image,
   Keyboard,
   Modal,
@@ -102,6 +104,19 @@ interface Span {
 type Row =
   | { kind: 'full'; startMin: number; cols: number }
   | { kind: 'compressed'; hours: number[] }
+
+type DayPeriodInfo = {
+  label: string
+  accent: string
+  text: string
+}
+
+type DayPeriodSegment = DayPeriodInfo & {
+  key: string
+  hours: number
+}
+
+const DAY_PERIOD_START_HOURS = [0, 6, 12, 18, 20] as const
 
 type HitCell =
   | { kind: 'full'; hour: number; col: number; minute: number }
@@ -224,6 +239,72 @@ function clamp(v: number, lo: number, hi: number): number {
 
 function snapMinute(minute: number): number {
   return clamp(Math.round(minute / 5) * 5, 0, 1435)
+}
+
+function dayPeriodForHour(hour: number): DayPeriodInfo {
+  if (hour < 6) return { label: '凌晨', accent: '#787CFF', text: '#626BDF' }
+  if (hour < 12) return { label: '上午', accent: '#DCEB64', text: '#8A940F' }
+  if (hour < 18) return { label: '下午', accent: '#FACC15', text: '#B7791F' }
+  if (hour < 20) return { label: '黄昏', accent: '#FF8140', text: '#D65F20' }
+  return { label: '夜晚', accent: '#A06EFF', text: '#7C3AED' }
+}
+
+function rowStartHour(row: Row): number {
+  return row.kind === 'full' ? Math.floor(row.startMin / 60) : row.hours[0]
+}
+
+function shouldShowPeriodLabel(row: Row): boolean {
+  if (row.kind === 'compressed') {
+    return row.hours.some((h) => DAY_PERIOD_START_HOURS.includes(h as typeof DAY_PERIOD_START_HOURS[number]))
+  }
+  const h = Math.floor(row.startMin / 60)
+  return row.startMin % 60 === 0 && DAY_PERIOD_START_HOURS.includes(h as typeof DAY_PERIOD_START_HOURS[number])
+}
+
+function rowPeriodSegments(row: Row): DayPeriodSegment[] {
+  const hours = row.kind === 'full' ? [Math.floor(row.startMin / 60)] : row.hours
+  const segs: DayPeriodSegment[] = []
+  for (const h of hours) {
+    const info = dayPeriodForHour(h)
+    const last = segs[segs.length - 1]
+    if (last && last.label === info.label) {
+      last.hours += 1
+    } else {
+      segs.push({ ...info, key: `${info.label}-${h}`, hours: 1 })
+    }
+  }
+  return segs
+}
+
+function periodLabelSegmentsForRow(row: Row): DayPeriodSegment[] {
+  if (row.kind === 'compressed') return rowPeriodSegments(row)
+  return shouldShowPeriodLabel(row) ? rowPeriodSegments(row) : []
+}
+
+function paletteSignature(p: ActivityPalette): string {
+  const cats = [...p.categories]
+    .sort((a, b) => a.id - b.id)
+    .map((c) => `${c.id}:${c.name}:${c.color}:${c.sortOrder}:${c.lastUsedAt}`)
+    .join('|')
+  const tags = [...p.tags]
+    .sort((a, b) => a.id - b.id)
+    .map((t) => `${t.id}:${t.categoryId}:${t.fullPath}:${t.leafName}:${t.depth}:${t.lastUsedAt}`)
+    .join('|')
+  return `${cats}#${tags}`
+}
+
+function blocksSignature(bs: ActivityBlock[]): string {
+  return [...bs]
+    .sort((a, b) => a.minute - b.minute)
+    .map((b) => `${b.date}:${b.minute}:${b.tagId}:${b.note ?? ''}:${b.createdAt}`)
+    .join('|')
+}
+
+function mostRecentTagId(p: ActivityPalette): number | null {
+  const mostRecent = [...p.tags]
+    .filter((t) => !!t.lastUsedAt)
+    .sort((a, b) => (b.lastUsedAt ?? '').localeCompare(a.lastUsedAt ?? ''))[0]
+  return mostRecent?.id ?? null
 }
 
 // 标签树节点：fullPath 按 "," 分层，category 名是 level0，逐层往下
@@ -366,8 +447,8 @@ function TagTreeView({
             else if (node.tag) onPick(node.tag.id)
           }}
           onLongPress={() => {
-            if (node.tag) onLongPressTag(node.tag)
-            else if (depth === 0) onLongPressCategory(node.segment)
+            if (depth === 0) onLongPressCategory(node.segment)
+            else if (node.tag) onLongPressTag(node.tag)
             // 中间分支节点（非 root 也无 tag）= 虚拟段，没法删，不响应长按
           }}
           delayLongPress={400}
@@ -837,9 +918,15 @@ export default function DayNightScreen() {
     grantTs: 0,
   })
   const plannedTasksRef = useRef<PlannedTask[]>([])
+  const selectedDateRef = useRef(selectedDate)
+  const selectedTagIdRef = useRef(selectedTagId)
+  const blocksRef = useRef<ActivityBlock[]>([])
 
   focusStartRef.current = focusStart
   plannedTasksRef.current = plannedTasks
+  selectedDateRef.current = selectedDate
+  selectedTagIdRef.current = selectedTagId
+  blocksRef.current = blocks
 
   // palette 走 ref —— PanResponder 闭包里查 tag 名要拿最新 palette，
   // 不能直接读闭包外的 tagById（那是首次 render 时的空 Map）
@@ -1024,10 +1111,7 @@ export default function DayNightScreen() {
       setPalette(p)
       // 默认选最近用过的 tag；都没用过就不选（让用户主动点选标签按钮）
       // 不再用 p.tags[0]（那是按 category_id, id 排的最早 tag，不是用户意图）
-      const mostRecent = [...p.tags]
-        .filter((t) => !!t.lastUsedAt)
-        .sort((a, b) => (b.lastUsedAt ?? '').localeCompare(a.lastUsedAt ?? ''))[0]
-      setSelectedTagId(mostRecent?.id ?? null)
+      setSelectedTagId(mostRecentTagId(p))
     })
     return () => {
       alive = false
@@ -1046,6 +1130,51 @@ export default function DayNightScreen() {
       alive = false
     }
   }, [selectedDate])
+
+  // 桌面端推同步时，native SoloDb 已经写库，但当前 mounted 的昼夜表不会自动重读。
+  // 同步 HTTP server 在 import 成功后发 SoloDbChanged；这里只在事件到达/回前台时重读。
+  useEffect(() => {
+    let alive = true
+    let inFlight = false
+    const refreshVisibleData = async () => {
+      if (inFlight) return
+      inFlight = true
+      const date = selectedDateRef.current
+      const dateKey = toLocalDateStr(date)
+      try {
+        const [nextPalette, nextBlocks] = await Promise.all([fetchPalette(), fetchBlocks(date)])
+        if (!alive) return
+        const currentPalette = paletteRef.current
+        if (!currentPalette || paletteSignature(nextPalette) !== paletteSignature(currentPalette)) {
+          setPalette(nextPalette)
+          setSelectedTagId((cur) => {
+            if (cur != null && nextPalette.tags.some((t) => t.id === cur)) return cur
+            return selectedTagIdRef.current == null ? mostRecentTagId(nextPalette) : null
+          })
+        }
+        // 请求回来时用户可能已经切了日期；只刷新发起时对应的那一天。
+        if (toLocalDateStr(selectedDateRef.current) === dateKey &&
+            blocksSignature(nextBlocks) !== blocksSignature(blocksRef.current)) {
+          setBlocks(nextBlocks)
+        }
+      } catch (e: any) {
+        console.warn('[daynight-refresh] failed:', e?.message ?? e)
+      } finally {
+        inFlight = false
+      }
+    }
+    const dbSub = DeviceEventEmitter.addListener('SoloDbChanged', () => {
+      void refreshVisibleData()
+    })
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void refreshVisibleData()
+    })
+    return () => {
+      alive = false
+      dbSub.remove()
+      sub.remove()
+    }
+  }, [])
 
   // 重 measure cellArea 的屏幕坐标 —— 三种触发：
   //   editMode / focusStart 变化 → 上方 toolbar 内容变化
@@ -1919,9 +2048,53 @@ export default function DayNightScreen() {
               // 整点 → 加粗 + 更黑（compressed 一定整点；full 行只 startMin % 60 === 0）
               const isHourMark = row.kind === 'compressed' || row.startMin % 60 === 0
               const isCompressed = row.kind === 'compressed'
+              const period = dayPeriodForHour(rowStartHour(row))
+              const periodSegments = rowPeriodSegments(row)
+              const labelSegments = periodLabelSegmentsForRow(row)
               return (
-                <View key={i} style={[styles.axisCell, isCompressed && styles.axisCellCompressed]}>
-                  <Text style={[styles.axisText, isHourMark && styles.axisTextHour, isCompressed && styles.axisTextCompressed]}>
+                <View
+                  key={i}
+                  style={[
+                    styles.axisCell,
+                    isCompressed && styles.axisCellCompressed,
+                  ]}
+                >
+                  <View pointerEvents="none" style={styles.axisPeriodLayers}>
+                    {periodSegments.map((seg) => (
+                      <View
+                        key={seg.key}
+                        style={{
+                          flex: seg.hours,
+                          backgroundColor: alpha(seg.accent, isCompressed ? 0.18 : 0.07),
+                        }}
+                      />
+                    ))}
+                  </View>
+                  <View pointerEvents="none" style={styles.axisPeriodStrip}>
+                    {periodSegments.map((seg) => (
+                      <View
+                        key={`${seg.key}-strip`}
+                        style={{ flex: seg.hours, backgroundColor: seg.accent }}
+                      />
+                    ))}
+                  </View>
+                  {labelSegments.length > 0 && (
+                    <Text style={styles.axisPeriodLabel} numberOfLines={1}>
+                      {labelSegments.map((seg, idx) => (
+                        <Text key={seg.key} style={{ color: seg.text }}>
+                          {idx > 0 ? '/' : ''}{seg.label}
+                        </Text>
+                      ))}
+                    </Text>
+                  )}
+                  <Text
+                    style={[
+                      styles.axisText,
+                      isHourMark && styles.axisTextHour,
+                      isCompressed && styles.axisTextCompressed,
+                      { color: period.text },
+                    ]}
+                  >
                     {row.kind === 'full'
                       ? fmtMinute(row.startMin)
                       : row.hours.length === 1
@@ -1945,9 +2118,18 @@ export default function DayNightScreen() {
               // chipBelow：focus 第一行（前面没 full row）时 chip 朝下，避免顶到屏幕外
               const chipBelow = row.kind === 'full' && !rows.slice(0, i).some((r) => r.kind === 'full')
               if (row.kind === 'compressed') {
+                const period = dayPeriodForHour(rowStartHour(row))
                 return (
-                  <View key={i} style={[styles.cellRow, styles.cellRowCompressed]}>
+                  <View
+                    key={i}
+                    style={[
+                      styles.cellRow,
+                      styles.cellRowCompressed,
+                      { backgroundColor: alpha(period.accent, 0.08) },
+                    ]}
+                  >
                     {row.hours.map((h) => {
+                      const hourPeriod = dayPeriodForHour(h)
                       // hour 内按 5min 块合并成 runs，按时间比例铺色
                       const hourRuns: { mins: number; tag: number | null }[] = []
                       for (let m = h * 60; m < h * 60 + 60; m += 5) {
@@ -1957,8 +2139,13 @@ export default function DayNightScreen() {
                         else hourRuns.push({ mins: 5, tag: t })
                       }
                       return (
-                        <View key={h} style={styles.cellSlot}>
-                          <View style={styles.compressedInner}>
+                        <View key={h} style={[styles.cellSlot, { backgroundColor: alpha(hourPeriod.accent, 0.035) }]}>
+                          <View
+                            style={[
+                              styles.compressedInner,
+                              { backgroundColor: alpha(hourPeriod.accent, 0.1) },
+                            ]}
+                          >
                             {hourRuns.map((run, idx) => {
                               const widthPct = (run.mins / 60) * 100
                               if (run.tag == null) {
@@ -1967,7 +2154,7 @@ export default function DayNightScreen() {
                                     key={idx}
                                     style={{
                                       width: `${widthPct}%`,
-                                      backgroundColor: theme.sunk,
+                                      backgroundColor: alpha(hourPeriod.accent, 0.1),
                                     }}
                                   />
                                 )
@@ -2010,6 +2197,7 @@ export default function DayNightScreen() {
               const rowCols = row.cols
               const rowMinutes = rowCols * 5
               const rowStart = row.startMin
+              const period = dayPeriodForHour(Math.floor(rowStart / 60))
               const runs: { l: number; r: number; tag: number }[] = []
               for (let col = 0; col < rowCols; col++) {
                 const m = rowStart + col * 5
@@ -2031,10 +2219,10 @@ export default function DayNightScreen() {
                   return { task, start, end }
                 })
               return (
-                <View key={i} style={styles.cellRow}>
+                <View key={i} style={[styles.cellRow, { backgroundColor: alpha(period.accent, 0.04) }]}>
                   {Array.from({ length: rowCols }, (_, col) => (
                     <View key={col} style={styles.cellSlot}>
-                      <View style={styles.emptyInner} />
+                      <View style={[styles.emptyInner, { backgroundColor: alpha(period.accent, 0.1) }]} />
                     </View>
                   ))}
                   {runs.map((run) => {
@@ -3164,6 +3352,33 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  axisPeriodLayers: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    flexDirection: 'column',
+  },
+  axisPeriodStrip: {
+    position: 'absolute',
+    left: 0,
+    top: 3,
+    bottom: 3,
+    width: 3,
+    borderTopRightRadius: 2,
+    borderBottomRightRadius: 2,
+    overflow: 'hidden',
+    opacity: 0.72,
+  },
+  axisPeriodLabel: {
+    fontSize: 8,
+    fontWeight: '800',
+    lineHeight: 10,
+    includeFontPadding: false,
   },
   // compressed 行 axis 加浅灰底，跟 cellRowCompressed 视觉对齐
   axisCellCompressed: {
@@ -3191,6 +3406,7 @@ const styles = StyleSheet.create({
   cellRow: {
     flex: 1,
     flexDirection: 'row',
+    position: 'relative',
   },
   // 锤子形游标 wrap：chip 紧贴色块上沿，cap 紧贴色块下沿
   // 色块视觉边沿 = cellRow 上下各内缩 GAP/2 (= 2px)

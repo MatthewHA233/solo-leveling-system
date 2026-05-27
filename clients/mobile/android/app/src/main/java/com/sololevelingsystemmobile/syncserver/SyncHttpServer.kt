@@ -22,6 +22,7 @@ class SyncHttpServer(
   port: Int,
   private val db: SoloDb,
   private val alias: String = "Solo Leveling Mobile",
+  private val onImport: ((SoloDb.ImportResult) -> Unit)? = null,
 ) : NanoHTTPD(port) {
 
   override fun serve(session: IHTTPSession): Response {
@@ -101,6 +102,9 @@ class SyncHttpServer(
     } else "{}"
     val payload = jsonToExport(JSONObject(bodyStr))
     val r = db.importSync(payload)
+    if (r.activityCategories + r.activityTags + r.activityBlocks + r.planNodes + r.plannedBlocks > 0) {
+      onImport?.invoke(r)
+    }
     // SyncImportResult 字段名对齐 desktop db.rs
     val rJson = JSONObject().apply {
       put("activity_categories", r.activityCategories)
@@ -170,6 +174,10 @@ class SyncHttpServer(
     return o
   }
 
+  private fun nullableString(o: JSONObject, key: String): String? {
+    return if (o.isNull(key)) null else o.optString(key)
+  }
+
   private fun jsonToExport(o: JSONObject): SoloDb.SyncExport {
     return SoloDb.SyncExport(
       deviceId = o.optString("device_id"),
@@ -182,7 +190,7 @@ class SyncHttpServer(
           sortOrder = it.optInt("sort_order"),
           createdAt = it.optString("created_at"), lastUsedAt = it.optString("last_used_at"),
           updatedAt = it.optString("updated_at"),
-          deletedAt = if (it.isNull("deleted_at")) null else it.optString("deleted_at", null),
+          deletedAt = nullableString(it, "deleted_at"),
         )
       },
       activityTags = jsonArr(o, "activity_tags") { it ->
@@ -192,36 +200,36 @@ class SyncHttpServer(
           depth = it.optInt("depth", 1),
           createdAt = it.optString("created_at"), lastUsedAt = it.optString("last_used_at"),
           updatedAt = it.optString("updated_at"),
-          deletedAt = if (it.isNull("deleted_at")) null else it.optString("deleted_at", null),
+          deletedAt = nullableString(it, "deleted_at"),
         )
       },
       activityBlocks = jsonArr(o, "activity_blocks") { it ->
         SoloDb.SyncBlockRow(
           syncId = it.optString("sync_id"), date = it.optString("date"),
           minute = it.optInt("minute"), tagSyncId = it.optString("tag_sync_id"),
-          note = if (it.isNull("note")) null else it.optString("note", null),
+          note = nullableString(it, "note"),
           createdAt = it.optString("created_at"), updatedAt = it.optString("updated_at"),
-          deletedAt = if (it.isNull("deleted_at")) null else it.optString("deleted_at", null),
+          deletedAt = nullableString(it, "deleted_at"),
         )
       },
       planNodes = jsonArr(o, "plan_nodes") { it ->
         SoloDb.SyncPlanNodeRow(
           syncId = it.optString("sync_id"),
           projectTagSyncId = it.optString("project_tag_sync_id"),
-          parentSyncId = if (it.isNull("parent_sync_id")) null else it.optString("parent_sync_id", null),
+          parentSyncId = nullableString(it, "parent_sync_id"),
           title = it.optString("title"), status = it.optString("status", "active"),
           sortOrder = it.optInt("sort_order"),
           createdAt = it.optString("created_at"), updatedAt = it.optString("updated_at"),
-          deletedAt = if (it.isNull("deleted_at")) null else it.optString("deleted_at", null),
+          deletedAt = nullableString(it, "deleted_at"),
         )
       },
       plannedBlocks = jsonArr(o, "planned_blocks") { it ->
         SoloDb.SyncPlannedBlockRow(
           syncId = it.optString("sync_id"), date = it.optString("date"),
           minute = it.optInt("minute"), planNodeSyncId = it.optString("plan_node_sync_id"),
-          note = if (it.isNull("note")) null else it.optString("note", null),
+          note = nullableString(it, "note"),
           createdAt = it.optString("created_at"), updatedAt = it.optString("updated_at"),
-          deletedAt = if (it.isNull("deleted_at")) null else it.optString("deleted_at", null),
+          deletedAt = nullableString(it, "deleted_at"),
         )
       },
     )
