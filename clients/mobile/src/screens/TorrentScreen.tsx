@@ -186,8 +186,8 @@ function parsePromo(raw: string): { kind: string; text: string } | null {
 }
 
 // 时间地点 pattern：评论锚点
-//   "5月7日 重庆" / "5月10日 山西" / "1小时前 广东" / "刚刚" / "昨天 19:19 陕西"
-const COMMENT_TIME_LOC = /^(刚刚|\d+分钟前|\d+小时前|昨天|前天|\d+天前|\d{1,2}月\d{1,2}日)(?:\s+\S+){0,2}$/
+//   "5月7日 重庆" / "2024年1月18日 福建" / "1小时前 广东" / "刚刚" / "昨天 19:19 陕西"
+const COMMENT_TIME_LOC = /^(刚刚|\d+分钟前|\d+小时前|昨天|前天|\d+天前|(?:\d{4}年)?\d{1,2}月\d{1,2}日)(?:\s+\d{1,2}:\d{2})?(?:\s+\S+){0,2}$/
 const COMMENT_NOISE = new Set([
   '热门评论', '按热度', '按时间', '评论详情', '回复', '相关推荐',
   '展开', '收起', '添加表情', '文本栏', '说点什么吧', '评论',
@@ -219,7 +219,7 @@ function parseBiliComments(
   // 评论 surface 检测：有明确 marker，或 raw 内含 ≥ 2 个"时间地点"锚点（评论列表特征）
   // 用户滚到深处时顶部 marker 滚出视野，靠多个锚点也能判定是评论 surface
   const hasMarker = texts.some((t) => t === '热门评论' || t === '评论详情' || t === '按热度')
-  const anchorCount = texts.filter((t) => COMMENT_TIME_LOC.test(t)).length
+  const anchorCount = new Set(texts.filter((t) => COMMENT_TIME_LOC.test(t))).size
   if (!hasMarker && anchorCount < 2) return null
 
   // 找 "评论 N" → totalCount（在 detail 页 tab "评论 88" 这种格式）
@@ -946,7 +946,6 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
     if (wc.includes('UnitedBiz') || wc.includes('StoryVideo')) return false
     // ViewGroup 是 detail 内部 fullscreen/评论的 windowClass，不算 home
     return wc.includes('MainActivityV2') || wc.endsWith('ScrollView')
-      || wc === 'android.widget.FrameLayout'  // splash 期开屏
   }
   for (const c of items) {
     if (c.packageName !== 'tv.danmaku.bili') continue
@@ -1442,8 +1441,10 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
   }
 
   // Pass 1：先扫所有 raw，回填 ctx.title + 收所有 signal events
-  type EvSig = { ts: number; rowId: number; windowClass: string; sig: { kind: BiliActionKind; title?: string; upName?: string } }
-  const events: EvSig[] = []
+  type ActionBucketLine = { rowId: number; text: string; ts: number; windowClass: string }
+  type EvSig = { ts: number; rowId: number; windowClass: string; sig: { kind: BiliActionKind; title?: string; upName?: string; meta?: string } }
+  let events: EvSig[] = []
+  const secondBuckets = new Map<number, { ts: number; rowId: number; windowClass: string; lines: ActionBucketLine[] }>()
   const ctx = { upName: null as string | null, title: null as string | null }
   // Story raw 上下文：上一行 UP 名 + 当前行粉丝 = 锁定 ctx.upName
   // 下一行（含 STORY_TITLE_TAIL）= 锁定 ctx.title
@@ -1451,6 +1452,21 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
   for (const c of items) {
     if (c.packageName !== 'tv.danmaku.bili') continue
     const t = c.text.trim()
+    if (isA11ySnapshotCapture(c.captureType)) {
+      const sec = Math.floor(c.eventTimeMs / 1000)
+      const existing = secondBuckets.get(sec)
+      const line = { rowId: c.rowId, text: c.text, ts: c.eventTimeMs, windowClass: c.windowClass }
+      if (existing) {
+        existing.lines.push(line)
+        if (c.rowId < existing.rowId) {
+          existing.rowId = c.rowId
+          existing.ts = c.eventTimeMs
+          existing.windowClass = c.windowClass
+        }
+      } else {
+        secondBuckets.set(sec, { ts: c.eventTimeMs, rowId: c.rowId, windowClass: c.windowClass, lines: [line] })
+      }
+    }
     // Story 上下文回填
     if (c.windowClass.includes('StoryVideoActivity')) {
       const fansM = t.match(STORY_FANS)
@@ -1482,6 +1498,34 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
     events.push({ ts: c.eventTimeMs, rowId: c.rowId, windowClass: c.windowClass, sig })
   }
 
+  const SUB_TAB_KINDS = new Set<BiliActionKind>(['fullscreen', 'comments', 'comment_detail'])
+  const kindToSubTab: Record<string, VideoSubTab> = {
+    fullscreen: 'fullscreen', comments: 'comments', comment_detail: 'comment_detail',
+  }
+  const eventSec = (ts: number) => Math.floor(ts / 1000)
+  const existingSubTabSecKind = new Set(events
+    .filter((e) => SUB_TAB_KINDS.has(e.sig.kind))
+    .map((e) => `${eventSec(e.ts)}:${e.sig.kind}`))
+  const subTabKindBySec = new Map<number, BiliActionKind>()
+  for (const [sec, b] of secondBuckets) {
+    let kind: BiliActionKind | null = null
+    if (parseBiliCommentDetails(b.lines).length > 0) kind = 'comment_detail'
+    else if (parseBiliComments(b.lines)) kind = 'comments'
+    else if (b.lines.some((l) => l.text.trim() === '倍速')) kind = 'fullscreen'
+    if (!kind) continue
+    subTabKindBySec.set(sec, kind)
+    const key = `${sec}:${kind}`
+    if (!existingSubTabSecKind.has(key)) {
+      events.push({ ts: b.ts, rowId: b.rowId, windowClass: b.windowClass, sig: { kind } })
+      existingSubTabSecKind.add(key)
+    }
+  }
+  // 同一秒 a11y 树常同时包含视频头部和评论列表/全屏控件；此时 up 主行只是父页面残留，
+  // 不能当成"切回简介"，否则每轮 poll 都会生成 简介→评论 的 1s 抖动。
+  events = events
+    .filter((e) => !(e.sig.kind === 'video_intro' && subTabKindBySec.has(eventSec(e.ts))))
+    .sort((a, b) => a.rowId - b.rowId)
+
   type Cur = {
     startTs: number; endTs: number;
     kind: BiliActionKind;
@@ -1492,21 +1536,25 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
   }
   const acts: Cur[] = []
 
-  // Pass 2：splash 段独立识别
-  const splashEvs = events.filter((e) => e.sig.kind === 'splash')
-  const splashEnd = splashEvs.length > 0 ? splashEvs[splashEvs.length - 1].ts : 0
-  if (splashEvs.length > 0) {
-    acts.push({ startTs: splashEvs[0].ts, endTs: splashEnd, kind: 'splash' })
+  // Pass 2：splash 段独立识别。只按临近倒计时合段；detail/Launcher 里的"跳过 5"不是开屏。
+  const splashSegments: { startTs: number; endTs: number }[] = []
+  const isSplashSurface = (wc: string): boolean =>
+    wc === 'android.widget.FrameLayout' || wc.includes('MainActivityV2') || wc.endsWith('ScrollView')
+  const splashEvs = events.filter((e) =>
+    e.sig.kind === 'splash'
+    && isSplashSurface(e.windowClass))
+  for (const e of splashEvs) {
+    const last = splashSegments[splashSegments.length - 1]
+    if (last && e.ts - last.endTs < 15_000) last.endTs = e.ts
+    else splashSegments.push({ startTs: e.ts, endTs: e.ts })
   }
+  for (const s of splashSegments) acts.push({ startTs: s.startTs, endTs: s.endTs, kind: 'splash' })
+  const isDuringSplash = (ts: number) => splashSegments.some((s) => ts >= s.startTs && ts <= s.endTs + 1_000)
 
   // Pass 3：剩余 signals
   // 关键变化：fullscreen/comments/comment_detail 都是 video_intro 父动作下的"界面内 tab 切换"
   // 不再独立成动作行，而是吸收为 video_intro 的 tabSeq 子段。
   // 评论详情虽然是新页面，但属于"在这个视频上的延伸操作"，仍归 video_intro。
-  const SUB_TAB_KINDS = new Set<BiliActionKind>(['fullscreen', 'comments', 'comment_detail'])
-  const kindToSubTab: Record<string, VideoSubTab> = {
-    fullscreen: 'fullscreen', comments: 'comments', comment_detail: 'comment_detail',
-  }
   const ACTION_MERGE_GAP_MS = 60_000
   // 在 video_intro 上追加子段（同子段连续就 extend，不同就 push 新段）
   const pushSubTab = (parent: Cur, tab: VideoSubTab, ts: number) => {
@@ -1524,7 +1572,7 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
   let cur: Cur | null = null
   for (const e of events) {
     if (e.sig.kind === 'splash') continue
-    if (e.sig.kind === 'home' && e.ts <= splashEnd) continue
+    if (e.sig.kind === 'home' && isDuringSplash(e.ts)) continue
     const sig = e.sig
 
     // 子动作 → 吸收为父 video_intro 的 tabSeq
@@ -2381,9 +2429,6 @@ function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { it
   const tsLabel = s.tsStart === s.tsEnd
     ? fmtTime(s.tsEnd)
     : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
-  // 评论详情：默认收缩，跨视图跳转（highlighted）时自动展开
-  const [cdOpen, setCdOpen] = useState(false)
-  const detailsToShow = highlighted ? true : cdOpen
   const CD_COLOR = SUB_TAB_LABEL.comment_detail.color
   return (
     <View style={[styles.subCard, highlighted && styles.snapCardHighlight, { borderColor: alpha(COMMENTS_ACCENT, 0.3) }]}>
@@ -2404,83 +2449,88 @@ function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { it
               <Text style={styles.commentTime}>{c.timeLocation}</Text>
             </View>
             <Text style={styles.commentBody}>{c.body}</Text>
-            {(c.likes || c.replyCount) && (
+            {c.likes && (
               <View style={styles.commentFoot}>
-                {c.likes && <Text style={styles.commentFootText}>👍 {c.likes}</Text>}
-                {c.replyCount && <Text style={styles.commentFootText}>💬 {c.replyCount} 条回复</Text>}
+                <Text style={styles.commentFootText}>👍 {c.likes}</Text>
+              </View>
+            )}
+            {c.replyCount && (
+              <View style={styles.commentReplyEntry}>
+                <Text style={styles.commentReplyText}>共{c.replyCount}条回复</Text>
+                <Text style={styles.commentReplyArrow}>{'>'}</Text>
               </View>
             )}
           </View>
         ))}
-        {/* 评论详情：默认收缩；点头开/关；跨视图跳转过来自动展开 */}
+        {/* 评论详情：复现 B 站打开后的独立详情面板，而不是折叠展开控件 */}
         {hasCommentDetail && (
           <View style={styles.cdInline}>
-            <Pressable onPress={() => setCdOpen((x) => !x)} style={styles.cdHead}>
-              <Text style={[styles.cdLabel, { color: CD_COLOR }]}>评论详情</Text>
-              <Text style={[styles.cdCount, { color: CD_COLOR }]}>× {commentDetails.length || s.commentDetailSegs.length}</Text>
-              <Text style={styles.cdToggle}>{detailsToShow ? '收起 ▴' : '展开 ▾'}</Text>
-            </Pressable>
-            {detailsToShow && (
-              <View style={styles.cdBody}>
-                {commentDetails.length > 0 ? commentDetails.map((detail, i) => {
-                  const dur = Math.round((detail.endTs - detail.startTs) / 1000)
-                  return (
-                    <View key={`${detail.root?.rowId ?? 'reply'}-${i}`} style={[styles.cdThread, { borderLeftColor: CD_COLOR, backgroundColor: alpha(CD_COLOR, 0.06) }]}>
-                      <Text style={styles.cdSegTime}>
-                        {fmtTime(detail.startTs)} → {fmtTime(detail.endTs)}{dur >= 1 ? ` · 停留 ${dur}s` : ''}
-                        {detail.replyTotal ? ` · 相关回复 ${detail.replyTotal} 条` : ''}
-                      </Text>
-                      {detail.root && (
-                        <View style={styles.cdRoot}>
-                          <View style={styles.commentHead}>
-                            {detail.root.author && <Text style={styles.commentAuthor}>{detail.root.author}</Text>}
-                            {detail.root.badges.map((b, bi) => <Text key={bi} style={styles.commentBadge}>{b}</Text>)}
-                            <Text style={styles.commentTime}>{detail.root.timeLocation}</Text>
+            <View style={styles.cdSheetHead}>
+              <Text style={styles.cdSheetTitle}>评论详情</Text>
+              <Text style={styles.cdClose}>×</Text>
+            </View>
+            <View style={styles.cdBody}>
+              {commentDetails.length > 0 ? commentDetails.map((detail, i) => {
+                const dur = Math.round((detail.endTs - detail.startTs) / 1000)
+                const replyTotal = detail.replyTotal ?? (detail.replies.length > 0 ? String(detail.replies.length) : null)
+                return (
+                  <View key={`${detail.root?.rowId ?? 'reply'}-${i}`} style={[styles.cdThread, { borderTopColor: alpha(CD_COLOR, 0.24) }]}>
+                    <Text style={styles.cdSegTime}>
+                      {fmtTime(detail.startTs)} → {fmtTime(detail.endTs)}{dur >= 1 ? ` · 停留 ${dur}s` : ''}
+                    </Text>
+                    {detail.root && (
+                      <View style={styles.cdRoot}>
+                        <View style={styles.commentHead}>
+                          {detail.root.author && <Text style={styles.commentAuthor}>{detail.root.author}</Text>}
+                          {detail.root.badges.map((b, bi) => <Text key={bi} style={styles.commentBadge}>{b}</Text>)}
+                          <Text style={styles.commentTime}>{detail.root.timeLocation}</Text>
+                        </View>
+                        <Text style={styles.commentBody}>{detail.root.body}</Text>
+                        {detail.root.likes && (
+                          <View style={styles.commentFoot}>
+                            <Text style={styles.commentFootText}>👍 {detail.root.likes}</Text>
                           </View>
-                          <Text style={styles.commentBody}>{detail.root.body}</Text>
-                          {(detail.root.likes || detail.root.replyCount) && (
-                            <View style={styles.commentFoot}>
-                              {detail.root.likes && <Text style={styles.commentFootText}>👍 {detail.root.likes}</Text>}
-                              {detail.root.replyCount && <Text style={styles.commentFootText}>💬 {detail.root.replyCount} 条回复</Text>}
-                            </View>
-                          )}
+                        )}
+                      </View>
+                    )}
+                    {detail.replies.length > 0 && (
+                      <View style={styles.cdReplies}>
+                        <View style={styles.cdReplyHeader}>
+                          <Text style={styles.cdReplyHeaderText}>相关回复{replyTotal ? `共${replyTotal}条` : ''}</Text>
+                          <Text style={styles.cdReplySort}>按时间</Text>
                         </View>
-                      )}
-                      {detail.replies.length > 0 && (
-                        <View style={styles.cdReplies}>
-                          {detail.replies.slice(0, 5).map((r, ri) => (
-                            <View key={`${r.rowId}-${ri}`} style={[styles.cdReply, ri === detail.replies.length - 1 && { borderBottomWidth: 0, paddingBottom: 0 }]}>
-                              <View style={styles.commentHead}>
-                                {r.author && <Text style={styles.cdReplyAuthor}>{r.author}</Text>}
-                                {r.badges.map((b, bi) => <Text key={bi} style={styles.commentBadge}>{b}</Text>)}
-                                <Text style={styles.commentTime}>{r.timeLocation}</Text>
-                              </View>
-                              <Text style={styles.cdReplyBody}>{r.body}</Text>
-                              {r.likes && <Text style={styles.commentFootText}>👍 {r.likes}</Text>}
+                        {detail.replies.slice(0, 5).map((r, ri) => (
+                          <View key={`${r.rowId}-${ri}`} style={[styles.cdReply, ri === Math.min(detail.replies.length, 5) - 1 && { borderBottomWidth: 0, paddingBottom: 0 }]}>
+                            <View style={styles.commentHead}>
+                              {r.author && <Text style={styles.cdReplyAuthor}>{r.author}</Text>}
+                              {r.badges.map((b, bi) => <Text key={bi} style={styles.commentBadge}>{b}</Text>)}
+                              <Text style={styles.commentTime}>{r.timeLocation}</Text>
                             </View>
-                          ))}
-                          {detail.replies.length > 5 && (
-                            <Text style={styles.cdMore}>还有 {detail.replies.length - 5} 条回复已折叠</Text>
-                          )}
-                        </View>
-                      )}
-                    </View>
-                  )
-                }) : s.commentDetailSegs.map((seg, i) => {
-                  const dur = Math.round((seg.endTs - seg.startTs) / 1000)
-                  return (
-                    <View key={i} style={[styles.cdSeg, { borderLeftColor: CD_COLOR, backgroundColor: alpha(CD_COLOR, 0.06) }]}>
-                      <Text style={styles.cdSegTime}>
-                        {fmtTime(seg.startTs)} → {fmtTime(seg.endTs)}{dur >= 1 ? ` · 停留 ${dur}s` : ''}
-                      </Text>
-                      <Text style={styles.cdSegPlaceholder}>
-                        进入评论详情页（本次采样未抓到正文）
-                      </Text>
-                    </View>
-                  )
-                })}
+                            <Text style={styles.cdReplyBody}>{r.body}</Text>
+                            {r.likes && <Text style={styles.commentFootText}>👍 {r.likes}</Text>}
+                          </View>
+                        ))}
+                        {detail.replies.length > 5 && (
+                          <Text style={styles.cdMore}>还有 {detail.replies.length - 5} 条回复未展开</Text>
+                        )}
+                      </View>
+                    )}
+                  </View>
+                )
+              }) : s.commentDetailSegs.map((seg, i) => {
+                const dur = Math.round((seg.endTs - seg.startTs) / 1000)
+                return (
+                  <View key={i} style={[styles.cdSeg, { borderTopColor: alpha(CD_COLOR, 0.24) }]}>
+                    <Text style={styles.cdSegTime}>
+                      {fmtTime(seg.startTs)} → {fmtTime(seg.endTs)}{dur >= 1 ? ` · 停留 ${dur}s` : ''}
+                    </Text>
+                    <Text style={styles.cdSegPlaceholder}>
+                      进入评论详情页（本次采样未抓到正文）
+                    </Text>
+                  </View>
+                )
+              })}
               </View>
-            )}
           </View>
         )}
       </View>
@@ -3079,27 +3129,51 @@ const styles = StyleSheet.create({
   },
   commentFoot: { flexDirection: 'row', gap: 12, marginTop: 2 },
   commentFootText: { fontSize: 11, color: theme.inkSoft },
+  commentReplyEntry: {
+    marginTop: 6,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 4,
+    backgroundColor: alpha(COMMENTS_ACCENT, 0.08),
+  },
+  commentReplyText: { fontSize: 11, color: COMMENTS_ACCENT, fontWeight: '700' },
+  commentReplyArrow: { fontSize: 11, color: COMMENTS_ACCENT, fontWeight: '800' },
   commentVideoContext: {
     fontSize: 11, color: COMMENTS_ACCENT, fontWeight: '600', marginTop: 2,
   },
   placeholderHint: { fontSize: 12, color: theme.inkSoft, fontStyle: 'italic', lineHeight: 18 },
-  // 评论详情内嵌小卡（默认收缩）
+  // 评论详情面板：复现 B 站评论详情页结构
   cdInline: {
-    marginTop: 10, paddingTop: 10,
-    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.lineSoft,
+    marginTop: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: alpha(COMMENTS_ACCENT, 0.22),
+    borderRadius: 5,
+    overflow: 'hidden',
+    backgroundColor: alpha(COMMENTS_ACCENT, 0.035),
   },
-  cdHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  cdLabel: { fontSize: 12, fontWeight: '700' },
-  cdCount: { fontSize: 11, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  cdToggle: { fontSize: 11, color: theme.inkSoft, marginLeft: 'auto' },
-  cdBody: { marginTop: 8, gap: 6 },
+  cdSheetHead: {
+    minHeight: 34,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    backgroundColor: theme.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.lineSoft,
+  },
+  cdSheetTitle: { flex: 1, fontSize: 12, color: theme.ink, fontWeight: '800' },
+  cdClose: { fontSize: 16, color: theme.inkFaint, fontWeight: '600' },
+  cdBody: { gap: 0 },
   cdSeg: {
-    paddingHorizontal: 10, paddingVertical: 6,
-    borderLeftWidth: 3, borderRadius: 4,
+    paddingHorizontal: 10, paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   cdThread: {
     paddingHorizontal: 10, paddingVertical: 8,
-    borderLeftWidth: 3, borderRadius: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   cdSegTime: { fontSize: 11, color: theme.ink, fontVariant: ['tabular-nums'], fontWeight: '600' },
   cdSegPlaceholder: { fontSize: 11, color: theme.inkSoft, fontStyle: 'italic', marginTop: 2 },
@@ -3109,6 +3183,14 @@ const styles = StyleSheet.create({
     borderBottomColor: alpha(COMMENTS_ACCENT, 0.18),
   },
   cdReplies: { marginTop: 6, gap: 5 },
+  cdReplyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 2,
+  },
+  cdReplyHeaderText: { fontSize: 11, color: theme.inkSoft, fontWeight: '700' },
+  cdReplySort: { fontSize: 10, color: theme.inkFaint },
   cdReply: {
     paddingBottom: 5,
     borderBottomWidth: StyleSheet.hairlineWidth,
