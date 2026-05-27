@@ -5,7 +5,13 @@ import TorrentScreen, { type TorrentScreenDevSource } from '../../../src/screens
 const root = document.getElementById('root')!
 Object.assign(document.documentElement.style, { width: '100%', height: '100%' })
 Object.assign(document.body.style, { width: '100%', height: '100%', margin: '0', overflow: 'hidden' })
-Object.assign(root.style, { width: '100%', height: '100%' })
+Object.assign(root.style, {
+  width: '100%',
+  height: '100%',
+  minHeight: '0',
+  display: 'flex',
+  flexDirection: 'column',
+})
 
 const API_BASE = import.meta.env.VITE_SLS_MIRROR_API_BASE || ''
 

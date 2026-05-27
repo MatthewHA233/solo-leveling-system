@@ -32,7 +32,7 @@ import type {
   ActivityPalette,
   ActivityTag,
 } from '../types'
-import { createTag, deleteCategory, deleteTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks, renameCategory, renameTagPath } from '../lib/api'
+import { CATEGORY_PALETTE_COLORS, createTag, deleteCategory, deleteTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks, renameCategory, renameTagPath } from '../lib/api'
 import { loadDayNightZoomPrefs, saveDayNightZoomPrefs } from '../lib/prefs'
 import { addDays, fmtDateLabel, fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
 import { getAppIcons, getPowerEventsInRange, getWindowEventsInRange, type PowerEvent, type WindowEvent } from '../lib/perception'
@@ -136,6 +136,12 @@ const DEFAULT_PALETTE: ReadonlyArray<{ name: string; color: string; tags: Readon
   { name: '娱乐', color: '#FB7185', tags: ['看视频', '玩游戏', '刷手机'] },
   { name: '杂项', color: '#F97316', tags: ['临时事项', '等待', '整理'] },
 ]
+
+function suggestCategoryColor(categories: ActivityCategory[]): string {
+  const used = new Set(categories.map((c) => c.color))
+  return CATEGORY_PALETTE_COLORS.find((c) => !used.has(c)) ??
+    CATEGORY_PALETTE_COLORS[categories.length % CATEGORY_PALETTE_COLORS.length]
+}
 
 const PLAN_PRESETS: { pattern: RegExp; meta: PlanMeta }[] = [
   { pattern: /邮件|消息|沟通|回复|email|mail/i, meta: { icon: '@', color: '#4C86E0', label: '沟通' } },
@@ -283,9 +289,10 @@ function buildTagTree(
     for (const c of n.children) sortRec(c)
   }
   for (const r of roots) sortRec(r)
-  // 过滤空 root（无命中 tag 的 category），并按 root 的最新度排序
+  // 过滤空 root（无命中 tag 的 category），并按 root 的最新度排序。
+  // 只有一段的标签（用户只建了分类名）也保留为 root 行，方便继续加子节点/改色。
   return roots
-    .filter((r) => r.children.length > 0)
+    .filter((r) => r.children.length > 0 || r.tag != null)
     .sort((a, b) => recencyOf(b).localeCompare(recencyOf(a)))
 }
 
@@ -295,6 +302,8 @@ function TagTreeView({
   depth,
   selectedId,
   onPick,
+  onPickPath,
+  onOpenCategoryColor,
   onLongPressTag,
   onLongPressCategory,
 }: {
@@ -302,16 +311,21 @@ function TagTreeView({
   depth: number
   selectedId: number | null
   onPick: (id: number) => void
+  onPickPath?: (fullPath: string) => void
+  onOpenCategoryColor?: (categoryName: string) => void
   onLongPressTag: (tag: ActivityTag) => void
   onLongPressCategory: (categoryName: string) => void
 }) {
   // 叶子：无 children 且有 tag → 单 chip
-  if (node.children.length === 0 && node.tag) {
+  if (depth > 0 && node.children.length === 0 && node.tag) {
     const on = node.tag.id === selectedId
     const c = node.catColor
     return (
       <Pressable
-        onPress={() => onPick(node.tag!.id)}
+        onPress={() => {
+          if (onPickPath) onPickPath(node.fullPath)
+          else onPick(node.tag!.id)
+        }}
         onLongPress={() => onLongPressTag(node.tag!)}
         delayLongPress={400}
         style={[
@@ -345,32 +359,45 @@ function TagTreeView({
         },
       ]}
     >
-      <Pressable
-        onPress={() => node.tag && onPick(node.tag.id)}
-        onLongPress={() => {
-          if (node.tag) onLongPressTag(node.tag)
-          else if (depth === 0) onLongPressCategory(node.segment)
-          // 中间分支节点（非 root 也无 tag）= 虚拟段，没法删，不响应长按
-        }}
-        delayLongPress={400}
-        style={treeStyles.headerRow}
-      >
-        <View
-          style={[
-            treeStyles.headerDot,
-            { backgroundColor: node.catColor },
-          ]}
-        />
-        <Text
-          style={[
-            depth === 0 ? treeStyles.catHeader : treeStyles.branchHeader,
-            onHeader && { fontWeight: '800', textDecorationLine: 'underline' },
-          ]}
+      <View style={treeStyles.headerRow}>
+        <Pressable
+          onPress={() => {
+            if (onPickPath) onPickPath(node.fullPath)
+            else if (node.tag) onPick(node.tag.id)
+          }}
+          onLongPress={() => {
+            if (node.tag) onLongPressTag(node.tag)
+            else if (depth === 0) onLongPressCategory(node.segment)
+            // 中间分支节点（非 root 也无 tag）= 虚拟段，没法删，不响应长按
+          }}
+          delayLongPress={400}
+          style={treeStyles.headerPickArea}
         >
-          {node.segment}
-        </Text>
-        {node.tag != null && <Text style={treeStyles.selfMark}>（可选）</Text>}
-      </Pressable>
+          <View
+            style={[
+              treeStyles.headerDot,
+              { backgroundColor: node.catColor },
+            ]}
+          />
+          <Text
+            style={[
+              depth === 0 ? treeStyles.catHeader : treeStyles.branchHeader,
+              onHeader && { fontWeight: '800', textDecorationLine: 'underline' },
+            ]}
+          >
+            {node.segment}
+          </Text>
+        </Pressable>
+        {depth === 0 && onOpenCategoryColor && (
+          <Pressable
+            hitSlop={8}
+            onPress={() => onOpenCategoryColor(node.segment)}
+            style={[treeStyles.paletteBtn, { borderColor: alpha(node.catColor, 0.45), backgroundColor: alpha(node.catColor, 0.1) }]}
+          >
+            <PaletteGlyph color={node.catColor} size={14} />
+          </Pressable>
+        )}
+      </View>
       {leafKids.length > 0 && (
         <View style={treeStyles.leafRow}>
           {leafKids.map((c) => (
@@ -380,6 +407,8 @@ function TagTreeView({
               depth={depth + 1}
               selectedId={selectedId}
               onPick={onPick}
+              onPickPath={onPickPath}
+              onOpenCategoryColor={onOpenCategoryColor}
               onLongPressTag={onLongPressTag}
               onLongPressCategory={onLongPressCategory}
             />
@@ -393,6 +422,8 @@ function TagTreeView({
           depth={depth + 1}
           selectedId={selectedId}
           onPick={onPick}
+          onPickPath={onPickPath}
+          onOpenCategoryColor={onOpenCategoryColor}
           onLongPressTag={onLongPressTag}
           onLongPressCategory={onLongPressCategory}
         />
@@ -414,10 +445,25 @@ const treeStyles = StyleSheet.create({
     alignItems: 'center',
     gap: 7,
   },
+  headerPickArea: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    flexShrink: 1,
+    minWidth: 0,
+  },
   headerDot: {
     width: 9,
     height: 9,
     borderRadius: 5,
+  },
+  paletteBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   catHeader: {
     fontSize: 14,
@@ -429,10 +475,6 @@ const treeStyles = StyleSheet.create({
     fontSize: 12.5,
     fontWeight: '600',
     color: theme.ink,
-  },
-  selfMark: {
-    fontSize: 10.5,
-    color: theme.inkSoft,
   },
   leafRow: {
     flexDirection: 'row',
@@ -638,6 +680,21 @@ function SearchGlyph({ color = '#888', size = 14 }: { color?: string; size?: num
         }}
       />
     </View>
+  )
+}
+
+function PaletteGlyph({ color = '#888', size = 14 }: { color?: string; size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M12 3a9 9 0 0 0 0 18h1.3a1.7 1.7 0 0 0 1.2-2.9 1.7 1.7 0 0 1 1.2-2.9H17a4 4 0 0 0 0-8z"
+        stroke={color}
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Path d="M7.5 10h.01M10 7.5h.01M14 7.5h.01M6.8 14h.01" stroke={color} strokeWidth={2.4} strokeLinecap="round" />
+    </Svg>
   )
 }
 
@@ -852,6 +909,17 @@ export default function DayNightScreen() {
     | { kind: 'tag'; id: number; label: string; leafName: string }
     | { kind: 'category'; id: number; label: string; color: string }
     | null
+  >(null)
+  // 分类行调色板按钮：直接切换分类共享色。
+  const [categoryColorEdit, setCategoryColorEdit] = useState<
+    { id: number; name: string; color: string } | null
+  >(null)
+  // 新建标签时首段不存在：先确认是否创建新分类，并选择分类色。
+  const [pendingCreateCategory, setPendingCreateCategory] = useState<
+    { fullPath: string; categoryName: string; color: string } | null
+  >(null)
+  const [pendingColorConflict, setPendingColorConflict] = useState<
+    { color: string; usedBy: string; apply: () => void | Promise<void> } | null
   >(null)
   // "修改"路径：编辑完整路径 / 名字 + 颜色（标签编辑 fullPath 可换分类；分类才有 color）
   const [tagEdit, setTagEdit] = useState<
@@ -1117,6 +1185,38 @@ export default function DayNightScreen() {
     setSelectedTagId(id)
     setTagPickerOpen(false)
     setTagQuery('')
+  }
+
+  const createAndPickTag = async (fullPath: string, categoryColor?: string) => {
+    try {
+      const updated = await createTag(fullPath, categoryColor)
+      setPalette(updated)
+      const created = updated.tags.find((t) => t.fullPath === fullPath)
+      if (created) {
+        pickTag(created.id)
+        setAddMode(false)
+      }
+    } catch (e) {
+      console.warn('[create tag] failed', e)
+    }
+  }
+
+  const colorUsedBy = (color: string, excludeCategoryId?: number): string | null => {
+    const used = palette?.categories.find((c) => c.color === color && c.id !== excludeCategoryId)
+    return used?.name ?? null
+  }
+
+  const pickCategoryColor = (
+    color: string,
+    excludeCategoryId: number | undefined,
+    apply: () => void | Promise<void>,
+  ) => {
+    const usedBy = colorUsedBy(color, excludeCategoryId)
+    if (usedBy) {
+      setPendingColorConflict({ color, usedBy, apply })
+      return
+    }
+    apply()
   }
 
   // 过滤后的标签列表 —— fuzzy 评分对齐 desktop ActivityTagPalette：
@@ -2333,12 +2433,146 @@ export default function DayNightScreen() {
                 <Text style={styles.actionItemTextCancel}>取消</Text>
               </Pressable>
             </View>
-          )}
-        </View>
-      </Modal>
+	          )}
+	        </View>
+	      </Modal>
 
-      {/* 标签 / 分类 修改 modal */}
-      <Modal
+	      {/* 分类行调色板：点分类文本后的按钮直接切换共享色 */}
+	      <Modal
+	        visible={categoryColorEdit != null}
+	        transparent
+	        animationType="fade"
+	        onRequestClose={() => setCategoryColorEdit(null)}
+	      >
+	        <View style={styles.actionBackdrop}>
+	          <Pressable
+	            style={StyleSheet.absoluteFill}
+	            onPress={() => setCategoryColorEdit(null)}
+	          />
+	          {categoryColorEdit && (
+	            <View style={styles.editSheet}>
+	              <Text style={styles.editSheetTitle}>分类颜色</Text>
+	              <Text style={styles.colorSheetSub}>
+	                「{categoryColorEdit.name}」下所有标签共享这个颜色
+	              </Text>
+	              <View style={styles.colorCurrentRow}>
+	                <Text style={styles.colorCurrentLabel}>当前</Text>
+	                <View
+	                  style={[
+	                    styles.editColorChip,
+	                    { backgroundColor: categoryColorEdit.color },
+	                    styles.editColorChipActive,
+	                    colorUsedBy(categoryColorEdit.color, categoryColorEdit.id) && styles.editColorChipUsed,
+	                  ]}
+	                />
+	              </View>
+	              <View style={styles.editColorRow}>
+	                {CATEGORY_PALETTE_COLORS.map((c) => (
+	                  <Pressable
+	                    key={c}
+	                    onPress={() => {
+	                      const item = categoryColorEdit
+	                      pickCategoryColor(c, item.id, async () => {
+	                        try {
+	                          const next = await renameCategory(item.id, null, c)
+	                          setPalette(next)
+	                          setCategoryColorEdit(null)
+	                        } catch (e) {
+	                          console.warn('[category color] failed', e)
+	                        }
+	                      })
+	                    }}
+	                    style={[
+	                      styles.editColorChip,
+	                      { backgroundColor: c },
+	                      categoryColorEdit.color === c && styles.editColorChipActive,
+	                      colorUsedBy(c, categoryColorEdit.id) && styles.editColorChipUsed,
+	                    ]}
+	                  />
+	                ))}
+	              </View>
+	              <View style={styles.editActions}>
+	                <Pressable style={styles.editBtnGhost} onPress={() => setCategoryColorEdit(null)}>
+	                  <Text style={styles.editBtnGhostText}>取消</Text>
+	                </Pressable>
+	              </View>
+	            </View>
+	          )}
+	        </View>
+	      </Modal>
+
+	      {/* 新建标签遇到新分类：先确认分类 + 选颜色 */}
+	      <Modal
+	        visible={pendingCreateCategory != null}
+	        transparent
+	        animationType="fade"
+	        onRequestClose={() => setPendingCreateCategory(null)}
+	      >
+	        <View style={styles.actionBackdrop}>
+	          <Pressable
+	            style={StyleSheet.absoluteFill}
+	            onPress={() => setPendingCreateCategory(null)}
+	          />
+	          {pendingCreateCategory && (
+	            <View style={styles.editSheet}>
+	              <Text style={styles.editSheetTitle}>新建分类</Text>
+	              <Text style={styles.colorSheetSub}>
+	                将创建分类「{pendingCreateCategory.categoryName}」，并新建标签「{pendingCreateCategory.fullPath}」
+	              </Text>
+	              <Text style={styles.editFieldLabel}>分类颜色</Text>
+	              <View style={styles.colorCurrentRow}>
+	                <Text style={styles.colorCurrentLabel}>当前</Text>
+	                <View
+	                  style={[
+	                    styles.editColorChip,
+	                    { backgroundColor: pendingCreateCategory.color },
+	                    styles.editColorChipActive,
+	                    colorUsedBy(pendingCreateCategory.color) && styles.editColorChipUsed,
+	                  ]}
+	                />
+	              </View>
+	              <View style={styles.editColorRow}>
+	                {CATEGORY_PALETTE_COLORS.map((c) => (
+	                  <Pressable
+	                    key={c}
+	                    onPress={() =>
+	                      pickCategoryColor(c, undefined, () =>
+	                        setPendingCreateCategory((cur) => cur ? { ...cur, color: c } : cur),
+	                      )
+	                    }
+	                    style={[
+	                      styles.editColorChip,
+	                      { backgroundColor: c },
+	                      pendingCreateCategory.color === c && styles.editColorChipActive,
+	                      colorUsedBy(c) && styles.editColorChipUsed,
+	                    ]}
+	                  />
+	                ))}
+	              </View>
+	              <View style={styles.editActions}>
+	                <Pressable style={styles.editBtnGhost} onPress={() => setPendingCreateCategory(null)}>
+	                  <Text style={styles.editBtnGhostText}>取消</Text>
+	                </Pressable>
+	                <Pressable
+	                  style={styles.editBtnPrimary}
+	                  onPress={() => {
+	                    const item = pendingCreateCategory
+	                    pickCategoryColor(item.color, undefined, () => {
+	                      setPendingCreateCategory(null)
+	                      createAndPickTag(item.fullPath, item.color)
+	                    })
+	                  }}
+	                >
+	                  <Text style={styles.editBtnPrimaryText}>创建</Text>
+	                </Pressable>
+	              </View>
+	            </View>
+	          )}
+	        </View>
+	      </Modal>
+
+	      {/* 标签 / 分类 修改 modal */}
+	      <Modal
         visible={tagEdit != null}
         transparent
         animationType="fade"
@@ -2367,23 +2601,37 @@ export default function DayNightScreen() {
                 placeholderTextColor={theme.inkFaint}
               />
               {tagEdit.kind === 'category' && (
-                <>
-                  <Text style={styles.editFieldLabel}>颜色</Text>
-                  <View style={styles.editColorRow}>
-                    {['#5B9BFF', '#39C7B6', '#F8AE3C', '#EF6677', '#B16BFA', '#56C271', '#FF8A65', '#7686A6'].map((c) => (
-                      <Pressable
-                        key={c}
-                        onPress={() =>
-                          setTagEdit((cur) =>
-                            cur && cur.kind === 'category' ? { ...cur, color: c } : cur,
-                          )
-                        }
-                        style={[
-                          styles.editColorChip,
-                          { backgroundColor: c },
-                          tagEdit.color === c && styles.editColorChipActive,
-                        ]}
-                      />
+	                <>
+		                  <Text style={styles.editFieldLabel}>颜色</Text>
+		                  <View style={styles.colorCurrentRow}>
+		                    <Text style={styles.colorCurrentLabel}>当前</Text>
+		                    <View
+		                      style={[
+		                        styles.editColorChip,
+		                        { backgroundColor: tagEdit.color },
+		                        styles.editColorChipActive,
+		                        colorUsedBy(tagEdit.color, tagEdit.id) && styles.editColorChipUsed,
+		                      ]}
+		                    />
+		                  </View>
+		                  <View style={styles.editColorRow}>
+		                    {CATEGORY_PALETTE_COLORS.map((c) => (
+		                      <Pressable
+		                        key={c}
+	                        onPress={() =>
+	                          pickCategoryColor(c, tagEdit.id, () =>
+	                            setTagEdit((cur) =>
+	                              cur && cur.kind === 'category' ? { ...cur, color: c } : cur,
+	                            ),
+	                          )
+	                        }
+	                        style={[
+	                          styles.editColorChip,
+	                          { backgroundColor: c },
+	                          tagEdit.color === c && styles.editColorChipActive,
+	                          colorUsedBy(c, tagEdit.id) && styles.editColorChipUsed,
+	                        ]}
+	                      />
                     ))}
                   </View>
                 </>
@@ -2423,9 +2671,9 @@ export default function DayNightScreen() {
       </Modal>
 
       {/* 修改确认（rename 保存前再问一次，避免误改 LWW 同步会传到其他端） */}
-      <ConfirmDialog
-        open={pendingRename != null}
-        title={pendingRename?.kind === 'category' ? '修改分类' : '修改标签'}
+	      <ConfirmDialog
+	        open={pendingRename != null}
+	        title={pendingRename?.kind === 'category' ? '修改分类' : '修改标签'}
         body={
           pendingRename?.kind === 'category'
             ? `分类「${pendingRename.original}」→「${pendingRename.newName}」\n颜色 ${pendingRename.newColor}`
@@ -2447,11 +2695,29 @@ export default function DayNightScreen() {
             setPalette(next)
           } catch (e) {
             console.warn('[rename] failed', e)
-          }
-        }}
-      />
+	          }
+	        }}
+	      />
 
-      {/* 删除确认框 */}
+	      <ConfirmDialog
+	        open={pendingColorConflict != null}
+	        title="颜色已被使用"
+	        body={
+	          pendingColorConflict
+	            ? `这个颜色已在「${pendingColorConflict.usedBy}」分类使用。\n真的要选择这个颜色吗？`
+	            : ''
+	        }
+	        confirmText="仍然选择"
+	        cancelText="换一个"
+	        onCancel={() => setPendingColorConflict(null)}
+	        onConfirm={() => {
+	          const item = pendingColorConflict
+	          setPendingColorConflict(null)
+	          item?.apply()
+	        }}
+	      />
+
+	      {/* 删除确认框 */}
       <ConfirmDialog
         open={confirmDelete != null}
         title={confirmDelete?.kind === 'category' ? '删除分类' : '删除标签'}
@@ -2619,19 +2885,20 @@ export default function DayNightScreen() {
               const leaf = segs[segs.length - 1]
               const parent = segs.slice(0, -1).join(' › ')
               return (
-                <Pressable
-                  style={styles.createRow}
-                  onPress={async () => {
-                    const updated = await createTag(normalized)
-                    setPalette(updated)
-                    const created = updated.tags.find((t) => t.fullPath === normalized)
-                    if (created) {
-                      pickTag(created.id)
-                      // 新建完退出新建模式 + 清搜索框，让用户看到结果
-                      setAddMode(false)
-                    }
-                  }}
-                >
+	                <Pressable
+	                  style={styles.createRow}
+	                  onPress={() => {
+	                    if (isNewCat) {
+	                      setPendingCreateCategory({
+	                        fullPath: normalized,
+	                        categoryName: segs[0],
+	                        color: suggestCategoryColor(palette.categories),
+	                      })
+	                      return
+	                    }
+	                    createAndPickTag(normalized)
+	                  }}
+	                >
                   <Text style={styles.createPlus}>+</Text>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.createMain}>
@@ -2663,18 +2930,16 @@ export default function DayNightScreen() {
                     node={root}
                     depth={0}
                     selectedId={selectedTagId}
-                    onPick={(id) => {
-                      if (addMode) {
-                        // 新建模式：点 tag = 回填 fullPath + "," 到搜索框
-                        // 用户可以继续打子节点 leaf name
-                        const tag = palette.tags.find((t) => t.id === id)
-                        if (tag) {
-                          setTagQuery(tag.fullPath + ',')
+                    onPick={pickTag}
+                    onPickPath={addMode
+                      ? (fullPath) => {
+                          setTagQuery(fullPath + ',')
                           searchInputRef.current?.focus()
                         }
-                      } else {
-                        pickTag(id)
-                      }
+                      : undefined}
+                    onOpenCategoryColor={(name) => {
+                      const cat = palette.categories.find((c) => c.name === name)
+                      if (cat) setCategoryColorEdit({ id: cat.id, name: cat.name, color: cat.color })
                     }}
                     onLongPressTag={(t) =>
                       setTagAction({ kind: 'tag', id: t.id, label: t.fullPath, leafName: t.leafName })
@@ -3540,6 +3805,26 @@ const styles = StyleSheet.create({
     color: theme.ink,
     marginBottom: 14,
   },
+  colorSheetSub: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: theme.inkSoft,
+    marginBottom: 10,
+  },
+  colorCurrentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingBottom: 10,
+    marginBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.line,
+  },
+  colorCurrentLabel: {
+    fontSize: 12,
+    color: theme.inkSoft,
+    fontWeight: '600',
+  },
   editFieldLabel: {
     fontSize: 12,
     color: theme.inkSoft,
@@ -3569,6 +3854,9 @@ const styles = StyleSheet.create({
   },
   editColorChipActive: {
     borderColor: theme.ink,
+  },
+  editColorChipUsed: {
+    borderColor: '#D14848',
   },
   editActions: {
     flexDirection: 'row',

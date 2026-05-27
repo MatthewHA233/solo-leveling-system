@@ -47,6 +47,10 @@ const PACKAGE_LABEL: Record<string, string> = {
   'tv.danmaku.bili': 'B 站',
 }
 
+function isA11ySnapshotCapture(captureType: string): boolean {
+  return captureType === 'a11y-view' || captureType === 'a11y-poll'
+}
+
 type ViewMode = 'raw' | 'feed' | 'action'
 type SortOrder = 'desc' | 'asc'
 type JumpKind = 'home' | 'detail' | 'story' | 'fullscreen' | 'comments'
@@ -823,7 +827,7 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
   const feedTitlesInHome = new Set<string>()
   for (const c of items) {
     if (c.packageName !== 'tv.danmaku.bili') continue
-    if (c.captureType !== 'a11y-view') continue
+    if (!isA11ySnapshotCapture(c.captureType)) continue
     const p = parseBiliFeedItem(c.rowId, c.eventTimeMs, c.text)
     if (p) feedTitlesInHome.add(p.title)
   }
@@ -851,7 +855,7 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
   }
   for (const c of items) {
     if (c.packageName !== 'tv.danmaku.bili') continue
-    if (c.captureType !== 'a11y-view') continue
+    if (!isA11ySnapshotCapture(c.captureType)) continue
     if (!isHomeSurface(c.windowClass)) continue
     const parsed = parseBiliFeedItem(c.rowId, c.eventTimeMs, c.text)
     if (parsed && (parsed.kind === '视频' || parsed.kind === '竖版视频' || parsed.kind === '横幅视频')) {
@@ -871,7 +875,7 @@ function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
   const detailBuckets = new Map<number, { ts: number; lines: { rowId: number; text: string; ts: number }[] }>()
   for (const c of items) {
     if (c.packageName !== 'tv.danmaku.bili') continue
-    if (c.captureType !== 'a11y-view') continue
+    if (!isA11ySnapshotCapture(c.captureType)) continue
     const wc = c.windowClass
     // UnitedBiz / StoryVideo / 评论浮层 / 全屏 ViewGroup —— 都进 detail bucket
     const isDetail =

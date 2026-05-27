@@ -79,6 +79,14 @@ export async function fetchPalette(): Promise<ActivityPalette> {
   }
 }
 
+// 与 desktop ActivityTagPalette 的 COLOR_PALETTE 保持一致。
+export const CATEGORY_PALETTE_COLORS = [
+  '#22C55E', '#38BDF8', '#F97316', '#E879F9', '#FACC15', '#14B8A6',
+  '#FB7185', '#A78BFA', '#84CC16', '#60A5FA', '#F472B6', '#2DD4BF',
+  '#EF4444', '#F59E0B', '#EAB308', '#10B981', '#06B6D4', '#0EA5E9',
+  '#3B82F6', '#6366F1', '#8B5CF6', '#D946EF', '#EC4899', '#64748B',
+] as const
+
 /**
  * 创建新 tag（fullPath 形如 "工作,日常,新事项"）。
  * 首段未匹配现有 category 时自动新建 category（desktop 尚不支持，手机端先做）。
@@ -164,12 +172,6 @@ export async function paintBlocks(
 export async function eraseBlocks(date: Date, minutes: number[]): Promise<void> {
   await soloEraseBlocks(toLocalDateStr(date), minutes)
 }
-
-// 新建 category 的预设色板（避开种子色，按光谱排）
-const CATEGORY_PALETTE_COLORS = [
-  '#0EA5E9', '#A855F7', '#EC4899', '#EF4444', '#F59E0B',
-  '#10B981', '#14B8A6', '#8B5CF6', '#6366F1', '#D946EF',
-]
 
 // ── 聊天 API ──
 

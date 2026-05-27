@@ -31,6 +31,8 @@ interface Props {
 const COLOR_PALETTE = [
   '#22C55E', '#38BDF8', '#F97316', '#E879F9', '#FACC15', '#14B8A6',
   '#FB7185', '#A78BFA', '#84CC16', '#60A5FA', '#F472B6', '#2DD4BF',
+  '#EF4444', '#F59E0B', '#EAB308', '#10B981', '#06B6D4', '#0EA5E9',
+  '#3B82F6', '#6366F1', '#8B5CF6', '#D946EF', '#EC4899', '#64748B',
 ] as const
 
 // 一键初始化的默认分类 + 标签（偏向通用，不预置编程 — 不是所有人都适合）
@@ -176,6 +178,23 @@ export default function ActivityTagPalette({
       alert(`改颜色失败: ${e}`)
     }
   }, [closeAllMenus, onPaletteChange])
+
+  const colorUsedBy = useCallback((color: string, excludeCategoryId?: number): string | null => {
+    const used = palette.categories.find((c) => c.color === color && c.id !== excludeCategoryId)
+    return used?.name ?? null
+  }, [palette.categories])
+
+  const pickCategoryColor = useCallback((
+    color: string,
+    excludeCategoryId: number | undefined,
+    apply: () => void | Promise<void>,
+  ) => {
+    const usedBy = colorUsedBy(color, excludeCategoryId)
+    if (usedBy && !window.confirm(`这个颜色已在「${usedBy}」分类使用。\n真的要选择这个颜色吗？`)) {
+      return
+    }
+    apply()
+  }, [colorUsedBy])
 
   // ── 一键初始化默认分类 + 常用标签（空状态时使用） ──
   const [seeding, setSeeding] = useState(false)
@@ -388,7 +407,8 @@ export default function ActivityTagPalette({
               name={editingCatName}
               color={editingCatColor}
               onNameChange={setEditingCatName}
-              onColorChange={setEditingCatColor}
+              onColorChange={(c) => pickCategoryColor(c, editingCatId, () => setEditingCatColor(c))}
+              usedColorBy={(c) => colorUsedBy(c, editingCatId)}
               onSave={handleSaveCategory}
               onCancel={cancelEditCategory}
               onDelete={() => handleDeleteCategory(cat)}
@@ -462,7 +482,8 @@ export default function ActivityTagPalette({
           menu={tagMenu}
           categoryName={catById.get(tagMenu.tag.categoryId)?.name ?? ''}
           currentColor={catById.get(tagMenu.tag.categoryId)?.color ?? theme.textMuted}
-          onPickColor={(c) => applyCategoryColor(tagMenu.tag.categoryId, c)}
+          usedColorBy={(c) => colorUsedBy(c, tagMenu.tag.categoryId)}
+          onPickColor={(c) => pickCategoryColor(c, tagMenu.tag.categoryId, () => applyCategoryColor(tagMenu.tag.categoryId, c))}
           onSwitchMode={(mode) => setTagMenu({ ...tagMenu, mode })}
           onRename={() => startRenameTag(tagMenu.tag)}
           onDelete={() => handleDeleteTag(tagMenu.tag)}
@@ -577,16 +598,18 @@ function CategoryChip({ cat, active, onToggle, onEdit }: {
 }
 
 function CategoryEditor({
-  name, color, onNameChange, onColorChange, onSave, onCancel, onDelete, deletable,
+  name, color, onNameChange, onColorChange, usedColorBy, onSave, onCancel, onDelete, deletable,
 }: {
   name: string; color: string
   onNameChange: (v: string) => void
   onColorChange: (v: string) => void
+  usedColorBy?: (color: string) => string | null
   onSave: () => void
   onCancel: () => void
   onDelete?: () => void
   deletable?: boolean
 }) {
+  const currentUsedBy = usedColorBy?.(color)
   return (
     <div style={{
       border: `1px solid ${color}55`,
@@ -613,6 +636,25 @@ function CategoryEditor({
           </Tooltip>
         )}
       </div>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        paddingTop: 2,
+        color: theme.textMuted,
+        fontSize: 10,
+        fontFamily: theme.fontMono,
+        letterSpacing: 1,
+      }}>
+        <span>当前</span>
+        <button
+          type="button"
+          onClick={() => onColorChange(color)}
+          style={{
+            width: 22, height: 22, background: color,
+            border: `1px solid ${currentUsedBy ? theme.dangerRed : theme.textPrimary}`,
+            cursor: 'pointer',
+          }}
+        />
+      </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
         {COLOR_PALETTE.map((c) => (
           <button
@@ -620,7 +662,7 @@ function CategoryEditor({
             onClick={() => onColorChange(c)}
             style={{
               width: 18, height: 18, background: c,
-              border: `1px solid ${color === c ? theme.textPrimary : 'transparent'}`,
+              border: `1px solid ${usedColorBy?.(c) ? theme.dangerRed : color === c ? theme.textPrimary : 'transparent'}`,
               cursor: 'pointer',
             }}
           />
@@ -629,7 +671,6 @@ function CategoryEditor({
     </div>
   )
 }
-
 // ── TagRow ──
 function TagRow({
   tag, color, selected, editing, editValue, highlight,
@@ -721,16 +762,18 @@ function TagRow({
 
 // ── 右键 / "…" 菜单（支持二级"改色"色板） ──
 function TagContextMenu({
-  menu, categoryName, currentColor, onPickColor, onSwitchMode, onRename, onDelete,
+  menu, categoryName, currentColor, usedColorBy, onPickColor, onSwitchMode, onRename, onDelete,
 }: {
   menu: TagMenu
   categoryName: string
   currentColor: string
+  usedColorBy?: (color: string) => string | null
   onPickColor: (color: string) => void
   onSwitchMode: (mode: 'menu' | 'color') => void
   onRename: () => void
   onDelete: () => void
 }) {
+  const currentUsedBy = usedColorBy?.(currentColor)
   // 防止菜单超出视口右下边界
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ x: menu.x, y: menu.y })
@@ -781,9 +824,30 @@ function TagContextMenu({
             分类 {categoryName} · 共享色
           </div>
           <div style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '4px 6px 6px',
+            borderBottom: `1px solid ${theme.hudFrameSoft}`,
+            marginBottom: 4,
+            color: theme.textMuted,
+            fontSize: 10,
+            fontFamily: theme.fontMono,
+            letterSpacing: 1,
+          }}>
+            <span>当前</span>
+            <button
+              type="button"
+              onClick={() => onPickColor(currentColor)}
+              style={{
+                width: 24, height: 24, background: currentColor,
+                border: `1px solid ${currentUsedBy ? theme.dangerRed : theme.textPrimary}`,
+                cursor: 'pointer',
+              }}
+            />
+          </div>
+          <div style={{
             display: 'flex', flexWrap: 'wrap', gap: 4,
             padding: '4px 6px',
-            maxWidth: 168,
+            maxWidth: 196,
           }}>
             {COLOR_PALETTE.map((c) => (
               <button
@@ -791,7 +855,7 @@ function TagContextMenu({
                 onClick={() => onPickColor(c)}
                 style={{
                   width: 22, height: 22, background: c,
-                  border: `1px solid ${currentColor === c ? theme.textPrimary : 'transparent'}`,
+                  border: `1px solid ${usedColorBy?.(c) ? theme.dangerRed : currentColor === c ? theme.textPrimary : 'transparent'}`,
                   cursor: 'pointer',
                 }}
               />
