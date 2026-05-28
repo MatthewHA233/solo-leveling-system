@@ -4,7 +4,7 @@
 // 同一事件的格子连为一体 · 编辑模式拖拽涂色（可跨行）
 // ══════════════════════════════════════════════
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Animated,
@@ -36,71 +36,48 @@ import type {
 } from '../types'
 import { CATEGORY_PALETTE_COLORS, createTag, deleteCategory, deleteTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks, renameCategory, renameTagPath } from '../lib/api'
 import { loadDayNightZoomPrefs, saveDayNightZoomPrefs } from '../lib/prefs'
-import { addDays, fmtDateLabel, fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
+import { addDays, fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
 import { getAppIcons, getPowerEventsInRange, getWindowEventsInRange, type PowerEvent, type WindowEvent } from '../lib/perception'
-
-const GUTTER = 46
-const GAP = 4
-const R_ACTIVITY = 14
-const R_EMPTY = 5
+import {
+  buildRows,
+  buildSpans,
+  buildTorrentRows,
+  clamp,
+  dayPeriodForHour,
+  minuteOfDayFloat,
+  periodLabelSegmentsForRow,
+  rowPeriodSegments,
+  rowStartHour,
+  snapMinute,
+  zoomFocusHours,
+} from './daynight/timeRows'
+import {
+  GAP,
+  GUTTER,
+  R_ACTIVITY,
+  R_EMPTY,
+  TOTAL_ROWS_LEVELS,
+  ZOOM_LEVELS,
+  type DragState,
+  type HitCell,
+  type Interaction,
+  type PlanMeta,
+  type PlannedTask,
+  type Row,
+  type Span,
+  type TotalRows,
+  type ZoomCols,
+} from './daynight/types'
+import { buildTagTree, TagTreeView } from './daynight/paletteTree'
+import { DayNightHeader } from './daynight/DayNightHeader'
+import { DayNightEditorBar } from './daynight/DayNightEditorBar'
+import { ActionTimeline, type ActionTimelineSource } from './torrent/ActionTimeline'
+import type { TorrentActionRange } from './torrent/types'
 
 // zoom 双轴矩阵：
 //   cols（横向放大，pinch 双指水平展开）：12 / 6 / 4 / 3 → 一行 60/30/20/15 min
 //   totalRows（纵向放大，pinch 双指垂直展开）：24..14 → 屏上行数 = 行高反比
 //
-// 每个 (cols, totalRows) 组合自动算 (focusRows, topTiers, botTiers)：
-//   focusRows × cols / 12 必须是整数 hour（约束 1）
-//   focusRows + topTiers + botTiers = totalRows（约束 2）
-//   topTiers + botTiers ≥ 1 仅当 rest > 0（约束 3：有 hour 要装才需要 tier）
-type ZoomCols = 12 | 6 | 4 | 3
-const ZOOM_LEVELS: readonly ZoomCols[] = [12, 6, 4, 3] as const
-// totalRows 候选：24 默认（最稀疏），14 最紧凑。从稀疏到紧凑排
-const TOTAL_ROWS_LEVELS = [24, 22, 20, 18, 16, 14] as const
-type TotalRows = typeof TOTAL_ROWS_LEVELS[number]
-// cols=12 → 1（focus rows 任意），6 → 2，4 → 3，3 → 4
-const COLS_R_FACTOR: Record<ZoomCols, number> = { 12: 1, 6: 2, 4: 3, 3: 4 }
-
-const MAX_HOURS_PER_TIER = 6  // 每个 compressed 行最多装 6 小时
-
-interface RowConfig { focusRows: number }
-
-// 用 totalRows 反推 focusRows：枚举所有合法 focusStart 取最坏 tier 总数
-// （AUDIT-027：之前用单边 ceil(rest/6) 估算，居中场景 top+bot 两边非整 6 时
-// 实际 ceil(top/6) + ceil(bot/6) 可能比单边多 1，导致 buildRows().length > totalRows）
-function computeRowConfig(cols: ZoomCols, totalRows: number): RowConfig {
-  const rFactor = COLS_R_FACTOR[cols]
-  const rMax = Math.floor((24 * 12) / cols / rFactor) * rFactor
-  for (let R = rMax; R >= 0; R -= rFactor) {
-    const focusH = (R * cols) / 12
-    const rest = 24 - focusH
-    let worstTier = 0
-    if (rest > 0) {
-      // 枚举 top = k hour, bot = (rest - k) hour，k ∈ [0, rest]
-      for (let k = 0; k <= rest; k++) {
-        const topTiers = k > 0 ? Math.ceil(k / MAX_HOURS_PER_TIER) : 0
-        const botTiers = rest - k > 0 ? Math.ceil((rest - k) / MAX_HOURS_PER_TIER) : 0
-        const sum = topTiers + botTiers
-        if (sum > worstTier) worstTier = sum
-      }
-    }
-    if (R + worstTier <= totalRows) {
-      return { focusRows: R }
-    }
-  }
-  return { focusRows: 0 }
-}
-
-function zoomFocusHours(cols: ZoomCols, totalRows: number): number {
-  return (computeRowConfig(cols, totalRows).focusRows * cols) / 12
-}
-
-interface Span {
-  startMin: number
-  endMin: number
-  tagId: number
-  note: string | null
-}
-
 type ProbeAppRun = {
   key: string
   packageName: string
@@ -111,40 +88,44 @@ type ProbeAppRun = {
   titles: string[]
 }
 
-type Row =
-  | { kind: 'full'; startMin: number; cols: number }
-  | { kind: 'compressed'; hours: number[] }
+type DayNightMode = 'daynight' | 'torrent'
 
-type DayPeriodInfo = {
-  label: string
-  accent: string
-  text: string
+const TORRENT_ACTION_COLORS: Record<TorrentActionRange['kind'], string> = {
+  splash: '#9CA3AF',
+  home: '#FB7299',
+  video_intro: '#00AEEC',
+  fullscreen: '#6366F1',
+  comments: '#FBB04C',
+  comment_detail: '#F59E0B',
 }
 
-type DayPeriodSegment = DayPeriodInfo & {
-  key: string
-  hours: number
+// B 站 app icon 主色系（粉/蓝/暖黄）映射到动作轨道。
+// 后续多 app 洪流域应由 native 对 launcher icon 做 dominant/accent 取色后写入转译表。
+const TORRENT_ICON_TRACK_COLORS: Record<TorrentActionRange['kind'], string> = {
+  splash: '#B8B4C7',
+  home: '#FB7299',
+  video_intro: '#00AEEC',
+  fullscreen: '#36C5F0',
+  comments: '#FBB04C',
+  comment_detail: '#F59E0B',
 }
 
-const DAY_PERIOD_START_HOURS = [0, 6, 12, 18, 20] as const
-
-type HitCell =
-  | { kind: 'full'; hour: number; col: number; minute: number }
-  | { kind: 'compressed'; hour: number }
-
-interface PlannedTask {
-  id: string
-  title: string
-  icon: string
-  color: string
-  durationMin: number
-  scheduledStartMin: number | null
+function torrentActionLabel(a: TorrentActionRange): string {
+  if (a.kind === 'video_intro') return a.isStory ? '竖屏视频' : '视频播放'
+  if (a.kind === 'home') return '主页'
+  if (a.kind === 'splash') return '开屏'
+  if (a.kind === 'fullscreen') return '全屏'
+  if (a.kind === 'comments') return '评论'
+  return '评论详情'
 }
 
-interface PlanMeta {
-  icon: string
-  color: string
-  label: string
+function torrentActionShortLabel(a: TorrentActionRange): string {
+  if (a.kind === 'video_intro') return a.isStory ? '竖' : '播'
+  if (a.kind === 'home') return '主'
+  if (a.kind === 'splash') return '启'
+  if (a.kind === 'fullscreen') return '全'
+  if (a.kind === 'comments') return '评'
+  return '详'
 }
 
 const PLAN_SUGGESTIONS = ['复盘今天', '写论文初稿', 'React Native 动效', '整理收件箱']
@@ -180,60 +161,6 @@ const PLAN_PRESETS: { pattern: RegExp; meta: PlanMeta }[] = [
 ]
 
 const DEFAULT_PLAN_META: PlanMeta = { icon: '+', color: '#3E63DD', label: '任务' }
-
-function buildSpans(blocks: ActivityBlock[]): Span[] {
-  const sorted = [...blocks].sort((a, b) => a.minute - b.minute)
-  const spans: Span[] = []
-  for (const b of sorted) {
-    const last = spans[spans.length - 1]
-    if (last && last.tagId === b.tagId && b.minute === last.endMin) {
-      last.endMin = b.minute + 5
-      if (!last.note && b.note) last.note = b.note
-    } else {
-      spans.push({ startMin: b.minute, endMin: b.minute + 5, tagId: b.tagId, note: b.note })
-    }
-  }
-  return spans
-}
-
-function buildRows(focusStart: number, zoomCols: ZoomCols, totalRows: number): Row[] {
-  const cfg = computeRowConfig(zoomCols, totalRows)
-  const focusH = (cfg.focusRows * zoomCols) / 12
-  const safeStart = clamp(focusStart, 0, 24 - focusH)
-  const rows: Row[] = []
-
-  // 上方 compressed：tier 行数 = ceil(topHours / 6)，每行装 ≤ 6 hour（自动新建行）
-  const topHours: number[] = []
-  for (let h = 0; h < safeStart; h++) topHours.push(h)
-  if (topHours.length > 0) {
-    const topTiers = Math.ceil(topHours.length / MAX_HOURS_PER_TIER)
-    const chunk = Math.ceil(topHours.length / topTiers)
-    for (let i = 0; i < topTiers; i++) {
-      const slice = topHours.slice(i * chunk, (i + 1) * chunk)
-      if (slice.length > 0) rows.push({ kind: 'compressed', hours: slice })
-    }
-  }
-
-  // focus
-  const startMin = safeStart * 60
-  const minutesPerRow = zoomCols * 5
-  for (let i = 0; i < cfg.focusRows; i++) {
-    rows.push({ kind: 'full', startMin: startMin + i * minutesPerRow, cols: zoomCols })
-  }
-
-  // 下方 compressed：同上规则
-  const botHours: number[] = []
-  for (let h = safeStart + focusH; h < 24; h++) botHours.push(h)
-  if (botHours.length > 0) {
-    const botTiers = Math.ceil(botHours.length / MAX_HOURS_PER_TIER)
-    const chunk = Math.ceil(botHours.length / botTiers)
-    for (let i = 0; i < botTiers; i++) {
-      const slice = botHours.slice(i * chunk, (i + 1) * chunk)
-      if (slice.length > 0) rows.push({ kind: 'compressed', hours: slice })
-    }
-  }
-  return rows
-}
 
 function fmtHM(mins: number): string {
   const h = Math.floor(mins / 60)
@@ -296,54 +223,6 @@ function buildProbeAppRuns(events: WindowEvent[], segmentEndMs: number): ProbeAp
   return runs
 }
 
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, v))
-}
-
-function snapMinute(minute: number): number {
-  return clamp(Math.round(minute / 5) * 5, 0, 1435)
-}
-
-function dayPeriodForHour(hour: number): DayPeriodInfo {
-  if (hour < 6) return { label: '凌晨', accent: '#787CFF', text: '#626BDF' }
-  if (hour < 12) return { label: '上午', accent: '#DCEB64', text: '#8A940F' }
-  if (hour < 18) return { label: '下午', accent: '#FACC15', text: '#B7791F' }
-  if (hour < 20) return { label: '黄昏', accent: '#FF8140', text: '#D65F20' }
-  return { label: '夜晚', accent: '#A06EFF', text: '#7C3AED' }
-}
-
-function rowStartHour(row: Row): number {
-  return row.kind === 'full' ? Math.floor(row.startMin / 60) : row.hours[0]
-}
-
-function shouldShowPeriodLabel(row: Row): boolean {
-  if (row.kind === 'compressed') {
-    return row.hours.some((h) => DAY_PERIOD_START_HOURS.includes(h as typeof DAY_PERIOD_START_HOURS[number]))
-  }
-  const h = Math.floor(row.startMin / 60)
-  return row.startMin % 60 === 0 && DAY_PERIOD_START_HOURS.includes(h as typeof DAY_PERIOD_START_HOURS[number])
-}
-
-function rowPeriodSegments(row: Row): DayPeriodSegment[] {
-  const hours = row.kind === 'full' ? [Math.floor(row.startMin / 60)] : row.hours
-  const segs: DayPeriodSegment[] = []
-  for (const h of hours) {
-    const info = dayPeriodForHour(h)
-    const last = segs[segs.length - 1]
-    if (last && last.label === info.label) {
-      last.hours += 1
-    } else {
-      segs.push({ ...info, key: `${info.label}-${h}`, hours: 1 })
-    }
-  }
-  return segs
-}
-
-function periodLabelSegmentsForRow(row: Row): DayPeriodSegment[] {
-  if (row.kind === 'compressed') return rowPeriodSegments(row)
-  return shouldShowPeriodLabel(row) ? rowPeriodSegments(row) : []
-}
-
 function paletteSignature(p: ActivityPalette): string {
   const cats = [...p.categories]
     .sort((a, b) => a.id - b.id)
@@ -369,280 +248,6 @@ function mostRecentTagId(p: ActivityPalette): number | null {
     .sort((a, b) => (b.lastUsedAt ?? '').localeCompare(a.lastUsedAt ?? ''))[0]
   return mostRecent?.id ?? null
 }
-
-// 标签树节点：fullPath 按 "," 分层，category 名是 level0，逐层往下
-type TagTreeNode = {
-  segment: string
-  fullPath: string
-  tag: ActivityTag | null  // 自己是不是个实标签（branch + 自身都有可能命中）
-  children: TagTreeNode[]
-  catColor: string
-}
-
-function buildTagTree(
-  tags: ActivityTag[],
-  categories: ActivityCategory[],
-): TagTreeNode[] {
-  const catByName = new Map(categories.map((c) => [c.name, c]))
-  const roots: TagTreeNode[] = []
-  const rootByName = new Map<string, TagTreeNode>()
-  for (const cat of categories) {
-    const r: TagTreeNode = {
-      segment: cat.name,
-      fullPath: cat.name,
-      tag: null,
-      children: [],
-      catColor: cat.color,
-    }
-    roots.push(r)
-    rootByName.set(cat.name, r)
-  }
-  for (const tag of tags) {
-    const parts = tag.fullPath.split(',')
-    const cat = catByName.get(parts[0])
-    if (!cat) continue
-    let node = rootByName.get(parts[0])!
-    for (let i = 1; i < parts.length; i++) {
-      const seg = parts[i]
-      let child = node.children.find((c) => c.segment === seg)
-      if (!child) {
-        child = {
-          segment: seg,
-          fullPath: parts.slice(0, i + 1).join(','),
-          tag: null,
-          children: [],
-          catColor: cat.color,
-        }
-        node.children.push(child)
-      }
-      node = child
-    }
-    node.tag = tag
-  }
-  // 每层 children 按"新旧"排序：取自身或后代里最大的 lastUsedAt，倒序
-  const recencyOf = (n: TagTreeNode): string => {
-    let best = n.tag?.lastUsedAt ?? ''
-    for (const c of n.children) {
-      const r = recencyOf(c)
-      if (r > best) best = r
-    }
-    return best
-  }
-  const sortRec = (n: TagTreeNode) => {
-    n.children.sort((a, b) => recencyOf(b).localeCompare(recencyOf(a)))
-    for (const c of n.children) sortRec(c)
-  }
-  for (const r of roots) sortRec(r)
-  // 过滤空 root（无命中 tag 的 category），并按 root 的最新度排序。
-  // 只有一段的标签（用户只建了分类名）也保留为 root 行，方便继续加子节点/改色。
-  return roots
-    .filter((r) => r.children.length > 0 || r.tag != null)
-    .sort((a, b) => recencyOf(b).localeCompare(recencyOf(a)))
-}
-
-/** 递归渲染标签树节点。叶子 = chip；分支 = 嵌套 box；分支自身有 tag 时 box 头部可点击。 */
-function TagTreeView({
-  node,
-  depth,
-  selectedId,
-  onPick,
-  onPickPath,
-  onOpenCategoryColor,
-  onLongPressTag,
-  onLongPressCategory,
-}: {
-  node: TagTreeNode
-  depth: number
-  selectedId: number | null
-  onPick: (id: number) => void
-  onPickPath?: (fullPath: string) => void
-  onOpenCategoryColor?: (categoryName: string) => void
-  onLongPressTag: (tag: ActivityTag) => void
-  onLongPressCategory: (categoryName: string) => void
-}) {
-  // 叶子：无 children 且有 tag → 单 chip
-  if (depth > 0 && node.children.length === 0 && node.tag) {
-    const on = node.tag.id === selectedId
-    const c = node.catColor
-    return (
-      <Pressable
-        onPress={() => {
-          if (onPickPath) onPickPath(node.fullPath)
-          else onPick(node.tag!.id)
-        }}
-        onLongPress={() => onLongPressTag(node.tag!)}
-        delayLongPress={400}
-        style={[
-          treeStyles.leafChip,
-          {
-            backgroundColor: on ? alpha(c, 0.38) : alpha(c, 0.22),
-            borderColor: on ? c : alpha(c, 0.55),
-          },
-          on && treeStyles.leafChipOn,
-        ]}
-      >
-        <Text style={[treeStyles.leafText, on && treeStyles.leafTextOn]}>
-          {node.segment}
-        </Text>
-      </Pressable>
-    )
-  }
-  // 分支：嵌套 box；先 leaf 子节点行内 chip，再 branch 子节点垂直堆叠
-  const leafKids = node.children.filter((c) => c.children.length === 0 && c.tag)
-  const branchKids = node.children.filter((c) => c.children.length > 0)
-  const onHeader = node.tag != null && node.tag.id === selectedId
-  return (
-    <View
-      style={[
-        treeStyles.box,
-        {
-          // 浅深底色 + 边框承担 category 识别，文字保持 ink
-          backgroundColor: alpha(node.catColor, depth === 0 ? 0.1 : 0.06),
-          borderColor: alpha(node.catColor, depth === 0 ? 0.55 : 0.35),
-          borderLeftWidth: depth === 0 ? 4 : 2,
-        },
-      ]}
-    >
-      <View style={treeStyles.headerRow}>
-        <Pressable
-          onPress={() => {
-            if (onPickPath) onPickPath(node.fullPath)
-            else if (node.tag) onPick(node.tag.id)
-          }}
-          onLongPress={() => {
-            if (depth === 0) onLongPressCategory(node.segment)
-            else if (node.tag) onLongPressTag(node.tag)
-            // 中间分支节点（非 root 也无 tag）= 虚拟段，没法删，不响应长按
-          }}
-          delayLongPress={400}
-          style={treeStyles.headerPickArea}
-        >
-          <View
-            style={[
-              treeStyles.headerDot,
-              { backgroundColor: node.catColor },
-            ]}
-          />
-          <Text
-            style={[
-              depth === 0 ? treeStyles.catHeader : treeStyles.branchHeader,
-              onHeader && { fontWeight: '800', textDecorationLine: 'underline' },
-            ]}
-          >
-            {node.segment}
-          </Text>
-        </Pressable>
-        {depth === 0 && onOpenCategoryColor && (
-          <Pressable
-            hitSlop={8}
-            onPress={() => onOpenCategoryColor(node.segment)}
-            style={[treeStyles.paletteBtn, { borderColor: alpha(node.catColor, 0.45), backgroundColor: alpha(node.catColor, 0.1) }]}
-          >
-            <PaletteGlyph color={node.catColor} size={14} />
-          </Pressable>
-        )}
-      </View>
-      {leafKids.length > 0 && (
-        <View style={treeStyles.leafRow}>
-          {leafKids.map((c) => (
-            <TagTreeView
-              key={c.fullPath}
-              node={c}
-              depth={depth + 1}
-              selectedId={selectedId}
-              onPick={onPick}
-              onPickPath={onPickPath}
-              onOpenCategoryColor={onOpenCategoryColor}
-              onLongPressTag={onLongPressTag}
-              onLongPressCategory={onLongPressCategory}
-            />
-          ))}
-        </View>
-      )}
-      {branchKids.map((c) => (
-        <TagTreeView
-          key={c.fullPath}
-          node={c}
-          depth={depth + 1}
-          selectedId={selectedId}
-          onPick={onPick}
-          onPickPath={onPickPath}
-          onOpenCategoryColor={onOpenCategoryColor}
-          onLongPressTag={onLongPressTag}
-          onLongPressCategory={onLongPressCategory}
-        />
-      ))}
-    </View>
-  )
-}
-
-const treeStyles = StyleSheet.create({
-  box: {
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 9,
-    marginBottom: 8,
-    gap: 6,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-  },
-  headerPickArea: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    flexShrink: 1,
-    minWidth: 0,
-  },
-  headerDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 5,
-  },
-  paletteBtn: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  catHeader: {
-    fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-    color: theme.ink,
-  },
-  branchHeader: {
-    fontSize: 12.5,
-    fontWeight: '600',
-    color: theme.ink,
-  },
-  leafRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 5,
-  },
-  leafChip: {
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 13,
-    borderWidth: 1,
-  },
-  leafChipOn: {
-    borderWidth: 1.5,
-  },
-  leafText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: theme.ink,
-  },
-  leafTextOn: {
-    fontWeight: '700',
-  },
-})
 
 /** 撤回/前进 弯箭头（U 形 + 箭头头），direction=left 是撤回，right 是前进。 */
 function UndoGlyph({
@@ -857,30 +462,14 @@ function nextPlanId(): string {
   return `plan-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-interface Interaction {
-  editMode: boolean
-  selectedTagId: number | null
-  rows: Row[]
-  blocks: ActivityBlock[]
-  blockByMinute: Map<number, ActivityBlock>
-  spans: Span[]
-  selectedDate: Date
-}
-
-interface DragState {
-  mode: 'paint' | 'erase'      // 仅起点判定的"主导意图"，commit 仍按每 cell 独立判断
-  startMin: number | null      // 拖拽起点（5min 对齐）
-  lastMin: number | null       // 上一次 move 命中的 minute
-  painted: Set<number>         // 本次拖拽覆盖的全部 mins（含 paint + erase + replace）
-  paintMins: Set<number>       // 本次拖拽中需要 paint 的 mins（commit 分批用）
-  eraseMins: Set<number>       // 本次拖拽中需要 erase 的 mins
-  snapshot: ActivityBlock[]    // 拖拽前的 blocks 快照，用于"区间反向"时恢复 + undo
-  moved: boolean
-  tapCell: HitCell | null
-  grantTs: number              // grant 时间戳，release 时算时长用于 long-press 防误触
-}
-
-export default function DayNightScreen() {
+export default function DayNightScreen({
+  mode = 'daynight',
+  torrentActionSource,
+}: {
+  mode?: DayNightMode
+  torrentActionSource?: ActionTimelineSource
+} = {}) {
+  const isTorrentMode = mode === 'torrent'
   // SafeArea inset 是异步算的 —— 第一次 mount 时 top=0，几 ms 后变成
   // 状态栏 + 刘海高度。App.tsx 用 paddingTop: insets.top 推开整个 root，
   // 所以 insets.top 变化时 cellArea 的屏幕 y 偏移也跟着变，必须重 measure，
@@ -952,10 +541,30 @@ export default function DayNightScreen() {
   const [composerTitle, setComposerTitle] = useState('')
   const [composerDuration, setComposerDuration] = useState(25)
   const [plannedTasks, setPlannedTasks] = useState<PlannedTask[]>([])
+  const [torrentActions, setTorrentActions] = useState<TorrentActionRange[]>([])
+  const [activeTorrentAction, setActiveTorrentAction] = useState<TorrentActionRange | null>(null)
+  const [torrentManualAnchorMinute, setTorrentManualAnchorMinute] = useState<number | null>(null)
+  const [normalGridHeight, setNormalGridHeight] = useState(0)
+  const torrentTransition = useRef(new Animated.Value(isTorrentMode ? 1 : 0)).current
+
+  useEffect(() => {
+    Animated.timing(torrentTransition, {
+      toValue: isTorrentMode ? 1 : 0,
+      duration: 260,
+      useNativeDriver: false,
+    }).start()
+    if (isTorrentMode) {
+      setEditMode(false)
+      setPickerMode(null)
+    }
+  }, [isTorrentMode, torrentTransition])
 
   // ── refs（供手势回调读取最新值）──
   const gridHRef = useRef(0)
   const focusBaseRef = useRef(3)
+  const torrentAnchorBaseRef = useRef(0)
+  const torrentAnchorMinuteRef = useRef(0)
+  const isTorrentModeRef = useRef(isTorrentMode)
   const focusStartRef = useRef(3)
   const areaRef = useRef({ x: 0, y: 0, w: 0, h: 0 })
   const cellAreaRef = useRef<View>(null)
@@ -986,6 +595,7 @@ export default function DayNightScreen() {
   const blocksRef = useRef<ActivityBlock[]>([])
 
   focusStartRef.current = focusStart
+  isTorrentModeRef.current = isTorrentMode
   plannedTasksRef.current = plannedTasks
   selectedDateRef.current = selectedDate
   selectedTagIdRef.current = selectedTagId
@@ -1491,11 +1101,74 @@ export default function DayNightScreen() {
   const nowDate = new Date(nowTs)
   const nowTotalSec = nowDate.getHours() * 3600 + nowDate.getMinutes() * 60 + nowDate.getSeconds()
   const nowMinute = Math.floor(nowTotalSec / 60)
-  const rows = useMemo(() => buildRows(focusStart, zoomCols, totalRows), [focusStart, zoomCols, totalRows])
+  const baseRows = useMemo(() => buildRows(focusStart, zoomCols, totalRows), [focusStart, zoomCols, totalRows])
+  const activeTorrentMinute = activeTorrentAction && isSameDay(new Date(activeTorrentAction.startTs), selectedDate)
+    ? Math.floor(minuteOfDayFloat(activeTorrentAction.startTs))
+    : null
+  const torrentAnchorMinute = torrentManualAnchorMinute ?? activeTorrentMinute ?? (isToday ? nowMinute : focusStart * 60)
+  torrentAnchorMinuteRef.current = torrentAnchorMinute
+  const torrentRows = useMemo(() => buildTorrentRows(torrentAnchorMinute), [torrentAnchorMinute])
+  const rows = isTorrentMode ? torrentRows : baseRows
+  const effectiveEditMode = isTorrentMode ? false : editMode
+  const normalRowHeight = normalGridHeight > 0 ? normalGridHeight / Math.max(1, baseRows.length) : Math.max(38, winH / 24)
+  const torrentGridHeight = Math.max(116, Math.min(144, Math.round(normalRowHeight * 3)))
+  const gridAnimatedHeight = torrentTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [
+      normalGridHeight > 0 ? normalGridHeight : Math.round(winH * 0.62),
+      torrentGridHeight,
+    ],
+  })
+  const torrentActionRuns = useMemo(() => {
+    if (!isTorrentMode) return []
+    return torrentActions
+      .filter((a) => isSameDay(new Date(a.startTs), selectedDate))
+      .map((a) => {
+        const startMin = minuteOfDayFloat(a.startTs)
+        const rawEnd = minuteOfDayFloat(a.endTs)
+        const endMin = rawEnd >= startMin ? Math.max(rawEnd, startMin + 0.5) : 1440
+        return { ...a, startMin, endMin }
+      })
+  }, [isTorrentMode, selectedDate, torrentActions])
+  const torrentDateRange = useMemo(() => {
+    const start = new Date(selectedDate)
+    start.setHours(0, 0, 0, 0)
+    const end = new Date(start)
+    end.setDate(start.getDate() + 1)
+    return { startTs: start.getTime(), endTs: end.getTime() }
+  }, [selectedDate])
+  const torrentQueryRange = useMemo(() => {
+    if (!isTorrentMode || torrentRows.length === 0) return undefined
+    const first = torrentRows[0]
+    const last = torrentRows[torrentRows.length - 1]
+    if (first.kind !== 'full' || last.kind !== 'full') return undefined
+    const startMinute = clamp(first.startMin - 2, 0, 1439)
+    const endMinute = clamp(last.startMin + last.cols * 5 + 2, startMinute + 1, 1440)
+    return {
+      startTs: torrentDateRange.startTs + startMinute * 60_000,
+      endTs: torrentDateRange.startTs + endMinute * 60_000,
+    }
+  }, [isTorrentMode, torrentDateRange.startTs, torrentRows])
+  const activeTorrentQueryRange = activeTorrentAction || torrentManualAnchorMinute != null
+    ? torrentQueryRange
+    : undefined
+  const handleActionsLoaded = useCallback((actions: TorrentActionRange[]) => {
+    setTorrentActions(actions)
+    setActiveTorrentAction((cur) => {
+      if (cur && actions.some((a) => a.key === cur.key)) return cur
+      return actions[0] ?? null
+    })
+  }, [])
+  const handleVisibleActionChange = useCallback((action: TorrentActionRange | null) => {
+    if (action) {
+      setTorrentManualAnchorMinute(null)
+      setActiveTorrentAction(action)
+    }
+  }, [])
   rowsLenRef.current = rows.length
 
   // 同步 refs
-  interactionRef.current = { editMode, selectedTagId, rows, blocks, blockByMinute, spans, selectedDate }
+  interactionRef.current = { editMode: effectiveEditMode, selectedTagId, rows, blocks, blockByMinute, spans, selectedDate }
 
   // ── 点 → 命中格子 ──
   // cellArea 自己的手势使用本地坐标 locationX/locationY，不再依赖
@@ -1616,7 +1289,7 @@ export default function DayNightScreen() {
           dragRef.current.moved = true       // 阻断 tap commit
           dragRef.current.startMin = null    // 阻断 paint commit
         }
-        if (!interactionRef.current.editMode && numTouches >= 2 && touches && touches.length >= 2) {
+        if (!isTorrentModeRef.current && !interactionRef.current.editMode && numTouches >= 2 && touches && touches.length >= 2) {
           const [a, b] = [touches[0], touches[1]]
           const dx = Math.abs(a.pageX - b.pageX)
           const dy = Math.abs(a.pageY - b.pageY)
@@ -1743,13 +1416,23 @@ export default function DayNightScreen() {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 6,
       onPanResponderGrant: () => {
-        focusBaseRef.current = focusStartRef.current
+        if (isTorrentModeRef.current) {
+          torrentAnchorBaseRef.current = Math.floor(torrentAnchorMinuteRef.current / 30) * 30
+        } else {
+          focusBaseRef.current = focusStartRef.current
+        }
       },
       onPanResponderMove: (_, g) => {
         // 用真实渲染 rows.length 算 rowH（AUDIT-025）—— 之前用 totalRowCount() 估算
         // 最大值，focusStart 贴边时实际行数更少，rowH 算偏小导致拖动步进慢
         const total = rowsLenRef.current || 1
         const rowH = gridHRef.current > 0 ? gridHRef.current / total : 40
+        if (isTorrentModeRef.current) {
+          const steps = Math.round(-g.dy / rowH)
+          const next = clamp(torrentAnchorBaseRef.current + steps * 30, 0, 1439)
+          setTorrentManualAnchorMinute((cur) => (cur === next ? cur : next))
+          return
+        }
         const focusH = zoomFocusHours(zoomColsRef.current, totalRowsRef.current)
         const next = clamp(focusBaseRef.current + Math.round(-g.dy / rowH), 0, 24 - focusH)
         setFocusStart((cur) => (cur === next ? cur : next))
@@ -1895,166 +1578,57 @@ export default function DayNightScreen() {
 
   return (
     <View style={styles.root}>
-      {/* 日期行：‹ [日期+回到今天 chip 同行] ›  日期可点击弹日历 */}
-      <View style={styles.dateRow}>
-        <Pressable hitSlop={10} onPress={() => setSelectedDate((d) => addDays(d, -1))} style={styles.arrow}>
-          <Text style={styles.arrowText}>‹</Text>
-        </Pressable>
-        <View style={styles.dateCenter}>
-          <Pressable onPress={() => setCalendarOpen(true)} hitSlop={6}>
-            <Text style={styles.dateText}>{fmtDateLabel(selectedDate)}</Text>
-          </Pressable>
-          {!isToday && (
-            <Pressable onPress={() => setSelectedDate(new Date())} style={styles.backTodayChip} hitSlop={4}>
-              <Text style={styles.backTodayChipText}>回到今天</Text>
-            </Pressable>
-          )}
-        </View>
-        <Pressable hitSlop={10} onPress={() => setSelectedDate((d) => addDays(d, 1))} style={styles.arrow}>
-          <Text style={styles.arrowText}>›</Text>
-        </Pressable>
-      </View>
-
-      {/* 概览 —— 文字 + 条形点击弹明细；chips 是横向 ScrollView 滑动看更多分类 */}
-      <View style={styles.summary}>
-        <Pressable
-          onPress={() => summary.rows.length > 0 && setStatsOpen(true)}
-        >
-        <Text style={styles.summaryText}>
-          已记录 <Text style={styles.summaryStrong}>{fmtHM(summary.total)}</Text>
-          {summary.rows.length > 0 ? ` · ${summary.rows.length} 类` : ''}
-        </Text>
-        <View style={styles.sumBar}>
-          {summary.rows.map((r) => {
-            // 段落占总日 1440 的比例：太窄（<5%）不放字（直接看下方 chips）
-            const showLabel = r.mins / 1440 >= 0.05
-            return (
-              <View
-                key={r.cat.id}
-                style={[styles.sumSeg, { flex: r.mins, backgroundColor: r.cat.color }]}
-              >
-                {showLabel && (
-                  <Text style={styles.sumSegText} numberOfLines={1}>
-                    {r.cat.name}
-                  </Text>
-                )}
-              </View>
-            )
-          })}
-          {summary.total < 1440 && (
-            <View style={{ flex: 1440 - summary.total, backgroundColor: theme.line }} />
-          )}
-        </View>
-        </Pressable>
-        {/* 兜底分类 chips：横向滚（分类多时一行装不下也不换行，左右滑动看） */}
-        {summary.rows.length > 0 && (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.sumChips}
-          >
-            {summary.rows.map((r) => (
-              <View key={r.cat.id} style={styles.sumChip}>
-                <View style={[styles.sumChipDot, { backgroundColor: r.cat.color }]} />
-                <Text style={styles.sumChipText}>
-                  {r.cat.name}
-                  <Text style={styles.sumChipMins}> {fmtHM(r.mins)}</Text>
-                </Text>
-              </View>
-            ))}
-          </ScrollView>
-        )}
-      </View>
+      <DayNightHeader
+        selectedDate={selectedDate}
+        isToday={isToday}
+        summary={summary}
+        compact={isTorrentMode}
+        transitionProgress={torrentTransition}
+        onPrevDate={() => setSelectedDate((d) => addDays(d, -1))}
+        onNextDate={() => setSelectedDate((d) => addDays(d, 1))}
+        onOpenCalendar={() => setCalendarOpen(true)}
+        onBackToday={() => setSelectedDate(new Date())}
+        onOpenStats={() => setStatsOpen(true)}
+      />
 
       {/* 整行按钮：idle 状态显示居中的"编辑"主按钮；编辑模式下同位置一组小按钮 */}
       {palette && (
-        <View
-          style={styles.actionSlot}
-          onLayout={(e) => {
-            const { y, height } = e.nativeEvent.layout
-            setActionSlotBottom(y + height)
-          }}
+        <Animated.View
+          pointerEvents={isTorrentMode ? 'none' : 'auto'}
+          style={[
+            styles.editorCollapse,
+            {
+              opacity: torrentTransition.interpolate({
+                inputRange: [0, 1],
+                outputRange: [1, 0],
+              }),
+              maxHeight: torrentTransition.interpolate({
+                inputRange: [0, 1],
+                outputRange: [52, 0],
+              }),
+            },
+          ]}
         >
-          {!editMode ? (
-            <Pressable onPress={() => setEditMode(true)} style={styles.editFullBtn}>
-              <SlidersGlyph color="#FFF" size={15} />
-              <Text style={styles.editFullText}>编辑昼夜表</Text>
-            </Pressable>
-          ) : (
-            <View style={styles.editingChips}>
-              {/* 搜索按钮：单独入口，点开后自动 focus 输入框 */}
-              <Pressable
-                onPress={() =>
-                  setPickerMode((m) => (m === 'search' ? null : 'search'))
-                }
-                style={[
-                  styles.iconBtn,
-                  pickerMode === 'search' && styles.iconBtnActive,
-                ]}
-              >
-                <SearchGlyph
-                  color={pickerMode === 'search' ? theme.accent : theme.ink}
-                  size={14}
-                />
-              </Pressable>
-              {/* 当前标签按钮：点开浏览模式（不 focus 输入框，直接看标签云） */}
-              <Pressable
-                onPress={() =>
-                  setPickerMode((m) => (m === 'browse' ? null : 'browse'))
-                }
-                style={[
-                  styles.currentTagBtn,
-                  pickerMode === 'browse' && styles.currentTagBtnActive,
-                ]}
-              >
-                <Text style={styles.currentTagText} numberOfLines={1}>
-                  {selectedTagId != null
-                    ? tagById.get(selectedTagId)?.leafName ?? '选标签'
-                    : '选标签'}
-                </Text>
-                <CaretGlyph
-                  color={theme.inkSoft}
-                  size={9}
-                  direction={pickerMode === 'browse' ? 'up' : 'down'}
-                />
-              </Pressable>
-              <Pressable
-                onPress={handleUndo}
-                disabled={undoStack.length === 0}
-                style={[
-                  styles.iconBtn,
-                  { marginLeft: 'auto' },
-                  undoStack.length === 0 && styles.iconBtnDisabled,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.iconBtnText,
-                    undoStack.length === 0 && styles.iconBtnTextDisabled,
-                  ]}
-                >↶</Text>
-              </Pressable>
-              <Pressable
-                onPress={handleRedo}
-                disabled={redoStack.length === 0}
-                style={[
-                  styles.iconBtn,
-                  redoStack.length === 0 && styles.iconBtnDisabled,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.iconBtnText,
-                    redoStack.length === 0 && styles.iconBtnTextDisabled,
-                  ]}
-                >↷</Text>
-              </Pressable>
-              <Pressable onPress={() => setEditMode(false)} style={styles.donePillBtn}>
-                <Text style={styles.donePillText}>完成</Text>
-              </Pressable>
-            </View>
-          )}
-        </View>
+          <DayNightEditorBar
+            editMode={effectiveEditMode}
+            pickerMode={isTorrentMode ? null : pickerMode}
+            selectedTagLabel={selectedTagId != null
+              ? tagById.get(selectedTagId)?.leafName ?? '选标签'
+              : '选标签'}
+            undoDisabled={undoStack.length === 0}
+            redoDisabled={redoStack.length === 0}
+            onLayout={(e) => {
+              const { y, height } = e.nativeEvent.layout
+              setActionSlotBottom(y + height)
+            }}
+            onStartEdit={() => setEditMode(true)}
+            onToggleSearch={() => setPickerMode((m) => (m === 'search' ? null : 'search'))}
+            onToggleBrowse={() => setPickerMode((m) => (m === 'browse' ? null : 'browse'))}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+            onDone={() => setEditMode(false)}
+          />
+        </Animated.View>
       )}
 
 
@@ -2063,10 +1637,16 @@ export default function DayNightScreen() {
           <ActivityIndicator color={theme.accent} />
         </View>
       ) : (
-        <View
-          style={styles.grid}
+        <>
+        <Animated.View
+          style={[
+            styles.grid,
+            isTorrentMode && styles.gridTorrent,
+            (isTorrentMode || normalGridHeight > 0) && { height: gridAnimatedHeight },
+          ]}
           onLayout={(e: LayoutChangeEvent) => {
             gridHRef.current = e.nativeEvent.layout.height
+            if (!isTorrentMode) setNormalGridHeight(e.nativeEvent.layout.height)
           }}
         >
           {/* 时间轴 */}
@@ -2245,11 +1825,48 @@ export default function DayNightScreen() {
                   const end = Math.min(task.scheduledStartMin + task.durationMin, rowStart + rowMinutes)
                   return { task, start, end }
                 })
+              const torrentRowActions = isTorrentMode
+                ? torrentActionRuns
+                  .filter((run) => run.endMin > rowStart && run.startMin < rowStart + rowMinutes)
+                  .map((run) => {
+                    const start = Math.max(run.startMin, rowStart)
+                    const end = Math.min(run.endMin, rowStart + rowMinutes)
+                    const leftPct = ((start - rowStart) / rowMinutes) * 100
+                    const exactWidthPct = Math.max(0.3, ((end - start) / rowMinutes) * 100)
+                    return { run, start, end, leftPct, exactWidthPct }
+                  })
+                  .sort((a, b) => a.start - b.start)
+                : []
+              const torrentLaneEnds = [-Infinity, -Infinity]
+              const torrentActionSegments = torrentRowActions.map((seg) => {
+                const visualWidthPct = Math.max(seg.exactWidthPct, 4.8)
+                const freeLane = torrentLaneEnds.findIndex((endPct) => seg.leftPct >= endPct + 0.4)
+                const lane = freeLane >= 0
+                  ? freeLane
+                  : (torrentLaneEnds[0] <= torrentLaneEnds[1] ? 0 : 1)
+                torrentLaneEnds[lane] = seg.leftPct + visualWidthPct
+                return { ...seg, lane }
+              })
               return (
                 <View key={i} style={[styles.cellRow, { backgroundColor: alpha(period.accent, 0.04) }]}>
                   {Array.from({ length: rowCols }, (_, col) => (
                     <View key={col} style={styles.cellSlot}>
-                      <View style={[styles.emptyInner, { backgroundColor: alpha(period.accent, 0.1) }]} />
+                      <View
+                        style={[
+                          styles.emptyInner,
+                          isTorrentMode && styles.emptyInnerTorrent,
+                          { backgroundColor: alpha(period.accent, 0.1) },
+                        ]}
+                      />
+                      {isTorrentMode && (
+                        <View
+                          pointerEvents="none"
+                          style={[
+                            styles.torrentTrackGuide,
+                            { backgroundColor: alpha(period.accent, 0.18) },
+                          ]}
+                        />
+                      )}
                     </View>
                   ))}
                   {runs.map((run) => {
@@ -2277,13 +1894,21 @@ export default function DayNightScreen() {
                           position: 'absolute',
                           left: `${leftPct}%`,
                           width: `${widthPct}%`,
-                          top: 0,
+                          top: isTorrentMode ? 24 : 0,
                           bottom: 0,
+                          zIndex: isTorrentMode ? 3 : 1,
+                          elevation: isTorrentMode ? 1 : 0,
+                          backgroundColor: isTorrentMode ? colorOf(run.tag) : undefined,
                           // 上下间距 GAP/2 保留（行间分隔），同色连接时让左/右触边
-                          paddingTop: GAP / 2,
+                          paddingTop: isTorrentMode ? 0 : GAP / 2,
                           paddingBottom: GAP / 2,
                           paddingLeft: continuesLeft ? 0 : GAP / 2,
                           paddingRight: continuesRight ? 0 : GAP / 2,
+                          borderTopLeftRadius: isTorrentMode ? (continuesLeft ? 0 : R_ACTIVITY) : 0,
+                          borderBottomLeftRadius: isTorrentMode ? (continuesLeft ? 0 : R_ACTIVITY) : 0,
+                          borderTopRightRadius: isTorrentMode ? (continuesRight ? 0 : R_ACTIVITY) : 0,
+                          borderBottomRightRadius: isTorrentMode ? (continuesRight ? 0 : R_ACTIVITY) : 0,
+                          overflow: isTorrentMode ? 'hidden' : 'visible',
                         }}
                         pointerEvents="none"
                       >
@@ -2302,7 +1927,7 @@ export default function DayNightScreen() {
                           }}
                         >
                           {showLabel ? (
-                            <Text style={styles.cellLabel} numberOfLines={1}>
+                            <Text style={[styles.cellLabel, isTorrentMode && styles.cellLabelTorrent]} numberOfLines={1}>
                               {tagName}
                             </Text>
                           ) : null}
@@ -2310,7 +1935,52 @@ export default function DayNightScreen() {
                       </View>
                     )
                   })}
-                  {/* 当前时间游标：锤子型，chip 紧贴色块上沿 + I 形 cap，
+                  {isTorrentMode && torrentActionSegments.map((seg) => {
+                    const { run, leftPct, exactWidthPct, lane } = seg
+                    const active = activeTorrentAction?.key === run.key
+                    const color = TORRENT_ICON_TRACK_COLORS[run.kind]
+                    const startsInRow = run.startMin >= rowStart && run.startMin < rowStart + rowMinutes
+                    const endsInRow = run.endMin > rowStart && run.endMin <= rowStart + rowMinutes
+                    const shortLabel = torrentActionShortLabel(run)
+                    return (
+                      <View
+                        key={`${run.key}-${rowStart}`}
+                        pointerEvents="none"
+                        style={[
+                          styles.torrentOverlayWrap,
+                          {
+                            left: `${leftPct}%`,
+                            width: `${exactWidthPct}%`,
+                            minWidth: active ? 44 : 34,
+                            top: 3 + lane * 10,
+                          },
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.torrentOverlay,
+                            {
+                              borderColor: color,
+                              backgroundColor: alpha(color, active ? 0.72 : 0.42),
+                            },
+                            active && styles.torrentOverlayActive,
+                          ]}
+                        >
+                          {startsInRow && <View style={[styles.torrentOverlayNode, { backgroundColor: color }]} />}
+                          {endsInRow && <View style={[styles.torrentOverlayEndNode, { backgroundColor: color }]} />}
+                          <Text style={styles.torrentOverlayMiniText} numberOfLines={1}>
+                            {shortLabel}
+                          </Text>
+                          {active && exactWidthPct >= 18 && (
+                            <Text style={[styles.torrentOverlayText, { color }]} numberOfLines={1}>
+                              {torrentActionLabel(run)}
+                            </Text>
+                          )}
+                        </View>
+                      </View>
+                    )
+                  })}
+                  {/* 当前时间游标：普通模式是锤子型；洪流域模式只画贴合轨道的细游标，
                       位置按秒级精度 = (nowMin - rowStart) + sec/60，占行宽比例
                       仅 isToday + nowMinute 落在本 row 内才画；不响应手势 */}
                   {isToday && nowMinute >= rowStart && nowMinute < rowStart + rowMinutes && (() => {
@@ -2319,6 +1989,17 @@ export default function DayNightScreen() {
                     const leftPct = (offsetMin / rowMinutes) * 100
                     const hh = String(nowDate.getHours()).padStart(2, '0')
                     const mm = String(nowDate.getMinutes()).padStart(2, '0')
+                    if (isTorrentMode) {
+                      return (
+                        <View
+                          pointerEvents="none"
+                          style={[styles.torrentNowCursorWrap, { left: `${leftPct}%` }]}
+                        >
+                          <View style={styles.torrentNowCursorDot} />
+                          <View style={styles.torrentNowCursorStem} />
+                        </View>
+                      )
+                    }
                     return (
                       <View
                         pointerEvents="none"
@@ -2352,7 +2033,33 @@ export default function DayNightScreen() {
               )
             })}
           </View>
-        </View>
+        </Animated.View>
+        {isTorrentMode && (
+          <Animated.View
+            style={[
+              styles.torrentPane,
+              {
+                opacity: torrentTransition,
+                transform: [{
+                  translateY: torrentTransition.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [18, 0],
+                  }),
+                }],
+              },
+            ]}
+          >
+            <ActionTimeline
+              dateRange={torrentDateRange}
+              queryRange={activeTorrentQueryRange}
+              sortOrder="asc"
+              source={torrentActionSource}
+              onVisibleActionChange={handleVisibleActionChange}
+              onActionsLoaded={handleActionsLoaded}
+            />
+          </Animated.View>
+        )}
+        </>
       )}
 
 
@@ -3377,6 +3084,11 @@ const styles = StyleSheet.create({
     paddingRight: 12,
     paddingBottom: 12,
   },
+  gridTorrent: {
+    flex: 0,
+    minHeight: 116,
+    paddingBottom: 6,
+  },
   axis: {
     width: GUTTER,
   },
@@ -3440,6 +3152,88 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     position: 'relative',
   },
+  torrentOverlayWrap: {
+    position: 'absolute',
+    height: 10,
+    zIndex: 7,
+    paddingHorizontal: 1,
+  },
+  torrentOverlay: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 999,
+    borderColor: alpha('#FFFFFF', 0.45),
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'visible',
+    shadowOpacity: 0.22,
+    shadowRadius: 2,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 2,
+  },
+  torrentOverlayActive: {
+    transform: [{ scaleY: 1.25 }],
+  },
+  torrentOverlayNode: {
+    position: 'absolute',
+    left: -3,
+    top: 0,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: theme.bg,
+  },
+  torrentOverlayEndNode: {
+    position: 'absolute',
+    right: -3,
+    top: 0,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: theme.bg,
+  },
+  torrentOverlayText: {
+    position: 'absolute',
+    top: -17,
+    fontSize: 9,
+    lineHeight: 11,
+    fontWeight: '800',
+    paddingHorizontal: 3,
+    includeFontPadding: false,
+  },
+  torrentOverlayMiniText: {
+    color: '#FFFFFF',
+    fontSize: 8,
+    lineHeight: 9,
+    fontWeight: '900',
+    includeFontPadding: false,
+    textAlign: 'center',
+  },
+  torrentNowCursorWrap: {
+    position: 'absolute',
+    top: GAP / 2 - 1,
+    bottom: GAP / 2,
+    width: 12,
+    marginLeft: -6,
+    alignItems: 'center',
+    zIndex: 12,
+  },
+  torrentNowCursorDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: theme.accent,
+    borderWidth: 1,
+    borderColor: theme.bg,
+  },
+  torrentNowCursorStem: {
+    width: 2,
+    flex: 1,
+    backgroundColor: alpha(theme.accent, 0.7),
+    borderRadius: 2,
+  },
   // 锤子形游标 wrap：chip 紧贴色块上沿，cap 紧贴色块下沿
   // 色块视觉边沿 = cellRow 上下各内缩 GAP/2 (= 2px)
   // wrap top = -(chipH - GAP/2) ≈ -12，让 chip 底落在色块上沿
@@ -3490,6 +3284,7 @@ const styles = StyleSheet.create({
   cellSlot: {
     flex: 1,
     position: 'relative',
+    zIndex: 0,
   },
   emptyInner: {
     position: 'absolute',
@@ -3499,6 +3294,17 @@ const styles = StyleSheet.create({
     bottom: GAP / 2,
     borderRadius: R_EMPTY,
     backgroundColor: theme.surface,
+  },
+  emptyInnerTorrent: {
+    borderRadius: 6,
+  },
+  torrentTrackGuide: {
+    position: 'absolute',
+    left: GAP / 2 + 2,
+    right: GAP / 2 + 2,
+    top: 1,
+    height: 22,
+    borderRadius: 7,
   },
   compressedInner: {
     position: 'absolute',
@@ -3517,6 +3323,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0.3,
     textAlign: 'center',
+  },
+  cellLabelTorrent: {
+    fontSize: 11.5,
+    lineHeight: 14,
   },
   // compressed 行 cell 文字弱化（alpha 色块上白字对比变弱时切深字反而清楚）
   cellLabelCompressed: {
@@ -3537,6 +3347,9 @@ const styles = StyleSheet.create({
     height: 46,
     justifyContent: 'center',
     paddingHorizontal: 12,
+  },
+  editorCollapse: {
+    overflow: 'hidden',
   },
   // 主操作按钮（idle）—— 整行宽度，文字居中，深色 + 阴影
   editFullBtn: {
@@ -3652,6 +3465,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: '#FFF',
+  },
+  torrentPane: {
+    flex: 1,
+    minHeight: 160,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.line,
+    backgroundColor: theme.bg,
   },
   pickerInline: {
     flexShrink: 0,

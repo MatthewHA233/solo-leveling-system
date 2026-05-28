@@ -13,7 +13,9 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: [
-      { find: /^react-native$/, replacement: 'react-native-web' },
+      { find: /^react-native$/, replacement: path.join(__dirname, 'src/react-native-shim.ts') },
+      { find: /^react-native-svg$/, replacement: path.join(__dirname, 'src/react-native-svg-shim.tsx') },
+      { find: /^react-native-safe-area-context$/, replacement: path.join(__dirname, 'src/react-native-safe-area-context-shim.ts') },
       { find: /^react$/, replacement: path.join(mobileRoot, 'node_modules/react') },
       { find: /^react\/jsx-runtime$/, replacement: path.join(mobileRoot, 'node_modules/react/jsx-runtime.js') },
     ],

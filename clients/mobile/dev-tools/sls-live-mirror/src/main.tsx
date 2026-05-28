@@ -1,6 +1,8 @@
 import React, { useMemo } from 'react'
 import { createRoot } from 'react-dom/client'
 import TorrentScreen, { type TorrentScreenDevSource } from '../../../src/screens/TorrentScreen'
+import DayNightScreen from '../../../src/screens/DayNightScreen'
+import type { ActionTimelineSource } from '../../../src/screens/torrent/ActionTimeline'
 
 const root = document.getElementById('root')!
 Object.assign(document.documentElement.style, { width: '100%', height: '100%' })
@@ -29,8 +31,14 @@ type CaptureResponse = {
   status: { rowCount?: number }
 }
 
-async function loadCaptures() {
-  const res = await fetch(`${API_BASE}/api/captures?limit=50000`, { cache: 'no-store' })
+async function loadCaptures(range?: { startTs: number; endTs: number; limit?: number }) {
+  const params = new URLSearchParams()
+  params.set('limit', String(range?.limit ?? 50000))
+  if (range) {
+    params.set('startMs', String(Math.floor(range.startTs)))
+    params.set('endMs', String(Math.ceil(range.endTs)))
+  }
+  const res = await fetch(`${API_BASE}/api/captures?${params.toString()}`, { cache: 'no-store' })
   if (!res.ok) throw new Error(await res.text())
   const data = await res.json() as CaptureResponse
   return {
@@ -45,6 +53,7 @@ async function syncDb() {
 }
 
 function App() {
+  const screen = new URLSearchParams(window.location.search).get('screen')
   const devSource = useMemo<TorrentScreenDevSource>(() => ({
     pollMs: 2000,
     load: loadCaptures,
@@ -54,7 +63,13 @@ function App() {
     },
   }), [])
 
-  return <TorrentScreen devSource={devSource} />
+  const actionSource = useMemo<ActionTimelineSource>(() => ({
+    pollMs: 2000,
+    load: async (range) => (await loadCaptures(range)).items,
+  }), [])
+
+  if (screen === 'torrent') return <TorrentScreen devSource={devSource} />
+  return <DayNightScreen mode="torrent" torrentActionSource={actionSource} />
 }
 
 createRoot(root).render(

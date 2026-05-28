@@ -1,8 +1,8 @@
 # SLS 洪流域 Web Mirror
 
-同步手机端 `perception.db` 到本机，并用 Web 端直接渲染 mobile 的同一份 `TorrentScreen.tsx`。
+同步手机端 `perception.db` 到本机，并用 Web 端直接渲染 mobile 的同一份洪流域相关组件。
 
-这个工具用于调试 mobile 洪流域 UI：不是手写一份 HTML 复刻，而是 Vite + React Native Web 直接 import mobile 源码。改 `clients/mobile/src/screens/TorrentScreen.tsx` 后，浏览器热重载看到同一套组件和样式。
+这个工具用于调试 mobile 洪流域 UI：不是手写一份 HTML 复刻，而是 Vite + React Native Web 直接 import mobile 源码。默认渲染 `DayNightScreen mode="torrent"` 的融合页；改 mobile 源码后，浏览器热重载看到同一套组件和样式。
 
 ## 启动
 
@@ -16,6 +16,12 @@ npm run dev
 
 ```text
 http://localhost:8766/
+```
+
+旧版完整洪流域调试页仍保留：
+
+```text
+http://localhost:8766/?screen=torrent
 ```
 
 `npm run dev` 会同时启动：
@@ -41,7 +47,7 @@ SLS_CAPTURE_LIMIT=50000 node mirror-server.mjs
 
 ## 页面结构
 
-- 页面主体就是 mobile 的 `TorrentScreen`。
+- 默认页面主体是 mobile 的 `DayNightScreen mode="torrent"`；`?screen=torrent` 可切回完整 `TorrentScreen` 调试页。
 - 数据源通过 `devSource` 注入：Web 端从 `/api/captures` 读取 adb 同步出来的 DB。
 - React Native 组件通过 Vite alias 映射到 `react-native-web`。
 - 样式来自 `TorrentScreen.tsx` 的 `StyleSheet.create(...)`，不是 dev-tool 另写 UI。

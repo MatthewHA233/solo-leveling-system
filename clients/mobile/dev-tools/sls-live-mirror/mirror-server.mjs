@@ -111,9 +111,15 @@ async function refreshDbStats() {
   state.maxEventTimeMs = Number(first.maxEventTimeMs || 0)
 }
 
-async function queryCaptures(limit = DEFAULT_LIMIT) {
+async function queryCaptures(limit = DEFAULT_LIMIT, startMs = null, endMs = null) {
   await stat(DB_PATH)
   const safeLimit = Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 200000))
+  const start = Number(startMs)
+  const end = Number(endMs)
+  const hasRange = Number.isFinite(start) && Number.isFinite(end) && end > start
+  const where = hasRange
+    ? `where event_time_ms >= ${Math.floor(start)} and event_time_ms < ${Math.ceil(end)}`
+    : ''
   const sql = `
     select
       id as rowId,
@@ -125,6 +131,7 @@ async function queryCaptures(limit = DEFAULT_LIMIT) {
       text_hash as textHash,
       source_class as sourceClass
     from torrent_capture_android
+    ${where}
     order by id desc
     limit ${safeLimit};
   `
@@ -156,7 +163,9 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === '/api/captures') {
       const limit = Number(url.searchParams.get('limit') || DEFAULT_LIMIT)
-      const rows = await queryCaptures(limit)
+      const startMs = url.searchParams.get('startMs')
+      const endMs = url.searchParams.get('endMs')
+      const rows = await queryCaptures(limit, startMs, endMs)
       sendJson(res, 200, { rows, status: { ...state, adbSerial, packageName: PACKAGE_NAME } })
       return
     }

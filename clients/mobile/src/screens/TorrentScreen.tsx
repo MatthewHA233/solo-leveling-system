@@ -25,6 +25,7 @@ import {
   type TorrentCapture,
 } from '../lib/perception'
 import { alpha, theme } from '../theme'
+import type { BiliActionKind, TorrentActionRange } from './torrent/types'
 
 function fmtTime(ms: number): string {
   const d = new Date(ms)
@@ -894,14 +895,24 @@ interface WatchSummary {
   watchedSec: number    // 视频内累计看了多少（段合计）
 }
 
-// "还原动作" — 从 raw 时间序列识别用户操作
-type BiliActionKind =
-  | 'splash'         // 开屏广告（出现 "跳过 N" 倒计时）
-  | 'home'           // B 站主页（MainActivityV2 + feed item 出现）
-  | 'video_intro'    // 进入视频简介（新 UP 行 + 标题）
-  | 'fullscreen'     // 进入全屏播放（windowClass = ViewGroup + "倍速" 控件）
-  | 'comments'       // 评论 tab（"热门评论" 出现）
-  | 'comment_detail' // 评论详情（"评论详情" 出现）
+function actionLineToRange(a: Extract<ListItem, { kind: 'actionLine' }>): TorrentActionRange {
+  return {
+    key: a.key,
+    startTs: a.ts,
+    endTs: a.endTs ?? a.ts,
+    kind: a.act,
+    title: a.title,
+    upName: a.upName,
+    isStory: a.isStory,
+  }
+}
+
+export function buildTorrentActionRanges(itemsIn: TorrentCapture[]): TorrentActionRange[] {
+  return buildActionListItems(itemsIn)
+    .filter((a): a is Extract<ListItem, { kind: 'actionLine' }> => a.kind === 'actionLine')
+    .map(actionLineToRange)
+    .sort((a, b) => a.startTs - b.startTs)
+}
 
 function buildFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
   // items 从 native 来是 ORDER BY id DESC（新→旧），按时间序处理前先排成 ASC

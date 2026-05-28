@@ -11,7 +11,6 @@ import type { TabKey } from './src/components/TabBar'
 import DayNightScreen from './src/screens/DayNightScreen'
 import ChatScreen from './src/screens/ChatScreen'
 import PerceptionScreen from './src/screens/PerceptionScreen'
-import TorrentScreen from './src/screens/TorrentScreen'
 import ProtocolScreen from './src/screens/ProtocolScreen'
 import { theme } from './src/theme'
 
@@ -31,12 +30,10 @@ function AppContent() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.body}>
-        {tab === 'daynight' ? (
-          <DayNightScreen />
+        {tab === 'daynight' || tab === 'torrent' ? (
+          <DayNightScreen mode={tab === 'torrent' ? 'torrent' : 'daynight'} />
         ) : tab === 'chat' ? (
           <ChatScreen />
-        ) : tab === 'torrent' ? (
-          <TorrentScreen />
         ) : tab === 'protocol' ? (
           <ProtocolScreen />
         ) : (
