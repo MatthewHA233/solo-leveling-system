@@ -27,6 +27,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import Svg, { Path } from 'react-native-svg'
 import CalendarPopover from '../components/CalendarPopover'
 import ConfirmDialog from '../components/ConfirmDialog'
+import SharedDateHeader from '../components/SharedDateHeader'
 import { alpha, theme } from '../theme'
 import type {
   ActivityBlock,
@@ -36,7 +37,7 @@ import type {
 } from '../types'
 import { CATEGORY_PALETTE_COLORS, createTag, deleteCategory, deleteTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks, renameCategory, renameTagPath } from '../lib/api'
 import { loadDayNightZoomPrefs, saveDayNightZoomPrefs } from '../lib/prefs'
-import { addDays, fmtDateLabel, fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
+import { fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
 import { getAppIcons, getPowerEventsInRange, getWindowEventsInRange, type PowerEvent, type WindowEvent } from '../lib/perception'
 
 const GUTTER = 46
@@ -1895,25 +1896,11 @@ export default function DayNightScreen() {
 
   return (
     <View style={styles.root}>
-      {/* 日期行：‹ [日期+回到今天 chip 同行] ›  日期可点击弹日历 */}
-      <View style={styles.dateRow}>
-        <Pressable hitSlop={10} onPress={() => setSelectedDate((d) => addDays(d, -1))} style={styles.arrow}>
-          <Text style={styles.arrowText}>‹</Text>
-        </Pressable>
-        <View style={styles.dateCenter}>
-          <Pressable onPress={() => setCalendarOpen(true)} hitSlop={6}>
-            <Text style={styles.dateText}>{fmtDateLabel(selectedDate)}</Text>
-          </Pressable>
-          {!isToday && (
-            <Pressable onPress={() => setSelectedDate(new Date())} style={styles.backTodayChip} hitSlop={4}>
-              <Text style={styles.backTodayChipText}>回到今天</Text>
-            </Pressable>
-          )}
-        </View>
-        <Pressable hitSlop={10} onPress={() => setSelectedDate((d) => addDays(d, 1))} style={styles.arrow}>
-          <Text style={styles.arrowText}>›</Text>
-        </Pressable>
-      </View>
+      <SharedDateHeader
+        selectedDate={selectedDate}
+        onChangeDate={setSelectedDate}
+        onOpenCalendar={() => setCalendarOpen(true)}
+      />
 
       {/* 概览 —— 文字 + 条形点击弹明细；chips 是横向 ScrollView 滑动看更多分类 */}
       <View style={styles.summary}>

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   FlatList,
+  Image,
   Modal,
   Pressable,
   RefreshControl,
@@ -19,11 +20,15 @@ import {
 import {
   clearTorrentCaptures,
   countTorrentCaptures,
+  getAppIcons,
   getRecentTorrentCaptures,
   isAccessibilityEnabled,
   openAccessibilitySettings,
   type TorrentCapture,
 } from '../lib/perception'
+import CalendarPopover from '../components/CalendarPopover'
+import SharedDateHeader from '../components/SharedDateHeader'
+import { isSameDay } from '../lib/time'
 import { alpha, theme } from '../theme'
 
 function fmtTime(ms: number): string {
@@ -46,6 +51,15 @@ function fmtVidSec(sec: number): string {
 const PACKAGE_LABEL: Record<string, string> = {
   'tv.danmaku.bili': 'B 站',
 }
+const BILI_PACKAGE = 'tv.danmaku.bili'
+
+function getPackageLabel(packageName: string | null | undefined): string {
+  if (!packageName) return '应用'
+  return PACKAGE_LABEL[packageName] ?? packageName.split('.').filter(Boolean).pop() ?? packageName
+}
+
+const EMPTY_TAG_BY_ID = new Map()
+const EMPTY_CATEGORY_BY_ID = new Map()
 
 function isA11ySnapshotCapture(captureType: string): boolean {
   return captureType === 'a11y-view' || captureType === 'a11y-poll'
@@ -61,7 +75,6 @@ type CrossJump = (targetViewMode: ViewMode, ts: number, preferKind?: JumpKind) =
 // 限定只看这段时间的 raw → 单独研究某一卡片，不污染 UI
 // 提交前必须设回 null
 const DEV_TIME_RANGE: [string, string] | null = null
-
 // HH:MM:SS → 当天毫秒（用 items 中任意一条的本地日期作为基准日）
 function hhmmssToMs(hhmmss: string, items: TorrentCapture[]): number {
   if (items.length === 0) return 0
@@ -637,10 +650,11 @@ export type TorrentScreenDevSource = {
   pollMs?: number
   load: () => Promise<TorrentScreenDevData>
   clear?: () => Promise<void>
+  clearLabel?: string
   openAccessibilitySettings?: () => void
 }
 
-export default function TorrentScreen({ devSource }: { devSource?: TorrentScreenDevSource } = {}) {
+export default function TorrentScreen({ devSource, searchText }: { devSource?: TorrentScreenDevSource; searchText?: string } = {}) {
   const [items, setItems] = useState<TorrentCapture[]>([])
   const [total, setTotal] = useState(0)
   const [a11yOn, setA11yOn] = useState(false)
@@ -650,8 +664,20 @@ export default function TorrentScreen({ devSource }: { devSource?: TorrentScreen
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc')
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null)
   const [highlightKey, setHighlightKey] = useState<string | null>(null)
-  const [helpOpen, setHelpOpen] = useState(false)
+  const [selectedDate, setSelectedDate] = useState(() => new Date())
+  const [calendarOpen, setCalendarOpen] = useState(false)
+  const [a11yPromptOpen, setA11yPromptOpen] = useState(false)
+  const [appIconCache, setAppIconCache] = useState<Record<string, string>>({})
   const liveRef = useRef(true)
+  const a11yPromptShownRef = useRef(false)
+
+  const visibleItems = useMemo(
+    () => items.filter((it) => isSameDay(new Date(it.eventTimeMs), selectedDate)),
+    [items, selectedDate],
+  )
+  const visiblePackageKey = useMemo(() => {
+    return Array.from(new Set(visibleItems.map((it) => it.packageName).filter(Boolean))).sort().join('|')
+  }, [visibleItems])
 
   // 跨视图跳转：从动作行点 → 切到 feed 跳到对应卡片；从卡头点 → 切到 action 跳到对应行
   const onCrossJump = useCallback<CrossJump>((targetVm, ts, preferKind) => {
@@ -667,8 +693,8 @@ export default function TorrentScreen({ devSource }: { devSource?: TorrentScreen
 
   const refresh = useCallback(async () => {
     try {
-      // 默认拉 5000 条（约几天数据）；FlatList virtualize 只渲染可见区，
-      // 几千万条理论也不卡（实际需求加 cursor 分页再说）
+      // 默认读完整 raw 快照；性能优化只能靠取消后台轮询 / 后续转译表，
+      // 不能截断 raw，否则还原动作会丢上下文。
       const [list, n, on] = devSource
         ? await devSource.load().then((data) => [data.items, data.total, data.a11yOn] as const)
         : await Promise.all([
@@ -693,47 +719,59 @@ export default function TorrentScreen({ devSource }: { devSource?: TorrentScreen
   useEffect(() => {
     liveRef.current = true
     refresh()
-    const id = setInterval(refresh, devSource?.pollMs ?? 3000)
+    const pollMs = devSource?.pollMs
+    const id = pollMs != null && pollMs > 0 ? setInterval(refresh, pollMs) : null
     return () => {
       liveRef.current = false
-      clearInterval(id)
+      if (id != null) clearInterval(id)
     }
   }, [refresh, devSource?.pollMs])
+
+  useEffect(() => {
+    if (loading || a11yOn || devSource || a11yPromptShownRef.current) return
+    a11yPromptShownRef.current = true
+    setA11yPromptOpen(true)
+  }, [a11yOn, devSource, loading])
+
+  useEffect(() => {
+    const packages = visiblePackageKey ? visiblePackageKey.split('|') : []
+    const missing = packages.filter((pkg) => !(pkg in appIconCache))
+    if (missing.length === 0) return
+    let cancelled = false
+    getAppIcons(missing)
+      .then((icons) => {
+        if (cancelled) return
+        setAppIconCache((prev) => {
+          const next = { ...prev }
+          for (const pkg of missing) next[pkg] = icons[pkg] ?? ''
+          return next
+        })
+      })
+      .catch((e) => console.warn('[torrent] load app icons failed', e))
+    return () => { cancelled = true }
+  }, [visiblePackageKey, appIconCache])
 
   return (
     <View style={styles.root}>
       <View style={styles.header}>
-        <View style={styles.headerRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.title}>洪流域</Text>
-            <Text style={styles.subtitle}>
-              {a11yOn ? `已抓取 ${total} 条 · 当前显示 ${items.length}` : '辅助功能未开启'}
-            </Text>
-          </View>
-          {total > 0 && (
+        <SharedDateHeader
+          selectedDate={selectedDate}
+          onChangeDate={setSelectedDate}
+          onOpenCalendar={() => setCalendarOpen(true)}
+          right={(
             <Pressable
+              disabled={total <= 0 && !devSource?.clear}
               onPress={async () => {
                 if (devSource?.clear) await devSource.clear()
                 else await clearTorrentCaptures()
                 refresh()
               }}
-              style={styles.clearBtn}
+              style={[styles.clearBtn, total <= 0 && !devSource?.clear && styles.clearBtnDisabled]}
             >
-              <Text style={styles.clearBtnText}>清空</Text>
+              <Text style={styles.clearBtnText}>{devSource?.clearLabel ?? '清空'}</Text>
             </Pressable>
           )}
-          <Pressable onPress={() => setHelpOpen(true)} style={styles.helpBtn}>
-            <Text style={styles.helpBtnText}>?</Text>
-          </Pressable>
-        </View>
-        {!a11yOn && (
-          <Pressable
-            onPress={() => devSource?.openAccessibilitySettings ? devSource.openAccessibilitySettings() : openAccessibilitySettings()}
-            style={styles.openA11yBtn}
-          >
-            <Text style={styles.openA11yText}>去系统设置开启 SLS 辅助功能</Text>
-          </Pressable>
-        )}
+        />
         <View style={styles.modeRow}>
           {(['action', 'feed', 'raw'] as ViewMode[]).map((m) => (
             <Pressable
@@ -761,17 +799,17 @@ export default function TorrentScreen({ devSource }: { devSource?: TorrentScreen
         <View style={styles.empty}>
           <ActivityIndicator color={theme.accent} />
         </View>
-      ) : items.length === 0 ? (
+      ) : visibleItems.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyHint}>
-            还没抓到文本{'\n\n'}
+            这一天还没抓到文本{'\n\n'}
             打开哔哩哔哩 app，刷一刷首页{'\n'}
             这边会自动出现你看到过的视频卡片
           </Text>
         </View>
       ) : (
         <RenderList
-          items={items}
+          items={visibleItems}
           viewMode={viewMode}
           sortOrder={sortOrder}
           refreshing={refreshing}
@@ -786,35 +824,40 @@ export default function TorrentScreen({ devSource }: { devSource?: TorrentScreen
           }}
           onCrossJump={onCrossJump}
           highlightKey={highlightKey}
+          appIconCache={appIconCache}
+          searchText={searchText}
         />
       )}
-      <Modal visible={helpOpen} transparent animationType="fade" onRequestClose={() => setHelpOpen(false)}>
-        <Pressable style={styles.helpBackdrop} onPress={() => setHelpOpen(false)}>
+      <CalendarPopover
+        open={calendarOpen}
+        selectedDate={selectedDate}
+        tagById={EMPTY_TAG_BY_ID}
+        categoryById={EMPTY_CATEGORY_BY_ID}
+        onSelect={setSelectedDate}
+        onClose={() => setCalendarOpen(false)}
+      />
+      <Modal visible={a11yPromptOpen} transparent animationType="fade" onRequestClose={() => setA11yPromptOpen(false)}>
+        <Pressable style={styles.helpBackdrop} onPress={() => setA11yPromptOpen(false)}>
           <Pressable style={styles.helpCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.helpTitle}>洪流域 · 使用说明</Text>
-            <Text style={styles.helpSection}>三个视图</Text>
+            <Text style={styles.helpTitle}>需要开启 SLS 辅助功能</Text>
             <Text style={styles.helpText}>
-              · <Text style={{fontWeight:'700'}}>还原卡片</Text>：把 a11y 抓到的文本聚合还原成 B 站界面卡（主页 / 视频播放 / 评论区）{'\n'}
-              · <Text style={{fontWeight:'700'}}>还原动作</Text>：识别用户操作链（开屏 → 主页 → 进视频 → 评论…），含时间范围 + 停留时长{'\n'}
-              · <Text style={{fontWeight:'700'}}>原始 SLS 数据</Text>：未加工的 a11y 文本快照
+              洪流域依赖辅助功能记录你在 app 里看到的文本。开启后，回到 B 站或其他内容 app，新的文本会进入还原数据。
             </Text>
-            <Text style={styles.helpSection}>互相跳转</Text>
-            <Text style={styles.helpText}>
-              · 点 <Text style={{fontWeight:'700'}}>卡片头</Text>（B 站主页/视频播放/评论区标题区）→ 切到对应动作行{'\n'}
-              · 点 <Text style={{fontWeight:'700'}}>动作行</Text>整行 → 切到对应卡片{'\n'}
-              · 跳转到的目标会高亮闪烁 1.6s
-            </Text>
-            <Text style={styles.helpSection}>排序</Text>
-            <Text style={styles.helpText}>
-              右上 "新→旧 ↓ / 旧→新 ↑" 按钮：三个视图共用；卡片内子项（视频 item / 评论 / raw 文本）也同步翻转
-            </Text>
-            <Text style={styles.helpSection}>清空</Text>
-            <Text style={styles.helpText}>
-              清掉本地 torrent_capture 表所有数据（不影响 perception 历史数据）
-            </Text>
-            <Pressable onPress={() => setHelpOpen(false)} style={styles.helpClose}>
-              <Text style={styles.helpCloseText}>知道了</Text>
-            </Pressable>
+            <View style={styles.promptActions}>
+              <Pressable onPress={() => setA11yPromptOpen(false)} style={[styles.helpClose, styles.promptGhost]}>
+                <Text style={[styles.helpCloseText, styles.promptGhostText]}>稍后</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setA11yPromptOpen(false)
+                  if (devSource?.openAccessibilitySettings) devSource.openAccessibilitySettings()
+                  else openAccessibilitySettings()
+                }}
+                style={styles.helpClose}
+              >
+                <Text style={styles.helpCloseText}>去开启</Text>
+              </Pressable>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -871,7 +914,7 @@ type ListItem =
   | { kind: 'story'; key: string; tsStart: number; tsEnd: number; story: StoryItem }
   | { kind: 'comments'; key: string; tsStart: number; tsEnd: number; comments: CommentItem[]; totalCount: number | null; videoTitle: string | null; videoUp: string | null; commentDetailSegs: { startTs: number; endTs: number }[]; commentDetails: CommentDetailThread[] }
   | { kind: 'fullscreen'; key: string; tsStart: number; tsEnd: number; watch: WatchSummary; samples: PlayProgressSample[]; videoTitle: string | null; videoUp: string | null }
-  | { kind: 'actionLine'; key: string; ts: number; endTs?: number; act: BiliActionKind; title?: string; upName?: string; meta?: string; tabSeq?: VideoSubTabSeg[]; isStory?: boolean }
+  | { kind: 'actionLine'; key: string; ts: number; endTs?: number; act: BiliActionKind; title?: string; upName?: string; meta?: string; tabSeq?: VideoSubTabSeg[]; isStory?: boolean; packageName?: string; appLabel?: string }
   | { kind: 'rawSnapshot'; key: string; ts: number; packageName: string; windowClass: string; texts: { rowId: number; text: string; sourceClass: string }[] }
 
 // 视频播放界面内的 tab 切换段（video_intro 父动作下的子序列）
@@ -1441,10 +1484,10 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
   }
 
   // Pass 1：先扫所有 raw，回填 ctx.title + 收所有 signal events
-  type ActionBucketLine = { rowId: number; text: string; ts: number; windowClass: string }
-  type EvSig = { ts: number; rowId: number; windowClass: string; sig: { kind: BiliActionKind; title?: string; upName?: string; meta?: string } }
+  type ActionBucketLine = { rowId: number; text: string; ts: number; windowClass: string; packageName: string }
+  type EvSig = { ts: number; rowId: number; windowClass: string; packageName: string; sig: { kind: BiliActionKind; title?: string; upName?: string; meta?: string } }
   let events: EvSig[] = []
-  const secondBuckets = new Map<number, { ts: number; rowId: number; windowClass: string; lines: ActionBucketLine[] }>()
+  const secondBuckets = new Map<number, { ts: number; rowId: number; windowClass: string; packageName: string; lines: ActionBucketLine[] }>()
   const ctx = { upName: null as string | null, title: null as string | null }
   // Story raw 上下文：上一行 UP 名 + 当前行粉丝 = 锁定 ctx.upName
   // 下一行（含 STORY_TITLE_TAIL）= 锁定 ctx.title
@@ -1455,16 +1498,17 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
     if (isA11ySnapshotCapture(c.captureType)) {
       const sec = Math.floor(c.eventTimeMs / 1000)
       const existing = secondBuckets.get(sec)
-      const line = { rowId: c.rowId, text: c.text, ts: c.eventTimeMs, windowClass: c.windowClass }
+      const line = { rowId: c.rowId, text: c.text, ts: c.eventTimeMs, windowClass: c.windowClass, packageName: c.packageName }
       if (existing) {
         existing.lines.push(line)
         if (c.rowId < existing.rowId) {
           existing.rowId = c.rowId
           existing.ts = c.eventTimeMs
           existing.windowClass = c.windowClass
+          existing.packageName = c.packageName
         }
       } else {
-        secondBuckets.set(sec, { ts: c.eventTimeMs, rowId: c.rowId, windowClass: c.windowClass, lines: [line] })
+        secondBuckets.set(sec, { ts: c.eventTimeMs, rowId: c.rowId, windowClass: c.windowClass, packageName: c.packageName, lines: [line] })
       }
     }
     // Story 上下文回填
@@ -1495,7 +1539,7 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
       if (sig.upName !== ctx.upName) ctx.title = null
       ctx.upName = sig.upName
     }
-    events.push({ ts: c.eventTimeMs, rowId: c.rowId, windowClass: c.windowClass, sig })
+    events.push({ ts: c.eventTimeMs, rowId: c.rowId, windowClass: c.windowClass, packageName: c.packageName, sig })
   }
 
   const SUB_TAB_KINDS = new Set<BiliActionKind>(['fullscreen', 'comments', 'comment_detail'])
@@ -1516,7 +1560,7 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
     subTabKindBySec.set(sec, kind)
     const key = `${sec}:${kind}`
     if (!existingSubTabSecKind.has(key)) {
-      events.push({ ts: b.ts, rowId: b.rowId, windowClass: b.windowClass, sig: { kind } })
+      events.push({ ts: b.ts, rowId: b.rowId, windowClass: b.windowClass, packageName: b.packageName, sig: { kind } })
       existingSubTabSecKind.add(key)
     }
   }
@@ -1530,6 +1574,7 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
     startTs: number; endTs: number;
     kind: BiliActionKind;
     title?: string; upName?: string; meta?: string;
+    packageName?: string; appLabel?: string;
     tabSeq?: VideoSubTabSeg[]  // 仅 video_intro 用：界面内 tab 切换序列
     isStory?: boolean          // 仅 video_intro 用：是否 Story 竖屏视频
     storyCommentCount?: string | null
@@ -1537,7 +1582,7 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
   const acts: Cur[] = []
 
   // Pass 2：splash 段独立识别。只按临近倒计时合段；detail/Launcher 里的"跳过 5"不是开屏。
-  const splashSegments: { startTs: number; endTs: number }[] = []
+  const splashSegments: { startTs: number; endTs: number; packageName: string }[] = []
   const isSplashSurface = (wc: string): boolean =>
     wc === 'android.widget.FrameLayout' || wc.includes('MainActivityV2') || wc.endsWith('ScrollView')
   const splashEvs = events.filter((e) =>
@@ -1546,9 +1591,17 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
   for (const e of splashEvs) {
     const last = splashSegments[splashSegments.length - 1]
     if (last && e.ts - last.endTs < 15_000) last.endTs = e.ts
-    else splashSegments.push({ startTs: e.ts, endTs: e.ts })
+    else splashSegments.push({ startTs: e.ts, endTs: e.ts, packageName: e.packageName })
   }
-  for (const s of splashSegments) acts.push({ startTs: s.startTs, endTs: s.endTs, kind: 'splash' })
+  for (const s of splashSegments) {
+    acts.push({
+      startTs: s.startTs,
+      endTs: s.endTs,
+      kind: 'splash',
+      packageName: s.packageName,
+      appLabel: getPackageLabel(s.packageName),
+    })
+  }
   const isDuringSplash = (ts: number) => splashSegments.some((s) => ts >= s.startTs && ts <= s.endTs + 1_000)
 
   // Pass 3：剩余 signals
@@ -1617,7 +1670,15 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
       }
       acts.push(cur)
     }
-    cur = { startTs: e.ts, endTs: e.ts, kind: sig.kind, title: sig.title, upName: sig.upName }
+    cur = {
+      startTs: e.ts,
+      endTs: e.ts,
+      kind: sig.kind,
+      title: sig.title,
+      upName: sig.upName,
+      packageName: e.packageName,
+      appLabel: getPackageLabel(e.packageName),
+    }
   }
   if (cur) acts.push(cur)
 
@@ -1689,6 +1750,8 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
       kind: 'video_intro',
       title,
       upName: meta.upName,
+      packageName: 'tv.danmaku.bili',
+      appLabel: getPackageLabel('tv.danmaku.bili'),
       isStory: true,
       storyCommentCount: storyCommentCount ?? meta.comments,
       tabSeq: [{ tab: 'intro', startTs, endTs: startTs }],
@@ -1911,6 +1974,8 @@ function buildActionListItems(itemsIn: TorrentCapture[]): ListItem[] {
     meta: a.meta,
     tabSeq: a.tabSeq,
     isStory: a.isStory,
+    packageName: a.packageName,
+    appLabel: a.appLabel,
   })).reverse()
 }
 
@@ -1944,8 +2009,21 @@ function buildRawListItems(itemsIn: TorrentCapture[]): ListItem[] {
   return groups.reverse()  // 默认 desc，跟 feed/action 语义一致；UI 可切 asc
 }
 
+// 收集 ListItem 内所有字符串值，用于搜索匹配（不依赖具体字段名，鲁棒）
+function collectStrings(v: any, acc: string[], depth = 0): void {
+  if (v == null || depth > 6) return
+  if (typeof v === 'string') { acc.push(v); return }
+  if (Array.isArray(v)) { for (const x of v) collectStrings(x, acc, depth + 1); return }
+  if (typeof v === 'object') { for (const k in v) collectStrings((v as any)[k], acc, depth + 1); return }
+}
+function itemSearchText(it: ListItem): string {
+  const acc: string[] = []
+  collectStrings(it, acc)
+  return acc.join(' ').toLowerCase()
+}
+
 function RenderList({
-  items, viewMode, sortOrder, refreshing, onRefresh, jumpTarget, onJumpDone, onCrossJump, highlightKey,
+  items, viewMode, sortOrder, refreshing, onRefresh, jumpTarget, onJumpDone, onCrossJump, highlightKey, appIconCache, searchText,
 }: {
   items: TorrentCapture[]
   viewMode: ViewMode
@@ -1956,6 +2034,8 @@ function RenderList({
   onJumpDone: (targetKey: string | null) => void
   onCrossJump: CrossJump
   highlightKey: string | null
+  appIconCache: Record<string, string>
+  searchText?: string
 }) {
   // 【DEV-only】按时间戳范围过滤 raw items（卡片对照调试）
   const filteredItems = useMemo(() => {
@@ -2031,6 +2111,19 @@ function RenderList({
     }
   }, [jumpTarget, listItems, onJumpDone])
 
+  // 搜索：searchText 变化 → 找第一条文本命中的 item → 滚动 + 高亮闪烁（复用 onJumpDone）
+  useEffect(() => {
+    const q = (searchText || '').trim().toLowerCase()
+    if (!q || listItems.length === 0) return
+    const idx = listItems.findIndex((it) => itemSearchText(it).includes(q))
+    if (idx >= 0) {
+      try {
+        listRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.1 })
+      } catch {}
+      onJumpDone(listItems[idx].key)
+    }
+  }, [searchText, listItems, onJumpDone])
+
   if (listItems.length === 0) {
     return (
       <View style={styles.emptyInline}>
@@ -2053,6 +2146,7 @@ function RenderList({
           sortOrder={sortOrder}
           onCrossJump={onCrossJump}
           highlighted={highlightKey === item.key}
+          appIconCache={appIconCache}
         />
       )}
       style={styles.list}
@@ -2074,7 +2168,7 @@ function RenderList({
   )
 }
 
-function StorySnapView({ item: s, highlighted }: { item: Extract<ListItem, { kind: 'story' }>; highlighted: boolean }) {
+function StorySnapView({ item: s, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'story' }>; highlighted: boolean; appIconCache: Record<string, string> }) {
   const it = s.story
   const tsLabel = s.tsStart === s.tsEnd
     ? fmtTime(s.tsEnd)
@@ -2084,7 +2178,10 @@ function StorySnapView({ item: s, highlighted }: { item: Extract<ListItem, { kin
       <View style={[styles.snapCardHead, styles.snapCardHeadDetail]}>
         <View style={[styles.snapCardAccentBar, { backgroundColor: '#00AEEC' }]} />
         <View style={styles.snapCardHeadText}>
-          <Text style={styles.snapCardTitle}>视频播放界面（竖屏）</Text>
+          <View style={styles.snapCardTitleRow}>
+            <BiliCardIcon appIconCache={appIconCache} color="#00AEEC" />
+            <Text style={styles.snapCardTitle}>视频播放界面（竖屏）</Text>
+          </View>
           <Text style={styles.snapCardSubtitle}>{tsLabel}{it.seenCount > 1 ? ` · 看 ${it.seenCount} 次` : ''}</Text>
         </View>
       </View>
@@ -2115,24 +2212,24 @@ function StorySnapView({ item: s, highlighted }: { item: Extract<ListItem, { kin
   )
 }
 
-function ListItemView({ item, sortOrder, onCrossJump, highlighted }: { item: ListItem; sortOrder: SortOrder; onCrossJump: CrossJump; highlighted: boolean }) {
+function ListItemView({ item, sortOrder, onCrossJump, highlighted, appIconCache }: { item: ListItem; sortOrder: SortOrder; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
   // 视频组子卡：fullscreen / comments 且 _groupIdx > 0 = 子层级
   const groupIdx = (item as any)._groupIdx ?? 0
   const isChild = groupIdx > 0 && (item.kind === 'fullscreen' || item.kind === 'comments')
 
   let inner: React.ReactNode
   if (item.kind === 'home') {
-    inner = <HomeSnapView item={item} sortOrder={sortOrder} onCrossJump={onCrossJump} highlighted={highlighted} />
+    inner = <HomeSnapView item={item} sortOrder={sortOrder} onCrossJump={onCrossJump} highlighted={highlighted} appIconCache={appIconCache} />
   } else if (item.kind === 'detail') {
-    inner = <DetailSnapView item={item} onCrossJump={onCrossJump} highlighted={highlighted} />
+    inner = <DetailSnapView item={item} onCrossJump={onCrossJump} highlighted={highlighted} appIconCache={appIconCache} />
   } else if (item.kind === 'story') {
-    inner = <StorySnapView item={item} highlighted={highlighted} />
+    inner = <StorySnapView item={item} highlighted={highlighted} appIconCache={appIconCache} />
   } else if (item.kind === 'comments') {
-    inner = <CommentsSnapView item={item} sortOrder={sortOrder} onCrossJump={onCrossJump} highlighted={highlighted} />
+    inner = <CommentsSnapView item={item} sortOrder={sortOrder} onCrossJump={onCrossJump} highlighted={highlighted} appIconCache={appIconCache} />
   } else if (item.kind === 'fullscreen') {
-    inner = <FullscreenSnapView item={item} onCrossJump={onCrossJump} highlighted={highlighted} />
+    inner = <FullscreenSnapView item={item} onCrossJump={onCrossJump} highlighted={highlighted} appIconCache={appIconCache} />
   } else if (item.kind === 'actionLine') {
-    inner = <ActionLineView item={item} onCrossJump={onCrossJump} highlighted={highlighted} />
+    inner = <ActionLineView item={item} onCrossJump={onCrossJump} highlighted={highlighted} appIconCache={appIconCache} />
   } else if (item.kind === 'rawSnapshot') {
     inner = <RawSnapshotView item={item} sortOrder={sortOrder} />
   } else {
@@ -2151,7 +2248,7 @@ function ListItemView({ item, sortOrder, onCrossJump, highlighted }: { item: Lis
   return inner
 }
 
-function HomeSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'home' }>; sortOrder: SortOrder; onCrossJump: CrossJump; highlighted: boolean }) {
+function HomeSnapView({ item: s, sortOrder, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'home' }>; sortOrder: SortOrder; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
   // 卡头点击 → 跳到对应动作
   const onHeadPress = () => onCrossJump('action', s.tsStart)
   // feedItems 默认按 firstSeenTs ASC（视觉自顶向下）；desc 时反转
@@ -2179,6 +2276,7 @@ function HomeSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { item: 
         <View style={styles.snapCardAccentBar} />
         <View style={styles.snapCardHeadText}>
           <View style={styles.snapCardTitleRow}>
+            <BiliCardIcon appIconCache={appIconCache} color={HOME_ACCENT} />
             <Text style={styles.snapCardTitle}>B 站主页</Text>
             <Text style={styles.jumpHint}>→ 动作</Text>
           </View>
@@ -2237,7 +2335,7 @@ function HomeSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { item: 
   )
 }
 
-function DetailSnapView({ item: s, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'detail' }>; onCrossJump: CrossJump; highlighted: boolean }) {
+function DetailSnapView({ item: s, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'detail' }>; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
   const onHeadPress = () => onCrossJump('action', s.tsStart)
   // 相关推荐目前按 a11y 抓取顺序，跟时间顺序无关 — 不跟 sortOrder 翻
   // 评论数用 d.related 自身；主视频信息没有时间维度
@@ -2252,6 +2350,7 @@ function DetailSnapView({ item: s, onCrossJump, highlighted }: { item: Extract<L
         <View style={[styles.snapCardAccentBar, { backgroundColor: '#00AEEC' }]} />
         <View style={styles.snapCardHeadText}>
           <View style={styles.snapCardTitleRow}>
+            <BiliCardIcon appIconCache={appIconCache} color="#00AEEC" />
             <Text style={styles.snapCardTitle}>视频播放界面</Text>
             <Text style={styles.jumpHint}>→ 动作</Text>
           </View>
@@ -2420,7 +2519,7 @@ function PlayProgressStrip({ samples }: { samples: PlayProgressSample[] }) {
 
 const COMMENTS_ACCENT = '#FBB04C'
 
-function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'comments' }>; sortOrder: SortOrder; onCrossJump: CrossJump; highlighted: boolean }) {
+function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'comments' }>; sortOrder: SortOrder; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
   const onHeadPress = () => onCrossJump('action', s.tsStart)
   // 评论默认按 raw 出现顺序（视觉自顶向下）；desc 时反转
   const comments: CommentItem[] = sortOrder === 'desc' ? [...s.comments].reverse() : s.comments
@@ -2434,6 +2533,7 @@ function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted }: { it
     <View style={[styles.subCard, highlighted && styles.snapCardHighlight, { borderColor: alpha(COMMENTS_ACCENT, 0.3) }]}>
       <Pressable onPress={onHeadPress} style={[styles.subCardHead, { backgroundColor: alpha(COMMENTS_ACCENT, 0.06) }]}>
         <View style={[styles.subCardDot, { backgroundColor: COMMENTS_ACCENT }]} />
+        <BiliCardIcon appIconCache={appIconCache} color={COMMENTS_ACCENT} small />
         <Text style={[styles.subCardLabel, { color: COMMENTS_ACCENT }]}>评论区</Text>
         <Text style={styles.subCardMeta}>{tsLabel} · {comments.length} 条</Text>
         <Text style={styles.jumpHint}>→ 动作</Text>
@@ -2546,8 +2646,51 @@ function getActionJumpKind(a: Extract<ListItem, { kind: 'actionLine' }>): JumpKi
   return null
 }
 
+function ActionAppIcon({
+  color,
+  label,
+  iconB64,
+  size = 28,
+  inline = false,
+}: {
+  color: string
+  label: string
+  iconB64?: string
+  size?: number
+  inline?: boolean
+}) {
+  const initial = (label || '应').slice(0, 1).toUpperCase()
+  const radius = Math.max(6, Math.round(size * 0.28))
+  const badgeSize = Math.max(7, Math.round(size * 0.32))
+  return (
+    <View style={[styles.actionAppIcon, inline && styles.actionAppIconInline, { width: size, height: size, borderRadius: radius }]}>
+      {iconB64 ? (
+        <Image
+          style={[styles.actionAppIconImage, { width: size, height: size, borderRadius: radius }]}
+          source={{ uri: `data:image/png;base64,${iconB64}` }}
+        />
+      ) : (
+        <Text style={styles.actionAppIconText}>{initial}</Text>
+      )}
+      <View style={[styles.actionAppBadge, { backgroundColor: color, width: badgeSize, height: badgeSize, borderRadius: badgeSize / 2 }]} />
+    </View>
+  )
+}
+
+function BiliCardIcon({ appIconCache, color, small }: { appIconCache: Record<string, string>; color: string; small?: boolean }) {
+  return (
+    <ActionAppIcon
+      color={color}
+      label={getPackageLabel(BILI_PACKAGE)}
+      iconB64={appIconCache[BILI_PACKAGE]}
+      size={small ? 18 : 22}
+      inline
+    />
+  )
+}
+
 // 全屏播放子卡 — video_intro 的 fullscreen 段独立成卡
-function FullscreenSnapView({ item: s, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'fullscreen' }>; onCrossJump: CrossJump; highlighted: boolean }) {
+function FullscreenSnapView({ item: s, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'fullscreen' }>; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
   const onHeadPress = () => onCrossJump('action', s.tsStart)
   const tsLabel = s.tsStart === s.tsEnd ? fmtTime(s.tsEnd) : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
   const FS_COLOR = SUB_TAB_LABEL.fullscreen.color
@@ -2555,6 +2698,7 @@ function FullscreenSnapView({ item: s, onCrossJump, highlighted }: { item: Extra
     <View style={[styles.subCard, highlighted && styles.snapCardHighlight, { borderColor: alpha(FS_COLOR, 0.3) }]}>
       <Pressable onPress={onHeadPress} style={[styles.subCardHead, { backgroundColor: alpha(FS_COLOR, 0.06) }]}>
         <View style={[styles.subCardDot, { backgroundColor: FS_COLOR }]} />
+        <BiliCardIcon appIconCache={appIconCache} color={FS_COLOR} small />
         <Text style={[styles.subCardLabel, { color: FS_COLOR }]}>全屏播放</Text>
         <Text style={styles.subCardMeta}>{tsLabel}</Text>
         <Text style={styles.jumpHint}>→ 动作</Text>
@@ -2573,8 +2717,10 @@ function FullscreenSnapView({ item: s, onCrossJump, highlighted }: { item: Extra
 }
 
 // 评论详情子卡 — video_intro 的 comment_detail 段独立成卡
-function ActionLineView({ item: a, onCrossJump, highlighted }: { item: Extract<ListItem, { kind: 'actionLine' }>; onCrossJump: CrossJump; highlighted: boolean }) {
+function ActionLineView({ item: a, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'actionLine' }>; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
   const cfg = ACTION_CFG[a.act]
+  const appLabel = a.appLabel ?? getPackageLabel(a.packageName)
+  const iconB64 = a.packageName ? appIconCache[a.packageName] : undefined
   const lasted = a.endTs ? Math.round((a.endTs - a.ts) / 1000) : 0
   const timeRange = lasted >= 1
     ? `${fmtTime(a.ts)} → ${fmtTime(a.endTs!)}`
@@ -2587,7 +2733,7 @@ function ActionLineView({ item: a, onCrossJump, highlighted }: { item: Extract<L
       disabled={!canJump}
       style={[styles.actionRow, highlighted && styles.actionRowHighlight]}
     >
-      <View style={[styles.actionDot, { backgroundColor: cfg.color }]} />
+      <ActionAppIcon color={cfg.color} label={appLabel} iconB64={iconB64} />
       <View style={styles.actionBody}>
         <View style={styles.actionHead}>
           <Text style={[styles.actionKind, { color: cfg.color }]}>{a.act === 'video_intro' ? `进入视频播放界面${a.isStory ? '（竖屏）' : ''}` : cfg.label}</Text>
@@ -2670,7 +2816,7 @@ function RawSnapshotView({ item: g, sortOrder }: { item: Extract<ListItem, { kin
       <View style={styles.snapshotHead}>
         <Text style={styles.snapshotTime}>{fmtTime(g.ts)}</Text>
         <Text style={styles.snapshotMeta} numberOfLines={1}>
-          {PACKAGE_LABEL[g.packageName] ?? g.packageName}
+          {getPackageLabel(g.packageName)}
           {winShort ? ` · ${winShort}` : ''}
           {' · '}{texts.length} 条
         </Text>
@@ -2689,9 +2835,7 @@ function RawSnapshotView({ item: g, sortOrder }: { item: Extract<ListItem, { kin
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.bg },
   header: {
-    paddingHorizontal: 18,
-    paddingTop: 14,
-    paddingBottom: 12,
+    paddingBottom: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.line,
     backgroundColor: theme.surface,
@@ -2707,6 +2851,7 @@ const styles = StyleSheet.create({
     borderColor: theme.line,
     backgroundColor: theme.surface,
   },
+  clearBtnDisabled: { opacity: 0.35 },
   clearBtnText: { fontSize: 12, color: theme.inkSoft, fontWeight: '500' },
   helpBtn: {
     width: 28, height: 28, borderRadius: 14,
@@ -2733,6 +2878,13 @@ const styles = StyleSheet.create({
     backgroundColor: theme.accent, borderRadius: 6,
   },
   helpCloseText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+  promptActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 2 },
+  promptGhost: {
+    backgroundColor: theme.bg,
+    borderWidth: 1,
+    borderColor: theme.line,
+  },
+  promptGhostText: { color: theme.inkSoft },
   snapCardHighlight: {
     borderWidth: 2, borderColor: theme.accent,
     shadowColor: theme.accent, shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 0 },
@@ -2762,7 +2914,7 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   openA11yText: { color: '#FFF', fontSize: 13, fontWeight: '600' },
-  modeRow: { flexDirection: 'row', gap: 6, marginTop: 10 },
+  modeRow: { flexDirection: 'row', gap: 6, marginTop: 2, paddingHorizontal: 18 },
   modeChip: {
     paddingHorizontal: 12,
     paddingVertical: 5,
@@ -3208,6 +3360,41 @@ const styles = StyleSheet.create({
     backgroundColor: theme.surface,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.lineSoft,
+  },
+  actionAppIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+    marginRight: 12,
+  },
+  actionAppIconInline: {
+    marginTop: 0,
+    marginRight: 0,
+  },
+  actionAppIconText: {
+    color: theme.inkSoft,
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
+  actionAppIconImage: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+  },
+  actionAppBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: theme.surface,
   },
   actionDot: {
     width: 8,
