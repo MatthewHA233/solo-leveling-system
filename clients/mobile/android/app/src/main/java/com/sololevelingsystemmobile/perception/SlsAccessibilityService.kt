@@ -49,7 +49,7 @@ class SlsAccessibilityService : AccessibilityService() {
   // 电源/屏幕事件 receiver —— SCREEN_ON / SCREEN_OFF / USER_PRESENT
   // ACTION_SCREEN_OFF/ON 在 Android O+ 不能 manifest 静态注册（implicit broadcast 限制），
   // 必须动态注册到常驻 Service。这个 Service 是 AccessibilityService，系统不杀，能稳收。
-  // BOOT_COMPLETED 不在这处理（要 manifest + RECEIVE_BOOT_COMPLETED 权限，下个迭代）。
+  // 不记录系统开机/关机；应用监控只关心屏幕、解锁、窗口切换和 SLS 自身前台事件。
   private val powerReceiver: BroadcastReceiver = object : BroadcastReceiver() {
     override fun onReceive(ctx: Context?, intent: Intent?) {
       val action = intent?.action ?: return
@@ -281,8 +281,6 @@ class SlsAccessibilityService : AccessibilityService() {
 
   private fun handleWindowState(e: AccessibilityEvent) {
     val pkg = e.packageName?.toString() ?: return
-    // 过滤自身：AccessibilityEvent.text 会把整个 modal 内可见文字拼进 title，污染严重
-    if (pkg == applicationContext.packageName) return
     val cls = e.className?.toString() ?: ""
     val now = System.currentTimeMillis()
     if (pkg == lastPkg && cls == lastClass && now - lastTs < DEDUP_WINDOW_MS) return
@@ -376,8 +374,8 @@ class SlsAccessibilityService : AccessibilityService() {
           Log.w(TAG, "register power receiver failed", ex2)
         }
       }
-      // Service 启动那刻通常对应"应用启动 / 屏幕本来就亮"，记一个 boot 事件
-      // 作为时间轴起点（区别真正 BOOT_COMPLETED 留到下个迭代）
+      // AccessibilityService 启动不是手机开机，也不是屏幕亮起；单独记为感知服务启动，
+      // 用来解释为什么这一刻之后才开始有 window/screen 动态事件。
       val ts = System.currentTimeMillis()
       executor.execute {
         try { db.insertPowerEvent("service_started", ts) } catch (_: Throwable) {}

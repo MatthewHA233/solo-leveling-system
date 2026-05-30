@@ -6,11 +6,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   Image,
   Modal,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -18,9 +20,13 @@ import {
 import {
   getAppIcons,
   getRecentTorrentCaptures,
+  getPowerEventsInRange,
+  getWindowEventsInRange,
   isAccessibilityEnabled,
   openAccessibilitySettings,
+  type PowerEvent,
   type TorrentCapture,
+  type WindowEvent,
 } from '../lib/perception'
 import CalendarPopover, { type DayRangeColored } from '../components/CalendarPopover'
 import SharedDateHeader from '../components/SharedDateHeader'
@@ -111,16 +117,39 @@ function buildTorrentCalendarRanges(items: TorrentCapture[]): DayRangeColored[] 
   return mergeTorrentCalendarRanges(ranges)
 }
 
-type ViewMode = 'raw' | 'feed' | 'action'
+type ViewMode = 'monitor' | 'raw' | 'feed' | 'action'
 type SortOrder = 'desc' | 'asc'
 type JumpKind = 'home' | 'detail' | 'story' | 'fullscreen' | 'comments'
 type JumpTarget = { ts: number; preferKind?: JumpKind }
 type CrossJump = (targetViewMode: ViewMode, ts: number, preferKind?: JumpKind) => void
+type AppMonitorRun = {
+  key: string
+  packageName: string
+  appLabel: string
+  startMs: number
+  endMs: number
+  eventCount: number
+  titles: string[]
+}
+type AppMonitorSwitch = {
+  key: string
+  startMs: number
+  endMs: number
+  runs: AppMonitorRun[]
+  packageNames: string[]
+  labels: string[]
+  eventCount: number
+}
+type AppMonitorRow =
+  | { kind: 'run'; key: string; ts: number; run: AppMonitorRun }
+  | { kind: 'switch'; key: string; ts: number; sw: AppMonitorSwitch }
+  | { kind: 'power'; key: string; ts: number; event: PowerEvent }
 
 // 【DEV-only】卡片对照调试：把范围设成 ['HH:MM:SS', 'HH:MM:SS']
 // 限定只看这段时间的 raw → 单独研究某一卡片，不污染 UI
 // 提交前必须设回 null
 const DEV_TIME_RANGE: [string, string] | null = null
+const FAST_APP_SWITCH_WINDOW_MS = 60_000
 // HH:MM:SS → 当天毫秒（用 items 中任意一条的本地日期作为基准日）
 function hhmmssToMs(hhmmss: string, items: TorrentCapture[]): number {
   if (items.length === 0) return 0
@@ -128,6 +157,140 @@ function hhmmssToMs(hhmmss: string, items: TorrentCapture[]): number {
   const [h, m, s] = hhmmss.split(':').map(Number)
   ref.setHours(h, m, s, 0)
   return ref.getTime()
+}
+
+function localDayBounds(date: Date): { startMs: number; endMs: number } {
+  const d = new Date(date)
+  d.setHours(0, 0, 0, 0)
+  const startMs = d.getTime()
+  return { startMs, endMs: startMs + 24 * 60 * 60 * 1000 }
+}
+
+function fmtShortDuration(ms: number): string {
+  if (ms < 60_000) return '<1 分'
+  const mins = Math.max(1, Math.round(ms / 60_000))
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  if (h > 0 && m > 0) return `${h}小时${m}分`
+  if (h > 0) return `${h}小时`
+  return `${m}分`
+}
+
+function compactWindowTitles(events: WindowEvent[]): string[] {
+  const out: string[] = []
+  for (const ev of events) {
+    const label = ev.appLabel || ev.packageName
+    const title = ev.windowTitle?.trim()
+    if (!title || title === label || title === ev.packageName) continue
+    if (out[out.length - 1] !== title) out.push(title)
+  }
+  return out
+}
+
+function buildAppMonitorRuns(events: WindowEvent[], segmentEndMs: number): AppMonitorRun[] {
+  const sorted = [...events].sort((a, b) => a.eventTimeMs - b.eventTimeMs || a.rowId - b.rowId)
+  const runs: AppMonitorRun[] = []
+  let currentEvents: WindowEvent[] = []
+  const flush = (nextStartMs?: number) => {
+    if (currentEvents.length === 0) return
+    const first = currentEvents[0]
+    const last = currentEvents[currentEvents.length - 1]
+    const endMs = Math.max(last.eventTimeMs, Math.min(nextStartMs ?? segmentEndMs, segmentEndMs))
+    runs.push({
+      key: `app-run-${first.rowId}-${last.rowId}`,
+      packageName: first.packageName,
+      appLabel: first.appLabel || first.packageName,
+      startMs: first.eventTimeMs,
+      endMs,
+      eventCount: currentEvents.length,
+      titles: compactWindowTitles(currentEvents),
+    })
+    currentEvents = []
+  }
+  for (const ev of sorted) {
+    const last = currentEvents[currentEvents.length - 1]
+    if (!last || last.packageName === ev.packageName) {
+      currentEvents.push(ev)
+    } else {
+      flush(ev.eventTimeMs)
+      currentEvents.push(ev)
+    }
+  }
+  flush()
+  return runs
+}
+
+function uniqStrings(values: string[]): string[] {
+  const out: string[] = []
+  for (const value of values) {
+    if (!value || out.includes(value)) continue
+    out.push(value)
+  }
+  return out
+}
+
+function makeAppSwitch(group: AppMonitorRun[]): AppMonitorSwitch {
+  const first = group[0]
+  const last = group[group.length - 1]
+  return {
+    key: `app-switch-${first.key}-${last.key}`,
+    startMs: first.startMs,
+    endMs: last.endMs,
+    runs: group,
+    packageNames: uniqStrings(group.map((r) => r.packageName)),
+    labels: uniqStrings(group.map((r) => r.appLabel || r.packageName)),
+    eventCount: group.reduce((sum, r) => sum + r.eventCount, 0),
+  }
+}
+
+function buildAppMonitorRows(runs: AppMonitorRun[], powerEvents: PowerEvent[]): AppMonitorRow[] {
+  const appRows: AppMonitorRow[] = []
+  let i = 0
+  while (i < runs.length) {
+    const group = [runs[i]]
+    let j = i + 1
+    while (j < runs.length && runs[j].endMs - group[0].startMs <= FAST_APP_SWITCH_WINDOW_MS) {
+      group.push(runs[j])
+      j++
+    }
+    const distinctPackages = new Set(group.map((r) => r.packageName))
+    if (group.length >= 2 && distinctPackages.size >= 2) {
+      const sw = makeAppSwitch(group)
+      appRows.push({ kind: 'switch', key: sw.key, ts: sw.startMs, sw })
+      i = j
+    } else {
+      const run = runs[i]
+      appRows.push({ kind: 'run', key: run.key, ts: run.startMs, run })
+      i++
+    }
+  }
+  const powerRows: AppMonitorRow[] = powerEvents
+    .filter((event) => event.event !== 'boot' && event.event !== 'shutdown')
+    .map((event) => ({ kind: 'power', key: `power-${event.rowId}`, ts: event.eventTimeMs, event }))
+  return [...appRows, ...powerRows].sort((a, b) => a.ts - b.ts)
+}
+
+function powerEventLabel(event: string): string {
+  if (event === 'screen_on') return '屏幕亮起'
+  if (event === 'screen_off') return '屏幕熄灭'
+  if (event === 'unlocked') return '解锁手机'
+  if (event === 'service_started') return '感知服务启动'
+  return event
+}
+
+function mergeByRowId<T extends { rowId: number; eventTimeMs: number }>(prev: T[], next: T[]): T[] {
+  if (prev.length === 0) return [...next].sort((a, b) => a.eventTimeMs - b.eventTimeMs || a.rowId - b.rowId)
+  if (next.length === 0) return prev
+  const map = new Map<number, T>()
+  for (const item of prev) map.set(item.rowId, item)
+  for (const item of next) map.set(item.rowId, item)
+  return Array.from(map.values()).sort((a, b) => a.eventTimeMs - b.eventTimeMs || a.rowId - b.rowId)
+}
+
+function maxEventTime<T extends { eventTimeMs: number }>(items: T[]): number {
+  let max = 0
+  for (const item of items) if (item.eventTimeMs > max) max = item.eventTimeMs
+  return max
 }
 
 export type TorrentScreenDevData = {
@@ -139,6 +302,7 @@ export type TorrentScreenDevData = {
 export type TorrentScreenDevSource = {
   pollMs?: number
   load: () => Promise<TorrentScreenDevData>
+  loadAppMonitor?: (startMs: number, endMs: number) => Promise<{ events: WindowEvent[]; powerEvents: PowerEvent[] }>
   clear?: () => Promise<void>
   clearLabel?: string
   openAccessibilitySettings?: () => void
@@ -149,7 +313,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   const [a11yOn, setA11yOn] = useState(false)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
-  const [viewMode, setViewMode] = useState<ViewMode>('feed')
+  const [viewMode, setViewMode] = useState<ViewMode>('monitor')
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc')
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null)
   const [highlightKey, setHighlightKey] = useState<string | null>(null)
@@ -158,16 +322,30 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   const [a11yPromptOpen, setA11yPromptOpen] = useState(false)
   const [appIconCache, setAppIconCache] = useState<Record<string, string>>({})
   const [calendarRangesByDay, setCalendarRangesByDay] = useState<Record<string, DayRangeColored[]>>({})
+  const [monitorEvents, setMonitorEvents] = useState<WindowEvent[]>([])
+  const [monitorPowerEvents, setMonitorPowerEvents] = useState<PowerEvent[]>([])
+  const [monitorLoading, setMonitorLoading] = useState(false)
+  const [monitorRefreshing, setMonitorRefreshing] = useState(false)
   const liveRef = useRef(true)
   const a11yPromptShownRef = useRef(false)
+  const monitorEventsRef = useRef<WindowEvent[]>([])
+  const monitorPowerEventsRef = useRef<PowerEvent[]>([])
+  const prevViewModeRef = useRef<ViewMode>('monitor')
 
+  const selectedDayBounds = useMemo(() => localDayBounds(selectedDate), [selectedDate])
   const visibleItems = useMemo(
     () => items.filter((it) => isSameDay(new Date(it.eventTimeMs), selectedDate)),
     [items, selectedDate],
   )
-  const visiblePackageKey = useMemo(() => {
-    return Array.from(new Set(visibleItems.map((it) => it.packageName).filter(Boolean))).sort().join('|')
-  }, [visibleItems])
+  const iconPackageKey = useMemo(() => {
+    return Array.from(new Set([
+      ...visibleItems.map((it) => it.packageName).filter(Boolean),
+      ...monitorEvents.map((it) => it.packageName).filter(Boolean),
+    ])).sort().join('|')
+  }, [visibleItems, monitorEvents])
+
+  useEffect(() => { monitorEventsRef.current = monitorEvents }, [monitorEvents])
+  useEffect(() => { monitorPowerEventsRef.current = monitorPowerEvents }, [monitorPowerEvents])
 
   // 跨视图跳转：从动作行点 → 切到 feed 跳到对应卡片；从卡头点 → 切到 action 跳到对应行
   const onCrossJump = useCallback<CrossJump>((targetVm, ts, preferKind) => {
@@ -204,6 +382,46 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
     }
   }, [devSource])
 
+  const refreshAppMonitor = useCallback(async (mode: 'full' | 'incremental' = 'full') => {
+    const prevEvents = monitorEventsRef.current
+    const prevPowerEvents = monitorPowerEventsRef.current
+    const hasExisting = prevEvents.length > 0 || prevPowerEvents.length > 0
+    if (mode === 'full' || !hasExisting) setMonitorLoading(true)
+    try {
+      const now = Date.now()
+      const endMs = Math.min(selectedDayBounds.endMs, now)
+      const latestSeen = Math.max(maxEventTime(prevEvents), maxEventTime(prevPowerEvents))
+      const queryStartMs = mode === 'incremental' && hasExisting
+        ? Math.max(selectedDayBounds.startMs, latestSeen - 1000)
+        : selectedDayBounds.startMs
+      const loaded = devSource?.loadAppMonitor
+        ? await devSource.loadAppMonitor(queryStartMs, selectedDayBounds.endMs)
+        : await Promise.all([
+            getWindowEventsInRange(queryStartMs, selectedDayBounds.endMs, 5000),
+            getPowerEventsInRange(queryStartMs, selectedDayBounds.endMs, 2000),
+          ]).then(([events, powerEvents]) => ({ events, powerEvents }))
+      if (!liveRef.current) return
+      if (mode === 'incremental' && hasExisting) {
+        setMonitorEvents(mergeByRowId(prevEvents, loaded.events).filter((e) => e.eventTimeMs <= endMs))
+        setMonitorPowerEvents(mergeByRowId(prevPowerEvents, loaded.powerEvents).filter((e) => e.eventTimeMs <= endMs))
+      } else {
+        setMonitorEvents(loaded.events.filter((e) => e.eventTimeMs <= endMs))
+        setMonitorPowerEvents(loaded.powerEvents.filter((e) => e.eventTimeMs <= endMs))
+      }
+    } catch (e) {
+      console.warn('[torrent] app monitor refresh failed', e)
+      if (liveRef.current) {
+        setMonitorEvents([])
+        setMonitorPowerEvents([])
+      }
+    } finally {
+      if (liveRef.current) {
+        setMonitorLoading(false)
+        setMonitorRefreshing(false)
+      }
+    }
+  }, [devSource, selectedDayBounds.startMs, selectedDayBounds.endMs])
+
   useEffect(() => {
     liveRef.current = true
     refresh()
@@ -214,6 +432,25 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
       if (id != null) clearInterval(id)
     }
   }, [refresh, devSource?.pollMs])
+
+  useEffect(() => {
+    void refreshAppMonitor()
+  }, [refreshAppMonitor])
+
+  useEffect(() => {
+    const prev = prevViewModeRef.current
+    prevViewModeRef.current = viewMode
+    if (prev !== viewMode && viewMode === 'monitor') void refreshAppMonitor('incremental')
+  }, [viewMode, refreshAppMonitor])
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return
+      void refresh()
+      void refreshAppMonitor('incremental')
+    })
+    return () => sub.remove()
+  }, [refresh, refreshAppMonitor])
 
   useEffect(() => {
     let cancelled = false
@@ -246,7 +483,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   }, [a11yOn, devSource, loading])
 
   useEffect(() => {
-    const packages = visiblePackageKey ? visiblePackageKey.split('|') : []
+    const packages = iconPackageKey ? iconPackageKey.split('|') : []
     const missing = packages.filter((pkg) => !(pkg in appIconCache))
     if (missing.length === 0) return
     let cancelled = false
@@ -261,7 +498,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
       })
       .catch((e) => console.warn('[torrent] load app icons failed', e))
     return () => { cancelled = true }
-  }, [visiblePackageKey, appIconCache])
+  }, [iconPackageKey, appIconCache])
 
   return (
     <View style={styles.root}>
@@ -272,61 +509,82 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
           onOpenCalendar={() => setCalendarOpen(true)}
         />
         <View style={styles.modeRow}>
-          {(['action', 'feed', 'raw'] as ViewMode[]).map((m) => (
+          {(['monitor', 'action', 'feed', 'raw'] as ViewMode[]).map((m) => (
             <Pressable
               key={m}
               onPress={() => setViewMode(m)}
               style={[styles.modeChip, viewMode === m && styles.modeChipOn]}
             >
-              <Text style={[styles.modeChipText, viewMode === m && styles.modeChipTextOn]}>
-                {m === 'feed' ? '还原卡片' : m === 'action' ? '还原动作' : '原始 SLS 数据'}
+              <Text
+                style={[styles.modeChipText, viewMode === m && styles.modeChipTextOn]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.85}
+              >
+                {m === 'monitor' ? '应用监控' : m === 'feed' ? '还原卡片' : m === 'action' ? '还原动作' : '原始 SLS 数据'}
               </Text>
             </Pressable>
           ))}
-          <Pressable
-            onPress={() => setSortOrder((s) => s === 'desc' ? 'asc' : 'desc')}
-            style={styles.sortBtn}
-          >
-            <Text style={styles.sortBtnText}>
-              {sortOrder === 'desc' ? '新→旧 ↓' : '旧→新 ↑'}
-            </Text>
-          </Pressable>
         </View>
       </View>
 
-      {loading ? (
-        <View style={styles.empty}>
-          <ActivityIndicator color={theme.accent} />
-        </View>
-      ) : visibleItems.length === 0 ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyHint}>
-            这一天还没抓到文本{'\n\n'}
-            打开哔哩哔哩 app，刷一刷首页{'\n'}
-            这边会自动出现你看到过的视频卡片
+      <View style={styles.contentArea}>
+        <Pressable
+          onPress={() => setSortOrder((s) => s === 'desc' ? 'asc' : 'desc')}
+          style={styles.sortFloat}
+        >
+          <Text style={styles.sortFloatText}>
+            {sortOrder === 'desc' ? '新→旧 ↓' : '旧→新 ↑'}
           </Text>
-        </View>
-      ) : (
-        <RenderList
-          items={visibleItems}
-          viewMode={viewMode}
-          sortOrder={sortOrder}
-          refreshing={refreshing}
-          onRefresh={() => {
-            setRefreshing(true)
-            refresh()
-          }}
-          jumpTarget={jumpTarget}
-          onJumpDone={(targetKey) => {
-            setJumpTarget(null)
-            if (targetKey) onJumpHighlight(targetKey)
-          }}
-          onCrossJump={onCrossJump}
-          highlightKey={highlightKey}
-          appIconCache={appIconCache}
-          searchText={searchText}
-        />
-      )}
+        </Pressable>
+        {viewMode === 'monitor' ? (
+          <AppMonitorView
+            events={monitorEvents}
+            powerEvents={monitorPowerEvents}
+            loading={monitorLoading}
+            refreshing={monitorRefreshing}
+            onRefresh={() => {
+              setMonitorRefreshing(true)
+              refreshAppMonitor()
+            }}
+            appIconCache={appIconCache}
+            rangeEndMs={Math.min(selectedDayBounds.endMs, Date.now())}
+            sortOrder={sortOrder}
+          />
+        ) : loading ? (
+          <View style={styles.empty}>
+            <ActivityIndicator color={theme.accent} />
+          </View>
+        ) : visibleItems.length === 0 ? (
+          <View style={styles.empty}>
+            <Text style={styles.emptyHint}>
+              这一天还没抓到文本{'\n\n'}
+              打开哔哩哔哩 app，刷一刷首页{'\n'}
+              这边会自动出现你看到过的视频卡片
+            </Text>
+          </View>
+        ) : (
+          <RenderList
+            items={visibleItems}
+            viewMode={viewMode}
+            sortOrder={sortOrder}
+            refreshing={refreshing}
+            onRefresh={() => {
+              setRefreshing(true)
+              refresh()
+            }}
+            jumpTarget={jumpTarget}
+            onJumpDone={(targetKey) => {
+              setJumpTarget(null)
+              if (targetKey) onJumpHighlight(targetKey)
+            }}
+            onCrossJump={onCrossJump}
+            highlightKey={highlightKey}
+            appIconCache={appIconCache}
+            searchText={searchText}
+          />
+        )}
+      </View>
       <CalendarPopover
         open={calendarOpen}
         selectedDate={selectedDate}
@@ -407,6 +665,168 @@ function itemSearchText(it: ListItem): string {
   const acc: string[] = []
   collectStrings(it, acc)
   return acc.join(' ').toLowerCase()
+}
+
+function AppMonitorView({
+  events,
+  powerEvents,
+  loading,
+  refreshing,
+  onRefresh,
+  appIconCache,
+  rangeEndMs,
+  sortOrder,
+}: {
+  events: WindowEvent[]
+  powerEvents: PowerEvent[]
+  loading: boolean
+  refreshing: boolean
+  onRefresh: () => void
+  appIconCache: Record<string, string>
+  rangeEndMs: number
+  sortOrder: SortOrder
+}) {
+  const runs = useMemo(() => buildAppMonitorRuns(events, rangeEndMs), [events, rangeEndMs])
+  const rows = useMemo(() => {
+    const base = buildAppMonitorRows(runs, powerEvents)
+    return sortOrder === 'asc' ? base : [...base].reverse()
+  }, [runs, powerEvents, sortOrder])
+  const switchCount = rows.filter((row) => row.kind === 'switch').length
+  const [expandedSwitchKeys, setExpandedSwitchKeys] = useState<Set<string>>(() => new Set())
+  const toggleSwitchExpanded = (key: string) => {
+    setExpandedSwitchKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  if (loading && rows.length === 0) {
+    return (
+      <View style={styles.empty}>
+        <ActivityIndicator color={theme.accent} />
+      </View>
+    )
+  }
+
+  return (
+    <ScrollView
+      style={styles.monitorList}
+      contentContainerStyle={styles.monitorContent}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+    >
+      <View style={styles.monitorSummary}>
+        <Text style={styles.monitorTitle}>应用监控</Text>
+        <Text style={styles.monitorMeta}>
+          {runs.length} 段应用 · {events.length} 条窗口切换 · {powerEvents.length} 条屏幕事件
+          {switchCount > 0 ? ` · ${switchCount} 组快速切换` : ''}
+        </Text>
+      </View>
+      {rows.length === 0 ? (
+        <View style={styles.emptyInline}>
+          <Text style={styles.emptyHint}>
+            这一天还没有窗口切换记录{'\n\n'}
+            开启辅助功能后，切换 app、亮屏、解锁等事件会出现在这里
+          </Text>
+        </View>
+      ) : (
+        rows.map((row) => {
+          if (row.kind === 'power') {
+            const dim = row.event.event === 'screen_off'
+            return (
+              <View key={row.key} style={styles.monitorPowerRow}>
+                <Text style={styles.monitorTime}>{fmtTime(row.event.eventTimeMs).slice(0, 5)}</Text>
+                <View style={[styles.monitorPowerDot, dim && styles.monitorPowerDotDim]} />
+                <Text style={[styles.monitorPowerText, dim && { color: theme.inkSoft }]}>
+                  {powerEventLabel(row.event.event)}
+                </Text>
+              </View>
+            )
+          }
+          if (row.kind === 'switch') {
+            const sw = row.sw
+            const expanded = expandedSwitchKeys.has(sw.key)
+            const shownRuns = expanded ? sw.runs : sw.runs.slice(0, 4)
+            const hiddenCount = Math.max(0, sw.runs.length - shownRuns.length)
+            const appTitle = sw.labels.join(' → ')
+            return (
+              <View key={row.key} style={[styles.monitorRunRow, styles.monitorSwitchRow]}>
+                <Text style={styles.monitorTime}>
+                  {fmtTime(sw.startMs).slice(0, 5)}
+                  {sw.endMs > sw.startMs ? `\n${fmtTime(sw.endMs).slice(0, 5)}` : ''}
+                </Text>
+                <View style={[styles.monitorSwitchIcons, expanded && styles.monitorSwitchIconsExpanded]}>
+                  {shownRuns.map((run, idx) => {
+                    const b64 = appIconCache[run.packageName]
+                    const initial = (run.appLabel || run.packageName || '?').slice(0, 1).toUpperCase()
+                    return b64 ? (
+                      <Image key={`${run.key}-${idx}`} style={styles.monitorSwitchIcon} source={{ uri: `data:image/png;base64,${b64}` }} />
+                    ) : (
+                      <View key={`${run.key}-${idx}`} style={styles.monitorSwitchIconFallback}>
+                        <Text style={styles.monitorSwitchIconText}>{initial}</Text>
+                      </View>
+                    )
+                  })}
+                  {hiddenCount > 0 && (
+                    <Pressable hitSlop={8} onPress={() => toggleSwitchExpanded(sw.key)} style={styles.monitorSwitchMore}>
+                      <Text style={styles.monitorSwitchMoreText}>+{hiddenCount}</Text>
+                    </Pressable>
+                  )}
+                  {expanded && sw.runs.length > 4 && (
+                    <Pressable hitSlop={8} onPress={() => toggleSwitchExpanded(sw.key)} style={styles.monitorSwitchMore}>
+                      <Text style={styles.monitorSwitchMoreText}>收</Text>
+                    </Pressable>
+                  )}
+                </View>
+                <View style={styles.monitorBody}>
+                  <View style={styles.monitorAppHead}>
+                    <Text style={styles.monitorApp} numberOfLines={expanded ? 2 : 1}>{appTitle}</Text>
+                    <Text style={styles.monitorDuration}>快速切换 · {sw.eventCount} 次</Text>
+                  </View>
+                  <Text style={styles.monitorWindowTitle} numberOfLines={expanded ? 3 : 1}>
+                    {sw.runs.length} 段应用在 1 分钟内切换
+                  </Text>
+                  <Text style={styles.monitorPkg} numberOfLines={1}>{sw.packageNames.join(' / ')}</Text>
+                </View>
+              </View>
+            )
+          }
+          const run = row.run
+          const label = run.appLabel || run.packageName
+          const title = run.titles[run.titles.length - 1] ?? ''
+          const b64 = appIconCache[run.packageName]
+          const initial = (label || '?').slice(0, 1).toUpperCase()
+          return (
+            <View key={row.key} style={styles.monitorRunRow}>
+              <Text style={styles.monitorTime}>
+                {fmtTime(run.startMs).slice(0, 5)}
+                {run.endMs > run.startMs ? `\n${fmtTime(run.endMs).slice(0, 5)}` : ''}
+              </Text>
+              {b64 ? (
+                <Image style={styles.monitorIcon} source={{ uri: `data:image/png;base64,${b64}` }} />
+              ) : (
+                <View style={styles.monitorIconFallback}>
+                  <Text style={styles.monitorIconText}>{initial}</Text>
+                </View>
+              )}
+              <View style={styles.monitorBody}>
+                <View style={styles.monitorAppHead}>
+                  <Text style={styles.monitorApp} numberOfLines={1}>{label}</Text>
+                  <Text style={styles.monitorDuration}>
+                    {fmtShortDuration(run.endMs - run.startMs)}
+                    {run.eventCount > 1 ? ` · ${run.eventCount} 次` : ''}
+                  </Text>
+                </View>
+                {!!title && <Text style={styles.monitorWindowTitle} numberOfLines={1}>{title}</Text>}
+                <Text style={styles.monitorPkg} numberOfLines={1}>{run.packageName}</Text>
+              </View>
+            </View>
+          )
+        })
+      )}
+    </ScrollView>
+  )
 }
 
 function RenderList({
@@ -1279,8 +1699,9 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   openA11yText: { color: '#FFF', fontSize: 13, fontWeight: '600' },
-  modeRow: { flexDirection: 'row', gap: 6, marginTop: 2, paddingHorizontal: 18 },
+  modeRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2, paddingHorizontal: 18 },
   modeChip: {
+    flex: 1,
     paddingHorizontal: 12,
     paddingVertical: 5,
     borderRadius: 14,
@@ -1294,21 +1715,113 @@ const styles = StyleSheet.create({
   },
   modeChipText: { fontSize: 12, color: theme.inkSoft, fontWeight: '500' },
   modeChipTextOn: { color: '#FFF', fontWeight: '600' },
-  sortBtn: {
-    marginLeft: 'auto',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 12,
+  contentArea: { flex: 1, position: 'relative' },
+  sortFloat: {
+    position: 'absolute',
+    top: 8,
+    right: 14,
+    zIndex: 20,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: theme.lineSoft,
-    backgroundColor: theme.bg,
+    borderColor: alpha(theme.ink, 0.12),
+    backgroundColor: alpha(theme.surface, 0.92),
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
-  sortBtnText: { fontSize: 11, color: theme.inkSoft, fontWeight: '600' },
+  sortFloatText: { fontSize: 11, color: theme.inkSoft, fontWeight: '700' },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   emptyInline: { paddingTop: 60, alignItems: 'center', paddingHorizontal: 24 },
   emptyHint: { fontSize: 13, color: theme.inkSoft, textAlign: 'center', lineHeight: 22 },
   list: { flex: 1 },
   listContent: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 20 },
+  monitorList: { flex: 1 },
+  monitorContent: { paddingHorizontal: 14, paddingTop: 10, paddingBottom: 24 },
+  monitorSummary: {
+    backgroundColor: theme.surface,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.line,
+  },
+  monitorTitle: { fontSize: 15, fontWeight: '700', color: theme.ink },
+  monitorMeta: { fontSize: 11, color: theme.inkSoft, marginTop: 4 },
+  monitorRunRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: theme.surface,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.lineSoft,
+  },
+  monitorSwitchRow: {
+    backgroundColor: alpha(theme.accent, 0.05),
+    borderColor: alpha(theme.accent, 0.22),
+  },
+  monitorPowerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    marginBottom: 6,
+  },
+  monitorTime: {
+    width: 40,
+    fontSize: 11,
+    lineHeight: 15,
+    color: theme.inkSoft,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+  },
+  monitorIcon: { width: 30, height: 30, borderRadius: 7 },
+  monitorIconFallback: {
+    width: 30,
+    height: 30,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: alpha(theme.accent, 0.12),
+  },
+  monitorIconText: { fontSize: 13, fontWeight: '700', color: theme.accent },
+  monitorSwitchIcons: { width: 48, minHeight: 30, flexDirection: 'row', flexWrap: 'wrap', gap: 3, alignItems: 'center' },
+  monitorSwitchIconsExpanded: { width: 72 },
+  monitorSwitchIcon: { width: 21, height: 21, borderRadius: 5 },
+  monitorSwitchIconFallback: {
+    width: 21,
+    height: 21,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: alpha(theme.accent, 0.14),
+  },
+  monitorSwitchIconText: { fontSize: 10, fontWeight: '700', color: theme.accent },
+  monitorSwitchMore: {
+    width: 21,
+    height: 21,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: alpha(theme.ink, 0.08),
+  },
+  monitorSwitchMoreText: { fontSize: 9, fontWeight: '700', color: theme.inkSoft },
+  monitorBody: { flex: 1, minWidth: 0 },
+  monitorAppHead: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  monitorApp: { flex: 1, fontSize: 13, fontWeight: '700', color: theme.ink },
+  monitorDuration: { fontSize: 11, color: theme.inkSoft, fontVariant: ['tabular-nums'] },
+  monitorWindowTitle: { fontSize: 12, color: theme.inkSoft, marginTop: 2 },
+  monitorPkg: { fontSize: 10, color: theme.inkFaint, marginTop: 2 },
+  monitorPowerDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.accent },
+  monitorPowerDotDim: { backgroundColor: theme.inkFaint },
+  monitorPowerText: { fontSize: 12, color: theme.ink, fontWeight: '600' },
   // 主页快照大卡
   // 子卡片层级容器：缩进 + 左侧粗色连接线（视觉归属父 detail）
   childRow: {

@@ -571,6 +571,17 @@ function App() {
 
   const devSource = useMemo<TorrentScreenDevSource>(() => ({
     load: async () => capturesRef.current,
+    loadAppMonitor: async (startMs, endMs) => {
+      const qs = `startMs=${Math.round(startMs)}&endMs=${Math.round(endMs)}`
+      const [windowRes, powerRes] = await Promise.all([
+        fetch(`${API_BASE}/api/window-events?${qs}&limit=5000`, { cache: 'no-store' }).then((r) => r.json()),
+        fetch(`${API_BASE}/api/power-events?${qs}&limit=2000`, { cache: 'no-store' }).then((r) => r.json()),
+      ])
+      return {
+        events: windowRes.rows || [],
+        powerEvents: powerRes.rows || [],
+      }
+    },
     clear: async () => {},
     clearLabel: '刷新',
     openAccessibilitySettings: () => {},

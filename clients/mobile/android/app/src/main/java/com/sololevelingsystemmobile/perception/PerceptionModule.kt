@@ -351,9 +351,27 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
         putDouble("rowCount", s.rowCount.toDouble())
         putDouble("rawBytes", s.rawBytes.toDouble())
         putDouble("databaseBytes", s.databaseBytes.toDouble())
+        putInt("rawLimitMb", s.rawLimitMb)
       })
     } catch (e: Throwable) {
       promise.reject("TORRENT_STATS_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun setTorrentRawLimitMb(rawLimitMb: Double, promise: Promise) {
+    try {
+      val normalized = db.setTorrentRawLimitMb(rawLimitMb.toInt())
+      val pruned = db.pruneTorrentCapturesToRawLimit(normalized)
+      promise.resolve(Arguments.createMap().apply {
+        putInt("rawLimitMb", normalized)
+        putDouble("deletedRows", pruned.deletedRows.toDouble())
+        putInt("deletedDays", pruned.deletedDays)
+        putDouble("rawBytesBefore", pruned.rawBytesBefore.toDouble())
+        putDouble("rawBytesAfter", pruned.rawBytesAfter.toDouble())
+      })
+    } catch (e: Throwable) {
+      promise.reject("TORRENT_LIMIT_FAILED", e.message, e)
     }
   }
 

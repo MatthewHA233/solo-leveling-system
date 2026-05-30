@@ -77,6 +77,15 @@ export type TorrentStats = {
   rowCount: number
   rawBytes: number
   databaseBytes: number
+  rawLimitMb: number
+}
+
+export type TorrentRawLimitResult = {
+  rawLimitMb: number
+  deletedRows: number
+  deletedDays: number
+  rawBytesBefore: number
+  rawBytesAfter: number
 }
 
 interface PerceptionNative {
@@ -100,6 +109,7 @@ interface PerceptionNative {
   getTorrentCapturesInRange(startMs: number, endMs: number, limit: number): Promise<TorrentCapture[]>
   countTorrentCaptures(): Promise<number>
   getTorrentStats(): Promise<TorrentStats>
+  setTorrentRawLimitMb?(rawLimitMb: number): Promise<TorrentRawLimitResult>
   clearTorrentCaptures(): Promise<number>
 }
 
@@ -233,8 +243,28 @@ export async function countTorrentCaptures(): Promise<number> {
 }
 
 export async function getTorrentStats(): Promise<TorrentStats> {
-  if (!Native) return { rowCount: 0, rawBytes: 0, databaseBytes: 0 }
-  return Native.getTorrentStats()
+  if (!Native) return { rowCount: 0, rawBytes: 0, databaseBytes: 0, rawLimitMb: 256 }
+  const stats = await Native.getTorrentStats()
+  return {
+    ...stats,
+    rawLimitMb: Number.isFinite(stats.rawLimitMb) ? stats.rawLimitMb : 256,
+  }
+}
+
+export async function setTorrentRawLimitMb(rawLimitMb: number): Promise<TorrentRawLimitResult> {
+  if (!Native) {
+    return {
+      rawLimitMb,
+      deletedRows: 0,
+      deletedDays: 0,
+      rawBytesBefore: 0,
+      rawBytesAfter: 0,
+    }
+  }
+  if (typeof Native.setTorrentRawLimitMb !== 'function') {
+    throw new Error('当前安装包缺少洪流域 raw 上限接口，请安装新版 debug/release 包')
+  }
+  return Native.setTorrentRawLimitMb(rawLimitMb)
 }
 
 export async function clearTorrentCaptures(): Promise<number> {

@@ -152,6 +152,57 @@ async function queryCaptures(limit = DEFAULT_LIMIT) {
   return JSON.parse(stdout || '[]')
 }
 
+function isoFromMs(ms) {
+  const n = Number(ms)
+  if (!Number.isFinite(n) || n <= 0) return new Date(0).toISOString()
+  return new Date(n).toISOString()
+}
+
+async function queryWindowEvents(startMs, endMs, limit = 1000) {
+  try { await stat(DB_PATH) } catch { return [] }
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 1000, 5000))
+  const startIso = isoFromMs(startMs)
+  const endIso = isoFromMs(endMs)
+  const sql = `
+    select
+      id as rowId,
+      start_at as startAt,
+      coalesce(json_extract(data_json, '$.package_name'), '') as packageName,
+      coalesce(json_extract(data_json, '$.class_name'), '') as className,
+      coalesce(json_extract(data_json, '$.app_label'), '') as appLabel,
+      coalesce(json_extract(data_json, '$.window_title'), '') as windowTitle,
+      cast(coalesce(json_extract(data_json, '$.event_time_ms'), 0) as integer) as eventTimeMs
+    from perception_events_android
+    where bucket_id = 'sls-watcher-window_android'
+      and start_at >= '${startIso}' and start_at < '${endIso}'
+    order by id asc
+    limit ${safeLimit};
+  `
+  const { stdout } = await run('sqlite3', ['-json', DB_PATH, sql])
+  return JSON.parse(stdout || '[]')
+}
+
+async function queryPowerEvents(startMs, endMs, limit = 300) {
+  try { await stat(DB_PATH) } catch { return [] }
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 300, 2000))
+  const startIso = isoFromMs(startMs)
+  const endIso = isoFromMs(endMs)
+  const sql = `
+    select
+      id as rowId,
+      start_at as startAt,
+      coalesce(json_extract(data_json, '$.event'), '') as event,
+      cast(coalesce(json_extract(data_json, '$.event_time_ms'), 0) as integer) as eventTimeMs
+    from perception_events_android
+    where bucket_id = 'sls-watcher-power_android'
+      and start_at >= '${startIso}' and start_at < '${endIso}'
+    order by id asc
+    limit ${safeLimit};
+  `
+  const { stdout } = await run('sqlite3', ['-json', DB_PATH, sql])
+  return JSON.parse(stdout || '[]')
+}
+
 // 扫描 frames/<videoId>/，返回视频列表 + 每个视频的帧清单
 // 帧真实时刻由前端算：startRealTs + n / fps
 async function scanVideos() {
@@ -403,6 +454,24 @@ const server = createServer(async (req, res) => {
       await refreshDbStatsIfPresent()
       const limit = Number(url.searchParams.get('limit') || DEFAULT_LIMIT)
       const rows = await queryCaptures(limit)
+      sendJson(res, 200, { rows, status: { ...state, adbSerial, packageName: PACKAGE_NAME } })
+      return
+    }
+    if (url.pathname === '/api/window-events') {
+      await refreshDbStatsIfPresent()
+      const startMs = Number(url.searchParams.get('startMs') || 0)
+      const endMs = Number(url.searchParams.get('endMs') || Date.now())
+      const limit = Number(url.searchParams.get('limit') || 1000)
+      const rows = await queryWindowEvents(startMs, endMs, limit)
+      sendJson(res, 200, { rows, status: { ...state, adbSerial, packageName: PACKAGE_NAME } })
+      return
+    }
+    if (url.pathname === '/api/power-events') {
+      await refreshDbStatsIfPresent()
+      const startMs = Number(url.searchParams.get('startMs') || 0)
+      const endMs = Number(url.searchParams.get('endMs') || Date.now())
+      const limit = Number(url.searchParams.get('limit') || 300)
+      const rows = await queryPowerEvents(startMs, endMs, limit)
       sendJson(res, 200, { rows, status: { ...state, adbSerial, packageName: PACKAGE_NAME } })
       return
     }

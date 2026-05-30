@@ -22,6 +22,9 @@ import java.util.TimeZone
 class PerceptionDb(context: Context) :
   SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
 
+  private val appContext = context.applicationContext
+  @Volatile private var lastTorrentPruneCheckMs: Long = 0L
+
   override fun onConfigure(db: SQLiteDatabase) {
     super.onConfigure(db)
     // Android SQLite 默认外键不强制；perception_events_android.bucket_id 有
@@ -208,7 +211,7 @@ class PerceptionDb(context: Context) :
    */
   fun windowEventsInRange(startMs: Long, endMs: Long, limit: Int): List<WindowEventSnapshot> {
     val db = readableDatabase
-    val cap = limit.coerceIn(1, 500)
+    val cap = limit.coerceIn(1, 5000)
     val out = ArrayList<WindowEventSnapshot>()
     val startIso = isoFmt.format(Date(startMs))
     val endIso = isoFmt.format(Date(endMs))
@@ -227,14 +230,11 @@ class PerceptionDb(context: Context) :
         val raw = c.getString(2) ?: continue
         try {
           val obj = org.json.JSONObject(raw)
-          val pkg = obj.optString("package_name")
-          // 查询端兜底过滤：旧版本 Service 没过滤自身的脏数据这里也挡掉
-          if (pkg == "com.sololevelingsystemmobile") continue
           out.add(
             WindowEventSnapshot(
               rowId = rowId,
               startAt = startAt,
-              packageName = pkg,
+              packageName = obj.optString("package_name"),
               className = obj.optString("class_name"),
               appLabel = obj.optString("app_label"),
               windowTitle = obj.optString("window_title"),
@@ -249,7 +249,7 @@ class PerceptionDb(context: Context) :
     return out
   }
 
-  /** 写入电源 / 屏幕事件（screen_on / screen_off / unlocked / boot）。
+  /** 写入屏幕 / 解锁 / 感知服务事件（screen_on / screen_off / unlocked / service_started）。
    *  AUDIT-018: start_at/end_at 必须用真实 eventTimeMs 派生，不能用 nowIso()。
    *  否则异步 executor 排队、应用忙碌、跨过 span 结束边界时，真实落在 span
    *  内的事件因为写入时间在 span 外被 powerEventsInRange() 漏掉，影响"花了多久"。 */
@@ -268,6 +268,31 @@ class PerceptionDb(context: Context) :
     insertEvent(POWER_BUCKET_ID, isoFromTs, isoFromTs, payload)
   }
 
+  fun insertSelfWindowEvent(
+    packageName: String,
+    className: String,
+    appLabel: String,
+    windowTitle: String,
+    eventTimeMs: Long = System.currentTimeMillis(),
+  ) {
+    val isoFromTs = isoFmt.format(Date(eventTimeMs))
+    val payload = org.json.JSONObject().apply {
+      put("package_name", packageName)
+      put("class_name", className)
+      put("app_label", appLabel)
+      put("window_title", windowTitle)
+      put("event_time_ms", eventTimeMs)
+      put("source", "android_self_lifecycle")
+    }.toString()
+    ensureBucket(
+      id = WINDOW_BUCKET_ID,
+      kind = "window",
+      eventType = "window.state_changed",
+      source = "android_self_lifecycle",
+    )
+    insertEvent(WINDOW_BUCKET_ID, isoFromTs, isoFromTs, payload)
+  }
+
   data class PowerEventSnapshot(
     val rowId: Long,
     val startAt: String,
@@ -278,7 +303,7 @@ class PerceptionDb(context: Context) :
   /** 区间内电源事件，按时间正序。 */
   fun powerEventsInRange(startMs: Long, endMs: Long, limit: Int): List<PowerEventSnapshot> {
     val db = readableDatabase
-    val cap = limit.coerceIn(1, 500)
+    val cap = limit.coerceIn(1, 2000)
     val out = ArrayList<PowerEventSnapshot>()
     val startIso = isoFmt.format(Date(startMs))
     val endIso = isoFmt.format(Date(endMs))
@@ -336,16 +361,12 @@ class PerceptionDb(context: Context) :
   /** 读最近 N 条窗口切换事件，按 id 倒序（最新在前）。 */
   fun recentWindowEvents(limit: Int): List<WindowEventSnapshot> {
     val db = readableDatabase
-    val cap = limit.coerceIn(1, 200)
+    val cap = limit.coerceIn(1, 500)
     val out = ArrayList<WindowEventSnapshot>(cap)
-    // AUDIT-031：SQL 层先过滤旧版本写入的 SLS 自身窗口脏数据，让 LIMIT 计数正确
-    // （client 侧 continue 会让结果数 < 期望 cap）。跟 windowEventsInRange/purge
-    // 用的同一个 LIKE 模式保持一致
     db.rawQuery(
       """
       SELECT id, start_at, data_json FROM perception_events_android
       WHERE bucket_id = 'sls-watcher-window_android'
-        AND data_json NOT LIKE '%"package_name":"com.sololevelingsystemmobile"%'
       ORDER BY id DESC LIMIT ?
       """.trimIndent(),
       arrayOf(cap.toString()),
@@ -356,14 +377,11 @@ class PerceptionDb(context: Context) :
         val raw = c.getString(2) ?: continue
         try {
           val obj = org.json.JSONObject(raw)
-          val pkg = obj.optString("package_name")
-          // 二次兜底：极少数情况 LIKE 没匹配（json 转义边界）
-          if (pkg == "com.sololevelingsystemmobile") continue
           out.add(
             WindowEventSnapshot(
               rowId = rowId,
               startAt = startAt,
-              packageName = pkg,
+              packageName = obj.optString("package_name"),
               className = obj.optString("class_name"),
               appLabel = obj.optString("app_label"),
               windowTitle = obj.optString("window_title"),
@@ -445,6 +463,7 @@ class PerceptionDb(context: Context) :
       put("source_class", sourceClass)
     }
     db.insertOrThrow("torrent_capture_android", null, cv)
+    maybePruneTorrentCaptures(eventTimeMs)
     return true
   }
 
@@ -519,6 +538,7 @@ class PerceptionDb(context: Context) :
     val rowCount: Long,
     val rawBytes: Long,
     val databaseBytes: Long,
+    val rawLimitMb: Int,
   )
 
   fun torrentStorageStats(): TorrentStorageStats {
@@ -546,7 +566,131 @@ class PerceptionDb(context: Context) :
     } catch (_: Throwable) {
       0L
     }
-    return TorrentStorageStats(rowCount, rawBytes, databaseBytes)
+    return TorrentStorageStats(rowCount, rawBytes, databaseBytes, torrentRawLimitMb())
+  }
+
+  data class TorrentPruneResult(
+    val deletedRows: Long,
+    val deletedDays: Int,
+    val rawBytesBefore: Long,
+    val rawBytesAfter: Long,
+  )
+
+  private data class TorrentDayUsage(
+    val dayKey: String,
+    val rowCount: Long,
+    val rawBytes: Long,
+  )
+
+  fun torrentRawLimitMb(): Int {
+    return prefs().getInt(PREF_TORRENT_RAW_LIMIT_MB, DEFAULT_TORRENT_RAW_LIMIT_MB)
+  }
+
+  fun setTorrentRawLimitMb(rawLimitMb: Int): Int {
+    val normalized = normalizeTorrentRawLimitMb(rawLimitMb)
+    prefs().edit().putInt(PREF_TORRENT_RAW_LIMIT_MB, normalized).apply()
+    return normalized
+  }
+
+  fun pruneTorrentCapturesToRawLimit(rawLimitMb: Int = torrentRawLimitMb()): TorrentPruneResult {
+    val limitMb = normalizeTorrentRawLimitMb(rawLimitMb)
+    if (limitMb <= 0) {
+      val before = torrentRawBytes()
+      return TorrentPruneResult(0L, 0, before, before)
+    }
+    val limitBytes = limitMb.toLong() * 1024L * 1024L
+    val beforeDays = torrentDayUsages()
+    val beforeBytes = beforeDays.sumOf { it.rawBytes }
+    if (beforeBytes <= limitBytes || beforeDays.size <= 1) {
+      return TorrentPruneResult(0L, 0, beforeBytes, beforeBytes)
+    }
+
+    var projectedBytes = beforeBytes
+    val deleteDays = ArrayList<String>()
+    // 保留最新一天：如果当天 raw 自己超过上限，也不要清掉用户正在记录的上下文。
+    for (i in 0 until beforeDays.size - 1) {
+      if (projectedBytes <= limitBytes) break
+      val d = beforeDays[i]
+      deleteDays.add(d.dayKey)
+      projectedBytes -= d.rawBytes
+    }
+    if (deleteDays.isEmpty()) return TorrentPruneResult(0L, 0, beforeBytes, beforeBytes)
+
+    val db = writableDatabase
+    var deletedRows = 0L
+    db.beginTransaction()
+    try {
+      for (day in deleteDays) {
+        deletedRows += db.delete(
+          "torrent_capture_android",
+          "date(event_time_ms / 1000, 'unixepoch', 'localtime') = ?",
+          arrayOf(day),
+        ).toLong()
+      }
+      db.setTransactionSuccessful()
+    } finally {
+      db.endTransaction()
+    }
+    try {
+      db.execSQL("VACUUM")
+    } catch (_: Throwable) {
+      // 删除已经完成；VACUUM 失败只影响文件回收，不影响上限语义。
+    }
+    val afterBytes = torrentRawBytes()
+    return TorrentPruneResult(deletedRows, deleteDays.size, beforeBytes, afterBytes)
+  }
+
+  private fun maybePruneTorrentCaptures(nowMs: Long) {
+    val limitMb = torrentRawLimitMb()
+    if (limitMb <= 0) return
+    if (nowMs - lastTorrentPruneCheckMs < TORRENT_PRUNE_CHECK_INTERVAL_MS) return
+    lastTorrentPruneCheckMs = nowMs
+    try {
+      pruneTorrentCapturesToRawLimit(limitMb)
+    } catch (_: Throwable) {
+      // a11y 写入路径不能因为清理失败中断。
+    }
+  }
+
+  private fun prefs() = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+  private fun normalizeTorrentRawLimitMb(rawLimitMb: Int): Int {
+    if (rawLimitMb <= 0) return 0
+    return rawLimitMb.coerceIn(MIN_TORRENT_RAW_LIMIT_MB, MAX_TORRENT_RAW_LIMIT_MB)
+  }
+
+  private fun torrentRawBytes(): Long = torrentDayUsages().sumOf { it.rawBytes }
+
+  private fun torrentDayUsages(): List<TorrentDayUsage> {
+    val db = readableDatabase
+    val out = ArrayList<TorrentDayUsage>()
+    db.rawQuery(
+      """
+      SELECT date(event_time_ms / 1000, 'unixepoch', 'localtime') AS day_key,
+        COUNT(*),
+        COALESCE(SUM(
+          COALESCE(LENGTH(CAST(package_name AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(window_class AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(capture_type AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(text AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(text_hash AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(source_class AS BLOB)), 0)
+        ), 0) AS raw_bytes
+      FROM torrent_capture_android
+      GROUP BY day_key
+      ORDER BY MIN(event_time_ms) ASC
+      """.trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        out.add(TorrentDayUsage(
+          dayKey = c.getString(0),
+          rowCount = c.getLong(1),
+          rawBytes = c.getLong(2),
+        ))
+      }
+    }
+    return out
   }
 
   /** 清空所有 raw 文本捕获 */
@@ -566,6 +710,13 @@ class PerceptionDb(context: Context) :
     const val DEDUP_WINDOW_MS = 5 * 60 * 1000L  // 5 分钟去重窗
     private const val DB_NAME = "perception.db"
     private const val DB_VERSION = 3
+    private const val PREFS_NAME = "sls_perception"
+    private const val PREF_TORRENT_RAW_LIMIT_MB = "torrent_raw_limit_mb"
+    private const val DEFAULT_TORRENT_RAW_LIMIT_MB = 256
+    private const val MIN_TORRENT_RAW_LIMIT_MB = 16
+    private const val MAX_TORRENT_RAW_LIMIT_MB = 4096
+    private const val TORRENT_PRUNE_CHECK_INTERVAL_MS = 60_000L
+    private const val WINDOW_BUCKET_ID = "sls-watcher-window_android"
     private const val POWER_BUCKET_ID = "sls-watcher-power_android"
 
     private val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {

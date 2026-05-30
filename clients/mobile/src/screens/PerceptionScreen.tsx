@@ -56,6 +56,7 @@ import {
   openUsageAccessSettings,
   pingPerception,
   resetClickCounts,
+  setTorrentRawLimitMb,
   type ClickCountSnapshot,
   type CollectUsageResult,
   type DbStats,
@@ -112,6 +113,9 @@ export default function PerceptionScreen() {
   const [confirmTorrentClearOpen, setConfirmTorrentClearOpen] = useState(false)
   const [clearingTorrent, setClearingTorrent] = useState(false)
   const [torrentClearMsg, setTorrentClearMsg] = useState('')
+  const [torrentRawLimitInput, setTorrentRawLimitInput] = useState('256')
+  const [savingTorrentRawLimit, setSavingTorrentRawLimit] = useState(false)
+  const [torrentRawLimitMsg, setTorrentRawLimitMsg] = useState('')
 
   useEffect(() => {
     void runPing()
@@ -359,12 +363,39 @@ export default function PerceptionScreen() {
     setTorrentStatsLoading(true)
     setTorrentStatsError(null)
     try {
-      setTorrentStats(await getTorrentStats())
+      const stats = await getTorrentStats()
+      setTorrentStats(stats)
+      setTorrentRawLimitInput(String(Number.isFinite(stats.rawLimitMb) ? stats.rawLimitMb : 256))
     } catch (e: any) {
       setTorrentStatsError(e?.message ?? String(e))
       setTorrentStats(null)
     } finally {
       setTorrentStatsLoading(false)
+    }
+  }
+
+  async function saveTorrentRawLimit() {
+    if (savingTorrentRawLimit) return
+    const raw = torrentRawLimitInput.trim()
+    const parsed = raw.length > 0 ? Math.floor(Number(raw)) : NaN
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      setTorrentRawLimitMsg('请输入 0 或正整数 MB；0 表示不限制。')
+      return
+    }
+    setSavingTorrentRawLimit(true)
+    setTorrentRawLimitMsg('')
+    try {
+      const r = await setTorrentRawLimitMb(parsed)
+      setTorrentRawLimitInput(String(r.rawLimitMb))
+      const pruned = r.deletedRows > 0
+        ? `；已按整天删除 ${r.deletedDays} 天 / ${r.deletedRows} 条，raw ${fmtBytes(r.rawBytesBefore)} → ${fmtBytes(r.rawBytesAfter)}`
+        : ''
+      setTorrentRawLimitMsg(`已保存上限：${r.rawLimitMb === 0 ? '不限制' : `${r.rawLimitMb} MB`}${pruned}`)
+      await Promise.all([refreshTorrentStats(), refreshDb()])
+    } catch (e: any) {
+      setTorrentRawLimitMsg(`保存失败: ${e?.message ?? String(e)}`)
+    } finally {
+      setSavingTorrentRawLimit(false)
     }
   }
 
@@ -743,9 +774,39 @@ export default function PerceptionScreen() {
             <Text style={styles.cardSub}>
               perception.db 文件 {fmtBytes(torrentStats.databaseBytes)}
             </Text>
+            <Text style={styles.cardSub}>
+              raw 上限 {torrentStats.rawLimitMb === 0 ? '不限制' : `${torrentStats.rawLimitMb} MB`}；超过后按本地日期整天删除最早 raw，并保留最新一天
+            </Text>
           </>
         ) : (
           <Text style={styles.cardValue}>—</Text>
+        )}
+        <View style={styles.limitRow}>
+          <TextInput
+            value={torrentRawLimitInput}
+            onChangeText={setTorrentRawLimitInput}
+            keyboardType="number-pad"
+            placeholder="256"
+            placeholderTextColor={theme.inkSoft}
+            editable={!savingTorrentRawLimit}
+            style={styles.limitInput}
+          />
+          <Text style={styles.limitUnit}>MB</Text>
+          <Pressable
+            style={[styles.btn, styles.btnGhost, savingTorrentRawLimit && styles.btnDisabled]}
+            onPress={() => void saveTorrentRawLimit()}
+            disabled={savingTorrentRawLimit}
+          >
+            <Text style={[styles.btnText, styles.btnGhostText]}>
+              {savingTorrentRawLimit ? '保存中…' : '保存上限'}
+            </Text>
+          </Pressable>
+        </View>
+        <Text style={styles.cardSub}>填 0 表示不限制；有效范围 16-4096 MB，默认 256 MB。</Text>
+        {!!torrentRawLimitMsg && (
+          <Text style={[styles.cardSub, { color: torrentRawLimitMsg.startsWith('保存失败') || torrentRawLimitMsg.startsWith('请输入') ? theme.danger : theme.inkSoft }]}>
+            {torrentRawLimitMsg}
+          </Text>
         )}
         {!!torrentClearMsg && (
           <Text style={[styles.cardSub, { color: torrentClearMsg.startsWith('清空失败') ? theme.danger : theme.inkSoft }]}>
@@ -1029,6 +1090,27 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: theme.inkSoft,
     marginTop: 4,
+  },
+  limitRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+  },
+  limitInput: {
+    width: 88,
+    borderWidth: 1,
+    borderColor: theme.line,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: theme.ink,
+    backgroundColor: '#fff',
+    fontSize: 13,
+  },
+  limitUnit: {
+    fontSize: 12,
+    color: theme.inkSoft,
   },
   btnRow: {
     flexDirection: 'row',
