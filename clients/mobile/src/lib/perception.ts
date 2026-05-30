@@ -73,6 +73,12 @@ export type ClickCountSnapshot = {
   entries: ClickCountEntry[]
 }
 
+export type TorrentStats = {
+  rowCount: number
+  rawBytes: number
+  databaseBytes: number
+}
+
 interface PerceptionNative {
   ping(): Promise<PingResult>
   dbStats(): Promise<DbStats>
@@ -93,6 +99,7 @@ interface PerceptionNative {
   getRecentTorrentCaptures(limit: number): Promise<TorrentCapture[]>
   getTorrentCapturesInRange(startMs: number, endMs: number, limit: number): Promise<TorrentCapture[]>
   countTorrentCaptures(): Promise<number>
+  getTorrentStats(): Promise<TorrentStats>
   clearTorrentCaptures(): Promise<number>
 }
 
@@ -223,6 +230,11 @@ export async function getTorrentCapturesInRange(
 export async function countTorrentCaptures(): Promise<number> {
   if (!Native) return 0
   return Native.countTorrentCaptures()
+}
+
+export async function getTorrentStats(): Promise<TorrentStats> {
+  if (!Native) return { rowCount: 0, rawBytes: 0, databaseBytes: 0 }
+  return Native.getTorrentStats()
 }
 
 export async function clearTorrentCaptures(): Promise<number> {

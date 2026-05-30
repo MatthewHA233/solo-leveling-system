@@ -344,6 +344,20 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun getTorrentStats(promise: Promise) {
+    try {
+      val s = db.torrentStorageStats()
+      promise.resolve(Arguments.createMap().apply {
+        putDouble("rowCount", s.rowCount.toDouble())
+        putDouble("rawBytes", s.rawBytes.toDouble())
+        putDouble("databaseBytes", s.databaseBytes.toDouble())
+      })
+    } catch (e: Throwable) {
+      promise.reject("TORRENT_STATS_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
   fun clearTorrentCaptures(promise: Promise) {
     try { promise.resolve(db.clearTorrentCaptures().toDouble()) }
     catch (e: Throwable) { promise.reject("TORRENT_CLEAR_FAILED", e.message, e) }

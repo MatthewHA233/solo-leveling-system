@@ -41,11 +41,13 @@ import {
   type LinkedDevice,
 } from '../lib/syncclient'
 import {
+  clearTorrentCaptures,
   collectUsageStats,
   fetchDbStats,
   getLatestUsageSummary,
   getClickCounts,
   getRecentWindowEvents,
+  getTorrentStats,
   hasUsageAccess,
   insertDbProbe,
   isAccessibilityEnabled,
@@ -57,6 +59,7 @@ import {
   type ClickCountSnapshot,
   type CollectUsageResult,
   type DbStats,
+  type TorrentStats,
   type UsageSummary,
   type WindowEvent,
 } from '../lib/perception'
@@ -103,6 +106,12 @@ export default function PerceptionScreen() {
   const [syncingId, setSyncingId] = useState<string | null>(null)
   const [windowEvents, setWindowEvents] = useState<WindowEvent[]>([])
   const [clicks, setClicks] = useState<ClickCountSnapshot>({ total: 0, entries: [] })
+  const [torrentStats, setTorrentStats] = useState<TorrentStats | null>(null)
+  const [torrentStatsLoading, setTorrentStatsLoading] = useState(false)
+  const [torrentStatsError, setTorrentStatsError] = useState<string | null>(null)
+  const [confirmTorrentClearOpen, setConfirmTorrentClearOpen] = useState(false)
+  const [clearingTorrent, setClearingTorrent] = useState(false)
+  const [torrentClearMsg, setTorrentClearMsg] = useState('')
 
   useEffect(() => {
     void runPing()
@@ -112,6 +121,7 @@ export default function PerceptionScreen() {
     void refreshA11y()
     void refreshWindowEvents()
     void refreshClicks()
+    void refreshTorrentStats()
     void refreshSoloDb()
     void runSelfImport()
     void autoStartServer()
@@ -343,6 +353,35 @@ export default function PerceptionScreen() {
   async function clearClicks() {
     await resetClickCounts()
     await refreshClicks()
+  }
+
+  async function refreshTorrentStats() {
+    setTorrentStatsLoading(true)
+    setTorrentStatsError(null)
+    try {
+      setTorrentStats(await getTorrentStats())
+    } catch (e: any) {
+      setTorrentStatsError(e?.message ?? String(e))
+      setTorrentStats(null)
+    } finally {
+      setTorrentStatsLoading(false)
+    }
+  }
+
+  async function doClearTorrentCaptures() {
+    if (clearingTorrent) return
+    setClearingTorrent(true)
+    setTorrentClearMsg('')
+    try {
+      const deleted = await clearTorrentCaptures()
+      setTorrentClearMsg(`已清空 ${deleted} 条洪流域 raw`)
+      setConfirmTorrentClearOpen(false)
+      await Promise.all([refreshTorrentStats(), refreshDb()])
+    } catch (e: any) {
+      setTorrentClearMsg(`清空失败: ${e?.message ?? String(e)}`)
+    } finally {
+      setClearingTorrent(false)
+    }
   }
 
   async function refreshA11y() {
@@ -691,6 +730,49 @@ export default function PerceptionScreen() {
       </View>
 
       <View style={styles.card}>
+        <Text style={styles.cardLabel}>洪流域 raw 文本</Text>
+        {torrentStatsLoading ? (
+          <Text style={styles.cardValue}>统计中…</Text>
+        ) : torrentStatsError ? (
+          <Text style={[styles.cardValue, { color: theme.danger }]}>{torrentStatsError}</Text>
+        ) : torrentStats ? (
+          <>
+            <Text style={styles.cardValue}>
+              {torrentStats.rowCount} 条 · raw 约 {fmtBytes(torrentStats.rawBytes)}
+            </Text>
+            <Text style={styles.cardSub}>
+              perception.db 文件 {fmtBytes(torrentStats.databaseBytes)}
+            </Text>
+          </>
+        ) : (
+          <Text style={styles.cardValue}>—</Text>
+        )}
+        {!!torrentClearMsg && (
+          <Text style={[styles.cardSub, { color: torrentClearMsg.startsWith('清空失败') ? theme.danger : theme.inkSoft }]}>
+            {torrentClearMsg}
+          </Text>
+        )}
+        <View style={styles.btnRow}>
+          <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshTorrentStats}>
+            <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
+          </Pressable>
+          <Pressable
+            style={[
+              styles.btn,
+              styles.btnDangerGhost,
+              (!torrentStats?.rowCount || clearingTorrent) && styles.btnDisabled,
+            ]}
+            onPress={() => setConfirmTorrentClearOpen(true)}
+            disabled={!torrentStats?.rowCount || clearingTorrent}
+          >
+            <Text style={[styles.btnText, styles.btnDangerText]}>
+              {clearingTorrent ? '清空中…' : '清空洪流域'}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.card}>
         <Text style={styles.cardLabel}>使用情况访问 (PACKAGE_USAGE_STATS)</Text>
         <Text style={styles.cardValue}>
           {usageGranted == null ? '检测中…' : usageGranted ? '已授权' : '未授权'}
@@ -840,6 +922,20 @@ export default function PerceptionScreen() {
         UI 渲染 Top Apps + 时长 + 最近使用时刻。
       </Text>
 
+      <ConfirmDialog
+        open={confirmTorrentClearOpen}
+        title="清空洪流域 raw 数据？"
+        body={
+          `将删除 ${torrentStats?.rowCount ?? 0} 条洪流域原始文本记录，约 ${fmtBytes(torrentStats?.rawBytes ?? 0)}。\n\n` +
+          '这不会影响昼夜表、同步数据或窗口感知历史。'
+        }
+        confirmText={clearingTorrent ? '清空中…' : '确认清空'}
+        cancelText="取消"
+        danger
+        onCancel={() => setConfirmTorrentClearOpen(false)}
+        onConfirm={() => void doClearTorrentCaptures()}
+      />
+
       {/* 更新确认对话框 —— AUDIT-021: forced 时无"稍后"且不能点背景关闭 */}
       <ConfirmDialog
         open={confirmUpdateOpen}
@@ -882,6 +978,19 @@ function fmtClock(ms: number): string {
   const hh = String(d.getHours()).padStart(2, '0')
   const mm = String(d.getMinutes()).padStart(2, '0')
   return `${hh}:${mm}`
+}
+
+function fmtBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let idx = 0
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024
+    idx++
+  }
+  const digits = idx === 0 ? 0 : value >= 10 ? 1 : 2
+  return `${value.toFixed(digits)} ${units[idx]}`
 }
 
 const styles = StyleSheet.create({
@@ -938,6 +1047,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.line,
   },
+  btnDangerGhost: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: theme.danger,
+  },
+  btnDisabled: { opacity: 0.35 },
   btnText: {
     color: '#FFFFFF',
     fontSize: 13,
@@ -945,6 +1060,9 @@ const styles = StyleSheet.create({
   },
   btnGhostText: {
     color: theme.ink,
+  },
+  btnDangerText: {
+    color: theme.danger,
   },
   note: {
     fontSize: 12,

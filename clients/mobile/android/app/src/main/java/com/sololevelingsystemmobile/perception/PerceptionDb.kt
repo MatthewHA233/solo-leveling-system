@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import java.io.File
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -514,10 +515,51 @@ class PerceptionDb(context: Context) :
     }
   }
 
+  data class TorrentStorageStats(
+    val rowCount: Long,
+    val rawBytes: Long,
+    val databaseBytes: Long,
+  )
+
+  fun torrentStorageStats(): TorrentStorageStats {
+    val db = readableDatabase
+    val (rowCount, rawBytes) = db.rawQuery(
+      """
+      SELECT COUNT(*),
+        COALESCE(SUM(
+          COALESCE(LENGTH(CAST(package_name AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(window_class AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(capture_type AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(text AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(text_hash AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(source_class AS BLOB)), 0)
+        ), 0)
+      FROM torrent_capture_android
+      """.trimIndent(),
+      null,
+    ).use { c ->
+      if (c.moveToFirst()) Pair(c.getLong(0), c.getLong(1)) else Pair(0L, 0L)
+    }
+    val databaseBytes = try {
+      val p = db.path
+      if (p.isNullOrBlank()) 0L else File(p).length()
+    } catch (_: Throwable) {
+      0L
+    }
+    return TorrentStorageStats(rowCount, rawBytes, databaseBytes)
+  }
+
   /** 清空所有 raw 文本捕获 */
   fun clearTorrentCaptures(): Int {
     val db = writableDatabase
-    return db.delete("torrent_capture_android", null, null)
+    val deleted = db.delete("torrent_capture_android", null, null)
+    // 清空是低频显式操作，顺手 VACUUM 回收 raw 文本占用的 DB 文件空间。
+    try {
+      db.execSQL("VACUUM")
+    } catch (_: Throwable) {
+      // 清空结果优先返回；VACUUM 失败只影响文件回收，不影响数据删除。
+    }
+    return deleted
   }
 
   companion object {

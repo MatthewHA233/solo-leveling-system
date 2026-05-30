@@ -2,8 +2,8 @@
 
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { createWriteStream } from 'node:fs'
-import { mkdir, rename, stat, writeFile } from 'node:fs/promises'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,9 +11,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const CACHE_DIR = path.join(__dirname, '.cache')
 const DB_PATH = path.join(CACHE_DIR, 'perception.db')
 const DB_TMP_PATH = path.join(CACHE_DIR, 'perception.db.tmp')
+// 帧根目录：frames/<videoId>/{meta.json, f%04d.jpg}，手动 ffmpeg 拆好放进去
+const FRAMES_ROOT = process.env.SLS_FRAMES_ROOT || path.join(__dirname, 'frames')
+// 工作台布局配置（对照栏列表 / 高度 / 搜索词），随 .cache 一起 gitignore
+const BENCH_CONFIG_PATH = path.join(CACHE_DIR, 'bench-config.json')
+// 镜像截图独立存文件，json 只存文件名引用 → 配置永远小巧
+const SNAPSHOTS_DIR = path.join(CACHE_DIR, 'snapshots')
+// AI 可读的对照数据库：把每个对照组拍平为「原始帧 + 前端快照 + 错误批注」自描述记录
+const COMPARISONS_PATH = path.join(CACHE_DIR, 'comparisons.json')
 
 const PORT = Number(process.env.SLS_MIRROR_API_PORT || process.env.SLS_MIRROR_PORT || 8767)
-const SYNC_INTERVAL_MS = Number(process.env.SLS_SYNC_INTERVAL_MS || 2000)
 const DEFAULT_LIMIT = Number(process.env.SLS_CAPTURE_LIMIT || 50000)
 const PACKAGE_NAME = process.env.SLS_ANDROID_PACKAGE || 'com.sololevelingsystemmobile'
 let adbSerial = process.env.SLS_ADB_SERIAL || ''
@@ -111,6 +118,19 @@ async function refreshDbStats() {
   state.maxEventTimeMs = Number(first.maxEventTimeMs || 0)
 }
 
+async function refreshDbStatsIfPresent() {
+  try {
+    await refreshDbStats()
+  } catch (e) {
+    if (e && e.code === 'ENOENT') {
+      state.rowCount = 0
+      state.minEventTimeMs = 0
+      state.maxEventTimeMs = 0
+      state.dbBytes = 0
+    }
+  }
+}
+
 async function queryCaptures(limit = DEFAULT_LIMIT) {
   await stat(DB_PATH)
   const safeLimit = Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 200000))
@@ -132,6 +152,230 @@ async function queryCaptures(limit = DEFAULT_LIMIT) {
   return JSON.parse(stdout || '[]')
 }
 
+// 扫描 frames/<videoId>/，返回视频列表 + 每个视频的帧清单
+// 帧真实时刻由前端算：startRealTs + n / fps
+async function scanVideos() {
+  const out = []
+  let dirents = []
+  try {
+    dirents = await readdir(FRAMES_ROOT, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const d of dirents) {
+    if (!d.isDirectory()) continue
+    const id = d.name
+    const dir = path.join(FRAMES_ROOT, id)
+    let files = []
+    try {
+      files = (await readdir(dir)).filter((f) => /\.(jpe?g|png)$/i.test(f))
+    } catch {
+      continue
+    }
+    if (files.length === 0) continue
+    let meta = {}
+    try {
+      meta = JSON.parse(await readFile(path.join(dir, 'meta.json'), 'utf8'))
+    } catch {}
+    const fps = Number(meta.fps) || 3
+    let startRealTs = meta.startRealTs || ''
+    if (!startRealTs) {
+      const m = id.match(/(\d{1,2})[-:](\d{2})[-:](\d{2})/)
+      if (m) startRealTs = `${m[1].padStart(2, '0')}:${m[2]}:${m[3]}`
+    }
+    const frames = files
+      .map((f) => {
+        const nm = f.match(/(\d+)/)
+        return { n: nm ? Number(nm[1]) : 0, file: f }
+      })
+      .sort((a, b) => a.n - b.n)
+    out.push({
+      id,
+      label: meta.label || id,
+      startRealTs,
+      fps,
+      frameCount: frames.length,
+      frames,
+    })
+  }
+  out.sort((a, b) => a.label.localeCompare(b.label))
+  return out
+}
+
+// 帧号 → 真实时刻（视频起始 + 帧序号/fps），与前端算法一致
+function frameRealTs(startRealTs, fps, n) {
+  if (!startRealTs) return ''
+  const [h, m, s] = startRealTs.split(':').map(Number)
+  const base = h * 3600 + m * 60 + s + Math.floor((n - 1) / (fps || 3))
+  const p = (x) => String(x).padStart(2, '0')
+  return `${p(Math.floor(base / 3600) % 24)}:${p(Math.floor(base / 60) % 60)}:${p(base % 60)}`
+}
+
+// 把 bench-config 与视频帧元数据 join，生成拍平的 AI 可读对照数据库
+async function buildComparisons(config) {
+  const videos = await scanVideos()
+  const byId = new Map(videos.map((v) => [v.id, v]))
+  const out = []
+  const pbv = config.panelsByVideo || {}
+  for (const videoId of Object.keys(pbv)) {
+    const v = byId.get(videoId)
+    const panels = pbv[videoId] || []
+    panels.forEach((p, i) => {
+      // 纯多选：frameIdxs 是数据源；旧数据无则迁移 frameIdx
+      const idxs = Array.isArray(p.frameIdxs) ? p.frameIdxs : (p.frameIdx != null ? [p.frameIdx] : [])
+      const originalFrames = v
+        ? idxs
+            .filter((fi) => fi >= 0 && fi < v.frames.length)
+            .map((fi) => {
+              const frame = v.frames[fi]
+              return {
+                n: frame.n,
+                file: frame.file,
+                path: `frames/${videoId}/${frame.file}`,
+                url: `/frames/${videoId}/${frame.file}`,
+                realTs: frameRealTs(v.startRealTs, v.fps, frame.n),
+                offsetS: Math.floor((frame.n - 1) / (v.fps || 3)),
+              }
+            })
+        : []
+      out.push({
+        videoId,
+        videoLabel: v ? v.label : videoId,
+        panelIndex: i + 1,
+        status: p.status || 'unmarked',
+        note: p.note || '',
+        frameCount: originalFrames.length,
+        originalFrames,
+        snapshots: (p.snapshots || []).map((s) => ({
+          file: typeof s.url === 'string' ? s.url.split('/').pop() : null,
+          path: typeof s.url === 'string' ? s.url.replace(/^\//, '') : null,
+          url: s.url || null,
+          resolved: s.id === p.resolvedSnapId, // 该快照是否为「验证已解决」镜像
+        })),
+      })
+    })
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    total: out.length,
+    errorCount: out.filter((c) => c.status === 'error').length,
+    comparisons: out,
+  }
+}
+
+async function serveFrame(res, pathname) {
+  const rel = decodeURIComponent(pathname.slice('/frames/'.length))
+  const filePath = path.normalize(path.join(FRAMES_ROOT, rel))
+  if (!filePath.startsWith(FRAMES_ROOT)) {
+    sendJson(res, 403, { error: 'forbidden' })
+    return
+  }
+  try {
+    const st = await stat(filePath)
+    if (!st.isFile()) throw new Error('not a file')
+    const ext = path.extname(filePath).toLowerCase()
+    const ct = ext === '.png' ? 'image/png' : 'image/jpeg'
+    res.writeHead(200, { 'content-type': ct, 'cache-control': 'public, max-age=3600' })
+    createReadStream(filePath).pipe(res)
+  } catch {
+    sendJson(res, 404, { error: 'frame not found' })
+  }
+}
+
+// 从录屏文件名解析起始时刻 + videoId 后缀：Record_2026-05-26-10-16-50_xxx → 10:16:50
+function parseStartTs(filename) {
+  const m = filename.match(/(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/)
+  if (m) return { startRealTs: `${m[4]}:${m[5]}:${m[6]}`, idSuffix: `${m[4]}-${m[5]}-${m[6]}` }
+  const t = filename.match(/(\d{2})[-:](\d{2})[-:](\d{2})/)
+  if (t) return { startRealTs: `${t[1]}:${t[2]}:${t[3]}`, idSuffix: `${t[1]}-${t[2]}-${t[3]}` }
+  return { startRealTs: '', idSuffix: String(Date.now()) }
+}
+
+// 接收上传的视频 → ffmpeg 拆帧到 frames/<videoId>/（长边 1280 / q12 / 3fps）
+async function extractVideo(req, res, filename) {
+  await mkdir(CACHE_DIR, { recursive: true })
+  const { startRealTs, idSuffix } = parseStartTs(filename)
+  const videoId = `v-${idSuffix}`
+  const tmp = path.join(CACHE_DIR, `upload-${Date.now()}.mp4`)
+  await new Promise((resolve, reject) => {
+    const ws = createWriteStream(tmp)
+    req.pipe(ws)
+    ws.on('finish', resolve)
+    ws.on('error', reject)
+    req.on('error', reject)
+  })
+  const outDir = path.join(FRAMES_ROOT, videoId)
+  await mkdir(outDir, { recursive: true })
+  // 重拆覆盖：先清旧帧
+  try {
+    for (const f of await readdir(outDir)) {
+      if (/\.(jpe?g|png)$/i.test(f)) await unlink(path.join(outDir, f))
+    }
+  } catch {}
+  try {
+    await run(process.env.SLS_FFMPEG || 'ffmpeg', [
+      '-y', '-i', tmp,
+      '-vf', "fps=3,scale='if(gt(a,1),1280,-2)':'if(gt(a,1),-2,1280)'",
+      '-q:v', '12',
+      path.join(outDir, 'f%04d.jpg'),
+    ])
+  } catch (e) {
+    try { await unlink(tmp) } catch {}
+    sendJson(res, 500, { error: `ffmpeg 失败：${e instanceof Error ? e.message : String(e)}` })
+    return
+  }
+  await writeFile(path.join(outDir, 'meta.json'), JSON.stringify({ label: filename, startRealTs, fps: 3 }, null, 2))
+  try { await unlink(tmp) } catch {}
+  const frameCount = (await readdir(outDir)).filter((f) => /\.jpe?g$/i.test(f)).length
+  sendJson(res, 200, { videoId, label: filename, startRealTs, frameCount })
+}
+
+// 接收截图二进制（image/jpeg）→ 存 snapshots/<id>.jpg → 返回引用 url
+async function saveSnapshot(req, res) {
+  await mkdir(SNAPSHOTS_DIR, { recursive: true })
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const file = `${id}.jpg`
+  const filePath = path.join(SNAPSHOTS_DIR, file)
+  try {
+    await new Promise((resolve, reject) => {
+      const ws = createWriteStream(filePath)
+      req.pipe(ws)
+      ws.on('finish', resolve)
+      ws.on('error', reject)
+      req.on('error', reject)
+    })
+    sendJson(res, 200, { id, file, url: `/snapshots/${file}` })
+  } catch (e) {
+    sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) })
+  }
+}
+
+async function serveSnapshot(res, pathname) {
+  const rel = decodeURIComponent(pathname.slice('/snapshots/'.length))
+  const filePath = path.normalize(path.join(SNAPSHOTS_DIR, rel))
+  if (!filePath.startsWith(SNAPSHOTS_DIR)) {
+    sendJson(res, 403, { error: 'forbidden' })
+    return
+  }
+  try {
+    const st = await stat(filePath)
+    if (!st.isFile()) throw new Error('not a file')
+    res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=31536000' })
+    createReadStream(filePath).pipe(res)
+  } catch {
+    sendJson(res, 404, { error: 'snapshot not found' })
+  }
+}
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    const chunks = []
+    req.on('data', (c) => chunks.push(c))
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', () => resolve(''))
+  })
+}
+
 function sendJson(res, statusCode, data) {
   const body = JSON.stringify(data)
   res.writeHead(statusCode, {
@@ -145,19 +389,78 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
   try {
     if (url.pathname === '/api/status') {
+      await refreshDbStatsIfPresent()
       sendJson(res, 200, {
         ...state,
         adbSerial,
         packageName: PACKAGE_NAME,
         port: PORT,
-        syncIntervalMs: SYNC_INTERVAL_MS,
+        syncMode: 'manual',
       })
       return
     }
     if (url.pathname === '/api/captures') {
+      await refreshDbStatsIfPresent()
       const limit = Number(url.searchParams.get('limit') || DEFAULT_LIMIT)
       const rows = await queryCaptures(limit)
       sendJson(res, 200, { rows, status: { ...state, adbSerial, packageName: PACKAGE_NAME } })
+      return
+    }
+    if (url.pathname === '/api/videos') {
+      const videos = await scanVideos()
+      sendJson(res, 200, { videos })
+      return
+    }
+    if (url.pathname === '/api/bench-config') {
+      if (req.method === 'GET') {
+        try {
+          const txt = await readFile(BENCH_CONFIG_PATH, 'utf8')
+          sendJson(res, 200, JSON.parse(txt))
+        } catch {
+          sendJson(res, 200, { panels: [] })
+        }
+        return
+      }
+      if (req.method === 'PUT') {
+        const body = await readBody(req)
+        try {
+          const data = JSON.parse(body || '{}')
+          await writeFile(BENCH_CONFIG_PATH, JSON.stringify(data, null, 2))
+          // 同步刷新 AI 可读对照数据库
+          try {
+            const cmp = await buildComparisons(data)
+            await writeFile(COMPARISONS_PATH, JSON.stringify(cmp, null, 2))
+          } catch {}
+          sendJson(res, 200, { ok: true })
+        } catch (e) {
+          sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) })
+        }
+        return
+      }
+    }
+    if (url.pathname.startsWith('/frames/')) {
+      await serveFrame(res, url.pathname)
+      return
+    }
+    if (url.pathname === '/api/comparisons' && req.method === 'GET') {
+      let config = { panelsByVideo: {} }
+      try { config = JSON.parse(await readFile(BENCH_CONFIG_PATH, 'utf8')) } catch {}
+      const cmp = await buildComparisons(config)
+      try { await writeFile(COMPARISONS_PATH, JSON.stringify(cmp, null, 2)) } catch {}
+      sendJson(res, 200, cmp)
+      return
+    }
+    if (url.pathname === '/api/snapshot' && req.method === 'POST') {
+      await saveSnapshot(req, res)
+      return
+    }
+    if (url.pathname.startsWith('/snapshots/')) {
+      await serveSnapshot(res, url.pathname)
+      return
+    }
+    if (url.pathname === '/api/extract' && req.method === 'POST') {
+      const filename = url.searchParams.get('filename') || 'video.mp4'
+      await extractVideo(req, res, filename)
       return
     }
     if (url.pathname === '/api/sync' && req.method === 'POST') {
@@ -173,12 +476,9 @@ const server = createServer(async (req, res) => {
 
 await mkdir(CACHE_DIR, { recursive: true })
 await writeFile(path.join(CACHE_DIR, '.gitignore'), '*\n!.gitignore\n')
-pullDb()
-setInterval(() => {
-  if (!state.syncing) pullDb()
-}, SYNC_INTERVAL_MS)
 
 server.listen(PORT, () => {
   console.log(`[sls-live-mirror] http://localhost:${PORT}/`)
-  console.log(`[sls-live-mirror] syncing ${PACKAGE_NAME} via adb ${adbSerial || '(auto)'}`)
+  console.log(`[sls-live-mirror] manual snapshot mode for ${PACKAGE_NAME} via adb ${adbSerial || '(auto)'}`)
+  console.log('[sls-live-mirror] no background DB sync; POST /api/sync pulls one snapshot')
 })

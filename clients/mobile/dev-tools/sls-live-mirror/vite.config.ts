@@ -14,13 +14,14 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: /^react-native$/, replacement: 'react-native-web' },
+      { find: /^react-native-svg$/, replacement: path.join(__dirname, 'src', 'react-native-svg.web.tsx') },
       { find: /^react$/, replacement: path.join(mobileRoot, 'node_modules/react') },
       { find: /^react\/jsx-runtime$/, replacement: path.join(mobileRoot, 'node_modules/react/jsx-runtime.js') },
     ],
     dedupe: ['react', 'react-dom', 'react-native-web'],
   },
   optimizeDeps: {
-    include: ['react', 'react-dom/client', 'react-native-web'],
+    include: ['react', 'react-dom/client', 'react-native-web', 'html2canvas'],
     exclude: ['react-native'],
   },
   define: {
@@ -35,6 +36,14 @@ export default defineConfig({
     },
     proxy: {
       '/api': {
+        target: 'http://localhost:8767',
+        changeOrigin: true,
+      },
+      '/frames': {
+        target: 'http://localhost:8767',
+        changeOrigin: true,
+      },
+      '/snapshots': {
         target: 'http://localhost:8767',
         changeOrigin: true,
       },

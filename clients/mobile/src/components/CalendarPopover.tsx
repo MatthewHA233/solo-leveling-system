@@ -18,11 +18,14 @@ interface Props {
   /** tag/category 用于 ring 取色（按 tag 所属 category 的颜色画弧） */
   tagById: ReadonlyMap<number, ActivityTag>
   categoryById: ReadonlyMap<number, ActivityCategory>
+  /** 外部直接传入的日历环。洪流域用它展示动作区间，不读取昼夜表 blocks。 */
+  externalRangesByDay?: Record<string, DayRangeColored[]>
+  loadActivityRanges?: boolean
   onSelect: (date: Date) => void
   onClose: () => void
 }
 
-interface DayRangeColored {
+export interface DayRangeColored {
   /** 起始分钟 [0,1440) */
   startMin: number
   /** 结束分钟 (0,1440] */
@@ -136,7 +139,14 @@ const ringStyles = StyleSheet.create({
 })
 
 export default function CalendarPopover({
-  open, selectedDate, tagById, categoryById, onSelect, onClose,
+  open,
+  selectedDate,
+  tagById,
+  categoryById,
+  externalRangesByDay,
+  loadActivityRanges = true,
+  onSelect,
+  onClose,
 }: Props) {
   const [viewMonth, setViewMonth] = useState(() => startOfMonth(selectedDate))
   // 月份 → date_key → blocks 缓存
@@ -147,6 +157,10 @@ export default function CalendarPopover({
   // 再打开月历必须看到最新；reopen 时间开销几十 ms 可接受
   useEffect(() => {
     if (!open) return
+    if (!loadActivityRanges) {
+      setRangesByDay({})
+      return
+    }
     const grid = buildMonthGrid(viewMonth)
     let alive = true
     Promise.all(
@@ -166,7 +180,7 @@ export default function CalendarPopover({
       setRangesByDay(next)
     })
     return () => { alive = false }
-  }, [open, viewMonth, tagById, categoryById])
+  }, [open, viewMonth, tagById, categoryById, loadActivityRanges])
 
   // 打开时把视图月对齐到当前 selectedDate 的月份（不重置已切的视图）
   useEffect(() => {
@@ -214,7 +228,8 @@ export default function CalendarPopover({
               const inMonth = d.getMonth() === viewMonth.getMonth()
               const isSelected = isSameDay(d, selectedDate)
               const isCurToday = isSameDay(d, today)
-              const ranges = rangesByDay[toLocalDateStr(d)] ?? []
+              const key = toLocalDateStr(d)
+              const ranges = externalRangesByDay?.[key] ?? rangesByDay[key] ?? []
               return (
                 <Pressable
                   key={d.toISOString()}
