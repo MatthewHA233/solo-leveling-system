@@ -50,9 +50,19 @@ impl BiliState {
 // ── API State ──
 
 pub struct BailianState {
-    pub pending_quota: Mutex<Option<oneshot::Sender<Result<Vec<crate::db::ModelFreeQuota>, String>>>>,
-    pub pending_account: Mutex<Option<oneshot::Sender<Result<serde_json::Value, String>>>>,
+    pub pending_quota: Mutex<Option<PendingQuota>>,
+    pub pending_account: Mutex<Option<PendingAccount>>,
     pub quota_progress: Mutex<VecDeque<serde_json::Value>>,
+}
+
+pub struct PendingQuota {
+    pub token: String,
+    pub tx: oneshot::Sender<Result<Vec<crate::db::ModelFreeQuota>, String>>,
+}
+
+pub struct PendingAccount {
+    pub token: String,
+    pub tx: oneshot::Sender<Result<serde_json::Value, String>>,
 }
 
 impl BailianState {
@@ -131,12 +141,14 @@ struct BiliResultPayload {
 
 #[derive(Deserialize)]
 struct BailianQuotaPayload {
+    token: Option<String>,
     ok: Option<Vec<crate::db::ModelFreeQuota>>,
     error: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct BailianAccountPayload {
+    token: Option<String>,
     ok: Option<serde_json::Value>,
     error: Option<String>,
 }
@@ -952,6 +964,18 @@ async fn recv_bailian_quota_result(
     State(state): State<ApiState>,
     Json(body): Json<BailianQuotaPayload>,
 ) -> Json<ApiResponse<()>> {
+    let pending = {
+        let mut guard = state.bailian.pending_quota.lock().await;
+        let Some(pending) = guard.as_ref() else {
+            log::warn!("[Bailian] ignore quota_result without pending request");
+            return Json(ApiResponse::ok(()));
+        };
+        if body.token.as_deref() != Some(pending.token.as_str()) {
+            log::warn!("[Bailian] ignore quota_result with invalid token");
+            return Json(ApiResponse::ok(()));
+        }
+        guard.take()
+    };
     let result = match body.ok {
         Some(rows) => {
             if let Err(e) = state.db.upsert_model_free_quotas(&rows).await {
@@ -961,10 +985,8 @@ async fn recv_bailian_quota_result(
         }
         None => Err(body.error.unwrap_or_else(|| "unknown error".to_string())),
     };
-
-    let mut guard = state.bailian.pending_quota.lock().await;
-    if let Some(tx) = guard.take() {
-        let _ = tx.send(result);
+    if let Some(pending) = pending {
+        let _ = pending.tx.send(result);
     }
 
     Json(ApiResponse::ok(()))
@@ -974,14 +996,24 @@ async fn recv_bailian_account_result(
     State(state): State<ApiState>,
     Json(body): Json<BailianAccountPayload>,
 ) -> Json<ApiResponse<()>> {
+    let pending = {
+        let mut guard = state.bailian.pending_account.lock().await;
+        let Some(pending) = guard.as_ref() else {
+            log::warn!("[Bailian] ignore account_result without pending request");
+            return Json(ApiResponse::ok(()));
+        };
+        if body.token.as_deref() != Some(pending.token.as_str()) {
+            log::warn!("[Bailian] ignore account_result with invalid token");
+            return Json(ApiResponse::ok(()));
+        }
+        guard.take()
+    };
     let result = match body.ok {
         Some(data) => Ok(data),
         None => Err(body.error.unwrap_or_else(|| "unknown error".to_string())),
     };
-
-    let mut guard = state.bailian.pending_account.lock().await;
-    if let Some(tx) = guard.take() {
-        let _ = tx.send(result);
+    if let Some(pending) = pending {
+        let _ = pending.tx.send(result);
     }
 
     Json(ApiResponse::ok(()))
@@ -989,8 +1021,20 @@ async fn recv_bailian_account_result(
 
 async fn recv_bailian_quota_progress(
     State(state): State<ApiState>,
-    Json(body): Json<serde_json::Value>,
+    Json(mut body): Json<serde_json::Value>,
 ) -> Json<ApiResponse<()>> {
+    let token = body.get("token").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let valid = {
+        let guard = state.bailian.pending_quota.lock().await;
+        guard.as_ref().map(|p| Some(p.token.as_str()) == token.as_deref()).unwrap_or(false)
+    };
+    if !valid {
+        log::warn!("[Bailian] ignore quota_progress with invalid token");
+        return Json(ApiResponse::ok(()));
+    }
+    if let Some(obj) = body.as_object_mut() {
+        obj.remove("token");
+    }
     let mut progress = state.bailian.quota_progress.lock().await;
     if progress.len() >= 160 {
         progress.pop_front();

@@ -1008,6 +1008,8 @@ impl Database {
                 audio_transcript TEXT,
                 visual_transcribed_at TEXT,
                 audio_transcribed_at TEXT,
+                combined_transcript TEXT,
+                combined_transcribed_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -1979,7 +1981,12 @@ impl Database {
                     completion_text_tokens, completion_audio_tokens,
                     cost_cny, free_quota_tokens, free_quota_saved_cny,
                     success, error_message, metadata
-             FROM model_call_log"
+             FROM model_call_log l
+             WHERE l.api_key_id IS NULL
+                OR NOT EXISTS (
+                    SELECT 1 FROM model_api_keys k
+                    WHERE k.id = l.api_key_id AND k.deleted_at IS NOT NULL
+                )"
         ).map_err(|e| e.to_string())?;
         let model_call_log = stmt.query_map([], |row| {
             Ok(SyncModelCallLog {
@@ -2285,11 +2292,26 @@ impl Database {
                     params![&row.updated_at, &row.id],
                 ).map_err(|e| e.to_string())?;
             }
+            if is_tombstone {
+                conn.execute("DELETE FROM model_call_log WHERE api_key_id = ?", params![&row.id])
+                    .map_err(|e| e.to_string())?;
+            }
             result.model_api_keys += 1;
         }
 
         // ── 模型调用日志：append-only，PK=id 撞了就跳过 ──
         for row in payload.model_call_log {
+            if let Some(api_key_id) = row.api_key_id.as_deref() {
+                let key_deleted: bool = conn.query_row(
+                    "SELECT deleted_at IS NOT NULL FROM model_api_keys WHERE id = ?",
+                    params![api_key_id],
+                    |r| r.get::<_, i64>(0),
+                ).optional().map_err(|e| e.to_string())?.unwrap_or(0) != 0;
+                if key_deleted {
+                    result.skipped += 1;
+                    continue;
+                }
+            }
             let exists: bool = conn.query_row(
                 "SELECT 1 FROM model_call_log WHERE id = ?",
                 params![&row.id],
@@ -4506,7 +4528,8 @@ impl Database {
         let conn = self.conn.lock().await;
         // AUDIT-036：改软删 — 写 deleted_at + 清明文 api_key + is_active=0，
         // 保留 row 作为 tombstone 让对端同步时知道这个 id 已删，不会再把
-        // 明文 key 重新 push 回来；call_log 仍硬删（不属于 sync 范围）
+        // 明文 key 重新 push 回来；AUDIT-064：本地 call_log 硬删，并在
+        // import/export 侧屏蔽 tombstone key 的日志，防止其他设备回流。
         let was_active: bool = conn.query_row(
             "SELECT is_active FROM model_api_keys WHERE id = ? AND deleted_at IS NULL",
             rusqlite::params![id],

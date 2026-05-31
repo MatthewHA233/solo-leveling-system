@@ -409,6 +409,7 @@ export default function BiliHistoryDialog({
     if (!item.view_at) return
     const target = new Date(item.view_at * 1000)
     pendingScrollBvidRef.current = item.bvid
+    setFilter('all')
     setSearchOpen(false)
     setDetailSpan(null)
     setDate(target)
@@ -514,7 +515,16 @@ export default function BiliHistoryDialog({
     const targetBvid = pendingScrollBvidRef.current
     if (!targetBvid || !galleryRef.current) return
     const hit = placed.find((p) => p.span.bvid === targetBvid)
-    if (!hit) return
+    if (!hit) {
+      if (filter !== 'all') {
+        setFilter('all')
+        return
+      }
+      if (!spans.some((s) => s.bvid === targetBvid)) {
+        pendingScrollBvidRef.current = null
+      }
+      return
+    }
     pendingScrollBvidRef.current = null
     const scrollEl = galleryRef.current
     const desiredTop = Math.max(0, hit.top - 80)
@@ -526,7 +536,7 @@ export default function BiliHistoryDialog({
     const tFlash = setTimeout(() => setFlashBvid(null), 1800)
     const tHover = setTimeout(() => setHoveredId(null), 1800)
     return () => { clearTimeout(tFlash); clearTimeout(tHover) }
-  }, [placed])
+  }, [filter, placed, spans])
 
   // 前后日切换：基于 B站 day-counts 判断目标日是否有观看记录（today 始终可达）
   const biliDataDays = useDataDays(date, 'bili')

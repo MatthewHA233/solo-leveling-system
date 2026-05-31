@@ -142,6 +142,10 @@ export function usageToLogRequest(options: LogUsageOptions): LogModelCallRequest
 
   const prompt_text_tokens = details?.text_tokens
     ?? Math.max(0, promptTotal - (details?.image_tokens ?? 0) - (details?.video_tokens ?? 0) - (details?.audio_tokens ?? 0))
+  const completionAudioTokens = completionDetails?.audio_tokens ?? 0
+  const completionTextTokens = completionDetails
+    ? (completionDetails.text_tokens ?? Math.max(0, (usage?.completion_tokens ?? 0) - completionAudioTokens))
+    : (usage?.completion_tokens ?? 0)
 
   return {
     api_key_id: options.apiKeyId ?? null,
@@ -153,8 +157,8 @@ export function usageToLogRequest(options: LogUsageOptions): LogModelCallRequest
     prompt_image_tokens: details?.image_tokens ?? 0,
     prompt_video_tokens: details?.video_tokens ?? 0,
     prompt_audio_tokens: details?.audio_tokens ?? 0,
-    completion_text_tokens: completionDetails?.text_tokens ?? usage?.completion_tokens ?? 0,
-    completion_audio_tokens: completionDetails?.audio_tokens ?? 0,
+    completion_text_tokens: completionTextTokens,
+    completion_audio_tokens: completionAudioTokens,
     success: options.success ?? true,
     error_message: options.errorMessage ?? null,
     metadata: options.metadata ? JSON.stringify(options.metadata) : null,

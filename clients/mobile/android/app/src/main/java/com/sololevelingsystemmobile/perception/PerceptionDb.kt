@@ -470,7 +470,7 @@ class PerceptionDb(context: Context) :
   /** 按时间区间倒序返回，最多 limit 条 */
   fun torrentCapturesInRange(startMs: Long, endMs: Long, limit: Int): List<TorrentCaptureSnapshot> {
     val db = readableDatabase
-    val cap = limit.coerceIn(1, 50000)
+    val cap = limit.coerceIn(1, 500000)
     val out = ArrayList<TorrentCaptureSnapshot>()
     db.rawQuery(
       """

@@ -1412,6 +1412,7 @@ export default function App() {
           // FairyHUD 自己通过 analyser 获取，这里暂不处理
         },
         onError: (message) => {
+          omniUsageStartedAtRef.current = 0
           setChatMessages((prev) => [...prev, {
             id: crypto.randomUUID(), role: 'system' as const,
             content: message, timestamp: new Date().toISOString(),
@@ -1435,6 +1436,7 @@ export default function App() {
   const omniAgentMsgIdRef = useRef<string | null>(null)   // 当前 AI 回复气泡的消息 ID
   const omniDebugInfoRef = useRef<OmniDebugInfo | null>(null)  // 本轮 Omni 上下文快照（随气泡写入）
   const omniLastUsageRef = useRef<ModelCallLog | null>(null)   // 本轮 Omni 模型审计快照（随气泡持久化）
+  const omniUsageStartedAtRef = useRef<number>(0)         // 本轮 Omni 调用起点，独立于 RAlt 按压时间
   const refreshSystemPromptRef = useRef<() => Promise<string>>(() => Promise.resolve(''))
 
   useEffect(() => {
@@ -1566,7 +1568,7 @@ export default function App() {
 
     // Omni Realtime 一轮结束携带 usage：写入审计 + 立即贴到当前 agent 气泡
     registerListen<{ model: string; usage: RealtimeUsage }>('omni://usage', ({ payload }) => {
-      const startedMs = altDownTimeRef.current || Date.now()
+      const startedMs = omniUsageStartedAtRef.current || Date.now()
       void logModelUsage({
         feature: 'fairy_omni_chat',
         modelId: payload.model,
@@ -1587,6 +1589,8 @@ export default function App() {
             prev.map((m) => m.id === targetId ? { ...m, usage: call } : m)
           )
         }
+      }).finally(() => {
+        if (omniUsageStartedAtRef.current === startedMs) omniUsageStartedAtRef.current = 0
       })
     })
 
@@ -1745,6 +1749,7 @@ export default function App() {
           emitFairy('listening')  // 立即给视觉反馈，不等 mic 权限
           // Omni 语音模式：提前刷 system prompt 并写 debug 快照（onUserAudio 无法知道 systemPrompt）
           if (configRef.current.aiMode === 'omni') {
+            omniUsageStartedAtRef.current = Date.now()
             refreshSystemPrompt().then((sp) => {
               const cfg = configRef.current
               omniDebugInfoRef.current = {
@@ -1777,6 +1782,7 @@ export default function App() {
       } else {
         const svc = voiceServiceRef.current
         if (svc) svc.cancel()
+        omniUsageStartedAtRef.current = 0
         emitFairy('idle')
       }
     }
@@ -1988,6 +1994,7 @@ export default function App() {
         return
       }
       const omniModel = await getFeatureModel('fairy_omni_chat', cfg.omniModel)
+      omniUsageStartedAtRef.current = Date.now()
       // 记录 debug 快照（text_chunk 建气泡时写入 ChatMessage）
       omniDebugInfoRef.current = {
         systemPrompt,
@@ -2007,6 +2014,7 @@ export default function App() {
         // 后续由 omni://text_chunk / omni://audio_chunk / omni://status(audio_done) 处理
         // setIsProcessing(false) 在 audio_done handler 里触发
       } catch (err) {
+        omniUsageStartedAtRef.current = 0
         setChatMessages((prev) => [...prev, {
           id: crypto.randomUUID(), role: 'system' as const,
           content: `Omni 错误: ${err instanceof Error ? err.message : String(err)}`,

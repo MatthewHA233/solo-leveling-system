@@ -281,6 +281,9 @@ class SlsAccessibilityService : AccessibilityService() {
 
   private fun handleWindowState(e: AccessibilityEvent) {
     val pkg = e.packageName?.toString() ?: return
+    // SLS 自身使用由 MainActivity.onResume() 写一条干净的 android_self_lifecycle
+    // 记录；无障碍窗口事件会带入页面/弹窗文本，不能再进常规窗口时间线。
+    if (pkg == applicationContext.packageName) return
     val cls = e.className?.toString() ?: ""
     val now = System.currentTimeMillis()
     if (pkg == lastPkg && cls == lastClass && now - lastTs < DEDUP_WINDOW_MS) return

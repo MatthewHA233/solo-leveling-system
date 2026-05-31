@@ -19,7 +19,7 @@ import {
 } from 'react-native'
 import {
   getAppIcons,
-  getRecentTorrentCaptures,
+  getTorrentCapturesInRange,
   getPowerEventsInRange,
   getWindowEventsInRange,
   isAccessibilityEnabled,
@@ -69,6 +69,7 @@ function fmtVidSec(sec: number): string {
 const EMPTY_TAG_BY_ID = new Map()
 const EMPTY_CATEGORY_BY_ID = new Map()
 const TORRENT_CALENDAR_CACHE_KEY = 'torrent.calendar.ranges.v1'
+const TORRENT_DAY_RAW_LIMIT = 300_000
 
 function clampMinute(n: number): number {
   return Math.max(0, Math.min(1440, n))
@@ -366,7 +367,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
       const [list, on] = devSource
         ? await devSource.load().then((data) => [data.items, data.a11yOn] as const)
         : await Promise.all([
-            getRecentTorrentCaptures(50000),
+            getTorrentCapturesInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, TORRENT_DAY_RAW_LIMIT),
             isAccessibilityEnabled(),
           ])
       if (!liveRef.current) return
@@ -380,7 +381,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
         setRefreshing(false)
       }
     }
-  }, [devSource])
+  }, [devSource, selectedDayBounds.endMs, selectedDayBounds.startMs])
 
   const refreshAppMonitor = useCallback(async (mode: 'full' | 'incremental' = 'full') => {
     const prevEvents = monitorEventsRef.current

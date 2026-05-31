@@ -829,11 +829,34 @@ export function buildBiliFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
     && c.windowClass.includes('StoryVideoActivity'))
   const storyAllLines = storyRaw.map((c) => ({ rowId: c.rowId, text: c.text, ts: c.eventTimeMs }))
   const allStoryItems = parseStoryItems(storyAllLines)
-  const storyByCommentCount = new Map<string, StoryItem>()
+  const storyCandidatesByCommentCount = new Map<string, StoryItem[]>()
   for (const it of allStoryItems) {
-    if (it.comments && !storyByCommentCount.has(it.comments)) {
-      storyByCommentCount.set(it.comments, it)
+    if (it.comments) {
+      const arr = storyCandidatesByCommentCount.get(it.comments)
+      if (arr) arr.push(it)
+      else storyCandidatesByCommentCount.set(it.comments, [it])
     }
+  }
+  const pickStoryByCommentCount = (count: string, ts: number, currentTitle: string | null): StoryItem | null => {
+    const candidates = storyCandidatesByCommentCount.get(count) ?? []
+    if (candidates.length === 0) return null
+    const byTitle = new Map<string, { item: StoryItem; dist: number }>()
+    for (const it of candidates) {
+      const dist = Math.abs(it.firstSeenTs - ts)
+      const prev = byTitle.get(it.title)
+      if (!prev || dist < prev.dist) byTitle.set(it.title, { item: it, dist })
+    }
+    if (currentTitle) {
+      const current = byTitle.get(currentTitle)
+      if (current && current.dist <= 30_000) return current.item
+    }
+    const ranked = Array.from(byTitle.values()).sort((a, b) => a.dist - b.dist)
+    const best = ranked[0]
+    if (!best) return null
+    if (ranked.length === 1 && best.dist <= 120_000) return best.item
+    const second = ranked[1]
+    if (best.dist <= 30_000 && (!second || best.dist + 1000 < second.dist)) return best.item
+    return null
   }
   // pre-pass：收 feed item title 集合，避免 banner 识别误抓 feed item 的标题独立行
   const feedTitlesInHome = new Set<string>()
@@ -944,7 +967,7 @@ export function buildBiliFeedListItems(itemsIn: TorrentCapture[]): ListItem[] {
       recentVideoUp = top.upName
     }
     const storyCommentCount = findStoryCommentCount(b.lines)
-    const storyByCount = storyCommentCount ? storyByCommentCount.get(storyCommentCount) : null
+    const storyByCount: StoryItem | null = storyCommentCount ? pickStoryByCommentCount(storyCommentCount, b.ts, recentVideoTitle) : null
     if (storyByCount) {
       recentVideoTitle = storyByCount.title
       recentVideoUp = storyByCount.upName
@@ -1633,27 +1656,57 @@ export function buildBiliActionListItems(itemsIn: TorrentCapture[]): ListItem[] 
   }
   storySeconds.sort((a, b) => a.ts - b.ts)
 
-  const storyTitleByCommentCount = new Map<string, StoryItem>()
+  const storyCandidatesByCommentCount = new Map<string, StoryItem[]>()
   for (const it of parsedStoryItems) {
-    if (it.comments && !storyTitleByCommentCount.has(it.comments)) {
-      storyTitleByCommentCount.set(it.comments, it)
+    if (it.comments) {
+      const arr = storyCandidatesByCommentCount.get(it.comments)
+      if (arr) arr.push(it)
+      else storyCandidatesByCommentCount.set(it.comments, [it])
     }
+  }
+  const pickStoryTitleByCommentCount = (count: string, ts: number): string | null => {
+    const candidates = storyCandidatesByCommentCount.get(count) ?? []
+    if (candidates.length === 0) return null
+    const candidateTitles = new Set(candidates.map((it) => it.title))
+    const priorSecs = storySeconds
+      .filter((s) => s.ts <= ts && ts - s.ts <= 30_000)
+      .sort((a, b) => b.ts - a.ts)
+    for (const s of priorSecs) {
+      const title = s.titles.find((t) => candidateTitles.has(t))
+      if (title) return title
+    }
+    const byTitle = new Map<string, { title: string; dist: number }>()
+    for (const it of candidates) {
+      const dist = Math.abs(it.firstSeenTs - ts)
+      const prev = byTitle.get(it.title)
+      if (!prev || dist < prev.dist) byTitle.set(it.title, { title: it.title, dist })
+    }
+    const ranked = Array.from(byTitle.values()).sort((a, b) => a.dist - b.dist)
+    const best = ranked[0]
+    if (!best) return null
+    if (ranked.length === 1 && best.dist <= 120_000) return best.title
+    const second = ranked[1]
+    if (best.dist <= 30_000 && (!second || best.dist + 1000 < second.dist)) return best.title
+    return null
   }
   const commentProofs: { count: string; title: string; firstTs: number; lastTs: number }[] = []
   const storyCommentCountBySec = new Map<number, string>()
+  const storyTitleByCommentSec = new Map<number, string>()
   for (const c of items) {
     if (c.packageName !== BILI_PACKAGE) continue
     if (!c.windowClass.includes('bilibili.video.story.view')) continue
     const count = findStoryCommentCount([{ text: c.text }])
     if (!count) continue
-    storyCommentCountBySec.set(Math.floor(c.eventTimeMs / 1000), count)
-    const meta = storyTitleByCommentCount.get(count)
-    if (!meta) continue
+    const title = pickStoryTitleByCommentCount(count, c.eventTimeMs)
+    if (!title) continue
+    const sec = Math.floor(c.eventTimeMs / 1000)
+    storyCommentCountBySec.set(sec, count)
+    storyTitleByCommentSec.set(sec, title)
     const lastProof = commentProofs[commentProofs.length - 1]
-    if (lastProof && lastProof.count === count && c.eventTimeMs - lastProof.lastTs < 10_000) {
+    if (lastProof && lastProof.count === count && lastProof.title === title && c.eventTimeMs - lastProof.lastTs < 10_000) {
       lastProof.lastTs = c.eventTimeMs
     } else {
-      commentProofs.push({ count, title: meta.title, firstTs: c.eventTimeMs, lastTs: c.eventTimeMs })
+      commentProofs.push({ count, title, firstTs: c.eventTimeMs, lastTs: c.eventTimeMs })
     }
   }
   commentProofs.sort((a, b) => a.firstTs - b.firstTs)
@@ -1754,9 +1807,18 @@ export function buildBiliActionListItems(itemsIn: TorrentCapture[]): ListItem[] 
     if (!e.windowClass.includes('bilibili.video.story.view')) continue
     if (!SUB_TAB_KINDS.has(e.sig.kind)) continue
     if (e.sig.kind === 'fullscreen') continue
-    const count = storyCommentCountBySec.get(Math.floor(e.ts / 1000))
+    const sec = Math.floor(e.ts / 1000)
+    const title = storyTitleByCommentSec.get(sec)
+    const count = storyCommentCountBySec.get(sec)
     let target: Cur | undefined
-    if (count) {
+    if (title) {
+      for (const v of storyVideoActs) {
+        if (v.title === title && e.ts >= v.startTs && (!target || v.startTs > target.startTs)) {
+          target = v
+        }
+      }
+    }
+    if (!target && count) {
       for (const v of storyVideoActs) {
         if (v.storyCommentCount === count && e.ts >= v.startTs && (!target || v.startTs > target.startTs)) {
           target = v

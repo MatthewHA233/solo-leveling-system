@@ -392,20 +392,23 @@ async fn bailian_get_account(
         .ok_or_else(|| "BAILIAN_WIN_NOT_OPEN".to_string())?;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let token = uuid::Uuid::new_v4().to_string();
     {
         let mut guard = bailian.pending_account.lock().await;
         if guard.is_some() {
             return Err("BAILIAN_ACCOUNT_BUSY".to_string());
         }
-        *guard = Some(tx);
+        *guard = Some(api::PendingAccount { token: token.clone(), tx });
     }
 
+    let token_json = serde_json::to_string(&token).map_err(|e| e.to_string())?;
     let js = r#"(async()=>{
+const TOKEN = __TOKEN__;
 const post = async (payload) => {
   await fetch('http://localhost:49733/api/bailian/account_result', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, token: TOKEN }),
   });
 };
 const pickName = () => {
@@ -480,9 +483,9 @@ try {
 } catch (error) {
   await post({ error: error?.message || String(error) });
 }
-})();"#;
+})();"#.replace("__TOKEN__", &token_json);
 
-    if let Err(e) = win.eval(js) {
+    if let Err(e) = win.eval(&js) {
         bailian.pending_account.lock().await.take();
         return Err(e.to_string());
     }
@@ -532,24 +535,27 @@ async fn scan_bailian_free_quota(
     };
 
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let token = uuid::Uuid::new_v4().to_string();
     {
         let mut guard = bailian.pending_quota.lock().await;
         if guard.is_some() {
             return Err("BAILIAN_QUOTA_BUSY".to_string());
         }
-        *guard = Some(tx);
+        *guard = Some(api::PendingQuota { token: token.clone(), tx });
     }
 
     let model_codes_json = serde_json::to_string(&model_codes).map_err(|e| e.to_string())?;
+    let token_json = serde_json::to_string(&token).map_err(|e| e.to_string())?;
     let js = format!(r#"(async()=>{{
 const modelCodes = {model_codes_json};
+const TOKEN = {token_json};
 const BASE = 'https://bailian.console.aliyun.com/cn-beijing/?tab=model';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const post = async (payload) => {{
   await fetch('http://localhost:49733/api/bailian/quota_result', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
-    body: JSON.stringify(payload),
+    body: JSON.stringify({{ ...payload, token: TOKEN }}),
   }});
 }};
 const progress = async (payload) => {{
@@ -557,7 +563,7 @@ const progress = async (payload) => {{
     await fetch('http://localhost:49733/api/bailian/quota_progress', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify(payload),
+      body: JSON.stringify({{ ...payload, token: TOKEN }}),
     }});
   }} catch {{}}
 }};

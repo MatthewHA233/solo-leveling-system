@@ -172,6 +172,12 @@ function featureForMode(mode: TrackMode): string {
   return TRANSCRIBE_FEATURE_BY_MODE[mode]
 }
 
+function transcriptCacheForMode(cache: TranscriptCache, mode: TrackMode): { text: string | null; at: string | null; kind: TranscribeKind } {
+  if (mode === 'audio') return { text: cache.audio, at: cache.audio_at, kind: 'audio' }
+  if (mode === 'visual') return { text: cache.visual, at: cache.visual_at, kind: 'visual' }
+  return { text: cache.combined, at: cache.combined_at, kind: 'combined' }
+}
+
 export default function BiliTranscribePanel({
   filePath, bvid, title, onClose, currentSec = null, onSeek, rightAnchor = 380,
 }: Props) {
@@ -296,26 +302,7 @@ export default function BiliTranscribePanel({
     setLocalMediaPath(null)
     setCopied(false)
 
-    let cancelled = false
-    invoke<TranscriptCache>('get_bili_transcripts', { filePath })
-      .then((cache) => {
-        if (cancelled) return
-        const text = cache.combined ?? cache.visual ?? cache.audio
-        const at = cache.combined_at ?? cache.visual_at ?? cache.audio_at
-        const kind: TranscribeKind = cache.combined ? 'combined' : cache.visual ? 'visual' : 'audio'
-        if (text) {
-          setResult({
-            stage: 'done',
-            text,
-            segments: parseTranscript(text, kind),
-            errMsg: null,
-            cachedAt: at,
-          })
-        }
-      })
-      .catch((e) => console.warn('[Transcribe] 读取缓存失败', e))
     return () => {
-      cancelled = true
       const prev = resultRef.current
       if ((prev.stage === 'uploading' || prev.stage === 'streaming') && prev.text.trim()) {
         invoke('update_bili_transcript', {
@@ -329,11 +316,30 @@ export default function BiliTranscribePanel({
 
   useEffect(() => () => { abortRef.current?.() }, [])
 
-  // trackMode 变化时清空 OSS 缓存，确保用新的媒体类型重新上传
+  // trackMode 变化时清空 OSS 缓存，并只加载当前模式自己的缓存。
   useEffect(() => {
     ossPromiseRef.current = null
     setLocalMediaPath(null)
-  }, [trackMode])
+    setCopied(false)
+    setResult(INIT_KIND_STATE)
+    let cancelled = false
+    invoke<TranscriptCache>('get_bili_transcripts', { filePath })
+      .then((cache) => {
+        if (cancelled) return
+        const picked = transcriptCacheForMode(cache, trackMode)
+        if (picked.text) {
+          setResult({
+            stage: 'done',
+            text: picked.text,
+            segments: parseTranscript(picked.text, picked.kind),
+            errMsg: null,
+            cachedAt: picked.at,
+          })
+        }
+      })
+      .catch((e) => console.warn('[Transcribe] 读取缓存失败', e))
+    return () => { cancelled = true }
+  }, [filePath, trackMode])
 
   const ensureOss = useCallback(async (apiKey: string, model: string): Promise<UploadedMedia> => {
     if (ossPromiseRef.current) return ossPromiseRef.current
