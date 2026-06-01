@@ -296,30 +296,7 @@ class SlsAccessibilityService : AccessibilityService() {
     executor.execute {
       try {
         val label = resolveLabel(pkg)
-        val payload = org.json.JSONObject().apply {
-          put("package_name", pkg)
-          put("class_name", cls)
-          put("app_label", label)
-          put("window_title", title)
-          put("event_time_ms", now)
-          put("source", SOURCE)
-        }
-        // AUDIT-020：start_at/end_at 用事件真实发生时刻（System.currentTimeMillis 时拍下的 now）
-        // 派生，不要在 executor 内调 nowIso() —— executor 排队跨过 span 边界会让
-        // windowEventsInRange() 漏查真实落在 span 内的事件
-        val isoFromNow = PerceptionDb.isoFromMs(now)
-        db.ensureBucket(
-          id = BUCKET_ID,
-          kind = BUCKET_KIND,
-          eventType = EVENT_TYPE,
-          source = SOURCE,
-        )
-        db.insertEvent(
-          bucketId = BUCKET_ID,
-          startAt = isoFromNow,
-          endAt = isoFromNow,
-          dataJson = payload.toString(),
-        )
+        db.insertAppMonitorWindowEvent(pkg, cls, label, title, now)
         Log.d(TAG, "window pkg=$pkg cls=$cls title=$title")
       } catch (ex: Throwable) {
         Log.w(TAG, "write window event failed", ex)

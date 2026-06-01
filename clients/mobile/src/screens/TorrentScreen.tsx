@@ -17,19 +17,21 @@ import {
   Text,
   View,
 } from 'react-native'
+import Svg, { Path, Rect } from 'react-native-svg'
 import {
   getAppIcons,
+  getAppMonitorSegmentsInRange,
   getTorrentCapturesInRange,
-  getPowerEventsInRange,
-  getWindowEventsInRange,
   isAccessibilityEnabled,
   openAccessibilitySettings,
   type PowerEvent,
+  type AppMonitorSegment,
   type TorrentCapture,
   type WindowEvent,
 } from '../lib/perception'
 import CalendarPopover, { type DayRangeColored } from '../components/CalendarPopover'
 import SharedDateHeader from '../components/SharedDateHeader'
+import { dayPeriodForTs } from '../lib/dayPeriods'
 import { soloGetPref, soloSetPref } from '../lib/solodb'
 import { isSameDay, toLocalDateStr } from '../lib/time'
 import { alpha, theme } from '../theme'
@@ -55,6 +57,13 @@ function fmtTime(ms: number): string {
   const mm = String(d.getMinutes()).padStart(2, '0')
   const ss = String(d.getSeconds()).padStart(2, '0')
   return `${hh}:${mm}:${ss}`
+}
+
+function fmtClock(ms: number): string {
+  const d = new Date(ms)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${hh}:${mm}`
 }
 
 // 视频内秒 → mm:ss / hh:mm:ss
@@ -151,6 +160,46 @@ type AppMonitorRow =
 // 提交前必须设回 null
 const DEV_TIME_RANGE: [string, string] | null = null
 const FAST_APP_SWITCH_WINDOW_MS = 60_000
+const POWER_SERVICE_COLOR = '#0D58C9'
+const POWER_SERVICE_WAVE_COLOR = '#333333'
+const POWER_SCREEN_ON_COLOR = '#27AD9A'
+const POWER_SCREEN_OFF_COLOR = '#5B6478'
+const POWER_UNLOCKED_COLOR = '#34A853'
+const MONITOR_TRANSIENT_PACKAGES = new Set([
+  'com.android.systemui',
+  'com.coloros.smartsidebar',
+])
+const MONITOR_LAUNCHER_PACKAGES = new Set([
+  'com.android.launcher',
+])
+
+function isMonitorInputMethod(ev: WindowEvent): boolean {
+  const pkg = ev.packageName || ''
+  const cls = ev.className || ''
+  return pkg.includes('inputmethod')
+    || cls.includes('inputmethodservice.SoftInputWindow')
+}
+
+function isLauncherTransition(ev: WindowEvent): boolean {
+  const title = ev.windowTitle?.trim() || ''
+  if (!MONITOR_LAUNCHER_PACKAGES.has(ev.packageName)) return false
+  return title.includes('最近用过的应用')
+    || title.startsWith('文件夹已')
+    || title === '应用图标'
+}
+
+function isMonitorNoiseEvent(ev: WindowEvent): boolean {
+  const title = ev.windowTitle?.trim() || ''
+  if (!ev.packageName) return true
+  if (MONITOR_TRANSIENT_PACKAGES.has(ev.packageName)) return true
+  if (isMonitorInputMethod(ev)) return true
+  if (isLauncherTransition(ev)) return true
+  // a11y 在点桌面图标或应用图标时会短暂把目标 app 记成"应用图标"，
+  // 这是启动过渡而不是该 app 的真实窗口。
+  if (title === '应用图标') return true
+  return false
+}
+
 // HH:MM:SS → 当天毫秒（用 items 中任意一条的本地日期作为基准日）
 function hhmmssToMs(hhmmss: string, items: TorrentCapture[]): number {
   if (items.length === 0) return 0
@@ -177,6 +226,53 @@ function fmtShortDuration(ms: number): string {
   return `${m}分`
 }
 
+function fmtPreciseDuration(ms: number): string {
+  if (ms <= 0) return '瞬时'
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}秒`
+  return fmtShortDuration(ms)
+}
+
+function TimeRangeBand({
+  startMs,
+  endMs,
+  compact,
+  header,
+}: {
+  startMs: number
+  endMs?: number
+  compact?: boolean
+  header?: boolean
+}) {
+  const period = dayPeriodForTs(startMs)
+  const hasRange = !!endMs && endMs > startMs
+  if (header) {
+    return (
+      <View style={styles.headerTimeBlock}>
+        <View style={styles.headerTimeMetaRow}>
+          <Text style={[styles.headerTimePeriod, { color: period.text }]}>{period.label}</Text>
+          {hasRange && <Text style={[styles.headerTimeDur, { color: period.text }]}>{fmtPreciseDuration(endMs! - startMs)}</Text>}
+        </View>
+        <Text style={[styles.headerTimeClock, { color: period.text }]} numberOfLines={1}>
+          {fmtClock(startMs)}{hasRange ? ` → ${fmtClock(endMs!)}` : ''}
+        </Text>
+      </View>
+    )
+  }
+  return (
+    <View style={[
+      styles.timeBand,
+      compact && styles.timeBandCompact,
+      { backgroundColor: alpha(period.accent, 0.07), borderColor: alpha(period.accent, 0.22) },
+    ]}>
+      <Text style={[styles.timeBandPeriod, { color: period.text, backgroundColor: alpha(period.accent, 0.12) }]}>{period.label}</Text>
+      <Text style={[styles.timeBandClock, { color: period.text }]}>
+        {fmtClock(startMs)}{hasRange ? ` → ${fmtClock(endMs!)}` : ''}
+      </Text>
+      {hasRange && <Text style={[styles.timeBandDur, { color: period.text }]}>{fmtPreciseDuration(endMs! - startMs)}</Text>}
+    </View>
+  )
+}
+
 function compactWindowTitles(events: WindowEvent[]): string[] {
   const out: string[] = []
   for (const ev of events) {
@@ -189,7 +285,9 @@ function compactWindowTitles(events: WindowEvent[]): string[] {
 }
 
 function buildAppMonitorRuns(events: WindowEvent[], segmentEndMs: number): AppMonitorRun[] {
-  const sorted = [...events].sort((a, b) => a.eventTimeMs - b.eventTimeMs || a.rowId - b.rowId)
+  const sorted = events
+    .filter((ev) => !isMonitorNoiseEvent(ev))
+    .sort((a, b) => a.eventTimeMs - b.eventTimeMs || a.rowId - b.rowId)
   const runs: AppMonitorRun[] = []
   let currentEvents: WindowEvent[] = []
   const flush = (nextStartMs?: number) => {
@@ -271,6 +369,65 @@ function buildAppMonitorRows(runs: AppMonitorRun[], powerEvents: PowerEvent[]): 
   return [...appRows, ...powerRows].sort((a, b) => a.ts - b.ts)
 }
 
+function appMonitorSegmentsToRuns(segments: AppMonitorSegment[], rangeEndMs: number): AppMonitorRun[] {
+  return segments
+    .filter((seg) => seg.kind === 'app')
+    .sort((a, b) => a.startMs - b.startMs || a.rowId - b.rowId)
+    .map((seg) => ({
+      key: `app-seg-${seg.rowId}`,
+      packageName: seg.packageName,
+      appLabel: seg.appLabel || seg.packageName,
+      startMs: seg.startMs,
+      endMs: Math.max(seg.startMs, Math.min(seg.endMs || seg.startMs, rangeEndMs)),
+      eventCount: Math.max(1, seg.eventCount || 1),
+      titles: Array.isArray(seg.titles) ? seg.titles : [],
+    }))
+}
+
+function appMonitorSegmentsToPowerEvents(segments: AppMonitorSegment[]): PowerEvent[] {
+  return segments
+    .filter((seg) => seg.kind === 'power')
+    .map((seg) => ({
+      rowId: seg.rowId,
+      startAt: '',
+      event: seg.eventType,
+      eventTimeMs: seg.startMs,
+    }))
+}
+
+function rawMonitorToSegments(events: WindowEvent[], powerEvents: PowerEvent[], rangeEndMs: number): AppMonitorSegment[] {
+  const runs = buildAppMonitorRuns(events, rangeEndMs)
+  const appSegments: AppMonitorSegment[] = runs.map((run, idx) => ({
+    rowId: idx + 1,
+    dateKey: toLocalDateStr(new Date(run.startMs)),
+    kind: 'app',
+    startMs: run.startMs,
+    endMs: run.endMs,
+    packageName: run.packageName,
+    className: '',
+    appLabel: run.appLabel,
+    windowTitle: run.titles[run.titles.length - 1] ?? '',
+    eventType: '',
+    eventCount: run.eventCount,
+    titles: run.titles,
+  }))
+  const powerSegments: AppMonitorSegment[] = powerEvents.map((event, idx) => ({
+    rowId: 1_000_000 + idx + event.rowId,
+    dateKey: toLocalDateStr(new Date(event.eventTimeMs)),
+    kind: 'power',
+    startMs: event.eventTimeMs,
+    endMs: event.eventTimeMs,
+    packageName: '',
+    className: '',
+    appLabel: '',
+    windowTitle: '',
+    eventType: event.event,
+    eventCount: 1,
+    titles: [],
+  }))
+  return [...appSegments, ...powerSegments].sort((a, b) => a.startMs - b.startMs || a.rowId - b.rowId)
+}
+
 function powerEventLabel(event: string): string {
   if (event === 'screen_on') return '屏幕亮起'
   if (event === 'screen_off') return '屏幕熄灭'
@@ -279,19 +436,64 @@ function powerEventLabel(event: string): string {
   return event
 }
 
-function mergeByRowId<T extends { rowId: number; eventTimeMs: number }>(prev: T[], next: T[]): T[] {
-  if (prev.length === 0) return [...next].sort((a, b) => a.eventTimeMs - b.eventTimeMs || a.rowId - b.rowId)
-  if (next.length === 0) return prev
-  const map = new Map<number, T>()
-  for (const item of prev) map.set(item.rowId, item)
-  for (const item of next) map.set(item.rowId, item)
-  return Array.from(map.values()).sort((a, b) => a.eventTimeMs - b.eventTimeMs || a.rowId - b.rowId)
+function powerEventTone(event: string): string {
+  if (event === 'screen_on') return POWER_SCREEN_ON_COLOR
+  if (event === 'screen_off') return POWER_SCREEN_OFF_COLOR
+  if (event === 'unlocked') return POWER_UNLOCKED_COLOR
+  if (event === 'service_started') return POWER_SERVICE_COLOR
+  return theme.accent
 }
 
-function maxEventTime<T extends { eventTimeMs: number }>(items: T[]): number {
-  let max = 0
-  for (const item of items) if (item.eventTimeMs > max) max = item.eventTimeMs
-  return max
+function MonitorPowerIcon({ event }: { event: string }) {
+  if (event === 'service_started') {
+    return (
+      <View style={[styles.monitorPowerIcon, { backgroundColor: alpha(POWER_SERVICE_COLOR, 0.08), borderColor: alpha(POWER_SERVICE_COLOR, 0.22) }]}>
+        <Svg width={22} height={22} viewBox="0 0 1024 1024">
+          <Path d="M512 592a80 80 0 1 0 0-160 80 80 0 0 0 0 160z" fill={POWER_SERVICE_COLOR} />
+          <Path d="M235.072 201.6A414.944 414.944 0 0 0 96 512c0 123.36 53.76 234.176 139.072 310.336l-21.312 23.904a446.816 446.816 0 0 1-149.6-322.688L64 512c0-132.864 57.824-252.224 149.728-334.272l21.344 23.904z m575.168-23.872A446.88 446.88 0 0 1 960 512l-0.16 11.552a446.848 446.848 0 0 1-149.6 322.688l-21.344-23.904A414.88 414.88 0 0 0 928 512c0-123.392-53.76-234.208-139.104-310.4l21.344-23.872zM341.568 320.96A255.36 255.36 0 0 0 256 512a255.36 255.36 0 0 0 85.568 190.976l-21.28 23.872A287.232 287.232 0 0 1 224 512a287.264 287.264 0 0 1 96.256-214.88l21.312 23.872z m362.112-23.872A287.232 287.232 0 0 1 800 512a287.232 287.232 0 0 1-96.288 214.848l-21.312-23.872A255.296 255.296 0 0 0 768 512a255.36 255.36 0 0 0-85.6-191.008l21.28-23.872z" fill={POWER_SERVICE_WAVE_COLOR} />
+        </Svg>
+      </View>
+    )
+  }
+  if (event === 'screen_off') {
+    return (
+      <View style={styles.monitorPowerIconPlain}>
+        <Svg width={28} height={28} viewBox="0 0 1024 1024">
+          <Path d="M0 512c0-159.061333 0-238.549333 25.984-301.269333a341.333333 341.333333 0 0 1 184.746667-184.746667C273.450667 0 352.938667 0 512 0c159.018667 0 238.549333 0 301.269333 25.984a341.333333 341.333333 0 0 1 184.746667 184.746667C1024 273.450667 1024 352.938667 1024 512c0 159.018667 0 238.549333-25.984 301.269333a341.333333 341.333333 0 0 1-184.746667 184.746667C750.549333 1024 671.018667 1024 512 1024c-159.061333 0-238.549333 0-301.269333-25.984a341.333333 341.333333 0 0 1-184.746667-184.746667C0 750.549333 0 671.018667 0 512z" fill={POWER_SCREEN_OFF_COLOR} />
+          <Path d="M518.570667 213.333333a262.570667 262.570667 0 0 0-126.208 492.885334v37.674666h252.501333v-37.674666A262.570667 262.570667 0 0 0 518.570667 213.333333z" fill="#FFFFFF" />
+          <Path d="M394.069333 792.96c0 19.626667 16 35.626667 35.584 35.626667h181.248c19.626667 0 35.626667-16.042667 35.626667-35.626667v-20.864H394.069333v20.864z m196.352 62.72h-140.373333a17.877333 17.877333 0 0 0-17.792 17.792v4.693333c0 9.813333 8.021333 17.834667 17.834667 17.834667h140.245333c9.813333 0 17.834667-8.021333 17.834667-17.834667v-4.693333a17.749333 17.749333 0 0 0-17.749334-17.834667z" fill="#F4B14B" />
+          <Path d="M390.826667 568.234667a22.272 22.272 0 0 0 31.530666 31.488l94.464-94.464 94.464 94.464a22.272 22.272 0 1 0 31.488-31.488l-94.464-94.464 94.464-94.506667a22.272 22.272 0 0 0-31.488-31.488l-94.464 94.506667-94.464-94.464a22.272 22.272 0 1 0-31.488 31.488l94.464 94.464-94.464 94.464z" fill={POWER_SCREEN_OFF_COLOR} />
+        </Svg>
+      </View>
+    )
+  }
+  if (event === 'screen_on') {
+    return (
+      <View style={styles.monitorPowerIconPlain}>
+        <Svg width={28} height={28} viewBox="0 0 1024 1024">
+          <Path d="M0 512c0-159.061333 0-238.549333 25.984-301.269333a341.333333 341.333333 0 0 1 184.746667-184.746667C273.450667 0 352.938667 0 512 0c159.018667 0 238.549333 0 301.269333 25.984a341.333333 341.333333 0 0 1 184.746667 184.746667C1024 273.450667 1024 352.938667 1024 512c0 159.018667 0 238.549333-25.984 301.269333a341.333333 341.333333 0 0 1-184.746667 184.746667C750.549333 1024 671.018667 1024 512 1024c-159.061333 0-238.549333 0-301.269333-25.984a341.333333 341.333333 0 0 1-184.746667-184.746667C0 750.549333 0 671.018667 0 512z" fill={POWER_SCREEN_ON_COLOR} />
+          <Path d="M298.666667 341.333333a128 128 0 0 1 128-128h170.666666a128 128 0 0 1 128 128v341.333334a128 128 0 0 1-128 128h-170.666666a128 128 0 0 1-128-128V341.333333z" fill="#FFFFFF" />
+          <Path d="M426.666667 746.666667a21.333333 21.333333 0 0 1 21.333333-21.333334h128a21.333333 21.333333 0 0 1 0 42.666667h-128a21.333333 21.333333 0 0 1-21.333333-21.333333z" fill="#F4B14B" />
+        </Svg>
+      </View>
+    )
+  }
+  if (event === 'unlocked') {
+    return (
+      <View style={styles.monitorPowerIconPlain}>
+        <Svg width={28} height={28} viewBox="0 0 1024 1024">
+          <Path d="M0 512c0-159.061333 0-238.549333 25.984-301.269333a341.333333 341.333333 0 0 1 184.746667-184.746667C273.450667 0 352.938667 0 512 0c159.018667 0 238.549333 0 301.269333 25.984a341.333333 341.333333 0 0 1 184.746667 184.746667C1024 273.450667 1024 352.938667 1024 512c0 159.018667 0 238.549333-25.984 301.269333a341.333333 341.333333 0 0 1-184.746667 184.746667C750.549333 1024 671.018667 1024 512 1024c-159.061333 0-238.549333 0-301.269333-25.984a341.333333 341.333333 0 0 1-184.746667-184.746667C0 750.549333 0 671.018667 0 512z" fill={POWER_UNLOCKED_COLOR} />
+          <Path d="M390.4 449.28h251.2c51.2 0 92.8 41.6 92.8 92.8v176.64c0 51.2-41.6 92.8-92.8 92.8H390.4c-51.2 0-92.8-41.6-92.8-92.8V542.08c0-51.2 41.6-92.8 92.8-92.8z" fill="#FFFFFF" />
+          <Path d="M394.24 452.266667h-72.533333v-82.346667C321.706667 252.373333 417.28 156.8 534.826667 156.8c95.018667 0 178.688 62.976 204.8 154.24a35.157333 35.157333 0 0 1-67.584 19.328 142.890667 142.890667 0 0 0-137.216-103.253333c-78.848 0-142.933333 64.085333-142.933334 142.805333v82.346667h2.346667z" fill="#FFFFFF" />
+          <Path d="M512 572.8a46.933333 46.933333 0 0 1 24.149333 87.210667v45.653333a24.149333 24.149333 0 0 1-48.298666 0v-45.653333A46.933333 46.933333 0 0 1 512 572.8z" fill="#F4B14B" />
+          <Rect x="382" y="449.28" width="280" height="52" rx="26" fill="#F4B14B" opacity={0.95} />
+        </Svg>
+      </View>
+    )
+  }
+  return (
+    <View style={[styles.monitorPowerIcon, { backgroundColor: alpha(theme.accent, 0.12), borderColor: alpha(theme.accent, 0.24) }]} />
+  )
 }
 
 export type TorrentScreenDevData = {
@@ -303,7 +505,7 @@ export type TorrentScreenDevData = {
 export type TorrentScreenDevSource = {
   pollMs?: number
   load: () => Promise<TorrentScreenDevData>
-  loadAppMonitor?: (startMs: number, endMs: number) => Promise<{ events: WindowEvent[]; powerEvents: PowerEvent[] }>
+  loadAppMonitor?: (startMs: number, endMs: number) => Promise<{ segments?: AppMonitorSegment[]; events?: WindowEvent[]; powerEvents?: PowerEvent[] }>
   clear?: () => Promise<void>
   clearLabel?: string
   openAccessibilitySettings?: () => void
@@ -323,14 +525,11 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   const [a11yPromptOpen, setA11yPromptOpen] = useState(false)
   const [appIconCache, setAppIconCache] = useState<Record<string, string>>({})
   const [calendarRangesByDay, setCalendarRangesByDay] = useState<Record<string, DayRangeColored[]>>({})
-  const [monitorEvents, setMonitorEvents] = useState<WindowEvent[]>([])
-  const [monitorPowerEvents, setMonitorPowerEvents] = useState<PowerEvent[]>([])
+  const [monitorSegments, setMonitorSegments] = useState<AppMonitorSegment[]>([])
   const [monitorLoading, setMonitorLoading] = useState(false)
   const [monitorRefreshing, setMonitorRefreshing] = useState(false)
   const liveRef = useRef(true)
   const a11yPromptShownRef = useRef(false)
-  const monitorEventsRef = useRef<WindowEvent[]>([])
-  const monitorPowerEventsRef = useRef<PowerEvent[]>([])
   const prevViewModeRef = useRef<ViewMode>('monitor')
 
   const selectedDayBounds = useMemo(() => localDayBounds(selectedDate), [selectedDate])
@@ -341,12 +540,9 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   const iconPackageKey = useMemo(() => {
     return Array.from(new Set([
       ...visibleItems.map((it) => it.packageName).filter(Boolean),
-      ...monitorEvents.map((it) => it.packageName).filter(Boolean),
+      ...monitorSegments.map((it) => it.packageName).filter(Boolean),
     ])).sort().join('|')
-  }, [visibleItems, monitorEvents])
-
-  useEffect(() => { monitorEventsRef.current = monitorEvents }, [monitorEvents])
-  useEffect(() => { monitorPowerEventsRef.current = monitorPowerEvents }, [monitorPowerEvents])
+  }, [visibleItems, monitorSegments])
 
   // 跨视图跳转：从动作行点 → 切到 feed 跳到对应卡片；从卡头点 → 切到 action 跳到对应行
   const onCrossJump = useCallback<CrossJump>((targetVm, ts, preferKind) => {
@@ -361,6 +557,16 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   }, [])
 
   const refresh = useCallback(async () => {
+    if (viewMode === 'monitor') {
+      if (!devSource) {
+        isAccessibilityEnabled()
+          .then((on) => { if (liveRef.current) setA11yOn(on) })
+          .catch(() => {})
+      }
+      setLoading(false)
+      setRefreshing(false)
+      return
+    }
     try {
       // 默认读完整 raw 快照；性能优化只能靠取消后台轮询 / 后续转译表，
       // 不能截断 raw，否则还原动作会丢上下文。
@@ -381,39 +587,43 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
         setRefreshing(false)
       }
     }
-  }, [devSource, selectedDayBounds.endMs, selectedDayBounds.startMs])
+  }, [devSource, selectedDayBounds.endMs, selectedDayBounds.startMs, viewMode])
 
   const refreshAppMonitor = useCallback(async (mode: 'full' | 'incremental' = 'full') => {
-    const prevEvents = monitorEventsRef.current
-    const prevPowerEvents = monitorPowerEventsRef.current
-    const hasExisting = prevEvents.length > 0 || prevPowerEvents.length > 0
-    if (mode === 'full' || !hasExisting) setMonitorLoading(true)
+    if (mode === 'full') setMonitorLoading(true)
     try {
       const now = Date.now()
       const endMs = Math.min(selectedDayBounds.endMs, now)
-      const latestSeen = Math.max(maxEventTime(prevEvents), maxEventTime(prevPowerEvents))
-      const queryStartMs = mode === 'incremental' && hasExisting
-        ? Math.max(selectedDayBounds.startMs, latestSeen - 1000)
-        : selectedDayBounds.startMs
-      const loaded = devSource?.loadAppMonitor
-        ? await devSource.loadAppMonitor(queryStartMs, selectedDayBounds.endMs)
-        : await Promise.all([
-            getWindowEventsInRange(queryStartMs, selectedDayBounds.endMs, 5000),
-            getPowerEventsInRange(queryStartMs, selectedDayBounds.endMs, 2000),
-          ]).then(([events, powerEvents]) => ({ events, powerEvents }))
-      if (!liveRef.current) return
-      if (mode === 'incremental' && hasExisting) {
-        setMonitorEvents(mergeByRowId(prevEvents, loaded.events).filter((e) => e.eventTimeMs <= endMs))
-        setMonitorPowerEvents(mergeByRowId(prevPowerEvents, loaded.powerEvents).filter((e) => e.eventTimeMs <= endMs))
+      let nextSegments: AppMonitorSegment[]
+      let source = 'native-formal'
+      if (devSource?.loadAppMonitor) {
+        const loaded = await devSource.loadAppMonitor(selectedDayBounds.startMs, selectedDayBounds.endMs)
+        if (loaded.segments && loaded.segments.length > 0) {
+          nextSegments = loaded.segments
+          source = 'dev-formal'
+        } else {
+          nextSegments = rawMonitorToSegments(loaded.events ?? [], loaded.powerEvents ?? [], endMs)
+          source = 'dev-raw-compatible'
+        }
       } else {
-        setMonitorEvents(loaded.events.filter((e) => e.eventTimeMs <= endMs))
-        setMonitorPowerEvents(loaded.powerEvents.filter((e) => e.eventTimeMs <= endMs))
+        nextSegments = await getAppMonitorSegmentsInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, 100000)
       }
+      const daySegments = nextSegments.filter((seg) =>
+        seg.startMs < selectedDayBounds.endMs && seg.endMs >= selectedDayBounds.startMs && seg.startMs <= endMs)
+      if (!liveRef.current) return
+      console.log('[torrent-monitor]', {
+        source,
+        start: new Date(selectedDayBounds.startMs).toISOString(),
+        end: new Date(selectedDayBounds.endMs).toISOString(),
+        rawCount: nextSegments.length,
+        count: daySegments.length,
+        first: daySegments[0]?.packageName,
+      })
+      setMonitorSegments(daySegments)
     } catch (e) {
       console.warn('[torrent] app monitor refresh failed', e)
       if (liveRef.current) {
-        setMonitorEvents([])
-        setMonitorPowerEvents([])
+        setMonitorSegments([])
       }
     } finally {
       if (liveRef.current) {
@@ -447,11 +657,11 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return
-      void refresh()
+      if (viewMode !== 'monitor') void refresh()
       void refreshAppMonitor('incremental')
     })
     return () => sub.remove()
-  }, [refresh, refreshAppMonitor])
+  }, [refresh, refreshAppMonitor, viewMode])
 
   useEffect(() => {
     let cancelled = false
@@ -540,8 +750,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
         </Pressable>
         {viewMode === 'monitor' ? (
           <AppMonitorView
-            events={monitorEvents}
-            powerEvents={monitorPowerEvents}
+            segments={monitorSegments}
             loading={monitorLoading}
             refreshing={monitorRefreshing}
             onRefresh={() => {
@@ -669,8 +878,7 @@ function itemSearchText(it: ListItem): string {
 }
 
 function AppMonitorView({
-  events,
-  powerEvents,
+  segments,
   loading,
   refreshing,
   onRefresh,
@@ -678,8 +886,7 @@ function AppMonitorView({
   rangeEndMs,
   sortOrder,
 }: {
-  events: WindowEvent[]
-  powerEvents: PowerEvent[]
+  segments: AppMonitorSegment[]
   loading: boolean
   refreshing: boolean
   onRefresh: () => void
@@ -687,7 +894,12 @@ function AppMonitorView({
   rangeEndMs: number
   sortOrder: SortOrder
 }) {
-  const runs = useMemo(() => buildAppMonitorRuns(events, rangeEndMs), [events, rangeEndMs])
+  const runs = useMemo(() => appMonitorSegmentsToRuns(segments, rangeEndMs), [segments, rangeEndMs])
+  const powerEvents = useMemo(() => appMonitorSegmentsToPowerEvents(segments), [segments])
+  const effectiveEventCount = useMemo(
+    () => runs.reduce((sum, run) => sum + run.eventCount, 0),
+    [runs],
+  )
   const rows = useMemo(() => {
     const base = buildAppMonitorRows(runs, powerEvents)
     return sortOrder === 'asc' ? base : [...base].reverse()
@@ -711,37 +923,43 @@ function AppMonitorView({
     )
   }
 
+  const summary = `${runs.length} 段应用 · ${effectiveEventCount} 次窗口信号 · ${powerEvents.length} 条屏幕事件 · 正式数据${switchCount > 0 ? ` · ${switchCount} 组快速切换` : ''}`
+
   return (
-    <ScrollView
+    <FlatList
       style={styles.monitorList}
       contentContainerStyle={styles.monitorContent}
+      data={rows}
+      keyExtractor={(row) => row.key}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-    >
-      <View style={styles.monitorSummary}>
-        <Text style={styles.monitorTitle}>应用监控</Text>
-        <Text style={styles.monitorMeta}>
-          {runs.length} 段应用 · {events.length} 条窗口切换 · {powerEvents.length} 条屏幕事件
-          {switchCount > 0 ? ` · ${switchCount} 组快速切换` : ''}
-        </Text>
-      </View>
-      {rows.length === 0 ? (
+      ListHeaderComponent={(
+        <View style={styles.monitorListHead}>
+          <Text style={styles.monitorListTitle}>应用监控</Text>
+          <Text style={styles.monitorListMeta}>{summary}</Text>
+        </View>
+      )}
+      ListEmptyComponent={(
         <View style={styles.emptyInline}>
           <Text style={styles.emptyHint}>
             这一天还没有窗口切换记录{'\n\n'}
             开启辅助功能后，切换 app、亮屏、解锁等事件会出现在这里
           </Text>
         </View>
-      ) : (
-        rows.map((row) => {
+      )}
+      renderItem={({ item: row }) => {
           if (row.kind === 'power') {
-            const dim = row.event.event === 'screen_off'
+            const tone = powerEventTone(row.event.event)
             return (
-              <View key={row.key} style={styles.monitorPowerRow}>
-                <Text style={styles.monitorTime}>{fmtTime(row.event.eventTimeMs).slice(0, 5)}</Text>
-                <View style={[styles.monitorPowerDot, dim && styles.monitorPowerDotDim]} />
-                <Text style={[styles.monitorPowerText, dim && { color: theme.inkSoft }]}>
-                  {powerEventLabel(row.event.event)}
-                </Text>
+              <View style={styles.actionRow}>
+                <MonitorPowerIcon event={row.event.event} />
+                <View style={styles.actionBody}>
+                  <View style={styles.actionHead}>
+                    <View style={styles.actionHeadLeft}>
+                      <Text style={[styles.actionKind, { color: tone }]}>{powerEventLabel(row.event.event)}</Text>
+                    </View>
+                    <TimeRangeBand startMs={row.event.eventTimeMs} header />
+                  </View>
+                </View>
               </View>
             )
           }
@@ -752,11 +970,7 @@ function AppMonitorView({
             const hiddenCount = Math.max(0, sw.runs.length - shownRuns.length)
             const appTitle = sw.labels.join(' → ')
             return (
-              <View key={row.key} style={[styles.monitorRunRow, styles.monitorSwitchRow]}>
-                <Text style={styles.monitorTime}>
-                  {fmtTime(sw.startMs).slice(0, 5)}
-                  {sw.endMs > sw.startMs ? `\n${fmtTime(sw.endMs).slice(0, 5)}` : ''}
-                </Text>
+              <View style={[styles.actionRow, styles.monitorSwitchActionRow]}>
                 <View style={[styles.monitorSwitchIcons, expanded && styles.monitorSwitchIconsExpanded]}>
                   {shownRuns.map((run, idx) => {
                     const b64 = appIconCache[run.packageName]
@@ -780,15 +994,18 @@ function AppMonitorView({
                     </Pressable>
                   )}
                 </View>
-                <View style={styles.monitorBody}>
-                  <View style={styles.monitorAppHead}>
-                    <Text style={styles.monitorApp} numberOfLines={expanded ? 2 : 1}>{appTitle}</Text>
-                    <Text style={styles.monitorDuration}>快速切换 · {sw.eventCount} 次</Text>
+                <View style={styles.actionBody}>
+                  <View style={styles.actionHead}>
+                    <View style={styles.actionHeadLeft}>
+                      <Text style={[styles.actionKind, { color: theme.accent }]} numberOfLines={expanded ? 2 : 1}>{appTitle}</Text>
+                      <Text style={styles.monitorInlineMeta}>快速切换 · {sw.eventCount} 次</Text>
+                    </View>
+                    <TimeRangeBand startMs={sw.startMs} endMs={sw.endMs} header />
                   </View>
-                  <Text style={styles.monitorWindowTitle} numberOfLines={expanded ? 3 : 1}>
+                  <Text style={styles.actionDetail} numberOfLines={expanded ? 3 : 1}>
                     {sw.runs.length} 段应用在 1 分钟内切换
                   </Text>
-                  <Text style={styles.monitorPkg} numberOfLines={1}>{sw.packageNames.join(' / ')}</Text>
+                  <Text style={styles.monitorPkgLine} numberOfLines={1}>{sw.packageNames.join(' / ')}</Text>
                 </View>
               </View>
             )
@@ -799,11 +1016,7 @@ function AppMonitorView({
           const b64 = appIconCache[run.packageName]
           const initial = (label || '?').slice(0, 1).toUpperCase()
           return (
-            <View key={row.key} style={styles.monitorRunRow}>
-              <Text style={styles.monitorTime}>
-                {fmtTime(run.startMs).slice(0, 5)}
-                {run.endMs > run.startMs ? `\n${fmtTime(run.endMs).slice(0, 5)}` : ''}
-              </Text>
+            <View style={styles.actionRow}>
               {b64 ? (
                 <Image style={styles.monitorIcon} source={{ uri: `data:image/png;base64,${b64}` }} />
               ) : (
@@ -811,22 +1024,27 @@ function AppMonitorView({
                   <Text style={styles.monitorIconText}>{initial}</Text>
                 </View>
               )}
-              <View style={styles.monitorBody}>
-                <View style={styles.monitorAppHead}>
-                  <Text style={styles.monitorApp} numberOfLines={1}>{label}</Text>
-                  <Text style={styles.monitorDuration}>
+              <View style={styles.actionBody}>
+                <View style={styles.actionHead}>
+                  <View style={styles.actionHeadLeft}>
+                    <Text style={[styles.actionKind, { color: theme.ink }]} numberOfLines={1}>{label}</Text>
+                    <Text style={styles.monitorInlineMeta}>
                     {fmtShortDuration(run.endMs - run.startMs)}
                     {run.eventCount > 1 ? ` · ${run.eventCount} 次` : ''}
-                  </Text>
+                    </Text>
+                  </View>
+                  <TimeRangeBand startMs={run.startMs} endMs={run.endMs} header />
                 </View>
-                {!!title && <Text style={styles.monitorWindowTitle} numberOfLines={1}>{title}</Text>}
-                <Text style={styles.monitorPkg} numberOfLines={1}>{run.packageName}</Text>
+                {!!title && <Text style={styles.actionDetail} numberOfLines={1}>{title}</Text>}
+                <Text style={styles.monitorPkgLine} numberOfLines={1}>{run.packageName}</Text>
               </View>
             </View>
           )
-        })
-      )}
-    </ScrollView>
+      }}
+      initialNumToRender={14}
+      maxToRenderPerBatch={12}
+      windowSize={11}
+    />
   )
 }
 
@@ -978,19 +1196,19 @@ function RenderList({
 
 function StorySnapView({ item: s, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'story' }>; highlighted: boolean; appIconCache: Record<string, string> }) {
   const it = s.story
-  const tsLabel = s.tsStart === s.tsEnd
-    ? fmtTime(s.tsEnd)
-    : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
   return (
     <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
       <View style={[styles.snapCardHead, styles.snapCardHeadDetail]}>
         <View style={[styles.snapCardAccentBar, { backgroundColor: '#00AEEC' }]} />
         <View style={styles.snapCardHeadText}>
-          <View style={styles.snapCardTitleRow}>
-            <BiliCardIcon appIconCache={appIconCache} color="#00AEEC" />
-            <Text style={styles.snapCardTitle}>视频播放界面（竖屏）</Text>
+          <View style={styles.headerTitleTimeRow}>
+            <View style={styles.headerTitleLeft}>
+              <BiliCardIcon appIconCache={appIconCache} color="#00AEEC" />
+              <Text style={[styles.snapCardTitle, styles.headerTitleText]}>视频播放界面（竖屏）</Text>
+            </View>
+            <TimeRangeBand startMs={s.tsStart} endMs={s.tsEnd} compact header />
           </View>
-          <Text style={styles.snapCardSubtitle}>{tsLabel}{it.seenCount > 1 ? ` · 看 ${it.seenCount} 次` : ''}</Text>
+          <Text style={styles.snapCardSubtitle}>{it.seenCount > 1 ? `看 ${it.seenCount} 次` : '在看'}</Text>
         </View>
       </View>
       <View style={styles.snapCardBody}>
@@ -1073,23 +1291,22 @@ function HomeSnapView({ item: s, sortOrder, onCrossJump, highlighted, appIconCac
     else { pairBuf.push(it); if (pairBuf.length === 2) flushPair() }
   }
   flushPair()
-  const tsLabel = s.tsStart === s.tsEnd
-    ? fmtTime(s.tsEnd)
-    : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
-  const dur = Math.round((s.tsEnd - s.tsStart) / 1000)
   return (
     <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
       <Pressable onPress={onHeadPress}>
       <View style={styles.snapCardHead}>
         <View style={styles.snapCardAccentBar} />
         <View style={styles.snapCardHeadText}>
-          <View style={styles.snapCardTitleRow}>
-            <BiliCardIcon appIconCache={appIconCache} color={HOME_ACCENT} />
-            <Text style={styles.snapCardTitle}>B 站主页</Text>
-            <Text style={styles.jumpHint}>→ 动作</Text>
+          <View style={styles.headerTitleTimeRow}>
+            <View style={styles.headerTitleLeft}>
+              <BiliCardIcon appIconCache={appIconCache} color={HOME_ACCENT} />
+              <Text style={[styles.snapCardTitle, styles.headerTitleText]}>B 站主页</Text>
+              <Text style={styles.jumpHint}>→ 动作</Text>
+            </View>
+            <TimeRangeBand startMs={s.tsStart} endMs={s.tsEnd} compact header />
           </View>
           <Text style={styles.snapCardSubtitle}>
-            {tsLabel}{dur > 0 ? ` · 停留 ${dur}s` : ''} · 看到 {s.feedItems.length} 条视频
+            看到 {s.feedItems.length} 条视频
             {s.sweepCount > 1 ? ` · 刷 ${s.sweepCount} 次` : ''}
           </Text>
         </View>
@@ -1148,22 +1365,22 @@ function DetailSnapView({ item: s, onCrossJump, highlighted, appIconCache }: { i
   // 相关推荐目前按 a11y 抓取顺序，跟时间顺序无关 — 不跟 sortOrder 翻
   // 评论数用 d.related 自身；主视频信息没有时间维度
   const d = s.detail
-  const tsLabel = s.tsStart === s.tsEnd
-    ? fmtTime(s.tsEnd)
-    : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
   return (
     <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
       <Pressable onPress={onHeadPress}>
       <View style={[styles.snapCardHead, styles.snapCardHeadDetail]}>
         <View style={[styles.snapCardAccentBar, { backgroundColor: '#00AEEC' }]} />
         <View style={styles.snapCardHeadText}>
-          <View style={styles.snapCardTitleRow}>
-            <BiliCardIcon appIconCache={appIconCache} color="#00AEEC" />
-            <Text style={styles.snapCardTitle}>视频播放界面</Text>
-            <Text style={styles.jumpHint}>→ 动作</Text>
+          <View style={styles.headerTitleTimeRow}>
+            <View style={styles.headerTitleLeft}>
+              <BiliCardIcon appIconCache={appIconCache} color="#00AEEC" />
+              <Text style={[styles.snapCardTitle, styles.headerTitleText]}>视频播放界面</Text>
+              <Text style={styles.jumpHint}>→ 动作</Text>
+            </View>
+            <TimeRangeBand startMs={s.tsStart} endMs={s.tsEnd} compact header />
           </View>
           <Text style={styles.snapCardSubtitle}>
-            {tsLabel} · 在看
+            在看
             {d.related.length > 0 ? ` · 相关推荐 ${d.related.length} 条` : ''}
           </Text>
         </View>
@@ -1321,18 +1538,18 @@ function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted, appIco
   const comments: CommentItem[] = s.comments
   const commentDetails = s.commentDetails
   const hasCommentDetail = commentDetails.length > 0 || s.commentDetailSegs.length > 0
-  const tsLabel = s.tsStart === s.tsEnd
-    ? fmtTime(s.tsEnd)
-    : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
   const CD_COLOR = SUB_TAB_LABEL.comment_detail.color
   return (
     <View style={[styles.subCard, highlighted && styles.snapCardHighlight, { borderColor: alpha(COMMENTS_ACCENT, 0.3) }]}>
       <Pressable onPress={onHeadPress} style={[styles.subCardHead, { backgroundColor: alpha(COMMENTS_ACCENT, 0.06) }]}>
-        <View style={[styles.subCardDot, { backgroundColor: COMMENTS_ACCENT }]} />
-        <BiliCardIcon appIconCache={appIconCache} color={COMMENTS_ACCENT} small />
-        <Text style={[styles.subCardLabel, { color: COMMENTS_ACCENT }]}>评论区</Text>
-        <Text style={styles.subCardMeta}>{tsLabel} · {comments.length} 条</Text>
-        <Text style={styles.jumpHint}>→ 动作</Text>
+        <View style={styles.subCardHeadLeft}>
+          <View style={[styles.subCardDot, { backgroundColor: COMMENTS_ACCENT }]} />
+          <BiliCardIcon appIconCache={appIconCache} color={COMMENTS_ACCENT} small />
+          <Text style={[styles.subCardLabel, { color: COMMENTS_ACCENT }]}>评论区</Text>
+          <Text style={styles.subCardMeta}>{comments.length} 条</Text>
+          <Text style={styles.jumpHint}>→ 动作</Text>
+        </View>
+        <TimeRangeBand startMs={s.tsStart} endMs={s.tsEnd} compact header />
       </Pressable>
       <View style={styles.subCardBody}>
         {comments.map((c, i) => (
@@ -1488,16 +1705,18 @@ function BiliCardIcon({ appIconCache, color, small }: { appIconCache: Record<str
 // 全屏播放子卡 — video_intro 的 fullscreen 段独立成卡
 function FullscreenSnapView({ item: s, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'fullscreen' }>; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
   const onHeadPress = () => onCrossJump('action', s.tsStart)
-  const tsLabel = s.tsStart === s.tsEnd ? fmtTime(s.tsEnd) : `${fmtTime(s.tsStart)} – ${fmtTime(s.tsEnd)}`
   const FS_COLOR = SUB_TAB_LABEL.fullscreen.color
   return (
     <View style={[styles.subCard, highlighted && styles.snapCardHighlight, { borderColor: alpha(FS_COLOR, 0.3) }]}>
       <Pressable onPress={onHeadPress} style={[styles.subCardHead, { backgroundColor: alpha(FS_COLOR, 0.06) }]}>
-        <View style={[styles.subCardDot, { backgroundColor: FS_COLOR }]} />
-        <BiliCardIcon appIconCache={appIconCache} color={FS_COLOR} small />
-        <Text style={[styles.subCardLabel, { color: FS_COLOR }]}>全屏播放</Text>
-        <Text style={styles.subCardMeta}>{tsLabel}</Text>
-        <Text style={styles.jumpHint}>→ 动作</Text>
+        <View style={styles.subCardHeadLeft}>
+          <View style={[styles.subCardDot, { backgroundColor: FS_COLOR }]} />
+          <BiliCardIcon appIconCache={appIconCache} color={FS_COLOR} small />
+          <Text style={[styles.subCardLabel, { color: FS_COLOR }]}>全屏播放</Text>
+          <Text style={styles.subCardMeta}>{s.samples.length > 0 ? `${s.samples.length} 次采样` : '无进度采样'}</Text>
+          <Text style={styles.jumpHint}>→ 动作</Text>
+        </View>
+        <TimeRangeBand startMs={s.tsStart} endMs={s.tsEnd} compact header />
       </Pressable>
       <View style={styles.subCardBody}>
         {s.samples.length > 0
@@ -1517,10 +1736,6 @@ function ActionLineView({ item: a, onCrossJump, highlighted, appIconCache }: { i
   const cfg = ACTION_CFG[a.act]
   const appLabel = a.appLabel ?? getPackageLabel(a.packageName)
   const iconB64 = a.packageName ? appIconCache[a.packageName] : undefined
-  const lasted = a.endTs ? Math.round((a.endTs - a.ts) / 1000) : 0
-  const timeRange = lasted >= 1
-    ? `${fmtTime(a.ts)} → ${fmtTime(a.endTs!)}`
-    : fmtTime(a.ts)
   const jumpKind = getActionJumpKind(a)
   const canJump = jumpKind != null
   return (
@@ -1532,11 +1747,12 @@ function ActionLineView({ item: a, onCrossJump, highlighted, appIconCache }: { i
       <ActionAppIcon color={cfg.color} label={appLabel} iconB64={iconB64} />
       <View style={styles.actionBody}>
         <View style={styles.actionHead}>
-          <Text style={[styles.actionKind, { color: cfg.color }]}>{a.act === 'video_intro' ? `进入视频播放界面${a.isStory ? '（竖屏）' : ''}` : cfg.label}</Text>
-          {canJump && <Text style={styles.jumpHint}>→ 卡片</Text>}
-          {lasted >= 1 && <Text style={styles.actionLasted}>停留 {lasted}s</Text>}
+          <View style={styles.actionHeadLeft}>
+            <Text style={[styles.actionKind, { color: cfg.color }]}>{a.act === 'video_intro' ? `进入视频播放界面${a.isStory ? '（竖屏）' : ''}` : cfg.label}</Text>
+            {canJump && <Text style={styles.jumpHint}>→ 卡片</Text>}
+          </View>
+          <TimeRangeBand startMs={a.ts} endMs={a.endTs} header />
         </View>
-        <Text style={styles.actionTime}>{timeRange}</Text>
         {(a.title || a.upName || a.meta) && (
           <Text style={styles.actionDetail} numberOfLines={2}>
             {a.title ? `《${a.title}》` : ''}
@@ -1680,7 +1896,22 @@ const styles = StyleSheet.create({
     backgroundColor: alpha(theme.accent, 0.12),
     borderLeftWidth: 3, borderLeftColor: theme.accent,
   },
-  snapCardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  headerTitleTimeRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  headerTitleLeft: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingTop: 1,
+  },
+  headerTitleText: { flexShrink: 1 },
   jumpHint: {
     fontSize: 9,
     color: theme.accent,
@@ -1742,58 +1973,97 @@ const styles = StyleSheet.create({
   listContent: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 20 },
   monitorList: { flex: 1 },
   monitorContent: { paddingHorizontal: 14, paddingTop: 10, paddingBottom: 24 },
-  monitorSummary: {
-    backgroundColor: theme.surface,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.line,
+  monitorListHead: {
+    paddingHorizontal: 4,
+    paddingTop: 2,
+    paddingBottom: 8,
   },
-  monitorTitle: { fontSize: 15, fontWeight: '700', color: theme.ink },
-  monitorMeta: { fontSize: 11, color: theme.inkSoft, marginTop: 4 },
-  monitorRunRow: {
+  monitorListTitle: { fontSize: 13, fontWeight: '800', color: theme.ink },
+  monitorListMeta: { fontSize: 10, color: theme.inkSoft, marginTop: 3, lineHeight: 15 },
+  timeBand: {
+    alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    backgroundColor: theme.surface,
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 8,
+    flexWrap: 'wrap',
+    gap: 5,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.lineSoft,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginTop: 3,
+    marginBottom: 5,
   },
-  monitorSwitchRow: {
-    backgroundColor: alpha(theme.accent, 0.05),
-    borderColor: alpha(theme.accent, 0.22),
+  timeBandCompact: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    marginTop: 2,
+    marginBottom: 4,
   },
-  monitorPowerRow: {
+  headerTimeBlock: {
+    width: '40%',
+    flexShrink: 0,
+    alignSelf: 'flex-start',
+    alignItems: 'flex-end',
+    paddingTop: 1,
+  },
+  headerTimeMetaRow: {
     flexDirection: 'row',
+    justifyContent: 'flex-end',
     alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    marginBottom: 6,
+    gap: 5,
+    marginBottom: 1,
   },
-  monitorTime: {
-    width: 40,
-    fontSize: 11,
+  headerTimePeriod: {
+    fontSize: 9,
+    lineHeight: 12,
+    fontWeight: '800',
+  },
+  headerTimeDur: {
+    fontSize: 9,
+    lineHeight: 12,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  headerTimeClock: {
+    fontSize: 12,
     lineHeight: 15,
-    color: theme.inkSoft,
+    color: theme.ink,
+    fontWeight: '800',
     fontVariant: ['tabular-nums'],
     textAlign: 'right',
   },
-  monitorIcon: { width: 30, height: 30, borderRadius: 7 },
+  timeBandPeriod: {
+    fontSize: 9,
+    fontWeight: '800',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  timeBandClock: {
+    fontSize: 11,
+    color: theme.ink,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  timeBandDur: {
+    fontSize: 10,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  monitorIcon: { width: 28, height: 28, borderRadius: 8, marginTop: 1, marginRight: 12 },
   monitorIconFallback: {
-    width: 30,
-    height: 30,
-    borderRadius: 7,
+    width: 28,
+    height: 28,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: alpha(theme.accent, 0.12),
+    marginTop: 1,
+    marginRight: 12,
   },
   monitorIconText: { fontSize: 13, fontWeight: '700', color: theme.accent },
-  monitorSwitchIcons: { width: 48, minHeight: 30, flexDirection: 'row', flexWrap: 'wrap', gap: 3, alignItems: 'center' },
+  monitorSwitchIcons: { width: 48, minHeight: 30, flexDirection: 'row', flexWrap: 'wrap', gap: 3, alignItems: 'center', marginTop: 1, marginRight: 12 },
   monitorSwitchIconsExpanded: { width: 72 },
   monitorSwitchIcon: { width: 21, height: 21, borderRadius: 5 },
   monitorSwitchIconFallback: {
@@ -1814,15 +2084,27 @@ const styles = StyleSheet.create({
     backgroundColor: alpha(theme.ink, 0.08),
   },
   monitorSwitchMoreText: { fontSize: 9, fontWeight: '700', color: theme.inkSoft },
-  monitorBody: { flex: 1, minWidth: 0 },
-  monitorAppHead: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
-  monitorApp: { flex: 1, fontSize: 13, fontWeight: '700', color: theme.ink },
-  monitorDuration: { fontSize: 11, color: theme.inkSoft, fontVariant: ['tabular-nums'] },
-  monitorWindowTitle: { fontSize: 12, color: theme.inkSoft, marginTop: 2 },
-  monitorPkg: { fontSize: 10, color: theme.inkFaint, marginTop: 2 },
-  monitorPowerDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.accent },
-  monitorPowerDotDim: { backgroundColor: theme.inkFaint },
-  monitorPowerText: { fontSize: 12, color: theme.ink, fontWeight: '600' },
+  monitorPowerIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    marginTop: 1,
+    marginRight: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  monitorPowerIconPlain: { width: 28, height: 28, marginTop: 1, marginRight: 12 },
+  monitorSwitchActionRow: {
+    backgroundColor: alpha(theme.accent, 0.035),
+  },
+  monitorInlineMeta: {
+    fontSize: 10,
+    color: theme.inkSoft,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  monitorPkgLine: { fontSize: 10, color: theme.inkFaint, marginTop: 2 },
   // 主页快照大卡
   // 子卡片层级容器：缩进 + 左侧粗色连接线（视觉归属父 detail）
   childRow: {
@@ -1849,15 +2131,24 @@ const styles = StyleSheet.create({
   subCardHead: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 8,
     paddingHorizontal: 10,
     paddingVertical: 7,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.lineSoft,
   },
+  subCardHeadLeft: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
   subCardDot: { width: 6, height: 6, borderRadius: 3 },
   subCardLabel: { fontSize: 12, fontWeight: '700' },
-  subCardMeta: { fontSize: 11, color: theme.inkSoft, fontVariant: ['tabular-nums'], marginLeft: 'auto', marginRight: 6 },
+  subCardMeta: { fontSize: 11, color: theme.inkSoft, fontVariant: ['tabular-nums'] },
   subCardBody: { padding: 12 },
   snapCard: {
     backgroundColor: theme.surface,
@@ -2282,24 +2573,26 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginRight: 12,
   },
-  actionBody: { flex: 1 },
-  actionHead: { flexDirection: 'row', alignItems: 'baseline', gap: 10, marginBottom: 4 },
-  actionTime: {
-    fontSize: 11,
-    color: theme.inkFaint,
-    fontVariant: ['tabular-nums'],
-    fontWeight: '500',
-    marginBottom: 2,
+  actionBody: { flex: 1, minWidth: 0 },
+  actionHead: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginBottom: 5,
+  },
+  actionHeadLeft: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   actionKind: {
+    flexShrink: 1,
     fontSize: 14,
     fontWeight: '700',
-  },
-  actionLasted: {
-    fontSize: 11,
-    color: theme.inkSoft,
-    fontVariant: ['tabular-nums'],
-    marginLeft: 'auto',
   },
   actionDetail: {
     fontSize: 12,

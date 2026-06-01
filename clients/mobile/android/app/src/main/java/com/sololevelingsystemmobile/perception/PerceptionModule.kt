@@ -245,6 +245,26 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun getAppMonitorSegmentsInRange(startMs: Double, endMs: Double, limit: Double, promise: Promise) {
+    try {
+      val items = db.appMonitorSegmentsInRange(startMs.toLong(), endMs.toLong(), limit.toInt())
+      promise.resolve(appMonitorSegmentsToArray(items))
+    } catch (e: Throwable) {
+      promise.reject("GET_APP_MONITOR_SEGMENTS_RANGE_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun getRecentAppMonitorSegments(limit: Double, promise: Promise) {
+    try {
+      val items = db.recentAppMonitorSegments(limit.toInt())
+      promise.resolve(appMonitorSegmentsToArray(items))
+    } catch (e: Throwable) {
+      promise.reject("GET_RECENT_APP_MONITOR_SEGMENTS_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
   fun isAccessibilityEnabled(promise: Promise) {
     try {
       promise.resolve(SlsAccessibilityService.isEnabled(reactContext))
@@ -384,4 +404,26 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
   companion object {
     const val NAME = "Perception"
   }
+
+  private fun appMonitorSegmentsToArray(items: List<PerceptionDb.AppMonitorSegmentSnapshot>) =
+    Arguments.createArray().apply {
+      for (it in items) {
+        val titles = Arguments.createArray()
+        for (t in it.titles) titles.pushString(t)
+        pushMap(Arguments.createMap().apply {
+          putDouble("rowId", it.rowId.toDouble())
+          putString("dateKey", it.dateKey)
+          putString("kind", it.kind)
+          putDouble("startMs", it.startMs.toDouble())
+          putDouble("endMs", it.endMs.toDouble())
+          putString("packageName", it.packageName)
+          putString("className", it.className)
+          putString("appLabel", it.appLabel)
+          putString("windowTitle", it.windowTitle)
+          putString("eventType", it.eventType)
+          putInt("eventCount", it.eventCount)
+          putArray("titles", titles)
+        })
+      }
+    }
 }

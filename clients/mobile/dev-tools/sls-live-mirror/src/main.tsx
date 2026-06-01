@@ -573,6 +573,8 @@ function App() {
     load: async () => capturesRef.current,
     loadAppMonitor: async (startMs, endMs) => {
       const qs = `startMs=${Math.round(startMs)}&endMs=${Math.round(endMs)}`
+      const segRes = await fetch(`${API_BASE}/api/app-monitor-segments?${qs}&limit=100000`, { cache: 'no-store' }).then((r) => r.json()).catch(() => ({ rows: [] }))
+      if (segRes.rows?.length) return { segments: segRes.rows }
       const [windowRes, powerRes] = await Promise.all([
         fetch(`${API_BASE}/api/window-events?${qs}&limit=5000`, { cache: 'no-store' }).then((r) => r.json()),
         fetch(`${API_BASE}/api/power-events?${qs}&limit=2000`, { cache: 'no-store' }).then((r) => r.json()),

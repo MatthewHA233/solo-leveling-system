@@ -36,9 +36,10 @@ import type {
   ActivityTag,
 } from '../types'
 import { CATEGORY_PALETTE_COLORS, createTag, deleteCategory, deleteTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks, renameCategory, renameTagPath } from '../lib/api'
+import { DAY_PERIOD_START_HOURS, dayPeriodForHour, type DayPeriodInfo } from '../lib/dayPeriods'
 import { loadDayNightZoomPrefs, saveDayNightZoomPrefs } from '../lib/prefs'
 import { fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
-import { getAppIcons, getPowerEventsInRange, getWindowEventsInRange, type PowerEvent, type WindowEvent } from '../lib/perception'
+import { getAppIcons, getAppMonitorSegmentsInRange, type AppMonitorSegment } from '../lib/perception'
 
 const GUTTER = 46
 const GAP = 4
@@ -116,18 +117,10 @@ type Row =
   | { kind: 'full'; startMin: number; cols: number }
   | { kind: 'compressed'; hours: number[] }
 
-type DayPeriodInfo = {
-  label: string
-  accent: string
-  text: string
-}
-
 type DayPeriodSegment = DayPeriodInfo & {
   key: string
   hours: number
 }
-
-const DAY_PERIOD_START_HOURS = [0, 6, 12, 18, 20] as const
 
 type HitCell =
   | { kind: 'full'; hour: number; col: number; minute: number }
@@ -249,52 +242,19 @@ function fmtMsDuration(ms: number): string {
   return fmtHM(Math.max(1, Math.round(ms / 60_000)))
 }
 
-function compactTitles(events: WindowEvent[]): string[] {
-  const out: string[] = []
-  for (const ev of events) {
-    const label = ev.appLabel || ev.packageName
-    const title = ev.windowTitle?.trim()
-    if (!title || title === label || title === ev.packageName) continue
-    if (out[out.length - 1] !== title) out.push(title)
-  }
-  return out
-}
-
-function buildProbeAppRuns(events: WindowEvent[], segmentEndMs: number): ProbeAppRun[] {
-  const sorted = [...events].sort((a, b) => a.eventTimeMs - b.eventTimeMs || a.rowId - b.rowId)
-  const runs: ProbeAppRun[] = []
-  let currentEvents: WindowEvent[] = []
-  const flush = (nextStartMs?: number) => {
-    if (currentEvents.length === 0) return
-    const first = currentEvents[0]
-    const last = currentEvents[currentEvents.length - 1]
-    const endMs = Math.max(
-      last.eventTimeMs,
-      Math.min(nextStartMs ?? segmentEndMs, segmentEndMs),
-    )
-    runs.push({
-      key: `run-${first.rowId}-${last.rowId}`,
-      packageName: first.packageName,
-      appLabel: first.appLabel || first.packageName,
-      startMs: first.eventTimeMs,
-      endMs,
-      eventCount: currentEvents.length,
-      titles: compactTitles(currentEvents),
-    })
-    currentEvents = []
-  }
-
-  for (const ev of sorted) {
-    const last = currentEvents[currentEvents.length - 1]
-    if (!last || last.packageName === ev.packageName) {
-      currentEvents.push(ev)
-    } else {
-      flush(ev.eventTimeMs)
-      currentEvents.push(ev)
-    }
-  }
-  flush()
-  return runs
+function buildProbeAppRuns(segments: AppMonitorSegment[], segmentEndMs: number): ProbeAppRun[] {
+  return segments
+    .filter((seg) => seg.kind === 'app')
+    .sort((a, b) => a.startMs - b.startMs || a.rowId - b.rowId)
+    .map((seg) => ({
+      key: `run-${seg.rowId}`,
+      packageName: seg.packageName,
+      appLabel: seg.appLabel || seg.packageName,
+      startMs: seg.startMs,
+      endMs: Math.max(seg.startMs, Math.min(seg.endMs || seg.startMs, segmentEndMs)),
+      eventCount: Math.max(1, seg.eventCount || 1),
+      titles: Array.isArray(seg.titles) ? seg.titles : [],
+    }))
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -303,14 +263,6 @@ function clamp(v: number, lo: number, hi: number): number {
 
 function snapMinute(minute: number): number {
   return clamp(Math.round(minute / 5) * 5, 0, 1435)
-}
-
-function dayPeriodForHour(hour: number): DayPeriodInfo {
-  if (hour < 6) return { label: '凌晨', accent: '#787CFF', text: '#626BDF' }
-  if (hour < 12) return { label: '上午', accent: '#DCEB64', text: '#8A940F' }
-  if (hour < 18) return { label: '下午', accent: '#FACC15', text: '#B7791F' }
-  if (hour < 20) return { label: '黄昏', accent: '#FF8140', text: '#D65F20' }
-  return { label: '夜晚', accent: '#A06EFF', text: '#7C3AED' }
 }
 
 function rowStartHour(row: Row): number {
@@ -932,8 +884,7 @@ export default function DayNightScreen() {
     }
   }
   const [detail, setDetail] = useState<Span | null>(null)
-  const [probeEvents, setProbeEvents] = useState<WindowEvent[]>([])
-  const [powerEvents, setPowerEvents] = useState<PowerEvent[]>([])
+  const [probeSegments, setProbeSegments] = useState<AppMonitorSegment[]>([])
   const [probeLoading, setProbeLoading] = useState(false)
   const [iconCache, setIconCache] = useState<Record<string, string>>({})
   // focusStart/zoomCols/totalRows 启动时从 SharedPreferences 加载
@@ -1259,8 +1210,7 @@ export default function DayNightScreen() {
 
   useEffect(() => {
     if (!detail) {
-      setProbeEvents([])
-      setPowerEvents([])
+      setProbeSegments([])
       return
     }
     const midnight = new Date(selectedDate)
@@ -1269,17 +1219,12 @@ export default function DayNightScreen() {
     const endMs = midnight.getTime() + detail.endMin * 60_000
     let alive = true
     setProbeLoading(true)
-    // 并行拉窗口事件 + 电源/屏幕事件，合并展示给"准确算花了多久"用
-    Promise.all([
-      getWindowEventsInRange(startMs, endMs, 200),
-      getPowerEventsInRange(startMs, endMs, 100),
-    ])
-      .then(async ([evs, pwrs]) => {
+    getAppMonitorSegmentsInRange(startMs, endMs, 500)
+      .then(async (segments) => {
         if (!alive) return
-        setProbeEvents(evs)
-        setPowerEvents(pwrs)
+        setProbeSegments(segments)
         // 异步把还没缓存的 pkg 图标拉过来
-        const needed = Array.from(new Set(evs.map((e) => e.packageName))).filter(
+        const needed = Array.from(new Set(segments.map((e) => e.packageName))).filter(
           (p) => p && !(p in iconCache),
         )
         if (needed.length > 0) {
@@ -1288,10 +1233,7 @@ export default function DayNightScreen() {
         }
       })
       .catch(() => {
-        if (alive) {
-          setProbeEvents([])
-          setPowerEvents([])
-        }
+        if (alive) setProbeSegments([])
       })
       .finally(() => {
         if (alive) setProbeLoading(false)
@@ -2385,18 +2327,18 @@ export default function DayNightScreen() {
                       const midnight = new Date(selectedDate)
                       midnight.setHours(0, 0, 0, 0)
                       const detailEndMs = midnight.getTime() + detail.endMin * 60_000
-                      const appRuns = buildProbeAppRuns(probeEvents, detailEndMs)
-                      // 合并 app run + power，按 eventTimeMs 正序展示
-                      // power 事件用 chip 行渲染（screen_off / on / unlocked / service_started）
+                      const appRuns = buildProbeAppRuns(probeSegments, detailEndMs)
+                      const powerSegments = probeSegments.filter((seg) => seg.kind === 'power')
+                      // 合并 app run + power，按正式段 startMs 正序展示
                       type Merged =
                         | { kind: 'app'; key: string; ts: number; run: ProbeAppRun }
-                        | { kind: 'power'; key: string; ts: number; ev: PowerEvent }
+                        | { kind: 'power'; key: string; ts: number; ev: AppMonitorSegment }
                       const merged: Merged[] = [
                         ...appRuns.map((run) => ({
                           kind: 'app' as const, key: run.key, ts: run.startMs, run,
                         })),
-                        ...powerEvents.map((ev) => ({
-                          kind: 'power' as const, key: `p${ev.rowId}`, ts: ev.eventTimeMs, ev,
+                        ...powerSegments.map((ev) => ({
+                          kind: 'power' as const, key: `p${ev.rowId}`, ts: ev.startMs, ev,
                         })),
                       ].sort((a, b) => a.ts - b.ts)
                       return (
@@ -2404,8 +2346,8 @@ export default function DayNightScreen() {
                           <Text style={styles.sheetProbeLabel}>
                             在这段时间手机
                             {appRuns.length > 0 ? ` · ${appRuns.length} 段应用` : ''}
-                            {probeEvents.length > appRuns.length ? ` / ${probeEvents.length} 条原始窗口事件` : ''}
-                            {powerEvents.length > 0 ? ` （含 ${powerEvents.length} 条屏幕事件）` : ''}
+                            {appRuns.length > 0 ? ` / ${appRuns.reduce((sum, run) => sum + run.eventCount, 0)} 次窗口信号` : ''}
+                            {powerSegments.length > 0 ? ` （含 ${powerSegments.length} 条屏幕事件）` : ''}
                           </Text>
                           {probeLoading ? (
                             <Text style={styles.sheetProbeEmpty}>读取中…</Text>
@@ -2418,15 +2360,15 @@ export default function DayNightScreen() {
                               if (row.kind === 'power') {
                                 const e = row.ev
 	                                const label =
-	                                  e.event === 'screen_off' ? '屏幕关闭'
-	                                  : e.event === 'screen_on' ? '屏幕亮起'
-	                                  : e.event === 'unlocked' ? '解锁'
-	                                  : e.event === 'service_started' ? '感知 Service 启动'
-	                                  : e.event
-	                                const dim = e.event === 'screen_off'
+	                                  e.eventType === 'screen_off' ? '屏幕关闭'
+	                                  : e.eventType === 'screen_on' ? '屏幕亮起'
+	                                  : e.eventType === 'unlocked' ? '解锁'
+	                                  : e.eventType === 'service_started' ? '感知 Service 启动'
+	                                  : e.eventType
+	                                const dim = e.eventType === 'screen_off'
 	                                return (
 	                                  <View key={row.key} style={styles.sheetPowerRow}>
-	                                    <Text style={styles.sheetProbeTime}>{fmtHHMMms(e.eventTimeMs)}</Text>
+	                                    <Text style={styles.sheetProbeTime}>{fmtHHMMms(e.startMs)}</Text>
 	                                    <Text style={[styles.sheetPowerText, dim && { color: theme.inkSoft }]}>
 	                                      {label}
 	                                    </Text>

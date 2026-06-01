@@ -62,6 +62,40 @@ export type PowerEvent = {
   eventTimeMs: number
 }
 
+export type AppMonitorSegment = {
+  rowId: number
+  dateKey: string
+  /** app / power */
+  kind: string
+  startMs: number
+  endMs: number
+  packageName: string
+  className: string
+  appLabel: string
+  windowTitle: string
+  /** screen_on / screen_off / unlocked / service_started when kind=power */
+  eventType: string
+  eventCount: number
+  titles: string[]
+}
+
+function normalizeAppMonitorSegment(seg: AppMonitorSegment): AppMonitorSegment {
+  return {
+    rowId: Number(seg.rowId || 0),
+    dateKey: String(seg.dateKey || ''),
+    kind: String(seg.kind || ''),
+    startMs: Number(seg.startMs || 0),
+    endMs: Number(seg.endMs || 0),
+    packageName: String(seg.packageName || ''),
+    className: String(seg.className || ''),
+    appLabel: String(seg.appLabel || ''),
+    windowTitle: String(seg.windowTitle || ''),
+    eventType: String(seg.eventType || ''),
+    eventCount: Number(seg.eventCount || 0),
+    titles: Array.isArray(seg.titles) ? seg.titles.map(String) : [],
+  }
+}
+
 export type ClickCountEntry = {
   packageName: string
   appLabel: string
@@ -101,6 +135,8 @@ interface PerceptionNative {
   getRecentWindowEvents(limit: number): Promise<WindowEvent[]>
   getWindowEventsInRange(startMs: number, endMs: number, limit: number): Promise<WindowEvent[]>
   getPowerEventsInRange(startMs: number, endMs: number, limit: number): Promise<PowerEvent[]>
+  getAppMonitorSegmentsInRange?(startMs: number, endMs: number, limit: number): Promise<AppMonitorSegment[]>
+  getRecentAppMonitorSegments?(limit: number): Promise<AppMonitorSegment[]>
   getClickCounts(): Promise<ClickCountSnapshot>
   resetClickCounts(): Promise<boolean>
   getAppIcons(packageNames: string[]): Promise<Record<string, string>>
@@ -126,6 +162,108 @@ export type TorrentCapture = {
 
 const Native: PerceptionNative | null =
   Platform.OS === 'android' ? (NativeModules.Perception as PerceptionNative) ?? null : null
+
+const MONITOR_TRANSIENT_PACKAGES = new Set([
+  'com.android.systemui',
+  'com.coloros.smartsidebar',
+])
+const MONITOR_LAUNCHER_PACKAGES = new Set([
+  'com.android.launcher',
+])
+
+function localDateKey(ms: number): string {
+  const d = new Date(ms)
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+function isMonitorNoiseEvent(ev: WindowEvent): boolean {
+  const title = ev.windowTitle?.trim() || ''
+  const pkg = ev.packageName || ''
+  const cls = ev.className || ''
+  if (!pkg) return true
+  if (MONITOR_TRANSIENT_PACKAGES.has(pkg)) return true
+  if (pkg.includes('inputmethod') || cls.includes('inputmethodservice.SoftInputWindow')) return true
+  if (MONITOR_LAUNCHER_PACKAGES.has(pkg)) {
+    if (title.includes('最近用过的应用') || title.startsWith('文件夹已') || title === '应用图标') return true
+  }
+  return title === '应用图标'
+}
+
+function compactWindowTitles(events: WindowEvent[]): string[] {
+  const out: string[] = []
+  for (const ev of events) {
+    const label = ev.appLabel || ev.packageName
+    const title = ev.windowTitle?.trim()
+    if (!title || title === label || title === ev.packageName) continue
+    if (out[out.length - 1] !== title) out.push(title)
+  }
+  return out
+}
+
+function rawAppMonitorToSegments(
+  events: WindowEvent[],
+  powerEvents: PowerEvent[],
+  rangeEndMs: number,
+): AppMonitorSegment[] {
+  const sorted = events
+    .filter((ev) => !isMonitorNoiseEvent(ev))
+    .sort((a, b) => a.eventTimeMs - b.eventTimeMs || a.rowId - b.rowId)
+  const segments: AppMonitorSegment[] = []
+  let current: WindowEvent[] = []
+  const flush = (nextStartMs?: number) => {
+    if (current.length === 0) return
+    const first = current[0]
+    const last = current[current.length - 1]
+    const endMs = Math.max(last.eventTimeMs, Math.min(nextStartMs ?? rangeEndMs, rangeEndMs))
+    const titles = compactWindowTitles(current)
+    segments.push({
+      rowId: first.rowId,
+      dateKey: localDateKey(first.eventTimeMs),
+      kind: 'app',
+      startMs: first.eventTimeMs,
+      endMs,
+      packageName: first.packageName,
+      className: last.className,
+      appLabel: first.appLabel || first.packageName,
+      windowTitle: titles[titles.length - 1] ?? last.windowTitle ?? '',
+      eventType: '',
+      eventCount: current.length,
+      titles,
+    })
+    current = []
+  }
+  for (const ev of sorted) {
+    const last = current[current.length - 1]
+    if (!last || last.packageName === ev.packageName) {
+      current.push(ev)
+    } else {
+      flush(ev.eventTimeMs)
+      current.push(ev)
+    }
+  }
+  flush()
+  for (const ev of powerEvents) {
+    if (ev.event === 'boot' || ev.event === 'shutdown') continue
+    segments.push({
+      rowId: ev.rowId,
+      dateKey: localDateKey(ev.eventTimeMs),
+      kind: 'power',
+      startMs: ev.eventTimeMs,
+      endMs: ev.eventTimeMs,
+      packageName: '',
+      className: '',
+      appLabel: '',
+      windowTitle: '',
+      eventType: ev.event,
+      eventCount: 1,
+      titles: [],
+    })
+  }
+  return segments.sort((a, b) => a.startMs - b.startMs || a.rowId - b.rowId)
+}
 
 export function isPerceptionAvailable(): boolean {
   return Native != null
@@ -199,6 +337,49 @@ export async function getPowerEventsInRange(
 ): Promise<PowerEvent[]> {
   if (!Native) return []
   return Native.getPowerEventsInRange(startMs, endMs, limit)
+}
+
+export async function getAppMonitorSegmentsInRange(
+  startMs: number,
+  endMs: number,
+  limit: number = 5000,
+): Promise<AppMonitorSegment[]> {
+  if (!Native) return []
+  let formal: AppMonitorSegment[] = []
+  if (typeof Native.getAppMonitorSegmentsInRange === 'function') {
+    try {
+      formal = await Native.getAppMonitorSegmentsInRange(startMs, endMs, limit)
+      formal = Array.from(formal || []).map(normalizeAppMonitorSegment)
+      console.log('[perception-monitor]', {
+        source: 'formal',
+        count: formal.length,
+        first: formal[0]?.packageName,
+      })
+    } catch (e) {
+      console.warn('[perception] getAppMonitorSegmentsInRange failed', e)
+    }
+  }
+  if (formal.length > 0) return formal
+  const [events, powerEvents] = await Promise.all([
+    Native.getWindowEventsInRange(startMs, endMs, Math.max(5000, limit)),
+    Native.getPowerEventsInRange(startMs, endMs, 2000),
+  ])
+  console.log('[perception-monitor]', { source: 'fallback-raw-compatible', events: events.length, powerEvents: powerEvents.length })
+  return rawAppMonitorToSegments(events, powerEvents, endMs).slice(0, limit)
+}
+
+export async function getRecentAppMonitorSegments(limit: number = 20): Promise<AppMonitorSegment[]> {
+  if (!Native) return []
+  if (typeof Native.getRecentAppMonitorSegments === 'function') {
+    try {
+      const formal = await Native.getRecentAppMonitorSegments(limit)
+      return Array.from(formal || []).map(normalizeAppMonitorSegment)
+    } catch (e) {
+      console.warn('[perception] getRecentAppMonitorSegments failed', e)
+      return []
+    }
+  }
+  return []
 }
 
 export async function getClickCounts(): Promise<ClickCountSnapshot> {

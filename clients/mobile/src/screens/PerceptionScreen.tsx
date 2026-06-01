@@ -46,7 +46,7 @@ import {
   fetchDbStats,
   getLatestUsageSummary,
   getClickCounts,
-  getRecentWindowEvents,
+  getRecentAppMonitorSegments,
   getTorrentStats,
   hasUsageAccess,
   insertDbProbe,
@@ -60,9 +60,9 @@ import {
   type ClickCountSnapshot,
   type CollectUsageResult,
   type DbStats,
+  type AppMonitorSegment,
   type TorrentStats,
   type UsageSummary,
-  type WindowEvent,
 } from '../lib/perception'
 
 export default function PerceptionScreen() {
@@ -105,7 +105,7 @@ export default function PerceptionScreen() {
   const [linkBusy, setLinkBusy] = useState(false)
   const [linkMsg, setLinkMsg] = useState<string>('')
   const [syncingId, setSyncingId] = useState<string | null>(null)
-  const [windowEvents, setWindowEvents] = useState<WindowEvent[]>([])
+  const [windowEvents, setWindowEvents] = useState<AppMonitorSegment[]>([])
   const [clicks, setClicks] = useState<ClickCountSnapshot>({ total: 0, entries: [] })
   const [torrentStats, setTorrentStats] = useState<TorrentStats | null>(null)
   const [torrentStatsLoading, setTorrentStatsLoading] = useState(false)
@@ -429,7 +429,7 @@ export default function PerceptionScreen() {
 
   async function refreshWindowEvents() {
     try {
-      setWindowEvents(await getRecentWindowEvents(20))
+      setWindowEvents(await getRecentAppMonitorSegments(20))
     } catch {
       setWindowEvents([])
     }
@@ -892,7 +892,7 @@ export default function PerceptionScreen() {
 
       <View style={styles.card}>
         <Text style={styles.cardLabel}>
-          最近窗口切换 · {windowEvents.length} 条 (最多 20)
+          最近应用监控正式段 · {windowEvents.length} 条 (最多 20)
         </Text>
         {windowEvents.length === 0 ? (
           <Text style={styles.cardValue}>未捕获 — 切换 app 或打开其他应用试试</Text>
@@ -901,14 +901,20 @@ export default function PerceptionScreen() {
             <View key={ev.rowId} style={styles.appRow}>
               <View style={styles.appLeft}>
                 <Text style={styles.appLabel} numberOfLines={1}>
-                  {ev.appLabel || ev.packageName}
-                  {ev.windowTitle ? `  ·  ${ev.windowTitle}` : ''}
+                  {ev.kind === 'power'
+                    ? (ev.eventType === 'screen_off' ? '屏幕熄灭'
+                      : ev.eventType === 'screen_on' ? '屏幕亮起'
+                      : ev.eventType === 'unlocked' ? '解锁手机'
+                      : ev.eventType === 'service_started' ? '感知服务启动'
+                      : ev.eventType)
+                    : (ev.appLabel || ev.packageName)}
+                  {ev.kind === 'app' && ev.titles?.length ? `  ·  ${ev.titles[ev.titles.length - 1]}` : ''}
                 </Text>
                 <Text style={styles.appPkg} numberOfLines={1}>
-                  {ev.packageName} / {ev.className}
+                  {ev.kind === 'power' ? 'power' : `${ev.packageName} / ${ev.className}`}
                 </Text>
               </View>
-              <Text style={styles.appPkg}>{fmtClock(ev.eventTimeMs)}</Text>
+              <Text style={styles.appPkg}>{fmtClock(ev.startMs)}</Text>
             </View>
           ))
         )}

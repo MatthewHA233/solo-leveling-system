@@ -203,6 +203,40 @@ async function queryPowerEvents(startMs, endMs, limit = 300) {
   return JSON.parse(stdout || '[]')
 }
 
+async function queryAppMonitorSegments(startMs, endMs, limit = 5000) {
+  try { await stat(DB_PATH) } catch { return [] }
+  const existsSql = "select name from sqlite_master where type='table' and name='app_monitor_segments_android' limit 1;"
+  const exists = await run('sqlite3', ['-noheader', DB_PATH, existsSql]).then((r) => r.stdout.trim()).catch(() => '')
+  if (!exists) return []
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 5000, 100000))
+  const sql = `
+    select
+      id as rowId,
+      date_key as dateKey,
+      kind as kind,
+      start_ms as startMs,
+      end_ms as endMs,
+      package_name as packageName,
+      class_name as className,
+      app_label as appLabel,
+      window_title as windowTitle,
+      event_type as eventType,
+      event_count as eventCount,
+      titles_json as titlesJson
+    from app_monitor_segments_android
+    where end_ms > ${Math.round(startMs)} and start_ms < ${Math.round(endMs)}
+    order by start_ms asc, id asc
+    limit ${safeLimit};
+  `
+  const { stdout } = await run('sqlite3', ['-json', DB_PATH, sql])
+  return JSON.parse(stdout || '[]').map((row) => {
+    let titles = []
+    try { titles = JSON.parse(row.titlesJson || '[]') } catch {}
+    const { titlesJson, ...rest } = row
+    return { ...rest, titles }
+  })
+}
+
 // 扫描 frames/<videoId>/，返回视频列表 + 每个视频的帧清单
 // 帧真实时刻由前端算：startRealTs + n / fps
 async function scanVideos() {
@@ -463,6 +497,15 @@ const server = createServer(async (req, res) => {
       const endMs = Number(url.searchParams.get('endMs') || Date.now())
       const limit = Number(url.searchParams.get('limit') || 1000)
       const rows = await queryWindowEvents(startMs, endMs, limit)
+      sendJson(res, 200, { rows, status: { ...state, adbSerial, packageName: PACKAGE_NAME } })
+      return
+    }
+    if (url.pathname === '/api/app-monitor-segments') {
+      await refreshDbStatsIfPresent()
+      const startMs = Number(url.searchParams.get('startMs') || 0)
+      const endMs = Number(url.searchParams.get('endMs') || Date.now())
+      const limit = Number(url.searchParams.get('limit') || 5000)
+      const rows = await queryAppMonitorSegments(startMs, endMs, limit)
       sendJson(res, 200, { rows, status: { ...state, adbSerial, packageName: PACKAGE_NAME } })
       return
     }

@@ -7,6 +7,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.io.File
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -88,6 +89,7 @@ class PerceptionDb(context: Context) :
     )
 
     createTorrentTables(db)
+    createAppMonitorTables(db)
   }
 
   /** "洪流域"raw 文本捕获：每次 a11y 抓到的文本都入库，调试期不做去重
@@ -112,6 +114,44 @@ class PerceptionDb(context: Context) :
     db.execSQL("CREATE INDEX IF NOT EXISTS idx_torrent_pkg_time ON torrent_capture_android(package_name, event_time_ms);")
   }
 
+  private fun createAppMonitorTables(db: SQLiteDatabase) {
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS app_monitor_segments_android (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date_key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        start_ms INTEGER NOT NULL,
+        end_ms INTEGER NOT NULL,
+        package_name TEXT NOT NULL DEFAULT '',
+        class_name TEXT NOT NULL DEFAULT '',
+        app_label TEXT NOT NULL DEFAULT '',
+        window_title TEXT NOT NULL DEFAULT '',
+        event_type TEXT NOT NULL DEFAULT '',
+        event_count INTEGER NOT NULL DEFAULT 1,
+        titles_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      """.trimIndent()
+    )
+    db.execSQL(
+      "CREATE INDEX IF NOT EXISTS idx_app_monitor_date_start " +
+        "ON app_monitor_segments_android(date_key, start_ms, end_ms);"
+    )
+    db.execSQL(
+      "CREATE INDEX IF NOT EXISTS idx_app_monitor_kind_start " +
+        "ON app_monitor_segments_android(kind, start_ms);"
+    )
+    db.execSQL(
+      """
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_app_monitor_power_unique
+      ON app_monitor_segments_android(kind, event_type, start_ms)
+      WHERE kind = 'power';
+      """.trimIndent()
+    )
+  }
+
   override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
     // AUDIT-034：增量迁移，保留 perception_events_android / perception_buckets_android
     // / app_catalog_android 历史数据，不再破坏式 DROP（v0.0.0.17 之前的 onUpgrade
@@ -121,6 +161,7 @@ class PerceptionDb(context: Context) :
     //   idx_torrent_dedupe 索引，新代码不依赖它、留着也无害），createTorrentTables
     //   的 IF NOT EXISTS 兜底不会破坏数据
     createTorrentTables(db)
+    createAppMonitorTables(db)
   }
 
   /** 确保 bucket 存在；返回 bucket id。 */
@@ -246,6 +287,24 @@ class PerceptionDb(context: Context) :
         }
       }
     }
+    if (out.isEmpty()) {
+      queryAppMonitorSegments(startMs, endMs, cap, newestFirst = false)
+        .asSequence()
+        .filter { it.kind == "app" }
+        .forEach {
+          out.add(
+            WindowEventSnapshot(
+              rowId = it.rowId,
+              startAt = isoFromMs(it.startMs),
+              packageName = it.packageName,
+              className = it.className,
+              appLabel = it.appLabel,
+              windowTitle = it.windowTitle,
+              eventTimeMs = it.startMs,
+            )
+          )
+        }
+    }
     return out
   }
 
@@ -254,18 +313,8 @@ class PerceptionDb(context: Context) :
    *  否则异步 executor 排队、应用忙碌、跨过 span 结束边界时，真实落在 span
    *  内的事件因为写入时间在 span 外被 powerEventsInRange() 漏掉，影响"花了多久"。 */
   fun insertPowerEvent(event: String, eventTimeMs: Long) {
-    val isoFromTs = isoFmt.format(Date(eventTimeMs))
-    val payload = org.json.JSONObject().apply {
-      put("event", event)
-      put("event_time_ms", eventTimeMs)
-    }.toString()
-    ensureBucket(
-      id = POWER_BUCKET_ID,
-      kind = "power",
-      eventType = "power.state_changed",
-      source = "android_receiver",
-    )
-    insertEvent(POWER_BUCKET_ID, isoFromTs, isoFromTs, payload)
+    if (event.isBlank() || event == "boot" || event == "shutdown") return
+    savePowerSegment(writableDatabase, localDateKey(eventTimeMs), eventTimeMs, event)
   }
 
   fun insertSelfWindowEvent(
@@ -275,22 +324,72 @@ class PerceptionDb(context: Context) :
     windowTitle: String,
     eventTimeMs: Long = System.currentTimeMillis(),
   ) {
-    val isoFromTs = isoFmt.format(Date(eventTimeMs))
-    val payload = org.json.JSONObject().apply {
-      put("package_name", packageName)
-      put("class_name", className)
-      put("app_label", appLabel)
-      put("window_title", windowTitle)
-      put("event_time_ms", eventTimeMs)
-      put("source", "android_self_lifecycle")
-    }.toString()
-    ensureBucket(
-      id = WINDOW_BUCKET_ID,
-      kind = "window",
-      eventType = "window.state_changed",
-      source = "android_self_lifecycle",
-    )
-    insertEvent(WINDOW_BUCKET_ID, isoFromTs, isoFromTs, payload)
+    insertAppMonitorWindowEvent(packageName, className, appLabel, windowTitle, eventTimeMs)
+  }
+
+  fun insertAppMonitorWindowEvent(
+    packageName: String,
+    className: String,
+    appLabel: String,
+    windowTitle: String,
+    eventTimeMs: Long = System.currentTimeMillis(),
+  ): Boolean {
+    if (isMonitorNoise(packageName, className, windowTitle)) return false
+    val db = writableDatabase
+    val dateKey = localDateKey(eventTimeMs)
+    val dayEndMs = localDayStartMs(eventTimeMs) + DAY_MS
+    db.beginTransaction()
+    try {
+      val latest = loadLastAppSegmentBefore(db, dateKey, Long.MAX_VALUE)
+      val label = if (appLabel.isBlank()) packageName else appLabel
+      if (latest != null && eventTimeMs >= latest.startMs) {
+        if (latest.packageName == packageName) {
+          latest.endMs = dayEndMs
+          latest.className = className
+          latest.appLabel = label
+          latest.windowTitle = windowTitle
+          latest.eventCount += 1
+          appendCompactTitle(latest.titles, label, packageName, windowTitle)
+          saveAppSegment(db, latest)
+        } else {
+          latest.endMs = eventTimeMs.coerceAtLeast(latest.startMs)
+          saveAppSegment(db, latest)
+          val next = AppSegmentDraft(
+            id = null,
+            dateKey = dateKey,
+            startMs = eventTimeMs,
+            endMs = dayEndMs,
+            packageName = packageName,
+            className = className,
+            appLabel = label,
+            windowTitle = windowTitle,
+            eventCount = 1,
+            titles = mutableListOf(),
+          )
+          appendCompactTitle(next.titles, label, packageName, windowTitle)
+          saveAppSegment(db, next)
+        }
+      } else {
+        val next = AppSegmentDraft(
+          id = null,
+          dateKey = dateKey,
+          startMs = eventTimeMs,
+          endMs = dayEndMs,
+          packageName = packageName,
+          className = className,
+          appLabel = label,
+          windowTitle = windowTitle,
+          eventCount = 1,
+          titles = mutableListOf(),
+        )
+        appendCompactTitle(next.titles, label, packageName, windowTitle)
+        saveAppSegment(db, next)
+      }
+      db.setTransactionSuccessful()
+      return true
+    } finally {
+      db.endTransaction()
+    }
   }
 
   data class PowerEventSnapshot(
@@ -334,6 +433,21 @@ class PerceptionDb(context: Context) :
           // ignore malformed
         }
       }
+    }
+    if (out.isEmpty()) {
+      queryAppMonitorSegments(startMs, endMs, cap, newestFirst = false)
+        .asSequence()
+        .filter { it.kind == "power" }
+        .forEach {
+          out.add(
+            PowerEventSnapshot(
+              rowId = it.rowId,
+              startAt = isoFromMs(it.startMs),
+              event = it.eventType,
+              eventTimeMs = it.startMs,
+            )
+          )
+        }
     }
     return out
   }
@@ -428,6 +542,383 @@ class PerceptionDb(context: Context) :
     val windowTitle: String,
     val eventTimeMs: Long,
   )
+
+  data class AppMonitorSegmentSnapshot(
+    val rowId: Long,
+    val dateKey: String,
+    val kind: String,
+    val startMs: Long,
+    val endMs: Long,
+    val packageName: String,
+    val className: String,
+    val appLabel: String,
+    val windowTitle: String,
+    val eventType: String,
+    val eventCount: Int,
+    val titles: List<String>,
+  )
+
+  private data class AppSegmentDraft(
+    var id: Long?,
+    val dateKey: String,
+    var startMs: Long,
+    var endMs: Long,
+    var packageName: String,
+    var className: String,
+    var appLabel: String,
+    var windowTitle: String,
+    var eventCount: Int,
+    val titles: MutableList<String>,
+  )
+
+  fun appMonitorSegmentsInRange(startMs: Long, endMs: Long, limit: Int): List<AppMonitorSegmentSnapshot> {
+    // 读取路径必须是纯索引查询。之前这里会先按天转译 raw，再查询正式段；
+    // 当某天 raw 较多时，打开应用监控会卡在 native bridge 上，表现为长时间转圈。
+    // raw → 正式段由写入侧触发；历史 raw 的补译应走显式后台任务，不能阻塞 UI 读取。
+    return queryAppMonitorSegments(startMs, endMs, limit, newestFirst = false)
+  }
+
+  fun recentAppMonitorSegments(limit: Int): List<AppMonitorSegmentSnapshot> {
+    // 同上：最近列表也不能在读取时补译所有 pending raw days。
+    return queryAppMonitorSegments(0L, Long.MAX_VALUE, limit, newestFirst = true)
+  }
+
+  fun materializeAppMonitorRawForTimestamp(tsMs: Long) {
+    materializeAppMonitorRawForDay(localDayStartMs(tsMs))
+  }
+
+  private fun materializeAppMonitorRawForRange(startMs: Long, endMs: Long) {
+    if (endMs <= startMs) return
+    var cursor = localDayStartMs(startMs)
+    val last = localDayStartMs((endMs - 1).coerceAtLeast(startMs))
+    while (cursor <= last) {
+      materializeAppMonitorRawForDay(cursor)
+      cursor += DAY_MS
+    }
+  }
+
+  private fun materializePendingAppMonitorRawDays() {
+    val days = ArrayList<Long>()
+    readableDatabase.rawQuery(
+      """
+      SELECT DISTINCT date(
+        CAST(json_extract(data_json, '$.event_time_ms') AS INTEGER) / 1000,
+        'unixepoch',
+        'localtime'
+      ) AS day_key
+      FROM perception_events_android
+      WHERE bucket_id IN (?, ?)
+      ORDER BY day_key DESC
+      LIMIT 60
+      """.trimIndent(),
+      arrayOf(WINDOW_BUCKET_ID, POWER_BUCKET_ID),
+    ).use { c ->
+      while (c.moveToNext()) {
+        parseLocalDayStartMs(c.getString(0) ?: "")?.let { days.add(it) }
+      }
+    }
+    for (day in days) materializeAppMonitorRawForDay(day)
+  }
+
+  private fun materializeAppMonitorRawForDay(dayStartMs: Long) {
+    val dayEndMs = dayStartMs + DAY_MS
+    val dateKey = localDateKey(dayStartMs)
+    val dayStartIso = isoFmt.format(Date(dayStartMs))
+    val dayEndIso = isoFmt.format(Date(dayEndMs))
+    val rawWindowMinMs = readableDatabase.rawQuery(
+      """
+      SELECT MIN(CAST(json_extract(data_json, '$.event_time_ms') AS INTEGER))
+      FROM perception_events_android
+      WHERE bucket_id = ?
+        AND start_at >= ? AND start_at < ?
+      """.trimIndent(),
+      arrayOf(WINDOW_BUCKET_ID, dayStartIso, dayEndIso),
+    ).use { c ->
+      if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
+    }
+    val rawPowerMinMs = readableDatabase.rawQuery(
+      """
+      SELECT MIN(CAST(json_extract(data_json, '$.event_time_ms') AS INTEGER))
+      FROM perception_events_android
+      WHERE bucket_id = ?
+        AND start_at >= ? AND start_at < ?
+      """.trimIndent(),
+      arrayOf(POWER_BUCKET_ID, dayStartIso, dayEndIso),
+    ).use { c ->
+      if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
+    }
+    if (rawWindowMinMs == null && rawPowerMinMs == null) return
+
+    val db = writableDatabase
+    db.beginTransaction()
+    try {
+      if (rawWindowMinMs != null) {
+        db.delete(
+          "app_monitor_segments_android",
+          "date_key = ? AND kind = 'app' AND start_ms >= ?",
+          arrayOf(dateKey, rawWindowMinMs.toString()),
+        )
+      }
+      if (rawPowerMinMs != null) {
+        db.delete(
+          "app_monitor_segments_android",
+          "date_key = ? AND kind = 'power' AND start_ms >= ?",
+          arrayOf(dateKey, rawPowerMinMs.toString()),
+        )
+      }
+
+      var current = rawWindowMinMs?.let { loadLastAppSegmentBefore(db, dateKey, it) }
+      var currentDirty = false
+      db.rawQuery(
+        """
+        SELECT data_json
+        FROM perception_events_android
+        WHERE bucket_id = ?
+          AND start_at >= ? AND start_at < ?
+        ORDER BY start_at ASC, id ASC
+        """.trimIndent(),
+        arrayOf(WINDOW_BUCKET_ID, dayStartIso, dayEndIso),
+      ).use { c ->
+        while (c.moveToNext()) {
+          val raw = c.getString(0) ?: continue
+          val obj = try { org.json.JSONObject(raw) } catch (_: Throwable) { continue }
+          val eventTimeMs = obj.optLong("event_time_ms", 0L)
+          if (rawWindowMinMs == null || eventTimeMs < rawWindowMinMs || eventTimeMs < dayStartMs || eventTimeMs >= dayEndMs) continue
+          val packageName = obj.optString("package_name")
+          val className = obj.optString("class_name")
+          val appLabel = obj.optString("app_label")
+          val windowTitle = obj.optString("window_title")
+          if (isMonitorNoise(packageName, className, windowTitle)) continue
+
+          if (current != null && current!!.packageName == packageName) {
+            val draft = current!!
+            draft.endMs = dayEndMs
+            draft.className = className
+            draft.appLabel = if (appLabel.isBlank()) packageName else appLabel
+            draft.windowTitle = windowTitle
+            draft.eventCount += 1
+            appendCompactTitle(draft.titles, draft.appLabel, packageName, windowTitle)
+            currentDirty = true
+          } else {
+            if (current != null) {
+              val draft = current!!
+              draft.endMs = eventTimeMs.coerceAtLeast(draft.startMs)
+              saveAppSegment(db, draft)
+            }
+            val label = if (appLabel.isBlank()) packageName else appLabel
+            current = AppSegmentDraft(
+              id = null,
+              dateKey = dateKey,
+              startMs = eventTimeMs,
+              endMs = dayEndMs,
+              packageName = packageName,
+              className = className,
+              appLabel = label,
+              windowTitle = windowTitle,
+              eventCount = 1,
+              titles = mutableListOf(),
+            )
+            appendCompactTitle(current!!.titles, label, packageName, windowTitle)
+            currentDirty = true
+          }
+        }
+      }
+      if (current != null && currentDirty) saveAppSegment(db, current!!)
+
+      db.rawQuery(
+        """
+        SELECT data_json
+        FROM perception_events_android
+        WHERE bucket_id = ?
+          AND start_at >= ? AND start_at < ?
+        ORDER BY start_at ASC, id ASC
+        """.trimIndent(),
+        arrayOf(POWER_BUCKET_ID, dayStartIso, dayEndIso),
+      ).use { c ->
+        while (c.moveToNext()) {
+          val raw = c.getString(0) ?: continue
+          val obj = try { org.json.JSONObject(raw) } catch (_: Throwable) { continue }
+          val eventTimeMs = obj.optLong("event_time_ms", 0L)
+          if (rawPowerMinMs == null || eventTimeMs < rawPowerMinMs || eventTimeMs < dayStartMs || eventTimeMs >= dayEndMs) continue
+          val event = obj.optString("event")
+          if (event.isBlank() || event == "boot" || event == "shutdown") continue
+          savePowerSegment(db, dateKey, eventTimeMs, event)
+        }
+      }
+
+      db.delete(
+        "perception_events_android",
+        "bucket_id IN (?, ?) AND start_at >= ? AND start_at < ?",
+        arrayOf(WINDOW_BUCKET_ID, POWER_BUCKET_ID, dayStartIso, dayEndIso),
+      )
+      db.setTransactionSuccessful()
+    } finally {
+      db.endTransaction()
+    }
+  }
+
+  private fun queryAppMonitorSegments(
+    startMs: Long,
+    endMs: Long,
+    limit: Int,
+    newestFirst: Boolean,
+  ): List<AppMonitorSegmentSnapshot> {
+    val cap = limit.coerceIn(1, 100000)
+    val out = ArrayList<AppMonitorSegmentSnapshot>()
+    val where = if (startMs <= 0L && endMs == Long.MAX_VALUE) {
+      "1 = 1"
+    } else {
+      "end_ms > ? AND start_ms < ?"
+    }
+    val args = if (startMs <= 0L && endMs == Long.MAX_VALUE) {
+      arrayOf(cap.toString())
+    } else {
+      arrayOf(startMs.toString(), endMs.toString(), cap.toString())
+    }
+    val order = if (newestFirst) "start_ms DESC, id DESC" else "start_ms ASC, id ASC"
+    readableDatabase.rawQuery(
+      """
+      SELECT id, date_key, kind, start_ms, end_ms, package_name, class_name, app_label,
+        window_title, event_type, event_count, titles_json
+      FROM app_monitor_segments_android
+      WHERE $where
+      ORDER BY $order
+      LIMIT ?
+      """.trimIndent(),
+      args,
+    ).use { c ->
+      while (c.moveToNext()) {
+        out.add(
+          AppMonitorSegmentSnapshot(
+            rowId = c.getLong(0),
+            dateKey = c.getString(1),
+            kind = c.getString(2),
+            startMs = c.getLong(3),
+            endMs = c.getLong(4),
+            packageName = c.getString(5),
+            className = c.getString(6),
+            appLabel = c.getString(7),
+            windowTitle = c.getString(8),
+            eventType = c.getString(9),
+            eventCount = c.getInt(10),
+            titles = parseTitlesJson(c.getString(11)),
+          )
+        )
+      }
+    }
+    return out
+  }
+
+  private fun loadLastAppSegmentBefore(db: SQLiteDatabase, dateKey: String, beforeMs: Long): AppSegmentDraft? {
+    return db.rawQuery(
+      """
+      SELECT id, start_ms, end_ms, package_name, class_name, app_label, window_title, event_count, titles_json
+      FROM app_monitor_segments_android
+      WHERE date_key = ? AND kind = 'app' AND start_ms < ?
+      ORDER BY start_ms DESC, id DESC
+      LIMIT 1
+      """.trimIndent(),
+      arrayOf(dateKey, beforeMs.toString()),
+    ).use { c ->
+      if (!c.moveToFirst()) return@use null
+      AppSegmentDraft(
+        id = c.getLong(0),
+        dateKey = dateKey,
+        startMs = c.getLong(1),
+        endMs = c.getLong(2),
+        packageName = c.getString(3),
+        className = c.getString(4),
+        appLabel = c.getString(5),
+        windowTitle = c.getString(6),
+        eventCount = c.getInt(7),
+        titles = parseTitlesJson(c.getString(8)).toMutableList(),
+      )
+    }
+  }
+
+  private fun saveAppSegment(db: SQLiteDatabase, draft: AppSegmentDraft) {
+    val now = nowIso()
+    val cv = ContentValues().apply {
+      put("date_key", draft.dateKey)
+      put("kind", "app")
+      put("start_ms", draft.startMs)
+      put("end_ms", draft.endMs.coerceAtLeast(draft.startMs))
+      put("package_name", draft.packageName)
+      put("class_name", draft.className)
+      put("app_label", draft.appLabel)
+      put("window_title", draft.windowTitle)
+      put("event_type", "")
+      put("event_count", draft.eventCount.coerceAtLeast(1))
+      put("titles_json", titlesToJson(draft.titles))
+      put("updated_at", now)
+    }
+    val id = draft.id
+    if (id != null) {
+      db.update("app_monitor_segments_android", cv, "id = ?", arrayOf(id.toString()))
+    } else {
+      cv.put("created_at", now)
+      draft.id = db.insertOrThrow("app_monitor_segments_android", null, cv)
+    }
+  }
+
+  private fun savePowerSegment(db: SQLiteDatabase, dateKey: String, eventTimeMs: Long, event: String) {
+    val now = nowIso()
+    val cv = ContentValues().apply {
+      put("date_key", dateKey)
+      put("kind", "power")
+      put("start_ms", eventTimeMs)
+      put("end_ms", eventTimeMs)
+      put("package_name", "")
+      put("class_name", "")
+      put("app_label", "")
+      put("window_title", "")
+      put("event_type", event)
+      put("event_count", 1)
+      put("titles_json", "[]")
+      put("created_at", now)
+      put("updated_at", now)
+    }
+    db.insertWithOnConflict("app_monitor_segments_android", null, cv, SQLiteDatabase.CONFLICT_IGNORE)
+  }
+
+  private fun appendCompactTitle(titles: MutableList<String>, appLabel: String, packageName: String, rawTitle: String) {
+    val title = rawTitle.trim()
+    if (title.isBlank() || title == appLabel || title == packageName) return
+    if (titles.lastOrNull() == title) return
+    titles.add(title)
+  }
+
+  private fun parseTitlesJson(raw: String?): List<String> {
+    if (raw.isNullOrBlank()) return emptyList()
+    return try {
+      val arr = org.json.JSONArray(raw)
+      val out = ArrayList<String>(arr.length())
+      for (i in 0 until arr.length()) {
+        val v = arr.optString(i).trim()
+        if (v.isNotBlank()) out.add(v)
+      }
+      out
+    } catch (_: Throwable) {
+      emptyList()
+    }
+  }
+
+  private fun titlesToJson(titles: List<String>): String {
+    val arr = org.json.JSONArray()
+    for (t in titles.takeLast(16)) arr.put(t)
+    return arr.toString()
+  }
+
+  private fun isMonitorNoise(packageName: String, className: String, windowTitle: String): Boolean {
+    val title = windowTitle.trim()
+    if (packageName.isBlank()) return true
+    if (packageName == "com.android.systemui" || packageName == "com.coloros.smartsidebar") return true
+    if (packageName.contains("inputmethod") || className.contains("inputmethodservice.SoftInputWindow")) return true
+    if (packageName == "com.android.launcher") {
+      if (title.contains("最近用过的应用") || title.startsWith("文件夹已") || title == "应用图标") return true
+    }
+    return title == "应用图标"
+  }
 
   data class TorrentCaptureSnapshot(
     val rowId: Long,
@@ -709,7 +1200,8 @@ class PerceptionDb(context: Context) :
   companion object {
     const val DEDUP_WINDOW_MS = 5 * 60 * 1000L  // 5 分钟去重窗
     private const val DB_NAME = "perception.db"
-    private const val DB_VERSION = 3
+    private const val DB_VERSION = 4
+    private const val DAY_MS = 24L * 60L * 60L * 1000L
     private const val PREFS_NAME = "sls_perception"
     private const val PREF_TORRENT_RAW_LIMIT_MB = "torrent_raw_limit_mb"
     private const val DEFAULT_TORRENT_RAW_LIMIT_MB = 256
@@ -722,6 +1214,7 @@ class PerceptionDb(context: Context) :
     private val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
       timeZone = TimeZone.getTimeZone("UTC")
     }
+    private val localDayFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
 
     fun nowIso(): String = isoFmt.format(Date())
 
@@ -729,6 +1222,22 @@ class PerceptionDb(context: Context) :
      *  让 SlsAccessibilityService / 其他 watcher 可以用真实时间写 start_at，
      *  避免 executor 排队 / executor 内 nowIso() 在边界跨过 span 导致漏查。 */
     fun isoFromMs(ms: Long): String = isoFmt.format(Date(ms))
+
+    fun localDateKey(ms: Long): String = localDayFmt.format(Date(ms))
+
+    fun localDayStartMs(ms: Long): Long {
+      return Calendar.getInstance().apply {
+        timeInMillis = ms
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+      }.timeInMillis
+    }
+
+    fun parseLocalDayStartMs(dayKey: String): Long? {
+      return try { localDayFmt.parse(dayKey)?.time } catch (_: Throwable) { null }
+    }
 
     private fun sha256Short(s: String): String {
       val md = MessageDigest.getInstance("SHA-256")
