@@ -1,0 +1,70 @@
+import type { TorrentCapture } from '../../lib/perception'
+import {
+  BILI_PACKAGE,
+  bilibiliTorrentParser,
+  feedKindLabel,
+  splitPlayProgressSegments,
+  type BiliActionKind,
+  type CommentItem,
+  type HomeFeedItem,
+  type ListItem,
+  type PlayProgressSample,
+  type VideoSubTab,
+} from './parsers/bilibili'
+import type { TorrentFormalActionDraft, TorrentFormalCardDraft, TorrentParserModule } from './types'
+
+export type TorrentListItem = ListItem
+export type {
+  BiliActionKind,
+  CommentItem,
+  HomeFeedItem,
+  PlayProgressSample,
+  VideoSubTab,
+}
+
+export const torrentParserModules: readonly TorrentParserModule<TorrentListItem>[] = [
+  bilibiliTorrentParser,
+]
+
+export function getTorrentParserForPackage(packageName: string | null | undefined): TorrentParserModule<TorrentListItem> | null {
+  if (!packageName) return null
+  return torrentParserModules.find((module) => module.packages.includes(packageName)) ?? null
+}
+
+export function getTorrentPackageLabel(packageName: string | null | undefined): string {
+  const parser = getTorrentParserForPackage(packageName)
+  if (parser) return parser.getPackageLabel(packageName)
+  if (!packageName) return '应用'
+  return packageName.split('.').filter(Boolean).pop() ?? packageName
+}
+
+function itemsForParser(items: TorrentCapture[], parser: TorrentParserModule<TorrentListItem>): TorrentCapture[] {
+  return items.filter(parser.canParse)
+}
+
+export function buildTorrentFeedListItems(items: TorrentCapture[]): TorrentListItem[] {
+  return torrentParserModules.flatMap((parser) => parser.buildFeedListItems(itemsForParser(items, parser)))
+}
+
+export function buildTorrentActionListItems(items: TorrentCapture[]): TorrentListItem[] {
+  return torrentParserModules.flatMap((parser) => parser.buildActionListItems(itemsForParser(items, parser)))
+}
+
+export function buildTorrentFormalActionDrafts(items: TorrentCapture[]): TorrentFormalActionDraft[] {
+  return torrentParserModules.flatMap((parser) =>
+    parser.buildFormalActions ? parser.buildFormalActions(itemsForParser(items, parser)) : [])
+}
+
+export function buildTorrentFormalCardDrafts(items: TorrentCapture[]): TorrentFormalCardDraft[] {
+  return torrentParserModules.flatMap((parser) =>
+    parser.buildFormalCards ? parser.buildFormalCards(itemsForParser(items, parser)) : [])
+}
+
+export const DEFAULT_TORRENT_PACKAGE = BILI_PACKAGE
+export const DEFAULT_TORRENT_ACCENT = bilibiliTorrentParser.accent
+
+export function getTorrentFeedKindLabel(kind: HomeFeedItem['kind']): string {
+  return feedKindLabel(kind)
+}
+
+export const splitTorrentPlayProgressSegments = splitPlayProgressSegments

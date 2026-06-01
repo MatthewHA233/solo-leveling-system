@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════
 // 洪流域：用户在 app 里看到的内容还原 UI。
-// B 站 raw 解析与动作/卡片模型在 ./torrent/bilibili.ts。
+// app raw 解析与动作/卡片模型由 ./torrent/registry.ts 分发到 parser 模块。
 // ══════════════════════════════════════════════
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -36,20 +36,20 @@ import { soloGetPref, soloSetPref } from '../lib/solodb'
 import { isSameDay, toLocalDateStr } from '../lib/time'
 import { alpha, theme } from '../theme'
 import {
-  BILI_ACCENT as HOME_ACCENT,
-  BILI_PACKAGE,
-  buildBiliActionListItems as buildActionListItems,
-  buildBiliFeedListItems as buildFeedListItems,
-  feedKindLabel,
-  getBiliPackageLabel as getPackageLabel,
-  splitPlayProgressSegments,
+  DEFAULT_TORRENT_ACCENT as HOME_ACCENT,
+  DEFAULT_TORRENT_PACKAGE,
+  buildTorrentActionListItems as buildActionListItems,
+  buildTorrentFeedListItems as buildFeedListItems,
+  getTorrentPackageLabel as getPackageLabel,
+  getTorrentFeedKindLabel as feedKindLabel,
+  splitTorrentPlayProgressSegments as splitPlayProgressSegments,
   type BiliActionKind,
   type CommentItem,
   type HomeFeedItem,
-  type ListItem,
   type PlayProgressSample,
+  type TorrentListItem as ListItem,
   type VideoSubTab,
-} from './torrent/bilibili'
+} from './torrent/registry'
 
 function fmtTime(ms: number): string {
   const d = new Date(ms)
@@ -1694,8 +1694,8 @@ function BiliCardIcon({ appIconCache, color, small }: { appIconCache: Record<str
   return (
     <ActionAppIcon
       color={color}
-      label={getPackageLabel(BILI_PACKAGE)}
-      iconB64={appIconCache[BILI_PACKAGE]}
+      label={getPackageLabel(DEFAULT_TORRENT_PACKAGE)}
+      iconB64={appIconCache[DEFAULT_TORRENT_PACKAGE]}
       size={small ? 18 : 22}
       inline
     />

@@ -1,10 +1,14 @@
 // Bilibili 洪流域解析：raw a11y 文本 → 卡片/动作模型
 // UI 渲染留在 TorrentScreen；这里保持纯数据转换，方便后续并排新增其他 App parser。
 
-import type { TorrentCapture } from '../../lib/perception'
+import type { TorrentCapture } from '../../../lib/perception'
+import type { TorrentFormalActionDraft, TorrentFormalCardDraft, TorrentParserModule } from '../types'
+import { sourceRefsInRange } from '../types'
 
 export const BILI_PACKAGE = 'tv.danmaku.bili'
 export const BILI_APP_LABEL = 'B 站'
+export const BILI_PARSER_ID = 'bilibili'
+export const BILI_PARSER_VERSION = 1
 
 export function getBiliPackageLabel(packageName: string | null | undefined): string {
   if (!packageName) return '应用'
@@ -1963,4 +1967,122 @@ export function buildBiliActionListItems(itemsIn: TorrentCapture[]): ListItem[] 
     packageName: a.packageName,
     appLabel: a.appLabel,
   })).reverse()
+}
+
+type BiliCardItem = Extract<ListItem, { kind: 'home' | 'detail' | 'story' | 'comments' | 'fullscreen' }>
+
+function actionPayload(item: Extract<ListItem, { kind: 'actionLine' }>): Record<string, unknown> {
+  return {
+    act: item.act,
+    title: item.title,
+    upName: item.upName,
+    meta: item.meta,
+    tabSeq: item.tabSeq,
+    isStory: item.isStory,
+  }
+}
+
+function cardTitle(item: BiliCardItem): string | undefined {
+  if (item.kind === 'detail') return item.detail.title ?? undefined
+  if (item.kind === 'story') return item.story.title
+  if (item.kind === 'comments') return item.videoTitle ?? undefined
+  if (item.kind === 'fullscreen') return item.videoTitle ?? undefined
+  if (item.kind === 'home') return 'B 站主页'
+  return undefined
+}
+
+function cardUpName(item: BiliCardItem): string | undefined {
+  if (item.kind === 'detail') return item.detail.upName ?? undefined
+  if (item.kind === 'story') return item.story.upName
+  if (item.kind === 'comments') return item.videoUp ?? undefined
+  if (item.kind === 'fullscreen') return item.videoUp ?? undefined
+  return undefined
+}
+
+function cardPayload(item: BiliCardItem): Record<string, unknown> {
+  if (item.kind === 'home') {
+    return {
+      kind: item.kind,
+      sweepCount: item.sweepCount,
+      feedItems: item.feedItems,
+    }
+  }
+  if (item.kind === 'detail') return { kind: item.kind, detail: item.detail }
+  if (item.kind === 'story') return { kind: item.kind, story: item.story }
+  if (item.kind === 'comments') {
+    return {
+      kind: item.kind,
+      totalCount: item.totalCount,
+      videoTitle: item.videoTitle,
+      videoUp: item.videoUp,
+      comments: item.comments,
+      commentDetailSegs: item.commentDetailSegs,
+      commentDetails: item.commentDetails,
+    }
+  }
+  return {
+    kind: item.kind,
+    watch: item.watch,
+    videoTitle: item.videoTitle,
+    videoUp: item.videoUp,
+    samples: item.samples,
+  }
+}
+
+export function buildBiliFormalActionDrafts(itemsIn: TorrentCapture[]): TorrentFormalActionDraft[] {
+  return buildBiliActionListItems(itemsIn)
+    .filter((item): item is Extract<ListItem, { kind: 'actionLine' }> => item.kind === 'actionLine')
+    .map((item) => ({
+      parserId: BILI_PARSER_ID,
+      parserVersion: BILI_PARSER_VERSION,
+      key: item.key,
+      packageName: item.packageName ?? BILI_PACKAGE,
+      appLabel: item.appLabel ?? BILI_APP_LABEL,
+      kind: item.act,
+      startTs: item.ts,
+      endTs: item.endTs ?? item.ts,
+      title: item.title,
+      upName: item.upName,
+      isStory: item.isStory,
+      payload: actionPayload(item),
+      sourceRefs: sourceRefsInRange(itemsIn, item.ts, item.endTs ?? item.ts),
+    }))
+}
+
+export function buildBiliFormalCardDrafts(itemsIn: TorrentCapture[]): TorrentFormalCardDraft[] {
+  return buildBiliFeedListItems(itemsIn)
+    .filter((item): item is BiliCardItem =>
+      item.kind === 'home'
+      || item.kind === 'detail'
+      || item.kind === 'story'
+      || item.kind === 'comments'
+      || item.kind === 'fullscreen')
+    .map((item) => ({
+      parserId: BILI_PARSER_ID,
+      parserVersion: BILI_PARSER_VERSION,
+      key: item.key,
+      packageName: BILI_PACKAGE,
+      appLabel: BILI_APP_LABEL,
+      cardKind: item.kind,
+      startTs: item.tsStart,
+      endTs: item.tsEnd,
+      title: cardTitle(item),
+      upName: cardUpName(item),
+      payload: cardPayload(item),
+      sourceRefs: sourceRefsInRange(itemsIn, item.tsStart, item.tsEnd),
+    }))
+}
+
+export const bilibiliTorrentParser: TorrentParserModule<ListItem> = {
+  id: BILI_PARSER_ID,
+  version: BILI_PARSER_VERSION,
+  displayName: BILI_APP_LABEL,
+  packages: [BILI_PACKAGE],
+  accent: BILI_ACCENT,
+  canParse: (item) => item.packageName === BILI_PACKAGE,
+  getPackageLabel: getBiliPackageLabel,
+  buildFeedListItems: buildBiliFeedListItems,
+  buildActionListItems: buildBiliActionListItems,
+  buildFormalActions: buildBiliFormalActionDrafts,
+  buildFormalCards: buildBiliFormalCardDrafts,
 }
