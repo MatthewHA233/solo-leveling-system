@@ -6,7 +6,12 @@
 import { useEffect, useState } from 'react'
 import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import ConfirmDialog from '../components/ConfirmDialog'
-import { theme } from '../theme'
+import { alpha, theme } from '../theme'
+import {
+  getTorrentReadMode,
+  setTorrentReadMode,
+  type TorrentReadMode,
+} from './torrent/readMode'
 import {
   checkForUpdate,
   downloadAndInstall,
@@ -116,6 +121,7 @@ export default function PerceptionScreen() {
   const [torrentRawLimitInput, setTorrentRawLimitInput] = useState('256')
   const [savingTorrentRawLimit, setSavingTorrentRawLimit] = useState(false)
   const [torrentRawLimitMsg, setTorrentRawLimitMsg] = useState('')
+  const [torrentReadMode, setTorrentReadModeState] = useState<TorrentReadMode>('formal')
 
   useEffect(() => {
     void runPing()
@@ -126,6 +132,7 @@ export default function PerceptionScreen() {
     void refreshWindowEvents()
     void refreshClicks()
     void refreshTorrentStats()
+    void refreshTorrentReadMode()
     void refreshSoloDb()
     void runSelfImport()
     void autoStartServer()
@@ -371,6 +378,23 @@ export default function PerceptionScreen() {
       setTorrentStats(null)
     } finally {
       setTorrentStatsLoading(false)
+    }
+  }
+
+  async function refreshTorrentReadMode() {
+    try {
+      setTorrentReadModeState(await getTorrentReadMode())
+    } catch {
+      setTorrentReadModeState('auto')
+    }
+  }
+
+  async function chooseTorrentReadMode(mode: TorrentReadMode) {
+    setTorrentReadModeState(mode)
+    try {
+      await setTorrentReadMode(mode)
+    } catch (e) {
+      console.warn('[perception] save torrent read mode failed', e)
     }
   }
 
@@ -761,7 +785,7 @@ export default function PerceptionScreen() {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardLabel}>洪流域 raw 文本</Text>
+        <Text style={styles.cardLabel}>洪流域数据存储</Text>
         {torrentStatsLoading ? (
           <Text style={styles.cardValue}>统计中…</Text>
         ) : torrentStatsError ? (
@@ -769,10 +793,19 @@ export default function PerceptionScreen() {
         ) : torrentStats ? (
           <>
             <Text style={styles.cardValue}>
-              {torrentStats.rowCount} 条 · raw 约 {fmtBytes(torrentStats.rawBytes)}
+              raw {torrentStats.rowCount} 条 · {fmtBytes(torrentStats.rawBytes)}
             </Text>
             <Text style={styles.cardSub}>
-              perception.db 文件 {fmtBytes(torrentStats.databaseBytes)}
+              应用监控：{torrentStats.appMonitorRowCount ?? 0} 条 · {fmtBytes(torrentStats.appMonitorBytes ?? 0)}
+            </Text>
+            <Text style={styles.cardSub}>
+              还原动作：{torrentStats.formalActionCount ?? 0} 条 · {fmtBytes(torrentStats.formalActionBytes ?? 0)}
+            </Text>
+            <Text style={styles.cardSub}>
+              还原卡片：{torrentStats.formalCardCount ?? 0} 条 · {fmtBytes(torrentStats.formalCardBytes ?? 0)}
+            </Text>
+            <Text style={styles.cardSub}>
+              perception.db 文件总量 {fmtBytes(torrentStats.databaseBytes)}
             </Text>
             <Text style={styles.cardSub}>
               raw 上限 {torrentStats.rawLimitMb === 0 ? '不限制' : `${torrentStats.rawLimitMb} MB`}；超过后按本地日期整天删除最早 raw，并保留最新一天
@@ -803,6 +836,25 @@ export default function PerceptionScreen() {
           </Pressable>
         </View>
         <Text style={styles.cardSub}>填 0 表示不限制；有效范围 16-4096 MB，默认 256 MB。</Text>
+        <Text style={[styles.cardSub, { marginTop: 10 }]}>洪流域读取模式</Text>
+        <View style={styles.segmentRow}>
+          {(['auto', 'formal', 'raw'] as TorrentReadMode[]).map((mode) => {
+            const active = torrentReadMode === mode
+            const label = mode === 'formal' ? '正式优先' : mode === 'auto' ? '自动' : '原始 raw'
+            return (
+              <Pressable
+                key={mode}
+                style={[styles.segmentBtn, active && styles.segmentBtnOn]}
+                onPress={() => void chooseTorrentReadMode(mode)}
+              >
+                <Text style={[styles.segmentText, active && styles.segmentTextOn]}>{label}</Text>
+              </Pressable>
+            )
+          })}
+        </View>
+        <Text style={styles.cardSub}>
+          默认正式数据优先；当天还没有正式数据时会读一次 raw 回填。原始 raw 模式只用于调试解析问题。
+        </Text>
         {!!torrentRawLimitMsg && (
           <Text style={[styles.cardSub, { color: torrentRawLimitMsg.startsWith('保存失败') || torrentRawLimitMsg.startsWith('请输入') ? theme.danger : theme.inkSoft }]}>
             {torrentRawLimitMsg}
@@ -1117,6 +1169,33 @@ const styles = StyleSheet.create({
   limitUnit: {
     fontSize: 12,
     color: theme.inkSoft,
+  },
+  segmentRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  segmentBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: theme.line,
+    borderRadius: 8,
+    paddingVertical: 8,
+    backgroundColor: '#fff',
+  },
+  segmentBtnOn: {
+    borderColor: theme.accent,
+    backgroundColor: alpha(theme.accent, 0.08),
+  },
+  segmentText: {
+    fontSize: 12,
+    color: theme.inkSoft,
+    fontWeight: '600',
+  },
+  segmentTextOn: {
+    color: theme.accent,
   },
   btnRow: {
     flexDirection: 'row',

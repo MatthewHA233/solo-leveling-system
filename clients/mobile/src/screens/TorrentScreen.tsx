@@ -21,11 +21,15 @@ import Svg, { Path, Rect } from 'react-native-svg'
 import {
   getAppIcons,
   getAppMonitorSegmentsInRange,
+  getTorrentFormalActionsInRange,
+  getTorrentFormalCardsInRange,
   getTorrentCapturesInRange,
   isAccessibilityEnabled,
   openAccessibilitySettings,
   type PowerEvent,
   type AppMonitorSegment,
+  type TorrentFormalAction,
+  type TorrentFormalCard,
   type TorrentCapture,
   type WindowEvent,
 } from '../lib/perception'
@@ -39,7 +43,9 @@ import {
   DEFAULT_TORRENT_ACCENT as HOME_ACCENT,
   DEFAULT_TORRENT_PACKAGE,
   buildTorrentActionListItems as buildActionListItems,
+  buildTorrentActionListItemsFromFormal,
   buildTorrentFeedListItems as buildFeedListItems,
+  buildTorrentFeedListItemsFromFormal,
   getTorrentPackageLabel as getPackageLabel,
   getTorrentFeedKindLabel as feedKindLabel,
   splitTorrentPlayProgressSegments as splitPlayProgressSegments,
@@ -50,6 +56,8 @@ import {
   type TorrentListItem as ListItem,
   type VideoSubTab,
 } from './torrent/registry'
+import { persistTorrentFormalDayFromRaw } from './torrent/formalStore'
+import { getTorrentReadMode, type TorrentReadMode } from './torrent/readMode'
 
 function fmtTime(ms: number): string {
   const d = new Date(ms)
@@ -125,6 +133,16 @@ function buildTorrentCalendarRanges(items: TorrentCapture[]): DayRangeColored[] 
     return { startMin, endMin, color: HOME_ACCENT }
   })
   return mergeTorrentCalendarRanges(ranges)
+}
+
+function buildTorrentCalendarRangesFromFormal(actions: TorrentFormalAction[]): DayRangeColored[] {
+  if (actions.length === 0) return []
+  return mergeTorrentCalendarRanges(actions.map((a) => {
+    const startMin = clampMinute(minuteOfTs(a.startTs))
+    const rawEnd = isSameDay(new Date(a.startTs), new Date(a.endTs)) ? minuteOfTs(a.endTs) + 1 : 1440
+    const endMin = clampMinute(Math.max(startMin + 5, rawEnd))
+    return { startMin, endMin, color: HOME_ACCENT }
+  }))
 }
 
 type ViewMode = 'monitor' | 'raw' | 'feed' | 'action'
@@ -528,15 +546,27 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   const [monitorSegments, setMonitorSegments] = useState<AppMonitorSegment[]>([])
   const [monitorLoading, setMonitorLoading] = useState(false)
   const [monitorRefreshing, setMonitorRefreshing] = useState(false)
+  const [formalActions, setFormalActions] = useState<TorrentFormalAction[]>([])
+  const [formalCards, setFormalCards] = useState<TorrentFormalCard[]>([])
+  const [readMode, setReadMode] = useState<TorrentReadMode>('formal')
   const liveRef = useRef(true)
   const a11yPromptShownRef = useRef(false)
   const prevViewModeRef = useRef<ViewMode>('monitor')
+  const formalPersistKeyRef = useRef<string | null>(null)
 
   const selectedDayBounds = useMemo(() => localDayBounds(selectedDate), [selectedDate])
   const visibleItems = useMemo(
     () => items.filter((it) => isSameDay(new Date(it.eventTimeMs), selectedDate)),
     [items, selectedDate],
   )
+  const hasFormalForCurrentView =
+    (viewMode === 'action' && formalActions.length > 0)
+    || (viewMode === 'feed' && formalCards.length > 0)
+  const canUseFormalItems = !devSource
+    && viewMode !== 'raw'
+    && hasFormalForCurrentView
+    && (readMode === 'formal' || (readMode === 'auto' && visibleItems.length === 0))
+  const hasRestorableData = visibleItems.length > 0 || canUseFormalItems
   const iconPackageKey = useMemo(() => {
     return Array.from(new Set([
       ...visibleItems.map((it) => it.packageName).filter(Boolean),
@@ -568,16 +598,48 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
       return
     }
     try {
-      // 默认读完整 raw 快照；性能优化只能靠取消后台轮询 / 后续转译表，
-      // 不能截断 raw，否则还原动作会丢上下文。
-      const [list, on] = devSource
-        ? await devSource.load().then((data) => [data.items, data.a11yOn] as const)
-        : await Promise.all([
-            getTorrentCapturesInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, TORRENT_DAY_RAW_LIMIT),
-            isAccessibilityEnabled(),
+      let list: TorrentCapture[] = []
+      let on = false
+      let nextFormalActions: TorrentFormalAction[] = []
+      let nextFormalCards: TorrentFormalCard[] = []
+      if (devSource) {
+        const data = await devSource.load()
+        list = data.items
+        on = data.a11yOn
+      } else if (readMode === 'formal') {
+        const [formalA, formalC, a11y] = await Promise.all([
+          getTorrentFormalActionsInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, 100000),
+          getTorrentFormalCardsInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, 100000),
+          isAccessibilityEnabled(),
+        ])
+        nextFormalActions = formalA
+        nextFormalCards = formalC
+        on = a11y
+        // 正式数据优先；如果当天还没转译过，读一次 raw 回填并渲染，避免新一天空白。
+        if (formalA.length === 0 && formalC.length === 0) {
+          list = await getTorrentCapturesInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, TORRENT_DAY_RAW_LIMIT)
+        }
+      } else {
+        // raw/auto 仍默认读完整 raw；auto 在 raw 被清理或当天没有 raw 时，再用正式表兜底。
+        const [rawList, a11y] = await Promise.all([
+          getTorrentCapturesInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, TORRENT_DAY_RAW_LIMIT),
+          isAccessibilityEnabled(),
+        ])
+        list = rawList
+        on = a11y
+        if (readMode === 'auto' && rawList.length === 0) {
+          const [formalA, formalC] = await Promise.all([
+            getTorrentFormalActionsInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, 100000),
+            getTorrentFormalCardsInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, 100000),
           ])
+          nextFormalActions = formalA
+          nextFormalCards = formalC
+        }
+      }
       if (!liveRef.current) return
       setItems(list)
+      setFormalActions(nextFormalActions)
+      setFormalCards(nextFormalCards)
       setA11yOn(on)
     } catch (e) {
       console.warn('[torrent] refresh failed', e)
@@ -587,7 +649,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
         setRefreshing(false)
       }
     }
-  }, [devSource, selectedDayBounds.endMs, selectedDayBounds.startMs, viewMode])
+  }, [devSource, readMode, selectedDayBounds.endMs, selectedDayBounds.startMs, viewMode])
 
   const refreshAppMonitor = useCallback(async (mode: 'full' | 'incremental' = 'full') => {
     if (mode === 'full') setMonitorLoading(true)
@@ -645,6 +707,14 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   }, [refresh, devSource?.pollMs])
 
   useEffect(() => {
+    let cancelled = false
+    getTorrentReadMode()
+      .then((mode) => { if (!cancelled) setReadMode(mode) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
     void refreshAppMonitor()
   }, [refreshAppMonitor])
 
@@ -678,14 +748,41 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   useEffect(() => {
     if (loading) return
     const dayKey = toLocalDateStr(selectedDate)
-    const ranges = buildTorrentCalendarRanges(visibleItems)
+    const ranges = visibleItems.length > 0
+      ? buildTorrentCalendarRanges(visibleItems)
+      : buildTorrentCalendarRangesFromFormal(formalActions)
     setCalendarRangesByDay((prev) => {
       if (sameCalendarRanges(prev[dayKey], ranges)) return prev
       const next = { ...prev, [dayKey]: ranges }
       soloSetPref(TORRENT_CALENDAR_CACHE_KEY, JSON.stringify(next)).catch(() => {})
       return next
     })
-  }, [loading, selectedDate, visibleItems])
+  }, [formalActions, loading, selectedDate, visibleItems])
+
+  useEffect(() => {
+    if (devSource || loading || visibleItems.length === 0) return
+    const dayKey = toLocalDateStr(selectedDate)
+    const first = visibleItems[0]
+    const last = visibleItems[visibleItems.length - 1]
+    const persistKey = `${dayKey}:${visibleItems.length}:${first?.rowId ?? 0}:${last?.rowId ?? 0}`
+    if (formalPersistKeyRef.current === persistKey) return
+    let cancelled = false
+    const id = setTimeout(() => {
+      if (cancelled) return
+      formalPersistKeyRef.current = persistKey
+      persistTorrentFormalDayFromRaw(dayKey, visibleItems)
+        .then((r) => {
+          if (!cancelled) {
+            console.log('[torrent-formal]', { dayKey, parserCount: r.parserCount, actionCount: r.actionCount, cardCount: r.cardCount })
+          }
+        })
+        .catch((e) => console.warn('[torrent] persist formal failed', e))
+    }, 600)
+    return () => {
+      cancelled = true
+      clearTimeout(id)
+    }
+  }, [devSource, loading, selectedDate, visibleItems])
 
   useEffect(() => {
     if (loading || a11yOn || devSource || a11yPromptShownRef.current) return
@@ -765,7 +862,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
           <View style={styles.empty}>
             <ActivityIndicator color={theme.accent} />
           </View>
-        ) : visibleItems.length === 0 ? (
+        ) : !hasRestorableData ? (
           <View style={styles.empty}>
             <Text style={styles.emptyHint}>
               这一天还没抓到文本{'\n\n'}
@@ -792,6 +889,9 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
             highlightKey={highlightKey}
             appIconCache={appIconCache}
             searchText={searchText}
+            formalActions={formalActions}
+            formalCards={formalCards}
+            useFormalItems={canUseFormalItems}
           />
         )}
       </View>
@@ -1050,6 +1150,7 @@ function AppMonitorView({
 
 function RenderList({
   items, viewMode, sortOrder, refreshing, onRefresh, jumpTarget, onJumpDone, onCrossJump, highlightKey, appIconCache, searchText,
+  formalActions, formalCards, useFormalItems,
 }: {
   items: TorrentCapture[]
   viewMode: ViewMode
@@ -1062,6 +1163,9 @@ function RenderList({
   highlightKey: string | null
   appIconCache: Record<string, string>
   searchText?: string
+  formalActions: TorrentFormalAction[]
+  formalCards: TorrentFormalCard[]
+  useFormalItems: boolean
 }) {
   // 【DEV-only】按时间戳范围过滤 raw items（卡片对照调试）
   const filteredItems = useMemo(() => {
@@ -1071,8 +1175,16 @@ function RenderList({
   }, [items])
   const listItems = useMemo(() => {
     let base: ListItem[]
-    if (viewMode === 'feed') base = buildFeedListItems(filteredItems)
-    else if (viewMode === 'action') base = buildActionListItems(filteredItems)
+    if (viewMode === 'feed') {
+      base = useFormalItems
+        ? buildTorrentFeedListItemsFromFormal(formalCards)
+        : buildFeedListItems(filteredItems)
+    }
+    else if (viewMode === 'action') {
+      base = useFormalItems
+        ? buildTorrentActionListItemsFromFormal(formalActions)
+        : buildActionListItems(filteredItems)
+    }
     else base = buildRawListItems(filteredItems)
     // build 函数们默认 desc（新→旧）；切 asc 时整体 reverse
     // feed 视图按 [_groupTs(sortOrder), _groupIdx ASC] 排：组级别翻转，组内顺序保持
@@ -1089,7 +1201,7 @@ function RenderList({
       return sorted
     }
     return sortOrder === 'asc' ? [...base].reverse() : base
-  }, [filteredItems, viewMode, sortOrder])
+  }, [filteredItems, viewMode, sortOrder, useFormalItems, formalActions, formalCards])
 
   // AUDIT-038：useRef / useEffect 必须无条件调用（React Hooks rules）。
   // 之前 listItems.length===0 提前 return 会让 Hooks 在空列表→非空切换时顺序错乱。

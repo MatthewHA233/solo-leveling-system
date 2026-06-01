@@ -112,6 +112,100 @@ class PerceptionDb(context: Context) :
     )
     db.execSQL("CREATE INDEX IF NOT EXISTS idx_torrent_time ON torrent_capture_android(event_time_ms);")
     db.execSQL("CREATE INDEX IF NOT EXISTS idx_torrent_pkg_time ON torrent_capture_android(package_name, event_time_ms);")
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS torrent_actions_android (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date_key TEXT NOT NULL,
+        parser_id TEXT NOT NULL,
+        parser_version INTEGER NOT NULL,
+        action_key TEXT NOT NULL,
+        package_name TEXT NOT NULL DEFAULT '',
+        app_label TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        start_ms INTEGER NOT NULL,
+        end_ms INTEGER NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        up_name TEXT NOT NULL DEFAULT '',
+        is_story INTEGER NOT NULL DEFAULT 0,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        source_refs_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      """.trimIndent()
+    )
+    db.execSQL(
+      """
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_torrent_actions_unique
+      ON torrent_actions_android(date_key, parser_id, action_key);
+      """.trimIndent()
+    )
+    db.execSQL(
+      "CREATE INDEX IF NOT EXISTS idx_torrent_actions_range " +
+        "ON torrent_actions_android(date_key, start_ms, end_ms);"
+    )
+    db.execSQL(
+      "CREATE INDEX IF NOT EXISTS idx_torrent_actions_parser " +
+        "ON torrent_actions_android(parser_id, parser_version, start_ms);"
+    )
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS torrent_cards_android (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date_key TEXT NOT NULL,
+        parser_id TEXT NOT NULL,
+        parser_version INTEGER NOT NULL,
+        card_key TEXT NOT NULL,
+        package_name TEXT NOT NULL DEFAULT '',
+        app_label TEXT NOT NULL DEFAULT '',
+        card_kind TEXT NOT NULL,
+        start_ms INTEGER NOT NULL,
+        end_ms INTEGER NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        up_name TEXT NOT NULL DEFAULT '',
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        source_refs_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      """.trimIndent()
+    )
+    db.execSQL(
+      """
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_torrent_cards_unique
+      ON torrent_cards_android(date_key, parser_id, card_key);
+      """.trimIndent()
+    )
+    db.execSQL(
+      "CREATE INDEX IF NOT EXISTS idx_torrent_cards_range " +
+        "ON torrent_cards_android(date_key, start_ms, end_ms);"
+    )
+    db.execSQL(
+      "CREATE INDEX IF NOT EXISTS idx_torrent_cards_parser " +
+        "ON torrent_cards_android(parser_id, parser_version, start_ms);"
+    )
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS torrent_translate_runs_android (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date_key TEXT NOT NULL,
+        parser_id TEXT NOT NULL,
+        parser_version INTEGER NOT NULL,
+        source_start_ms INTEGER NOT NULL,
+        source_end_ms INTEGER NOT NULL,
+        action_count INTEGER NOT NULL DEFAULT 0,
+        card_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(date_key, parser_id)
+      );
+      """.trimIndent()
+    )
+    db.execSQL(
+      "CREATE INDEX IF NOT EXISTS idx_torrent_translate_runs_date " +
+        "ON torrent_translate_runs_android(date_key, parser_id, parser_version);"
+    )
   }
 
   private fun createAppMonitorTables(db: SQLiteDatabase) {
@@ -160,6 +254,7 @@ class PerceptionDb(context: Context) :
     // v2 → v3：torrent_capture_android 已存在且 column 集合兼容（v2 阶段多过一个
     //   idx_torrent_dedupe 索引，新代码不依赖它、留着也无害），createTorrentTables
     //   的 IF NOT EXISTS 兜底不会破坏数据
+    // v4 → v5：补建洪流域 action/card 正式转译表，只增表和索引。
     createTorrentTables(db)
     createAppMonitorTables(db)
   }
@@ -909,6 +1004,30 @@ class PerceptionDb(context: Context) :
     return arr.toString()
   }
 
+  private fun parseJsonArray(raw: String?): org.json.JSONArray {
+    if (raw.isNullOrBlank()) return org.json.JSONArray()
+    return try {
+      org.json.JSONArray(raw)
+    } catch (_: Throwable) {
+      org.json.JSONArray()
+    }
+  }
+
+  private fun optJsonLong(obj: org.json.JSONObject, key: String, fallback: Long): Long {
+    if (!obj.has(key) || obj.isNull(key)) return fallback
+    return try {
+      obj.optDouble(key, fallback.toDouble()).toLong()
+    } catch (_: Throwable) {
+      fallback
+    }
+  }
+
+  private fun jsonValueToString(value: Any?, fallback: String): String {
+    if (value == null || value == org.json.JSONObject.NULL) return fallback
+    val raw = value.toString()
+    return raw.ifBlank { fallback }
+  }
+
   private fun isMonitorNoise(packageName: String, className: String, windowTitle: String): Boolean {
     val title = windowTitle.trim()
     if (packageName.isBlank()) return true
@@ -929,6 +1048,46 @@ class PerceptionDb(context: Context) :
     val text: String,
     val textHash: String,
     val sourceClass: String,
+  )
+
+  data class TorrentFormalSaveResult(
+    val actionCount: Int,
+    val cardCount: Int,
+  )
+
+  data class TorrentFormalActionSnapshot(
+    val rowId: Long,
+    val dateKey: String,
+    val parserId: String,
+    val parserVersion: Int,
+    val key: String,
+    val packageName: String,
+    val appLabel: String,
+    val kind: String,
+    val startMs: Long,
+    val endMs: Long,
+    val title: String,
+    val upName: String,
+    val isStory: Boolean,
+    val payloadJson: String,
+    val sourceRefsJson: String,
+  )
+
+  data class TorrentFormalCardSnapshot(
+    val rowId: Long,
+    val dateKey: String,
+    val parserId: String,
+    val parserVersion: Int,
+    val key: String,
+    val packageName: String,
+    val appLabel: String,
+    val cardKind: String,
+    val startMs: Long,
+    val endMs: Long,
+    val title: String,
+    val upName: String,
+    val payloadJson: String,
+    val sourceRefsJson: String,
   )
 
   /** raw 文本捕获插入：调试期不做去重，每次抓到都入库
@@ -1019,6 +1178,186 @@ class PerceptionDb(context: Context) :
     return out
   }
 
+  fun saveTorrentFormalDay(
+    dateKey: String,
+    parserId: String,
+    parserVersion: Int,
+    sourceStartMs: Long,
+    sourceEndMs: Long,
+    actionsJson: String,
+    cardsJson: String,
+  ): TorrentFormalSaveResult {
+    val normalizedDateKey = dateKey.trim()
+    val normalizedParserId = parserId.trim().ifBlank { "unknown" }
+    if (normalizedDateKey.isBlank()) {
+      throw IllegalArgumentException("dateKey is required")
+    }
+    val actions = parseJsonArray(actionsJson)
+    val cards = parseJsonArray(cardsJson)
+    val db = writableDatabase
+    val now = nowIso()
+    var actionCount = 0
+    var cardCount = 0
+
+    db.beginTransaction()
+    try {
+      // 同一天同 parser 只保留最新一次转译结果，raw 可删但正式表稳定。
+      db.delete(
+        "torrent_actions_android",
+        "date_key = ? AND parser_id = ?",
+        arrayOf(normalizedDateKey, normalizedParserId),
+      )
+      db.delete(
+        "torrent_cards_android",
+        "date_key = ? AND parser_id = ?",
+        arrayOf(normalizedDateKey, normalizedParserId),
+      )
+
+      for (i in 0 until actions.length()) {
+        val obj = actions.optJSONObject(i) ?: continue
+        val actionKey = obj.optString("key").trim().ifBlank { "$normalizedParserId-action-$i" }
+        val startMs = optJsonLong(obj, "startTs", sourceStartMs)
+        val endMs = optJsonLong(obj, "endTs", startMs).coerceAtLeast(startMs)
+        val cv = ContentValues().apply {
+          put("date_key", normalizedDateKey)
+          put("parser_id", normalizedParserId)
+          put("parser_version", parserVersion)
+          put("action_key", actionKey)
+          put("package_name", obj.optString("packageName"))
+          put("app_label", obj.optString("appLabel"))
+          put("kind", obj.optString("kind").trim().ifBlank { "unknown" })
+          put("start_ms", startMs)
+          put("end_ms", endMs)
+          put("title", obj.optString("title"))
+          put("up_name", obj.optString("upName"))
+          put("is_story", if (obj.optBoolean("isStory", false)) 1 else 0)
+          put("payload_json", jsonValueToString(obj.opt("payload"), "{}"))
+          put("source_refs_json", jsonValueToString(obj.opt("sourceRefs"), "[]"))
+          put("created_at", now)
+          put("updated_at", now)
+        }
+        db.insertWithOnConflict("torrent_actions_android", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+        actionCount++
+      }
+
+      for (i in 0 until cards.length()) {
+        val obj = cards.optJSONObject(i) ?: continue
+        val cardKey = obj.optString("key").trim().ifBlank { "$normalizedParserId-card-$i" }
+        val startMs = optJsonLong(obj, "startTs", sourceStartMs)
+        val endMs = optJsonLong(obj, "endTs", startMs).coerceAtLeast(startMs)
+        val cv = ContentValues().apply {
+          put("date_key", normalizedDateKey)
+          put("parser_id", normalizedParserId)
+          put("parser_version", parserVersion)
+          put("card_key", cardKey)
+          put("package_name", obj.optString("packageName"))
+          put("app_label", obj.optString("appLabel"))
+          put("card_kind", obj.optString("cardKind").trim().ifBlank { "unknown" })
+          put("start_ms", startMs)
+          put("end_ms", endMs)
+          put("title", obj.optString("title"))
+          put("up_name", obj.optString("upName"))
+          put("payload_json", jsonValueToString(obj.opt("payload"), "{}"))
+          put("source_refs_json", jsonValueToString(obj.opt("sourceRefs"), "[]"))
+          put("created_at", now)
+          put("updated_at", now)
+        }
+        db.insertWithOnConflict("torrent_cards_android", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+        cardCount++
+      }
+
+      val run = ContentValues().apply {
+        put("date_key", normalizedDateKey)
+        put("parser_id", normalizedParserId)
+        put("parser_version", parserVersion)
+        put("source_start_ms", sourceStartMs)
+        put("source_end_ms", sourceEndMs.coerceAtLeast(sourceStartMs))
+        put("action_count", actionCount)
+        put("card_count", cardCount)
+        put("created_at", now)
+        put("updated_at", now)
+      }
+      db.insertWithOnConflict("torrent_translate_runs_android", null, run, SQLiteDatabase.CONFLICT_REPLACE)
+      db.setTransactionSuccessful()
+    } finally {
+      db.endTransaction()
+    }
+    return TorrentFormalSaveResult(actionCount, cardCount)
+  }
+
+  fun torrentFormalActionsInRange(startMs: Long, endMs: Long, limit: Int): List<TorrentFormalActionSnapshot> {
+    val cap = limit.coerceIn(1, 100000)
+    val out = ArrayList<TorrentFormalActionSnapshot>()
+    readableDatabase.rawQuery(
+      """
+      SELECT id, date_key, parser_id, parser_version, action_key, package_name, app_label,
+        kind, start_ms, end_ms, title, up_name, is_story, payload_json, source_refs_json
+      FROM torrent_actions_android
+      WHERE end_ms >= ? AND start_ms < ?
+      ORDER BY start_ms DESC, id DESC
+      LIMIT ?
+      """.trimIndent(),
+      arrayOf(startMs.toString(), endMs.toString(), cap.toString()),
+    ).use { c ->
+      while (c.moveToNext()) {
+        out.add(TorrentFormalActionSnapshot(
+          rowId = c.getLong(0),
+          dateKey = c.getString(1),
+          parserId = c.getString(2),
+          parserVersion = c.getInt(3),
+          key = c.getString(4),
+          packageName = c.getString(5),
+          appLabel = c.getString(6),
+          kind = c.getString(7),
+          startMs = c.getLong(8),
+          endMs = c.getLong(9),
+          title = c.getString(10),
+          upName = c.getString(11),
+          isStory = c.getInt(12) != 0,
+          payloadJson = c.getString(13),
+          sourceRefsJson = c.getString(14),
+        ))
+      }
+    }
+    return out
+  }
+
+  fun torrentFormalCardsInRange(startMs: Long, endMs: Long, limit: Int): List<TorrentFormalCardSnapshot> {
+    val cap = limit.coerceIn(1, 100000)
+    val out = ArrayList<TorrentFormalCardSnapshot>()
+    readableDatabase.rawQuery(
+      """
+      SELECT id, date_key, parser_id, parser_version, card_key, package_name, app_label,
+        card_kind, start_ms, end_ms, title, up_name, payload_json, source_refs_json
+      FROM torrent_cards_android
+      WHERE end_ms >= ? AND start_ms < ?
+      ORDER BY start_ms DESC, id DESC
+      LIMIT ?
+      """.trimIndent(),
+      arrayOf(startMs.toString(), endMs.toString(), cap.toString()),
+    ).use { c ->
+      while (c.moveToNext()) {
+        out.add(TorrentFormalCardSnapshot(
+          rowId = c.getLong(0),
+          dateKey = c.getString(1),
+          parserId = c.getString(2),
+          parserVersion = c.getInt(3),
+          key = c.getString(4),
+          packageName = c.getString(5),
+          appLabel = c.getString(6),
+          cardKind = c.getString(7),
+          startMs = c.getLong(8),
+          endMs = c.getLong(9),
+          title = c.getString(10),
+          upName = c.getString(11),
+          payloadJson = c.getString(12),
+          sourceRefsJson = c.getString(13),
+        ))
+      }
+    }
+    return out
+  }
+
   fun countTorrentCaptures(): Long {
     return readableDatabase.rawQuery("SELECT COUNT(*) FROM torrent_capture_android", null).use { c ->
       if (c.moveToFirst()) c.getLong(0) else 0L
@@ -1030,6 +1369,12 @@ class PerceptionDb(context: Context) :
     val rawBytes: Long,
     val databaseBytes: Long,
     val rawLimitMb: Int,
+    val appMonitorRowCount: Long,
+    val appMonitorBytes: Long,
+    val formalActionCount: Long,
+    val formalActionBytes: Long,
+    val formalCardCount: Long,
+    val formalCardBytes: Long,
   )
 
   fun torrentStorageStats(): TorrentStorageStats {
@@ -1057,7 +1402,93 @@ class PerceptionDb(context: Context) :
     } catch (_: Throwable) {
       0L
     }
-    return TorrentStorageStats(rowCount, rawBytes, databaseBytes, torrentRawLimitMb())
+    val appMonitorUsage = appMonitorStorageUsage(db)
+    val formalActionUsage = torrentFormalActionStorageUsage(db)
+    val formalCardUsage = torrentFormalCardStorageUsage(db)
+    return TorrentStorageStats(
+      rowCount = rowCount,
+      rawBytes = rawBytes,
+      databaseBytes = databaseBytes,
+      rawLimitMb = torrentRawLimitMb(),
+      appMonitorRowCount = appMonitorUsage.rowCount,
+      appMonitorBytes = appMonitorUsage.bytes,
+      formalActionCount = formalActionUsage.rowCount,
+      formalActionBytes = formalActionUsage.bytes,
+      formalCardCount = formalCardUsage.rowCount,
+      formalCardBytes = formalCardUsage.bytes,
+    )
+  }
+
+  private data class TableUsage(val rowCount: Long, val bytes: Long)
+
+  private fun appMonitorStorageUsage(db: SQLiteDatabase): TableUsage {
+    return db.rawQuery(
+      """
+      SELECT COUNT(*),
+        COALESCE(SUM(
+          COALESCE(LENGTH(CAST(date_key AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(kind AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(package_name AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(class_name AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(app_label AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(window_title AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(event_type AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(titles_json AS BLOB)), 0)
+        ), 0)
+      FROM app_monitor_segments_android
+      """.trimIndent(),
+      null,
+    ).use { c ->
+      if (c.moveToFirst()) TableUsage(c.getLong(0), c.getLong(1)) else TableUsage(0L, 0L)
+    }
+  }
+
+  private fun torrentFormalActionStorageUsage(db: SQLiteDatabase): TableUsage {
+    return db.rawQuery(
+      """
+      SELECT COUNT(*),
+        COALESCE(SUM(
+          COALESCE(LENGTH(CAST(date_key AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(parser_id AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(action_key AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(package_name AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(app_label AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(kind AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(title AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(up_name AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(payload_json AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(source_refs_json AS BLOB)), 0)
+        ), 0)
+      FROM torrent_actions_android
+      """.trimIndent(),
+      null,
+    ).use { c ->
+      if (c.moveToFirst()) TableUsage(c.getLong(0), c.getLong(1)) else TableUsage(0L, 0L)
+    }
+  }
+
+  private fun torrentFormalCardStorageUsage(db: SQLiteDatabase): TableUsage {
+    return db.rawQuery(
+      """
+      SELECT COUNT(*),
+        COALESCE(SUM(
+          COALESCE(LENGTH(CAST(date_key AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(parser_id AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(card_key AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(package_name AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(app_label AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(card_kind AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(title AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(up_name AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(payload_json AS BLOB)), 0) +
+          COALESCE(LENGTH(CAST(source_refs_json AS BLOB)), 0)
+        ), 0)
+      FROM torrent_cards_android
+      """.trimIndent(),
+      null,
+    ).use { c ->
+      if (c.moveToFirst()) TableUsage(c.getLong(0), c.getLong(1)) else TableUsage(0L, 0L)
+    }
   }
 
   data class TorrentPruneResult(
@@ -1200,7 +1631,7 @@ class PerceptionDb(context: Context) :
   companion object {
     const val DEDUP_WINDOW_MS = 5 * 60 * 1000L  // 5 分钟去重窗
     private const val DB_NAME = "perception.db"
-    private const val DB_VERSION = 4
+    private const val DB_VERSION = 5
     private const val DAY_MS = 24L * 60L * 60L * 1000L
     private const val PREFS_NAME = "sls_perception"
     private const val PREF_TORRENT_RAW_LIMIT_MB = "torrent_raw_limit_mb"

@@ -1,7 +1,7 @@
 // Bilibili 洪流域解析：raw a11y 文本 → 卡片/动作模型
 // UI 渲染留在 TorrentScreen；这里保持纯数据转换，方便后续并排新增其他 App parser。
 
-import type { TorrentCapture } from '../../../lib/perception'
+import type { TorrentCapture, TorrentFormalAction, TorrentFormalCard } from '../../../lib/perception'
 import type { TorrentFormalActionDraft, TorrentFormalCardDraft, TorrentParserModule } from '../types'
 import { sourceRefsInRange } from '../types'
 
@@ -2029,6 +2029,124 @@ function cardPayload(item: BiliCardItem): Record<string, unknown> {
   }
 }
 
+function parseFormalPayload(raw: string): Record<string, any> {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function withFormalGroupMeta<T extends ListItem>(item: T, payload: Record<string, any>): T {
+  const groupTs = typeof payload.groupTs === 'number' ? payload.groupTs : undefined
+  const groupIdx = typeof payload.groupIdx === 'number' ? payload.groupIdx : undefined
+  return Object.assign(item, {
+    ...(groupTs != null ? { _groupTs: groupTs } : {}),
+    ...(groupIdx != null ? { _groupIdx: groupIdx } : {}),
+  })
+}
+
+export function buildBiliActionListItemsFromFormal(rows: TorrentFormalAction[]): ListItem[] {
+  return rows
+    .filter((row) => row.parserId === BILI_PARSER_ID)
+    .map((row) => {
+      const payload = parseFormalPayload(row.payloadJson)
+      return {
+        kind: 'actionLine' as const,
+        key: row.key,
+        ts: row.startTs,
+        endTs: row.endTs,
+        act: row.kind as BiliActionKind,
+        title: row.title || payload.title,
+        upName: row.upName || payload.upName,
+        meta: payload.meta,
+        tabSeq: Array.isArray(payload.tabSeq) ? payload.tabSeq : undefined,
+        isStory: row.isStory || payload.isStory === true,
+        packageName: row.packageName || BILI_PACKAGE,
+        appLabel: row.appLabel || BILI_APP_LABEL,
+      }
+    })
+}
+
+export function buildBiliFeedListItemsFromFormal(rows: TorrentFormalCard[]): ListItem[] {
+  return rows
+    .filter((row) => row.parserId === BILI_PARSER_ID)
+    .map((row) => {
+      const payload = parseFormalPayload(row.payloadJson)
+      const base = {
+        key: row.key,
+        tsStart: row.startTs,
+        tsEnd: row.endTs,
+      }
+      if (row.cardKind === 'home') {
+        return withFormalGroupMeta({
+          kind: 'home' as const,
+          ...base,
+          feedItems: Array.isArray(payload.feedItems) ? payload.feedItems : [],
+          sweepCount: typeof payload.sweepCount === 'number' ? payload.sweepCount : 1,
+        }, payload)
+      }
+      if (row.cardKind === 'detail') {
+        return withFormalGroupMeta({
+          kind: 'detail' as const,
+          ...base,
+          detail: payload.detail ?? { title: row.title || null, upName: row.upName || null, related: [], playProgress: [], promos: [] },
+        }, payload)
+      }
+      if (row.cardKind === 'story') {
+        return withFormalGroupMeta({
+          kind: 'story' as const,
+          ...base,
+          story: payload.story ?? {
+            title: row.title,
+            upName: row.upName,
+            upFans: '',
+            views: null,
+            isAd: false,
+            tag: null,
+            firstSeenTs: row.startTs,
+            lastSeenTs: row.endTs,
+            seenCount: 1,
+            likes: null,
+            comments: null,
+            coins: null,
+            favorites: null,
+            shares: null,
+          },
+        }, payload)
+      }
+      if (row.cardKind === 'comments') {
+        return withFormalGroupMeta({
+          kind: 'comments' as const,
+          ...base,
+          comments: Array.isArray(payload.comments) ? payload.comments : [],
+          totalCount: payload.totalCount ?? null,
+          videoTitle: row.title || payload.videoTitle || null,
+          videoUp: row.upName || payload.videoUp || null,
+          commentDetailSegs: Array.isArray(payload.commentDetailSegs) ? payload.commentDetailSegs : [],
+          commentDetails: Array.isArray(payload.commentDetails) ? payload.commentDetails : [],
+        }, payload)
+      }
+      return withFormalGroupMeta({
+        kind: 'fullscreen' as const,
+        ...base,
+        watch: payload.watch ?? {
+          startTs: row.startTs,
+          endTs: row.endTs,
+          videoFromSec: 0,
+          videoToSec: 0,
+          videoTotalSec: 0,
+          watchedSec: Math.max(0, Math.round((row.endTs - row.startTs) / 1000)),
+        },
+        samples: Array.isArray(payload.samples) ? payload.samples : [],
+        videoTitle: row.title || payload.videoTitle || null,
+        videoUp: row.upName || payload.videoUp || null,
+      }, payload)
+    })
+}
+
 export function buildBiliFormalActionDrafts(itemsIn: TorrentCapture[]): TorrentFormalActionDraft[] {
   return buildBiliActionListItems(itemsIn)
     .filter((item): item is Extract<ListItem, { kind: 'actionLine' }> => item.kind === 'actionLine')
@@ -2068,7 +2186,11 @@ export function buildBiliFormalCardDrafts(itemsIn: TorrentCapture[]): TorrentFor
       endTs: item.tsEnd,
       title: cardTitle(item),
       upName: cardUpName(item),
-      payload: cardPayload(item),
+      payload: {
+        ...cardPayload(item),
+        groupTs: (item as any)._groupTs,
+        groupIdx: (item as any)._groupIdx,
+      },
       sourceRefs: sourceRefsInRange(itemsIn, item.tsStart, item.tsEnd),
     }))
 }
@@ -2085,4 +2207,6 @@ export const bilibiliTorrentParser: TorrentParserModule<ListItem> = {
   buildActionListItems: buildBiliActionListItems,
   buildFormalActions: buildBiliFormalActionDrafts,
   buildFormalCards: buildBiliFormalCardDrafts,
+  buildActionListItemsFromFormal: buildBiliActionListItemsFromFormal,
+  buildFeedListItemsFromFormal: buildBiliFeedListItemsFromFormal,
 }

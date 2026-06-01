@@ -372,6 +372,12 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
         putDouble("rawBytes", s.rawBytes.toDouble())
         putDouble("databaseBytes", s.databaseBytes.toDouble())
         putInt("rawLimitMb", s.rawLimitMb)
+        putDouble("appMonitorRowCount", s.appMonitorRowCount.toDouble())
+        putDouble("appMonitorBytes", s.appMonitorBytes.toDouble())
+        putDouble("formalActionCount", s.formalActionCount.toDouble())
+        putDouble("formalActionBytes", s.formalActionBytes.toDouble())
+        putDouble("formalCardCount", s.formalCardCount.toDouble())
+        putDouble("formalCardBytes", s.formalCardBytes.toDouble())
       })
     } catch (e: Throwable) {
       promise.reject("TORRENT_STATS_FAILED", e.message, e)
@@ -401,6 +407,56 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
     catch (e: Throwable) { promise.reject("TORRENT_CLEAR_FAILED", e.message, e) }
   }
 
+  @ReactMethod
+  fun saveTorrentFormalDay(
+    dateKey: String,
+    parserId: String,
+    parserVersion: Double,
+    sourceStartMs: Double,
+    sourceEndMs: Double,
+    actionsJson: String,
+    cardsJson: String,
+    promise: Promise,
+  ) {
+    try {
+      val r = db.saveTorrentFormalDay(
+        dateKey = dateKey,
+        parserId = parserId,
+        parserVersion = parserVersion.toInt(),
+        sourceStartMs = sourceStartMs.toLong(),
+        sourceEndMs = sourceEndMs.toLong(),
+        actionsJson = actionsJson,
+        cardsJson = cardsJson,
+      )
+      promise.resolve(Arguments.createMap().apply {
+        putInt("actionCount", r.actionCount)
+        putInt("cardCount", r.cardCount)
+      })
+    } catch (e: Throwable) {
+      promise.reject("TORRENT_FORMAL_SAVE_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun getTorrentFormalActionsInRange(startMs: Double, endMs: Double, limit: Double, promise: Promise) {
+    try {
+      val items = db.torrentFormalActionsInRange(startMs.toLong(), endMs.toLong(), limit.toInt())
+      promise.resolve(torrentFormalActionsToArray(items))
+    } catch (e: Throwable) {
+      promise.reject("TORRENT_FORMAL_ACTIONS_QUERY_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun getTorrentFormalCardsInRange(startMs: Double, endMs: Double, limit: Double, promise: Promise) {
+    try {
+      val items = db.torrentFormalCardsInRange(startMs.toLong(), endMs.toLong(), limit.toInt())
+      promise.resolve(torrentFormalCardsToArray(items))
+    } catch (e: Throwable) {
+      promise.reject("TORRENT_FORMAL_CARDS_QUERY_FAILED", e.message, e)
+    }
+  }
+
   companion object {
     const val NAME = "Perception"
   }
@@ -423,6 +479,51 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
           putString("eventType", it.eventType)
           putInt("eventCount", it.eventCount)
           putArray("titles", titles)
+        })
+      }
+    }
+
+  private fun torrentFormalActionsToArray(items: List<PerceptionDb.TorrentFormalActionSnapshot>) =
+    Arguments.createArray().apply {
+      for (it in items) {
+        pushMap(Arguments.createMap().apply {
+          putDouble("rowId", it.rowId.toDouble())
+          putString("dateKey", it.dateKey)
+          putString("parserId", it.parserId)
+          putInt("parserVersion", it.parserVersion)
+          putString("key", it.key)
+          putString("packageName", it.packageName)
+          putString("appLabel", it.appLabel)
+          putString("kind", it.kind)
+          putDouble("startTs", it.startMs.toDouble())
+          putDouble("endTs", it.endMs.toDouble())
+          putString("title", it.title)
+          putString("upName", it.upName)
+          putBoolean("isStory", it.isStory)
+          putString("payloadJson", it.payloadJson)
+          putString("sourceRefsJson", it.sourceRefsJson)
+        })
+      }
+    }
+
+  private fun torrentFormalCardsToArray(items: List<PerceptionDb.TorrentFormalCardSnapshot>) =
+    Arguments.createArray().apply {
+      for (it in items) {
+        pushMap(Arguments.createMap().apply {
+          putDouble("rowId", it.rowId.toDouble())
+          putString("dateKey", it.dateKey)
+          putString("parserId", it.parserId)
+          putInt("parserVersion", it.parserVersion)
+          putString("key", it.key)
+          putString("packageName", it.packageName)
+          putString("appLabel", it.appLabel)
+          putString("cardKind", it.cardKind)
+          putDouble("startTs", it.startMs.toDouble())
+          putDouble("endTs", it.endMs.toDouble())
+          putString("title", it.title)
+          putString("upName", it.upName)
+          putString("payloadJson", it.payloadJson)
+          putString("sourceRefsJson", it.sourceRefsJson)
         })
       }
     }

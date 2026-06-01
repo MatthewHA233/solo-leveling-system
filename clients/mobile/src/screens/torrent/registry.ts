@@ -1,4 +1,4 @@
-import type { TorrentCapture } from '../../lib/perception'
+import type { TorrentCapture, TorrentFormalAction, TorrentFormalCard } from '../../lib/perception'
 import {
   BILI_PACKAGE,
   bilibiliTorrentParser,
@@ -58,6 +58,20 @@ export function buildTorrentFormalActionDrafts(items: TorrentCapture[]): Torrent
 export function buildTorrentFormalCardDrafts(items: TorrentCapture[]): TorrentFormalCardDraft[] {
   return torrentParserModules.flatMap((parser) =>
     parser.buildFormalCards ? parser.buildFormalCards(itemsForParser(items, parser)) : [])
+}
+
+export function buildTorrentActionListItemsFromFormal(items: TorrentFormalAction[]): TorrentListItem[] {
+  return torrentParserModules.flatMap((parser) =>
+    parser.buildActionListItemsFromFormal
+      ? parser.buildActionListItemsFromFormal(items.filter((item) => item.parserId === parser.id))
+      : [])
+}
+
+export function buildTorrentFeedListItemsFromFormal(items: TorrentFormalCard[]): TorrentListItem[] {
+  return torrentParserModules.flatMap((parser) =>
+    parser.buildFeedListItemsFromFormal
+      ? parser.buildFeedListItemsFromFormal(items.filter((item) => item.parserId === parser.id))
+      : [])
 }
 
 export const DEFAULT_TORRENT_PACKAGE = BILI_PACKAGE

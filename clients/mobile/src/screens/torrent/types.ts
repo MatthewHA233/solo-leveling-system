@@ -1,4 +1,4 @@
-import type { TorrentCapture } from '../../lib/perception'
+import type { TorrentCapture, TorrentFormalAction, TorrentFormalCard } from '../../lib/perception'
 
 export type TorrentParserId = 'bilibili' | (string & {})
 
@@ -53,6 +53,8 @@ export type TorrentParserModule<TListItem> = {
   buildActionListItems: (items: TorrentCapture[]) => TListItem[]
   buildFormalActions?: (items: TorrentCapture[]) => TorrentFormalActionDraft[]
   buildFormalCards?: (items: TorrentCapture[]) => TorrentFormalCardDraft[]
+  buildActionListItemsFromFormal?: (items: TorrentFormalAction[]) => TListItem[]
+  buildFeedListItemsFromFormal?: (items: TorrentFormalCard[]) => TListItem[]
 }
 
 export function sourceRefsInRange(

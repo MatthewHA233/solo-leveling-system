@@ -112,6 +112,12 @@ export type TorrentStats = {
   rawBytes: number
   databaseBytes: number
   rawLimitMb: number
+  appMonitorRowCount?: number
+  appMonitorBytes?: number
+  formalActionCount?: number
+  formalActionBytes?: number
+  formalCardCount?: number
+  formalCardBytes?: number
 }
 
 export type TorrentRawLimitResult = {
@@ -120,6 +126,81 @@ export type TorrentRawLimitResult = {
   deletedDays: number
   rawBytesBefore: number
   rawBytesAfter: number
+}
+
+export type TorrentFormalSaveResult = {
+  actionCount: number
+  cardCount: number
+}
+
+export type TorrentFormalSourceRef = {
+  rowId: number
+  eventTimeMs: number
+  packageName: string
+  windowClass: string
+  text?: string
+}
+
+export type TorrentFormalActionInput = {
+  key: string
+  packageName: string
+  appLabel: string
+  kind: string
+  startTs: number
+  endTs: number
+  title?: string
+  upName?: string
+  isStory?: boolean
+  payload?: Record<string, unknown>
+  sourceRefs?: TorrentFormalSourceRef[]
+}
+
+export type TorrentFormalCardInput = {
+  key: string
+  packageName: string
+  appLabel: string
+  cardKind: string
+  startTs: number
+  endTs: number
+  title?: string
+  upName?: string
+  payload?: Record<string, unknown>
+  sourceRefs?: TorrentFormalSourceRef[]
+}
+
+export type TorrentFormalAction = {
+  rowId: number
+  dateKey: string
+  parserId: string
+  parserVersion: number
+  key: string
+  packageName: string
+  appLabel: string
+  kind: string
+  startTs: number
+  endTs: number
+  title: string
+  upName: string
+  isStory: boolean
+  payloadJson: string
+  sourceRefsJson: string
+}
+
+export type TorrentFormalCard = {
+  rowId: number
+  dateKey: string
+  parserId: string
+  parserVersion: number
+  key: string
+  packageName: string
+  appLabel: string
+  cardKind: string
+  startTs: number
+  endTs: number
+  title: string
+  upName: string
+  payloadJson: string
+  sourceRefsJson: string
 }
 
 interface PerceptionNative {
@@ -147,6 +228,17 @@ interface PerceptionNative {
   getTorrentStats(): Promise<TorrentStats>
   setTorrentRawLimitMb?(rawLimitMb: number): Promise<TorrentRawLimitResult>
   clearTorrentCaptures(): Promise<number>
+  saveTorrentFormalDay?(
+    dayKey: string,
+    parserId: string,
+    parserVersion: number,
+    sourceStartMs: number,
+    sourceEndMs: number,
+    actionsJson: string,
+    cardsJson: string,
+  ): Promise<TorrentFormalSaveResult>
+  getTorrentFormalActionsInRange?(startMs: number, endMs: number, limit: number): Promise<TorrentFormalAction[]>
+  getTorrentFormalCardsInRange?(startMs: number, endMs: number, limit: number): Promise<TorrentFormalCard[]>
 }
 
 export type TorrentCapture = {
@@ -424,11 +516,30 @@ export async function countTorrentCaptures(): Promise<number> {
 }
 
 export async function getTorrentStats(): Promise<TorrentStats> {
-  if (!Native) return { rowCount: 0, rawBytes: 0, databaseBytes: 0, rawLimitMb: 256 }
+  if (!Native) {
+    return {
+      rowCount: 0,
+      rawBytes: 0,
+      databaseBytes: 0,
+      rawLimitMb: 256,
+      appMonitorRowCount: 0,
+      appMonitorBytes: 0,
+      formalActionCount: 0,
+      formalActionBytes: 0,
+      formalCardCount: 0,
+      formalCardBytes: 0,
+    }
+  }
   const stats = await Native.getTorrentStats()
   return {
     ...stats,
     rawLimitMb: Number.isFinite(stats.rawLimitMb) ? stats.rawLimitMb : 256,
+    appMonitorRowCount: Number(stats.appMonitorRowCount || 0),
+    appMonitorBytes: Number(stats.appMonitorBytes || 0),
+    formalActionCount: Number(stats.formalActionCount || 0),
+    formalActionBytes: Number(stats.formalActionBytes || 0),
+    formalCardCount: Number(stats.formalCardCount || 0),
+    formalCardBytes: Number(stats.formalCardBytes || 0),
   }
 }
 
@@ -451,4 +562,46 @@ export async function setTorrentRawLimitMb(rawLimitMb: number): Promise<TorrentR
 export async function clearTorrentCaptures(): Promise<number> {
   if (!Native) return 0
   return Native.clearTorrentCaptures()
+}
+
+export async function saveTorrentFormalDay(params: {
+  dayKey: string
+  parserId: string
+  parserVersion: number
+  sourceStartMs: number
+  sourceEndMs: number
+  actions: TorrentFormalActionInput[]
+  cards: TorrentFormalCardInput[]
+}): Promise<TorrentFormalSaveResult> {
+  if (!Native) return { actionCount: 0, cardCount: 0 }
+  if (typeof Native.saveTorrentFormalDay !== 'function') {
+    throw new Error('当前安装包缺少洪流域正式表接口，请安装新版 debug/release 包')
+  }
+  return Native.saveTorrentFormalDay(
+    params.dayKey,
+    params.parserId,
+    params.parserVersion,
+    params.sourceStartMs,
+    params.sourceEndMs,
+    JSON.stringify(params.actions ?? []),
+    JSON.stringify(params.cards ?? []),
+  )
+}
+
+export async function getTorrentFormalActionsInRange(
+  startMs: number,
+  endMs: number,
+  limit: number = 10000,
+): Promise<TorrentFormalAction[]> {
+  if (!Native || typeof Native.getTorrentFormalActionsInRange !== 'function') return []
+  return Native.getTorrentFormalActionsInRange(startMs, endMs, limit)
+}
+
+export async function getTorrentFormalCardsInRange(
+  startMs: number,
+  endMs: number,
+  limit: number = 10000,
+): Promise<TorrentFormalCard[]> {
+  if (!Native || typeof Native.getTorrentFormalCardsInRange !== 'function') return []
+  return Native.getTorrentFormalCardsInRange(startMs, endMs, limit)
 }
