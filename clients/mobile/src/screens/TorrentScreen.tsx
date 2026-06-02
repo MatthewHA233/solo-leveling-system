@@ -23,7 +23,9 @@ import {
   getAppMonitorSegmentsInRange,
   getTorrentFormalActionsInRange,
   getTorrentFormalCardsInRange,
+  getTorrentFormalMaxSourceEndMs,
   getTorrentCapturesInRange,
+  getTorrentRawFingerprintInRange,
   isAccessibilityEnabled,
   openAccessibilitySettings,
   type PowerEvent,
@@ -31,6 +33,7 @@ import {
   type TorrentFormalAction,
   type TorrentFormalCard,
   type TorrentCapture,
+  type TorrentRawFingerprint,
   type WindowEvent,
 } from '../lib/perception'
 import CalendarPopover, { type DayRangeColored } from '../components/CalendarPopover'
@@ -87,6 +90,18 @@ const EMPTY_TAG_BY_ID = new Map()
 const EMPTY_CATEGORY_BY_ID = new Map()
 const TORRENT_CALENDAR_CACHE_KEY = 'torrent.calendar.ranges.v1'
 const TORRENT_DAY_RAW_LIMIT = 300_000
+
+function torrentRawPersistKey(dayKey: string, rawList: TorrentCapture[]): string | null {
+  if (rawList.length === 0) return null
+  const first = rawList[0]
+  const last = rawList[rawList.length - 1]
+  return `${dayKey}:${rawList.length}:${first?.rowId ?? 0}:${last?.rowId ?? 0}`
+}
+
+function torrentRawFingerprintKey(dayKey: string, fp: TorrentRawFingerprint): string | null {
+  if (fp.count <= 0) return null
+  return `${dayKey}:${fp.count}:${fp.firstRowId}:${fp.lastRowId}:${fp.maxEventTimeMs}`
+}
 
 function clampMinute(n: number): number {
   return Math.max(0, Math.min(1440, n))
@@ -607,6 +622,8 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
         list = data.items
         on = data.a11yOn
       } else if (readMode === 'formal') {
+        const dayKey = toLocalDateStr(selectedDate)
+        const shouldProbeRaw = isSameDay(selectedDate, new Date()) || refreshing
         const [formalA, formalC, a11y] = await Promise.all([
           getTorrentFormalActionsInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, 100000),
           getTorrentFormalCardsInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, 100000),
@@ -615,9 +632,33 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
         nextFormalActions = formalA
         nextFormalCards = formalC
         on = a11y
-        // 正式数据优先；如果当天还没转译过，读一次 raw 回填并渲染，避免新一天空白。
-        if (formalA.length === 0 && formalC.length === 0) {
-          list = await getTorrentCapturesInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, TORRENT_DAY_RAW_LIMIT)
+        const hasFormal = formalA.length > 0 || formalC.length > 0
+        // 正式数据优先；无正式数据时读 raw 回填。今天/手动刷新时也探测 raw 增量，避免正式快照停在第一次物化。
+        let needsRaw = !hasFormal
+        if (hasFormal && shouldProbeRaw) {
+          const [fp, formalSourceEndMs] = await Promise.all([
+            getTorrentRawFingerprintInRange(selectedDayBounds.startMs, selectedDayBounds.endMs),
+            getTorrentFormalMaxSourceEndMs(dayKey),
+          ])
+          const fpKey = torrentRawFingerprintKey(dayKey, fp)
+          needsRaw = !!fpKey && fp.maxEventTimeMs > formalSourceEndMs && formalPersistKeyRef.current !== fpKey
+          if (!needsRaw && fpKey) formalPersistKeyRef.current = fpKey
+        }
+        if (needsRaw) {
+          const rawList = await getTorrentCapturesInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, TORRENT_DAY_RAW_LIMIT)
+          if (!hasFormal) list = rawList
+          const persistKey = torrentRawPersistKey(dayKey, rawList)
+          if (persistKey && formalPersistKeyRef.current !== persistKey) {
+            formalPersistKeyRef.current = persistKey
+            const result = await persistTorrentFormalDayFromRaw(dayKey, rawList)
+            console.log('[torrent-formal]', { dayKey, parserCount: result.parserCount, actionCount: result.actionCount, cardCount: result.cardCount })
+            const [freshA, freshC] = await Promise.all([
+              getTorrentFormalActionsInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, 100000),
+              getTorrentFormalCardsInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, 100000),
+            ])
+            nextFormalActions = freshA
+            nextFormalCards = freshC
+          }
         }
       } else {
         // raw/auto 仍默认读完整 raw；auto 在 raw 被清理或当天没有 raw 时，再用正式表兜底。
@@ -649,7 +690,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
         setRefreshing(false)
       }
     }
-  }, [devSource, readMode, selectedDayBounds.endMs, selectedDayBounds.startMs, viewMode])
+  }, [devSource, readMode, refreshing, selectedDate, selectedDayBounds.endMs, selectedDayBounds.startMs, viewMode])
 
   const refreshAppMonitor = useCallback(async (mode: 'full' | 'incremental' = 'full') => {
     if (mode === 'full') setMonitorLoading(true)
@@ -762,9 +803,8 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   useEffect(() => {
     if (devSource || loading || visibleItems.length === 0) return
     const dayKey = toLocalDateStr(selectedDate)
-    const first = visibleItems[0]
-    const last = visibleItems[visibleItems.length - 1]
-    const persistKey = `${dayKey}:${visibleItems.length}:${first?.rowId ?? 0}:${last?.rowId ?? 0}`
+    const persistKey = torrentRawPersistKey(dayKey, visibleItems)
+    if (!persistKey) return
     if (formalPersistKeyRef.current === persistKey) return
     let cancelled = false
     const id = setTimeout(() => {

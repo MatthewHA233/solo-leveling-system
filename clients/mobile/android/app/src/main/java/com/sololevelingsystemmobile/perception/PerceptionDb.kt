@@ -1105,6 +1105,14 @@ class PerceptionDb(context: Context) :
     val cardCount: Int,
   )
 
+  data class TorrentRawFingerprintSnapshot(
+    val count: Long,
+    val firstRowId: Long,
+    val lastRowId: Long,
+    val minEventTimeMs: Long,
+    val maxEventTimeMs: Long,
+  )
+
   data class TorrentFormalActionSnapshot(
     val rowId: Long,
     val dateKey: String,
@@ -1226,6 +1234,41 @@ class PerceptionDb(context: Context) :
       }
     }
     return out
+  }
+
+  fun torrentRawFingerprintInRange(startMs: Long, endMs: Long): TorrentRawFingerprintSnapshot {
+    return readableDatabase.rawQuery(
+      """
+      SELECT COUNT(*), MIN(id), MAX(id), MIN(event_time_ms), MAX(event_time_ms)
+      FROM torrent_capture_android
+      WHERE event_time_ms >= ? AND event_time_ms < ?
+      """.trimIndent(),
+      arrayOf(startMs.toString(), endMs.toString()),
+    ).use { c ->
+      if (!c.moveToFirst() || c.isNull(0) || c.getLong(0) <= 0L) {
+        return@use TorrentRawFingerprintSnapshot(0L, 0L, 0L, 0L, 0L)
+      }
+      TorrentRawFingerprintSnapshot(
+        count = c.getLong(0),
+        firstRowId = if (c.isNull(1)) 0L else c.getLong(1),
+        lastRowId = if (c.isNull(2)) 0L else c.getLong(2),
+        minEventTimeMs = if (c.isNull(3)) 0L else c.getLong(3),
+        maxEventTimeMs = if (c.isNull(4)) 0L else c.getLong(4),
+      )
+    }
+  }
+
+  fun torrentFormalMaxSourceEndMs(dateKey: String): Long {
+    return readableDatabase.rawQuery(
+      """
+      SELECT MAX(source_end_ms)
+      FROM torrent_translate_runs_android
+      WHERE date_key = ?
+      """.trimIndent(),
+      arrayOf(dateKey.trim()),
+    ).use { c ->
+      if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L
+    }
   }
 
   fun saveTorrentFormalDay(

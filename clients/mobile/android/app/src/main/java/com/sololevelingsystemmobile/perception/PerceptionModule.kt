@@ -364,6 +364,22 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun getTorrentRawFingerprintInRange(startMs: Double, endMs: Double, promise: Promise) {
+    try {
+      val fp = db.torrentRawFingerprintInRange(startMs.toLong(), endMs.toLong())
+      promise.resolve(Arguments.createMap().apply {
+        putDouble("count", fp.count.toDouble())
+        putDouble("firstRowId", fp.firstRowId.toDouble())
+        putDouble("lastRowId", fp.lastRowId.toDouble())
+        putDouble("minEventTimeMs", fp.minEventTimeMs.toDouble())
+        putDouble("maxEventTimeMs", fp.maxEventTimeMs.toDouble())
+      })
+    } catch (e: Throwable) {
+      promise.reject("TORRENT_FINGERPRINT_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
   fun getTorrentStats(promise: Promise) {
     try {
       val s = db.torrentStorageStats()
@@ -405,6 +421,12 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
   fun clearTorrentCaptures(promise: Promise) {
     try { promise.resolve(db.clearTorrentCaptures().toDouble()) }
     catch (e: Throwable) { promise.reject("TORRENT_CLEAR_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun getTorrentFormalMaxSourceEndMs(dateKey: String, promise: Promise) {
+    try { promise.resolve(db.torrentFormalMaxSourceEndMs(dateKey).toDouble()) }
+    catch (e: Throwable) { promise.reject("TORRENT_FORMAL_RUN_QUERY_FAILED", e.message, e) }
   }
 
   @ReactMethod

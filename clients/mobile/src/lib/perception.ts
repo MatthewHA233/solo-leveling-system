@@ -224,10 +224,12 @@ interface PerceptionNative {
   purgeSelfWindowEvents(): Promise<number>
   getRecentTorrentCaptures(limit: number): Promise<TorrentCapture[]>
   getTorrentCapturesInRange(startMs: number, endMs: number, limit: number): Promise<TorrentCapture[]>
+  getTorrentRawFingerprintInRange?(startMs: number, endMs: number): Promise<TorrentRawFingerprint>
   countTorrentCaptures(): Promise<number>
   getTorrentStats(): Promise<TorrentStats>
   setTorrentRawLimitMb?(rawLimitMb: number): Promise<TorrentRawLimitResult>
   clearTorrentCaptures(): Promise<number>
+  getTorrentFormalMaxSourceEndMs?(dateKey: string): Promise<number>
   saveTorrentFormalDay?(
     dayKey: string,
     parserId: string,
@@ -250,6 +252,14 @@ export type TorrentCapture = {
   text: string
   textHash: string
   sourceClass: string
+}
+
+export type TorrentRawFingerprint = {
+  count: number
+  firstRowId: number
+  lastRowId: number
+  minEventTimeMs: number
+  maxEventTimeMs: number
 }
 
 const Native: PerceptionNative | null =
@@ -562,6 +572,21 @@ export async function setTorrentRawLimitMb(rawLimitMb: number): Promise<TorrentR
 export async function clearTorrentCaptures(): Promise<number> {
   if (!Native) return 0
   return Native.clearTorrentCaptures()
+}
+
+export async function getTorrentRawFingerprintInRange(
+  startMs: number,
+  endMs: number,
+): Promise<TorrentRawFingerprint> {
+  if (!Native || typeof Native.getTorrentRawFingerprintInRange !== 'function') {
+    return { count: 0, firstRowId: 0, lastRowId: 0, minEventTimeMs: 0, maxEventTimeMs: 0 }
+  }
+  return Native.getTorrentRawFingerprintInRange(startMs, endMs)
+}
+
+export async function getTorrentFormalMaxSourceEndMs(dayKey: string): Promise<number> {
+  if (!Native || typeof Native.getTorrentFormalMaxSourceEndMs !== 'function') return 0
+  return Native.getTorrentFormalMaxSourceEndMs(dayKey)
 }
 
 export async function saveTorrentFormalDay(params: {
