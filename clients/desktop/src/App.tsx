@@ -2201,18 +2201,20 @@ export default function App() {
         )
       }
 
-      // ── 抽取本轮 user + 最终 assistant 文本，作为持久化 + TTS 的素材 ──
-      const newPairs: SessionMessage[] = []
-      for (const m of newHistory) {
-        if (m.type === 'user' && !m.isMeta && m.toolUseResult === undefined) {
-          const content = typeof m.message.content === 'string'
-            ? m.message.content
-            : m.message.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
-          if (content.trim()) newPairs.push(makeSessionMessage('user', content.trim()))
-        } else if (isAssistantMessage(m) && m.message.content.every((b: any) => b.type === 'text')) {
-          const text = getMessageText(m)
-          if (text.trim()) newPairs.push(makeSessionMessage('assistant', text.trim()))
+      const replyText = (() => {
+        for (let i = newHistory.length - 1; i >= 0; i--) {
+          const m = newHistory[i]
+          if (isAssistantMessage(m)) return getMessageText(m)
         }
+        return ''
+      })()
+
+      // ── 只持久化本轮 user + 最终 assistant，不能用全量历史长度去裁剪最近上下文窗口 ──
+      const newPairs: SessionMessage[] = []
+      const userText = text.trim()
+      if (!fromVoice && userText) newPairs.push(makeSessionMessage('user', userText))
+      if (replyText.trim()) {
+        newPairs.push(makeSessionMessage('assistant', replyText.trim()))
       }
       if (capturedUsage) {
         for (let i = newPairs.length - 1; i >= 0; i--) {
@@ -2222,13 +2224,6 @@ export default function App() {
           }
         }
       }
-      const replyText = (() => {
-        for (let i = newHistory.length - 1; i >= 0; i--) {
-          const m = newHistory[i]
-          if (isAssistantMessage(m)) return getMessageText(m)
-        }
-        return ''
-      })()
 
       // ── TTS：LLM 完成后 flush，等待音频；同步收集 PCM chunks 拼 WAV 落盘 ──
       let aiAudioPath: string | undefined
@@ -2315,9 +2310,7 @@ export default function App() {
             }
           }
         }
-        // 只追加真正新增的消息（去掉和 persistedBufferRef 已有内容重叠的部分）
-        const alreadyCount = persistedBufferRef.current.length
-        const deduplicated = newPairs.slice(alreadyCount)
+        const deduplicated = newPairs
         if (deduplicated.length > 0) {
           persistedBufferRef.current = [...persistedBufferRef.current, ...deduplicated]
           persistMessages(sid, deduplicated).catch(() => {})
