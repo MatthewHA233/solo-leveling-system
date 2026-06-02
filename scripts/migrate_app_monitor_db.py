@@ -141,9 +141,34 @@ def insert_app_segment(db: sqlite3.Connection, seg: dict) -> None:
   )
 
 
+def truncate_current_app_segment_at(db: sqlite3.Connection, date_key: str, event_time_ms: int) -> None:
+  row = db.execute(
+    """
+    SELECT id, start_ms, end_ms
+    FROM app_monitor_segments_android
+    WHERE date_key = ? AND kind = 'app' AND start_ms <= ?
+    ORDER BY start_ms DESC, id DESC
+    LIMIT 1
+    """,
+    (date_key, event_time_ms),
+  ).fetchone()
+  if not row:
+    return
+  seg_id, start_ms, end_ms = int(row[0]), int(row[1]), int(row[2])
+  if start_ms >= event_time_ms or end_ms <= event_time_ms:
+    return
+  now = iso_from_ms(int(dt.datetime.now().timestamp() * 1000))
+  db.execute(
+    "UPDATE app_monitor_segments_android SET end_ms = ?, updated_at = ? WHERE id = ?",
+    (event_time_ms, now, seg_id),
+  )
+
+
 def insert_power_segment(db: sqlite3.Connection, date_key: str, event_time_ms: int, event: str) -> None:
   if not event or event in {"boot", "shutdown"}:
     return
+  if event == "screen_off":
+    truncate_current_app_segment_at(db, date_key, event_time_ms)
   now = iso_from_ms(int(dt.datetime.now().timestamp() * 1000))
   db.execute(
     """
@@ -234,7 +259,21 @@ def materialize(db_path: Path) -> dict[str, int]:
           (day_key, raw_min),
         )
 
-      for _, ts, obj in day_windows:
+      events = sorted(
+        [("window", row_id, ts, obj) for row_id, ts, obj in day_windows]
+        + [("power", row_id, ts, obj) for row_id, ts, obj in day_powers],
+        key=lambda it: (it[2], it[1]),
+      )
+      for kind, _, ts, obj in events:
+        if kind == "power":
+          event = str(obj.get("event") or "")
+          if event == "screen_off" and current:
+            current["end_ms"] = max(current["start_ms"], ts)
+            insert_app_segment(db, current)
+            current = None
+          insert_power_segment(db, day_key, ts, event)
+          continue
+
         package_name = str(obj.get("package_name") or "")
         class_name = str(obj.get("class_name") or "")
         app_label = str(obj.get("app_label") or package_name)
@@ -242,7 +281,7 @@ def materialize(db_path: Path) -> dict[str, int]:
         if is_noise(package_name, class_name, window_title):
           continue
         label = app_label or package_name
-        if current and current["package_name"] == package_name:
+        if current and current["package_name"] == package_name and ts <= current["end_ms"]:
           current["end_ms"] = day_end
           current["class_name"] = class_name
           current["app_label"] = label
@@ -251,7 +290,8 @@ def materialize(db_path: Path) -> dict[str, int]:
           compact_titles_append(current["titles"], label, package_name, window_title)
         else:
           if current:
-            current["end_ms"] = max(current["start_ms"], ts)
+            if ts <= current["end_ms"]:
+              current["end_ms"] = max(current["start_ms"], ts)
             insert_app_segment(db, current)
           current = {
             "date_key": day_key,
@@ -267,9 +307,6 @@ def materialize(db_path: Path) -> dict[str, int]:
           compact_titles_append(current["titles"], label, package_name, window_title)
       if current:
         insert_app_segment(db, current)
-
-      for _, ts, obj in day_powers:
-        insert_power_segment(db, day_key, ts, str(obj.get("event") or ""))
 
     if raw_days:
       db.execute(

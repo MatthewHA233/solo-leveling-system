@@ -437,7 +437,7 @@ class PerceptionDb(context: Context) :
     try {
       val latest = loadLastAppSegmentBefore(db, dateKey, Long.MAX_VALUE)
       val label = if (appLabel.isBlank()) packageName else appLabel
-      if (latest != null && eventTimeMs >= latest.startMs) {
+      if (latest != null && eventTimeMs >= latest.startMs && latest.endMs >= eventTimeMs) {
         if (latest.packageName == packageName) {
           latest.endMs = dayEndMs
           latest.className = className
@@ -762,8 +762,43 @@ class PerceptionDb(context: Context) :
         )
       }
 
+      val screenOffTimes = ArrayList<Long>()
+      if (rawPowerMinMs != null) {
+        db.rawQuery(
+          """
+          SELECT data_json
+          FROM perception_events_android
+          WHERE bucket_id = ?
+            AND start_at >= ? AND start_at < ?
+          ORDER BY start_at ASC, id ASC
+          """.trimIndent(),
+          arrayOf(POWER_BUCKET_ID, dayStartIso, dayEndIso),
+        ).use { c ->
+          while (c.moveToNext()) {
+            val raw = c.getString(0) ?: continue
+            val obj = try { org.json.JSONObject(raw) } catch (_: Throwable) { continue }
+            val eventTimeMs = obj.optLong("event_time_ms", 0L)
+            val event = obj.optString("event")
+            if (event == "screen_off" && eventTimeMs >= dayStartMs && eventTimeMs < dayEndMs) {
+              screenOffTimes.add(eventTimeMs)
+            }
+          }
+        }
+      }
+
       var current = rawWindowMinMs?.let { loadLastAppSegmentBefore(db, dateKey, it) }
       var currentDirty = false
+      var currentLastEventMs = current?.startMs ?: rawWindowMinMs ?: dayStartMs
+      fun firstScreenOffAfter(fromMs: Long, toMs: Long): Long? =
+        screenOffTimes.firstOrNull { it > fromMs && it <= toMs }
+      fun closeCurrentAt(tsMs: Long) {
+        val draft = current ?: return
+        draft.endMs = tsMs.coerceAtLeast(draft.startMs)
+        saveAppSegment(db, draft)
+        current = null
+        currentDirty = false
+        currentLastEventMs = tsMs
+      }
       db.rawQuery(
         """
         SELECT data_json
@@ -785,6 +820,9 @@ class PerceptionDb(context: Context) :
           val windowTitle = obj.optString("window_title")
           if (isMonitorNoise(packageName, className, windowTitle)) continue
 
+          if (current != null) {
+            firstScreenOffAfter(currentLastEventMs, eventTimeMs)?.let { closeCurrentAt(it) }
+          }
           if (current != null && current!!.packageName == packageName) {
             val draft = current!!
             draft.endMs = dayEndMs
@@ -816,9 +854,13 @@ class PerceptionDb(context: Context) :
             appendCompactTitle(current!!.titles, label, packageName, windowTitle)
             currentDirty = true
           }
+          currentLastEventMs = eventTimeMs
         }
       }
-      if (current != null && currentDirty) saveAppSegment(db, current!!)
+      if (current != null && currentDirty) {
+        firstScreenOffAfter(currentLastEventMs, dayEndMs)?.let { current!!.endMs = it.coerceAtLeast(current!!.startMs) }
+        saveAppSegment(db, current!!)
+      }
 
       db.rawQuery(
         """
@@ -957,6 +999,7 @@ class PerceptionDb(context: Context) :
   }
 
   private fun savePowerSegment(db: SQLiteDatabase, dateKey: String, eventTimeMs: Long, event: String) {
+    if (event == "screen_off") truncateCurrentAppSegmentAt(db, dateKey, eventTimeMs)
     val now = nowIso()
     val cv = ContentValues().apply {
       put("date_key", dateKey)
@@ -974,6 +1017,13 @@ class PerceptionDb(context: Context) :
       put("updated_at", now)
     }
     db.insertWithOnConflict("app_monitor_segments_android", null, cv, SQLiteDatabase.CONFLICT_IGNORE)
+  }
+
+  private fun truncateCurrentAppSegmentAt(db: SQLiteDatabase, dateKey: String, eventTimeMs: Long) {
+    val latest = loadLastAppSegmentBefore(db, dateKey, eventTimeMs + 1L) ?: return
+    if (latest.startMs >= eventTimeMs || latest.endMs <= eventTimeMs) return
+    latest.endMs = eventTimeMs
+    saveAppSegment(db, latest)
   }
 
   private fun appendCompactTitle(titles: MutableList<String>, appLabel: String, packageName: String, rawTitle: String) {
