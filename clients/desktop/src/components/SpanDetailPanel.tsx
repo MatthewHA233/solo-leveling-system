@@ -296,4 +296,3 @@ function Track({ duration, color }: { duration: string; color: string }) {
     </div>
   )
 }
-

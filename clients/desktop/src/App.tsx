@@ -575,6 +575,7 @@ export default function App() {
   const configRef = useRef(config)
   const systemPromptRef = useRef<string>('')
   const chatMessagesRef = useRef<ChatMessage[]>([])
+  const omniUserInputPersistedRef = useRef(false)
   // 同步 ref，供 refreshSystemPrompt 读取最新值（避免 useCallback 闭包过期）
   useEffect(() => { chatMessagesRef.current = chatMessages }, [chatMessages])
   const LONG_PRESS_MS = 600
@@ -1385,6 +1386,8 @@ export default function App() {
           }
         },
         onTranscript: (text, sessionMsgId) => {
+          const isOmniMode = configRef.current.aiMode === 'omni'
+          if (isOmniMode) omniUserInputPersistedRef.current = false
           // 更新用户气泡的转写文字
           setChatMessages((prev) =>
             prev.map((m) => m.id === sessionMsgId ? { ...m, transcript: text } : m)
@@ -1397,12 +1400,13 @@ export default function App() {
               pendingAudioRef.current.delete(sessionMsgId)
               const voiceMsg = makeSessionMessage('user', text, pending.audioPath, pending.durationMs)
               persistedBufferRef.current = [...persistedBufferRef.current, voiceMsg]
+              if (isOmniMode) omniUserInputPersistedRef.current = true
               persistMessages(sessionIdRef.current, [voiceMsg]).catch(() => {})
             }
           }
 
           // Omni 模式：音频已经走 WS，工具调用走 omni://tool_call 事件，不回落 handleSend
-          if (configRef.current.aiMode === 'omni') {
+          if (isOmniMode) {
             lastOmniUserInputRef.current = text   // 供 audio_done 持久化使用
           } else {
             handleSend(text, true)
@@ -1661,7 +1665,9 @@ export default function App() {
                 ? chatMessagesRef.current.find((m) => m.id === msgId)?.content ?? ''
                 : ''
               ).trim()
-              if (userInput) newPairs.push(makeSessionMessage('user', userInput))
+              if (userInput && !omniUserInputPersistedRef.current) {
+                newPairs.push(makeSessionMessage('user', userInput))
+              }
 
               // AI 音频落盘后再写 DB；usage 若稍晚到（最多等 1500ms）也能附上
               const persistAiMsg = async () => {
@@ -1691,30 +1697,37 @@ export default function App() {
                   omniLastUsageRef.current = null
                 }
               }
-              persistAiMsg().then(() => {
-                if (newPairs.length > 0) {
-                  persistedBufferRef.current = [...persistedBufferRef.current, ...newPairs]
-                  persistMessages(sid, newPairs).catch(() => {})
-                  if (
-                    persistedBufferRef.current.length >= TITLE_TRIGGER_MIN_MESSAGES &&
-                    (sessionTitleRef.current === '新会话' || sessionTitleRef.current === '')
-                  ) {
-                    generateSessionTitle(persistedBufferRef.current, cfg)
-                      .then((title) => {
-                        if (!title) return
-                        sessionTitleRef.current = title
-                        patchSession(sid, { title }).catch(() => {})
-                      })
-                      .catch(() => {})
+              persistAiMsg()
+                .then(() => {
+                  if (newPairs.length > 0) {
+                    persistedBufferRef.current = [...persistedBufferRef.current, ...newPairs]
+                    persistMessages(sid, newPairs).catch(() => {})
+                    if (
+                      persistedBufferRef.current.length >= TITLE_TRIGGER_MIN_MESSAGES &&
+                      (sessionTitleRef.current === '新会话' || sessionTitleRef.current === '')
+                    ) {
+                      generateSessionTitle(persistedBufferRef.current, cfg)
+                        .then((title) => {
+                          if (!title) return
+                          sessionTitleRef.current = title
+                          patchSession(sid, { title }).catch(() => {})
+                        })
+                        .catch(() => {})
+                    }
                   }
-                }
-              }).catch(() => {})
-              lastOmniUserInputRef.current = ''
+                })
+                .catch(() => {})
+                .finally(() => {
+                  lastOmniUserInputRef.current = ''
+                  omniUserInputPersistedRef.current = false
+                })
             }
           } else if (payload.status === 'error') {
             omniAiPcmChunksRef.current = []
             omniTextAccRef.current = ''
             omniAgentMsgIdRef.current = null
+            lastOmniUserInputRef.current = ''
+            omniUserInputPersistedRef.current = false
             setChatMessages((prev) => [...prev, {
               id: crypto.randomUUID(), role: 'system' as const,
               content: `Omni 错误: ${payload.message ?? '未知'}`,
@@ -1995,6 +2008,8 @@ export default function App() {
       }
       const omniModel = await getFeatureModel('fairy_omni_chat', cfg.omniModel)
       omniUsageStartedAtRef.current = Date.now()
+      lastOmniUserInputRef.current = text
+      omniUserInputPersistedRef.current = false
       // 记录 debug 快照（text_chunk 建气泡时写入 ChatMessage）
       omniDebugInfoRef.current = {
         systemPrompt,
@@ -2009,7 +2024,6 @@ export default function App() {
           voice: cfg.omniVoice || '', systemPrompt,
           tools: toRealtimeTools(TOOL_DEFINITIONS),
         })
-        lastOmniUserInputRef.current = text
         await invoke('omni_send_text', { text })
         // 后续由 omni://text_chunk / omni://audio_chunk / omni://status(audio_done) 处理
         // setIsProcessing(false) 在 audio_done handler 里触发
@@ -3203,17 +3217,16 @@ export default function App() {
           onNewSession={() => { newSession() }}
           onDelete={async (id) => {
             try { await deleteChatSession(id) } catch {}
-            setSessions((prev) => {
-              const remaining = prev.filter((s) => s.id !== id)
-              if (sessionIdRef.current === id) {
-                if (remaining.length > 0) {
-                  switchSession(remaining[0].id)
-                } else {
-                  newSession()
-                }
+            const remaining = sessions.filter((s) => s.id !== id)
+            const deletingCurrent = sessionIdRef.current === id
+            setSessions(remaining)
+            if (deletingCurrent) {
+              if (remaining.length > 0) {
+                await switchSession(remaining[0].id)
+              } else {
+                await newSession()
               }
-              return remaining
-            })
+            }
           }}
           onClose={() => setPickerOpen(false)}
         />

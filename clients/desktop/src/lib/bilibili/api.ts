@@ -52,4 +52,3 @@ export function calcProgressFromDb(item: DbBiliItem): number {
   if (!item.duration || item.duration === 0) return 0
   return Math.min(1, item.progress / item.duration)
 }
-

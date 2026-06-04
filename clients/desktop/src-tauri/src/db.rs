@@ -2840,6 +2840,9 @@ impl Database {
                 (SELECT MAX(a.file_size) FROM bili_video_assets a
                   WHERE a.bvid = s.bvid AND a.download_status = 'done') AS file_size_bytes,
                 EXISTS (SELECT 1 FROM bili_video_assets a
+                  WHERE a.bvid = s.bvid AND a.download_status = 'done'
+                ) AS downloaded,
+                EXISTS (SELECT 1 FROM bili_video_assets a
                   WHERE a.bvid = s.bvid
                     AND (a.visual_transcript IS NOT NULL OR a.audio_transcript IS NOT NULL OR a.combined_transcript IS NOT NULL)
                 ) AS transcribed
@@ -2851,7 +2854,8 @@ impl Database {
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(params![date], |row| {
             let file_size_bytes: Option<i64> = row.get(11)?;
-            let transcribed: bool = row.get(12)?;
+            let downloaded: bool = row.get(12)?;
+            let transcribed: bool = row.get(13)?;
             Ok(BiliSpan {
                 bvid:        row.get(0)?,
                 oid:         row.get(1)?,
@@ -2864,7 +2868,7 @@ impl Database {
                 end_at:      row.get(8)?,
                 view_at:     row.get(9)?,
                 event_id:    row.get(10)?,
-                downloaded:  file_size_bytes.is_some(),
+                downloaded,
                 file_size_bytes,
                 transcribed,
             })

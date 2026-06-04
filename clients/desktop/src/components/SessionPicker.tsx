@@ -95,14 +95,17 @@ export default function SessionPicker({
       return
     }
     setSearching(true)
+    setServerHits(null)
+    let cancelled = false
     const timer = window.setTimeout(() => {
-      let cancelled = false
       searchChatSessions(q, 50)
         .then((rows) => { if (!cancelled) { setServerHits(rows); setSearching(false) } })
         .catch(() => { if (!cancelled) { setServerHits([]); setSearching(false) } })
-      return () => { cancelled = true }
     }, 250)
-    return () => window.clearTimeout(timer)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
   }, [query])
 
   // 搜索状态下：返回 SessionSearchHit[]（带 snippets）；否则把本地 sessions 包成 hit shape 复用 SessionRow 渲染
