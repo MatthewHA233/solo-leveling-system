@@ -3217,12 +3217,18 @@ export default function App() {
           onNewSession={() => { newSession() }}
           onDelete={async (id) => {
             try { await deleteChatSession(id) } catch {}
-            const remaining = sessions.filter((s) => s.id !== id)
             const deletingCurrent = sessionIdRef.current === id
-            setSessions(remaining)
+            // 用 updater 拿到 React 内部最新 prev，避免闭包 sessions 是过期快照；
+            // 副作用（switchSession/newSession）仍在 updater 外执行（AUDIT-073 原意）。
+            let nextFirstId: string | null = null
+            setSessions((prev) => {
+              const remaining = prev.filter((s) => s.id !== id)
+              nextFirstId = remaining[0]?.id ?? null
+              return remaining
+            })
             if (deletingCurrent) {
-              if (remaining.length > 0) {
-                await switchSession(remaining[0].id)
+              if (nextFirstId) {
+                await switchSession(nextFirstId)
               } else {
                 await newSession()
               }

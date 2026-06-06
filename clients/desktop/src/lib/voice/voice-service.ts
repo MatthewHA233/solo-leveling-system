@@ -88,6 +88,7 @@ export function createVoiceService(
 
   const startRecording = async () => {
     sessionSeq++
+    const mySeq = sessionSeq
     if (phase !== 'idle') phase = 'idle'
 
     const config = getConfig()
@@ -95,9 +96,15 @@ export function createVoiceService(
     const omniApiKey = getOmniApiKey(config)
     if (config.aiMode === 'omni' && omniApiKey) {
       // ── Omni 全模态模式：流式录音 → Omni WS → 转写 ──
-      streamRecorder = createStreamingRecorder()
+      // 用局部 sr，防止 await 期间 cancel()/stopAndProcess() 把闭包 streamRecorder 置 null
+      const sr = createStreamingRecorder()
+      streamRecorder = sr
       try {
         const omniModel = await getFeatureModel('fairy_omni_chat', config.omniModel)
+        if (mySeq !== sessionSeq || streamRecorder !== sr) {
+          await sr.stop().catch(() => {})
+          return
+        }
         await invoke('omni_connect', {
           apiKey: omniApiKey,
           model: omniModel,
@@ -105,28 +112,43 @@ export function createVoiceService(
           systemPrompt: getSystemPrompt(),
           tools: getOmniTools(),
         })
+        if (mySeq !== sessionSeq || streamRecorder !== sr) {
+          await sr.stop().catch(() => {})
+          invoke('omni_stop').catch(() => {})
+          return
+        }
         omniPcmChunks = []
         omniRecordStartMs = Date.now()
-        await streamRecorder.start({
+        await sr.start({
           onChunk: (pcm16) => {
             omniPcmChunks.push(pcm16)
             invoke('omni_send_audio', { pcmBase64: pcm16ToBase64(pcm16) }).catch(() => {})
           },
         })
+        if (mySeq !== sessionSeq || streamRecorder !== sr) {
+          await sr.stop().catch(() => {})
+          invoke('omni_stop').catch(() => {})
+          return
+        }
         setPhase('listening')
       } catch (err) {
         callbacks.onError(`Omni ASR 启动失败: ${err instanceof Error ? err.message : String(err)}`)
-        streamRecorder = null
+        if (streamRecorder === sr) streamRecorder = null
         invoke('omni_stop').catch(() => {})
       }
     } else {
       // ── 默认批量录音 ──
-      batchRecorder = createVoiceRecorder()
+      const br = createVoiceRecorder()
+      batchRecorder = br
       try {
-        await batchRecorder.start()
+        await br.start()
+        if (mySeq !== sessionSeq || batchRecorder !== br) {
+          await br.stop().catch(() => {})
+          return
+        }
         setPhase('listening')
       } catch (err) {
-        batchRecorder = null
+        if (batchRecorder === br) batchRecorder = null
         callbacks.onError(`麦克风访问失败: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
