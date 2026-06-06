@@ -12,7 +12,7 @@ import {
   fetchPlanNodes, fetchPlannedBlocks, paintPlannedBlocks, erasePlannedBlocks,
   fetchSyncLinks, fetchSyncPeers, runSyncLink,
 } from './lib/local-api'
-import type { PerceptionSpan, BiliSpan, ModelCallLog, LinkedDevice, SyncPeer } from './lib/local-api'
+import type { PerceptionSpan, BiliSpan, ModelCallLog, LinkedDevice, SyncPeer, Goal } from './lib/local-api'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from './types'
 import { theme, hud } from './theme'
 
@@ -299,6 +299,7 @@ export default function App() {
   const [activityBlocks, setActivityBlocks] = useState<ActivityBlock[]>([])
   const [plannedBlocks, setPlannedBlocks] = useState<PlannedBlock[]>([])
   const [planNodes, setPlanNodes] = useState<PlanNode[]>([])
+  const [activeGoals, setActiveGoals] = useState<Goal[]>([])
   const [recordLayer, setRecordLayer] = useState<RecordLayer>('actual')
   const [editMode, setEditMode] = useState(false)
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null)
@@ -711,6 +712,19 @@ export default function App() {
   }, [])
   const selectedDateIsToday = isToday(selectedDate)
   const protocolViewLabel = selectedDateIsToday ? '今日协议' : '当日协议'
+
+  const refreshActiveGoals = useCallback(() => {
+    fetchGoals('active')
+      .then(setActiveGoals)
+      .catch((err) => {
+        console.error('[Goals] 获取目标失败:', err)
+        setActiveGoals([])
+      })
+  }, [])
+
+  useEffect(() => {
+    refreshActiveGoals()
+  }, [refreshActiveGoals])
 
   const refreshPerceptionSpans = useCallback(() => {
     fetchPerceptionSpans(selectedDate)
@@ -2911,7 +2925,21 @@ export default function App() {
               />
             </div>
             <div style={mainPanelStyle('motivation')}>
-              <MotivationDashboard protocolLabel={protocolViewLabel} isTodayProtocol={selectedDateIsToday} />
+              <MotivationDashboard
+                protocolLabel={protocolViewLabel}
+                isTodayProtocol={selectedDateIsToday}
+                selectedDate={selectedDate}
+                goals={activeGoals}
+                activityPalette={activityPalette}
+                activityBlocks={activityBlocks}
+                plannedBlocks={plannedBlocks}
+                planNodes={planNodes}
+                onOpenPlanLayer={() => {
+                  setRecordLayer('plan')
+                  setEditMode(true)
+                  setMainView('daynight')
+                }}
+              />
             </div>
             <div style={mainPanelStyle('torrent')}>
               <TorrentFieldPanel />
