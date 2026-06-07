@@ -132,6 +132,7 @@ private struct AgentMessageRow: View {
 
 private struct TypingIndicator: View {
     @State private var phase: Int = 0
+    @State private var timer: Timer?
 
     var body: some View {
         HStack(spacing: 4) {
@@ -146,19 +147,25 @@ private struct TypingIndicator: View {
         .padding(.leading, 12)
         .padding(.vertical, 4)
         .onAppear {
-            withAnimation(.easeInOut(duration: 0.4).repeatForever(autoreverses: false)) {
-                // 使用 Timer 驱动循环
-            }
             startAnimation()
+        }
+        .onDisappear {
+            stopAnimation()
         }
     }
 
     private func startAnimation() {
-        Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
+        stopAnimation()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
             withAnimation(.easeInOut(duration: 0.25)) {
                 phase = (phase + 1) % 3
             }
         }
+    }
+
+    private func stopAnimation() {
+        timer?.invalidate()
+        timer = nil
     }
 }
 

@@ -792,7 +792,9 @@ final class AgentManager: ObservableObject {
         let newActiveKey: String? = newConfig.aiProvider == "openai" ? newConfig.openaiApiKey : newConfig.geminiApiKey
         if newConfig.aiEnabled, let key = newActiveKey, !key.isEmpty {
             if let bm = batchManager {
-                bm.config = newConfig
+                let client = AIClient(config: newConfig)
+                self.aiClient = client
+                bm.updateAIClient(client, config: newConfig)
             } else {
                 // batchManager 之前未创建（如切换了 provider），补创建
                 let client = AIClient(config: newConfig)

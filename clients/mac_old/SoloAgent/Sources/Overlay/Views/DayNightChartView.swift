@@ -196,7 +196,7 @@ struct DayNightChartView: View {
 
     private func loadActivities() {
         let cards = agent.persistence.activityCards(for: selectedDate)
-        activities = ChronosActivityConverter.convertAll(cards)
+        activities = ChronosActivityConverter.convertAll(cards, on: selectedDate)
         loadBatchThumbnails()
     }
 
@@ -209,6 +209,10 @@ struct DayNightChartView: View {
         }
 
         let cal = Calendar.current
+        let dayStart = cal.startOfDay(for: selectedDate)
+        let nextDay = cal.date(byAdding: .day, value: 1, to: dayStart) ?? selectedDate
+        let dayStartTs = Int(dayStart.timeIntervalSince1970)
+        let nextDayTs = Int(nextDay.timeIntervalSince1970)
         let storage = ScreenshotStorageManager.shared
 
         // 在主线程完成 SwiftData 查询（@MainActor 要求），收集图片路径
@@ -221,14 +225,15 @@ struct DayNightChartView: View {
         }
         var batchInfos: [BatchInfo] = []
         for batch in batches {
-            let startDate = Date(timeIntervalSince1970: Double(batch.startTs))
-            let endDate = Date(timeIntervalSince1970: Double(batch.endTs))
-            let sh = cal.component(.hour, from: startDate)
-            let sm = cal.component(.minute, from: startDate)
-            let eh = cal.component(.hour, from: endDate)
-            let em = cal.component(.minute, from: endDate)
-            let startMin = sh * 60 + sm
-            var endMin = eh * 60 + em
+            guard batch.startTs < nextDayTs && batch.endTs > dayStartTs else { continue }
+            let clippedStartTs = max(batch.startTs, dayStartTs)
+            let clippedEndTs = min(max(batch.endTs, clippedStartTs + 60), nextDayTs)
+            let startDate = Date(timeIntervalSince1970: Double(clippedStartTs))
+            let endDate = Date(timeIntervalSince1970: Double(clippedEndTs))
+            var startMin = cal.component(.hour, from: startDate) * 60 + cal.component(.minute, from: startDate)
+            var endMin = cal.component(.hour, from: endDate) * 60 + cal.component(.minute, from: endDate)
+            if clippedStartTs <= dayStartTs { startMin = 0 }
+            if clippedEndTs >= nextDayTs { endMin = 1440 }
             if endMin <= startMin { endMin = startMin + 1 }
 
             let screenshots = agent.persistence.screenshotsForBatch(batch.id)

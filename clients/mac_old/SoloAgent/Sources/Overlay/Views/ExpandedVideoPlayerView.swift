@@ -257,8 +257,12 @@ struct ExpandedVideoPlayerView: View {
               let arr = try? JSONSerialization.jsonObject(with: data) as? [Int] else {
             return
         }
-        // timeMapping[i].realTs = 视频第 i 秒对应的 Unix 时间戳（与 AI 看到的映射表完全一致）
-        timeMapping = arr.enumerated().map { (videoSec: Double($0.offset), realTs: Double($0.element)) }
+        let fps = max(1, agent.config.videoFps)
+        let videoSeconds = Int(ceil(Double(arr.count) / Double(fps)))
+        timeMapping = (0..<videoSeconds).map { sec in
+            let frameIdx = min(sec * fps, arr.count - 1)
+            return (videoSec: Double(sec), realTs: Double(arr[frameIdx]))
+        }
     }
 
     /// 给定视频播放秒数，直接查表返回真实时间；无数据时返回 nil

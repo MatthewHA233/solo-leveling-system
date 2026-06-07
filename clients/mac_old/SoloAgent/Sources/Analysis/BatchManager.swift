@@ -6,7 +6,7 @@ final class BatchManager {
     var config: AgentConfig
     private let persistence: PersistenceManager
     private let videoService = VideoProcessingService()
-    private let aiClient: AIClient
+    private var aiClient: AIClient
     var contextAdvisor: ContextAdvisor?
 
     private var isProcessing = false
@@ -23,6 +23,11 @@ final class BatchManager {
     init(config: AgentConfig, persistence: PersistenceManager, aiClient: AIClient) {
         self.config = config
         self.persistence = persistence
+        self.aiClient = aiClient
+    }
+
+    func updateAIClient(_ aiClient: AIClient, config: AgentConfig) {
+        self.config = config
         self.aiClient = aiClient
     }
 
@@ -159,7 +164,7 @@ final class BatchManager {
 
         // 3. 直接用缓存转录 → Phase 2 流式生成
         await onProgress?(batchId, "正在重新生成卡片...")
-        let existingCards = persistence.allActivityCardsToday()
+        let existingCards = persistence.activityCards(for: Date(timeIntervalSince1970: Double(batch.startTs)))
         let cards = await streamGenerateCards(batchId: batchId, transcription: transcription, existingCards: existingCards, contextHint: contextHint)
 
         if !cards.isEmpty {
@@ -319,7 +324,7 @@ final class BatchManager {
 
         // 8. Phase 2: 流式生成活动卡片
         await onProgress?(batchId, "正在生成活动卡片...")
-        let existingCards = persistence.allActivityCardsToday()
+        let existingCards = persistence.activityCards(for: Date(timeIntervalSince1970: Double(batch.startTs)))
         let cards = await streamGenerateCards(batchId: batchId, transcription: transcription, existingCards: existingCards, contextHint: contextHint)
 
         if !cards.isEmpty {
@@ -437,7 +442,7 @@ final class BatchManager {
 
         // 8. Phase 2: 流式生成活动卡片
         await onProgress?(batchId, "正在生成活动卡片...")
-        let existingCards = persistence.allActivityCardsToday()
+        let existingCards = persistence.activityCards(for: Date(timeIntervalSince1970: Double(startTs)))
         let cards = await streamGenerateCards(batchId: batchId, transcription: transcription, existingCards: existingCards, contextHint: contextHint)
 
         // 9. 保存活动卡片

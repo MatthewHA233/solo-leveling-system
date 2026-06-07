@@ -4,7 +4,9 @@ Agent API — 处理客户端 (macOS/Windows/Android) 的数据上报和通信
 这些端点遵循 protocol/agent-protocol.md 定义的统一协议。
 """
 
+import asyncio
 import base64
+import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/v1/agent", tags=["Agent"])
+logger = logging.getLogger(__name__)
 
 # 全局引用 (在 server.py 启动时注入)
 _system_ref = None
@@ -77,6 +80,8 @@ _reports: dict[str, list] = {}
 _last_heartbeat: dict[str, datetime] = {}
 # 焦点设备
 _focused_device: Optional[str] = None
+# 每个设备只保留一条深度分析任务，新的上报会替换旧的未完成分析
+_analysis_tasks: dict[str, asyncio.Task] = {}
 
 
 # ── Endpoints ──────────────────────────────────────
@@ -122,7 +127,7 @@ async def receive_report(report: AgentReport):
     # 更新焦点设备
     _update_focus(device_id, report.snapshot.idle_seconds)
     
-    # 如果系统已初始化，触发分析
+    # 如果系统已初始化，触发快速分析；耗时 AI 分析会在后台继续
     if _system_ref:
         await _trigger_analysis(device_id, report)
     
@@ -350,7 +355,7 @@ def _get_recommended_interval(device_id: str) -> int:
 
 
 async def _trigger_analysis(device_id: str, report: AgentReport):
-    """触发 AI 分析 (如果系统已初始化)"""
+    """触发分析：请求路径只做快路径，慢 AI 分析放后台。"""
     if not _system_ref:
         return
 
@@ -396,11 +401,14 @@ async def _trigger_analysis(device_id: str, report: AgentReport):
         # 规则引擎置信度低或有截图时，升级到 Level 2 AI 分析
         use_ai = (l1 and l1.get("confidence", 0) < 0.8) or screenshot_path
         if use_ai and hasattr(_system_ref.analyzer, 'analyze_screenshot'):
-            analysis = await _system_ref.analyzer.analyze_screenshot(
+            _schedule_level2_analysis(
+                device_id=device_id,
+                snapshot=snapshot,
                 screenshot_path=screenshot_path,
-                window_name=app_name,
+                app_name=app_name,
                 window_title=window_title,
             )
+            analysis = None
         elif l1:
             analysis = {
                 "activity": l1.get("summary", ""),
@@ -429,6 +437,78 @@ async def _trigger_analysis(device_id: str, report: AgentReport):
                     "device_id": device_id,
                 },
             )
+
+
+def _schedule_level2_analysis(
+    *,
+    device_id: str,
+    snapshot,
+    screenshot_path: Optional[str],
+    app_name: str,
+    window_title: str,
+) -> None:
+    existing = _analysis_tasks.get(device_id)
+    if existing and not existing.done():
+        existing.cancel()
+
+    task = asyncio.create_task(_run_level2_analysis(
+        device_id=device_id,
+        snapshot=snapshot,
+        screenshot_path=screenshot_path,
+        app_name=app_name,
+        window_title=window_title,
+    ))
+    _analysis_tasks[device_id] = task
+
+    def _cleanup(done_task: asyncio.Task, did: str = device_id) -> None:
+        if _analysis_tasks.get(did) is done_task:
+            _analysis_tasks.pop(did, None)
+        if done_task.cancelled():
+            return
+        try:
+            done_task.result()
+        except Exception:
+            logger.exception("Agent level2 analysis failed for device %s", did)
+
+    task.add_done_callback(_cleanup)
+
+
+async def _run_level2_analysis(
+    *,
+    device_id: str,
+    snapshot,
+    screenshot_path: Optional[str],
+    app_name: str,
+    window_title: str,
+) -> None:
+    if not _system_ref or not hasattr(_system_ref, 'analyzer'):
+        return
+
+    analysis = await _system_ref.analyzer.analyze_screenshot(
+        screenshot_path=screenshot_path,
+        window_name=app_name,
+        window_title=window_title,
+    )
+    if not analysis:
+        return
+
+    snapshot.activity_category = analysis.get("category", "")
+    snapshot.ai_analysis = analysis.get("activity", "")
+    snapshot.inferred_motive = analysis.get("motive", "")
+    snapshot.focus_score = analysis.get("focus_score", 0.5)
+    await _system_ref.db.save_snapshot(snapshot)
+
+    from ..core.events import EventType
+    await _system_ref.bus.emit_simple(
+        EventType.CONTEXT_ANALYZED,
+        analysis={
+            "activity": analysis.get("activity", ""),
+            "category": analysis.get("category", "other"),
+            "motive": analysis.get("motive", ""),
+            "focus_score": analysis.get("focus_score", 0.5),
+            "device_id": device_id,
+        },
+    )
 
 
 def _save_agent_screenshot(device_id: str, screenshot_b64: str) -> str | None:

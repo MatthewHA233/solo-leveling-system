@@ -57,10 +57,15 @@ export function createVoiceService(
 
   // Session 隔离：每次新录音自增，旧 session 的所有异步回调检查此值后放弃执行
   let sessionSeq = 0
+  let startingSeq: number | null = null
 
   const setPhase = (p: VoicePhase) => {
     phase = p
     callbacks.onPhaseChange(p)
+  }
+
+  const clearStarting = (seq: number) => {
+    if (startingSeq === seq) startingSeq = null
   }
 
   // ── Omni 模式：等待 AI 音频回复完成 ──
@@ -89,6 +94,7 @@ export function createVoiceService(
   const startRecording = async () => {
     sessionSeq++
     const mySeq = sessionSeq
+    startingSeq = mySeq
     if (phase !== 'idle') phase = 'idle'
 
     const config = getConfig()
@@ -102,6 +108,7 @@ export function createVoiceService(
       try {
         const omniModel = await getFeatureModel('fairy_omni_chat', config.omniModel)
         if (mySeq !== sessionSeq || streamRecorder !== sr) {
+          clearStarting(mySeq)
           await sr.stop().catch(() => {})
           return
         }
@@ -113,6 +120,7 @@ export function createVoiceService(
           tools: getOmniTools(),
         })
         if (mySeq !== sessionSeq || streamRecorder !== sr) {
+          clearStarting(mySeq)
           await sr.stop().catch(() => {})
           invoke('omni_stop').catch(() => {})
           return
@@ -126,12 +134,19 @@ export function createVoiceService(
           },
         })
         if (mySeq !== sessionSeq || streamRecorder !== sr) {
+          clearStarting(mySeq)
           await sr.stop().catch(() => {})
           invoke('omni_stop').catch(() => {})
           return
         }
+        clearStarting(mySeq)
         setPhase('listening')
       } catch (err) {
+        if (mySeq !== sessionSeq) {
+          clearStarting(mySeq)
+          return
+        }
+        clearStarting(mySeq)
         callbacks.onError(`Omni ASR 启动失败: ${err instanceof Error ? err.message : String(err)}`)
         if (streamRecorder === sr) streamRecorder = null
         invoke('omni_stop').catch(() => {})
@@ -143,11 +158,18 @@ export function createVoiceService(
       try {
         await br.start()
         if (mySeq !== sessionSeq || batchRecorder !== br) {
+          clearStarting(mySeq)
           await br.stop().catch(() => {})
           return
         }
+        clearStarting(mySeq)
         setPhase('listening')
       } catch (err) {
+        if (mySeq !== sessionSeq) {
+          clearStarting(mySeq)
+          return
+        }
+        clearStarting(mySeq)
         if (batchRecorder === br) batchRecorder = null
         callbacks.onError(`麦克风访问失败: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -155,7 +177,10 @@ export function createVoiceService(
   }
 
   const stopAndProcess = async () => {
-    if (phase !== 'listening') return
+    if (phase !== 'listening') {
+      if (startingSeq != null) cancel()
+      return
+    }
     setPhase('thinking')
 
     const mySeq = sessionSeq
@@ -257,6 +282,8 @@ export function createVoiceService(
   }
 
   const cancel = () => {
+    sessionSeq++
+    startingSeq = null
     if (batchRecorder) { batchRecorder.stop(); batchRecorder = null }
     if (streamRecorder) { streamRecorder.stop().catch(() => {}); streamRecorder = null }
     invoke('omni_stop').catch(() => {})

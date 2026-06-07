@@ -433,7 +433,7 @@ final class PersistenceManager {
         let endTs = Int(endOfDay.timeIntervalSince1970)
 
         let predicate = #Predicate<BatchRecord> { record in
-            record.startTs >= startTs && record.startTs < endTs
+            record.startTs < endTs && record.endTs > startTs
         }
         let descriptor = FetchDescriptor<BatchRecord>(
             predicate: predicate,
@@ -560,7 +560,7 @@ final class PersistenceManager {
         let endTs = Int(endOfDay.timeIntervalSince1970)
 
         let predicate = #Predicate<ActivityCardRecord> { card in
-            card.startTs >= startTs && card.startTs < endTs
+            card.startTs < endTs && card.endTs > startTs
         }
         let descriptor = FetchDescriptor<ActivityCardRecord>(
             predicate: predicate,

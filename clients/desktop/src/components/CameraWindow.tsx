@@ -35,14 +35,24 @@ export default function CameraWindow() {
   // 独立开摄像头（仅用于显示）
   useEffect(() => {
     let stream: MediaStream | null = null
+    let cancelled = false
     navigator.mediaDevices.getUserMedia({
       video: { width: 320, height: 240, facingMode: 'user' },
     }).then(s => {
+      if (cancelled) {
+        s.getTracks().forEach(t => t.stop())
+        return
+      }
       stream = s
       const v = videoRef.current
       if (v) { v.srcObject = s; v.play(); setStatus('ok') }
-    }).catch(() => setStatus('error'))
-    return () => { stream?.getTracks().forEach(t => t.stop()) }
+    }).catch(() => {
+      if (!cancelled) setStatus('error')
+    })
+    return () => {
+      cancelled = true
+      stream?.getTracks().forEach(t => t.stop())
+    }
   }, [])
 
   // 接收主窗口发来的人脸框数据

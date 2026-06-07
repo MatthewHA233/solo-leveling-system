@@ -10,12 +10,29 @@ enum ChronosActivityConverter {
         cards.compactMap { convert($0) }
     }
 
+    /// 批量转换，并按指定日期裁剪跨日卡片
+    static func convertAll(_ cards: [ActivityCardRecord], on date: Date) -> [ChronosActivity] {
+        cards.compactMap { convert($0, on: date) }
+    }
+
     /// 单张卡片 → ChronosActivity
-    static func convert(_ card: ActivityCardRecord) -> ChronosActivity? {
+    static func convert(_ card: ActivityCardRecord, on date: Date? = nil) -> ChronosActivity? {
         let cal = Calendar.current
 
-        let startDate = Date(timeIntervalSince1970: Double(card.startTs))
-        let endDate   = Date(timeIntervalSince1970: Double(card.endTs))
+        var clippedStartTs = card.startTs
+        var clippedEndTs = card.endTs
+        if let date {
+            let dayStart = cal.startOfDay(for: date)
+            let nextDay = cal.date(byAdding: .day, value: 1, to: dayStart) ?? date
+            let dayStartTs = Int(dayStart.timeIntervalSince1970)
+            let nextDayTs = Int(nextDay.timeIntervalSince1970)
+            guard card.startTs < nextDayTs && card.endTs > dayStartTs else { return nil }
+            clippedStartTs = max(card.startTs, dayStartTs)
+            clippedEndTs = min(card.endTs, nextDayTs)
+        }
+
+        let startDate = Date(timeIntervalSince1970: Double(clippedStartTs))
+        let endDate   = Date(timeIntervalSince1970: Double(clippedEndTs))
 
         let startComps = cal.dateComponents([.hour, .minute], from: startDate)
         let endComps   = cal.dateComponents([.hour, .minute], from: endDate)
@@ -25,8 +42,20 @@ enum ChronosActivityConverter {
             return nil
         }
 
-        let startMinute = sh * 60 + sm
+        var startMinute = sh * 60 + sm
         var endMinute   = eh * 60 + em
+
+        if let date {
+            let dayStart = cal.startOfDay(for: date)
+            let nextDay = cal.date(byAdding: .day, value: 1, to: dayStart) ?? date
+            if clippedStartTs <= Int(dayStart.timeIntervalSince1970) {
+                startMinute = 0
+                endMinute = max(endMinute, 1)
+            }
+            if clippedEndTs >= Int(nextDay.timeIntervalSince1970) {
+                endMinute = 1440
+            }
+        }
 
         // 同分钟内（秒级差异）→ 至少占1分钟
         if endMinute == startMinute {

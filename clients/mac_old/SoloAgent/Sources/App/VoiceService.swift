@@ -267,6 +267,7 @@ final class VoiceService: ObservableObject {
             }
             client.onFinish = { [weak self] in
                 Task { @MainActor in
+                    self?.fishClient?.stop()
                     self?.isPlaying = false
                     AIClient.debugLog("[Voice] TTS 播放完成")
                 }

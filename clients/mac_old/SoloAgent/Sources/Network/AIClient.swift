@@ -305,7 +305,7 @@ final class AIClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("solo-leveling-system/2.0", forHTTPHeaderField: "User-Agent")
 

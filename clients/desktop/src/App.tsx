@@ -459,6 +459,29 @@ export default function App() {
   const lastOmniUserInputRef = useRef<string>('')        // Omni 本轮用户输入（文字 or 转写）
   const audioDirRef = useRef<string>('')                 // 音频根目录（Rust data_local/solo-leveling-system/audio）
   const pendingAudioRef = useRef<Map<string, { audioPath: string; durationMs: number }>>(new Map())
+  const blobAudioUrlsRef = useRef<Set<string>>(new Set())
+
+  const trackBlobAudioUrl = useCallback((url: string) => {
+    if (url.startsWith('blob:')) blobAudioUrlsRef.current.add(url)
+    return url
+  }, [])
+
+  const revokeTrackedBlobAudioUrls = useCallback(() => {
+    for (const url of blobAudioUrlsRef.current) URL.revokeObjectURL(url)
+    blobAudioUrlsRef.current.clear()
+  }, [])
+
+  const replaceBlobAudioUrlWithFile = useCallback((messageId: string, blobUrl: string | undefined, audioPath: string) => {
+    if (!blobUrl?.startsWith('blob:') || !audioDirRef.current) return
+    const fileUrl = convertFileSrc(`${audioDirRef.current}/${audioPath}`)
+    setChatMessages((prev) =>
+      prev.map((m) => m.id === messageId && m.audioUrl === blobUrl ? { ...m, audioUrl: fileUrl } : m)
+    )
+    URL.revokeObjectURL(blobUrl)
+    blobAudioUrlsRef.current.delete(blobUrl)
+  }, [])
+
+  useEffect(() => revokeTrackedBlobAudioUrls, [revokeTrackedBlobAudioUrls])
   const [sessions, setSessions] = useState<readonly ChatSessionInfo[]>([])
   const [pickerOpen, setPickerOpen] = useState(false)
 
@@ -1346,7 +1369,7 @@ export default function App() {
           // 使用 sessionMsgId 作为消息 ID，以便 onTranscript 能找到并更新
           const bytes = Uint8Array.from(atob(wavBase64), (c) => c.charCodeAt(0))
           const blob = new Blob([bytes], { type: 'audio/wav' })
-          const audioUrl = URL.createObjectURL(blob)
+          const audioUrl = trackBlobAudioUrl(URL.createObjectURL(blob))
           const msgTimestamp = new Date().toISOString()
           setChatMessages((prev) => [...prev, {
             id: sessionMsgId, role: 'user' as const,
@@ -1363,6 +1386,7 @@ export default function App() {
               timestamp: msgTimestamp,
             }).then((audioPath) => {
               pendingAudioRef.current.set(sessionMsgId, { audioPath, durationMs })
+              replaceBlobAudioUrlWithFile(sessionMsgId, audioUrl, audioPath)
             }).catch(() => {})
           }
           // Omni 模式：把音频 item 追加到已有快照（Alt 按下时已创建快照）
@@ -1428,7 +1452,7 @@ export default function App() {
     )
     voiceServiceRef.current = svc
     return svc
-  }, [emitFairy])
+  }, [emitFairy, replaceBlobAudioUrlWithFile, trackBlobAudioUrl])
 
   // ── Omni 全模态模式：监听 AI 回复事件 ──
   const omniAudioCtxRef = useRef<AudioContext | null>(null)
@@ -1607,7 +1631,7 @@ export default function App() {
             omniAgentMsgIdRef.current = null
 
             const wavBlob = chunks.length > 0 ? pcm16ChunksToWavBlob(chunks, 24000) : null
-            const audioUrl = wavBlob ? URL.createObjectURL(wavBlob) : undefined
+            const audioUrl = wavBlob ? trackBlobAudioUrl(URL.createObjectURL(wavBlob)) : undefined
 
             const debugSnap = omniDebugInfoRef.current ?? undefined
             const aiMsgTimestamp = new Date().toISOString()
@@ -1681,6 +1705,7 @@ export default function App() {
                       wavBytes,
                       timestamp: aiMsgTimestamp,
                     })
+                    if (msgId) replaceBlobAudioUrlWithFile(msgId, audioUrl, aiAudioPath)
                   } catch { /* 落盘失败不阻塞 */ }
                 }
                 if (aiText || aiAudioPath) {
@@ -2276,7 +2301,7 @@ export default function App() {
             // 所有 chunks 已收齐：拼 WAV → 贴气泡音频回放 + 落盘留 audioPath
             if (tts.pcmChunks.length > 0) {
               const wavBlob = pcm16ChunksToWavBlob(tts.pcmChunks, 24000)
-              const audioUrl = URL.createObjectURL(wavBlob)
+              const audioUrl = trackBlobAudioUrl(URL.createObjectURL(wavBlob))
               const totalSamples = tts.pcmChunks.reduce((sum, c) => sum + c.length / 2, 0)
               aiAudioDurationMs = Math.round((totalSamples / 24000) * 1000)
               setChatMessages((prev) =>
@@ -2290,6 +2315,7 @@ export default function App() {
                     wavBytes,
                     timestamp: new Date().toISOString(),
                   })
+                  replaceBlobAudioUrlWithFile(agentMsgId, audioUrl, aiAudioPath)
                 } catch { /* 落盘失败不阻塞 */ }
               }
             }
@@ -2353,7 +2379,7 @@ export default function App() {
     }
 
     setIsProcessing(false)
-  }, [config, chatMessages])
+  }, [chatMessages, config, replaceBlobAudioUrlWithFile, trackBlobAudioUrl])
 
   useEffect(() => {
     handleSendRef.current = handleSend
@@ -2397,6 +2423,7 @@ export default function App() {
       const info = sessions.find((s) => s.id === sessionId)
       sessionTitleRef.current = info?.title || '新会话'
       conversationRef.current = sessionMessagesToLLMHistory(msgs).slice(-12)
+      revokeTrackedBlobAudioUrls()
       setChatMessages(sessionMessagesToChatMessages(msgs, audioDirRef.current))
       performJump()
     } catch {
@@ -2411,6 +2438,7 @@ export default function App() {
       sessionTitleRef.current = '新会话'
       persistedBufferRef.current = []
       conversationRef.current = []
+      revokeTrackedBlobAudioUrls()
       setChatMessages([])
       setSessions((prev) => [s, ...prev])
     } catch {
@@ -2419,9 +2447,10 @@ export default function App() {
       sessionTitleRef.current = '新会话'
       persistedBufferRef.current = []
       conversationRef.current = []
+      revokeTrackedBlobAudioUrls()
       setChatMessages([])
     }
-  }, [])
+  }, [revokeTrackedBlobAudioUrls])
 
   const mainPanelStyle = (mode: MainViewMode): React.CSSProperties => {
     const panelOrder: Record<MainViewMode, number> = { motivation: 0, daynight: 1, torrent: 2 }
@@ -3106,6 +3135,15 @@ export default function App() {
             // 固定时用 pinnedPos.minute 查对应 span，否则用 hover span
             const pm = pinnedPos?.minute ?? null
             const dtToMin = (dt: string) => { const [h,m] = (dt.split(' ')[1]??'').split(':').map(Number); return h*60+m }
+            const selectedDatePart = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`
+            const biliMinuteRange = (span: BiliSpan): [number, number] | null => {
+              const startDate = span.start_at.split(' ')[0] ?? ''
+              const endDate = span.end_at.split(' ')[0] ?? ''
+              if (endDate < selectedDatePart || startDate > selectedDatePart) return null
+              const startMin = startDate < selectedDatePart ? 0 : dtToMin(span.start_at)
+              const endMin = endDate > selectedDatePart ? 1440 : dtToMin(span.end_at)
+              return endMin > startMin ? [startMin, endMin] : null
+            }
             const pinnedTagSpan = pm != null
               ? perceptionSpans.find((s) => s.track === 'tags' && pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
               : null
@@ -3114,7 +3152,10 @@ export default function App() {
               ? perceptionSpans.find((s) => s.track === 'apps' && pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
               : null
             const pinnedBili = pm != null && trackMode === 'bili'
-              ? biliSpans.find((s) => pm >= dtToMin(s.start_at) && pm < dtToMin(s.end_at)) ?? null
+              ? biliSpans.find((s) => {
+                  const range = biliMinuteRange(s)
+                  return !!range && pm >= range[0] && pm < range[1]
+                }) ?? null
               : null
             const tagSpan = pinnedTagSpan ?? hoveredTagSpan
             const appSpan = trackMode === 'apps' ? (pinnedAppSpan ?? hoveredAppSpan) : null
@@ -3218,17 +3259,12 @@ export default function App() {
           onDelete={async (id) => {
             try { await deleteChatSession(id) } catch {}
             const deletingCurrent = sessionIdRef.current === id
-            // 用 updater 拿到 React 内部最新 prev，避免闭包 sessions 是过期快照；
-            // 副作用（switchSession/newSession）仍在 updater 外执行（AUDIT-073 原意）。
-            let nextFirstId: string | null = null
-            setSessions((prev) => {
-              const remaining = prev.filter((s) => s.id !== id)
-              nextFirstId = remaining[0]?.id ?? null
-              return remaining
-            })
+            const latestSessions = (await getRecentChatSessions(50)).filter((s) => s.id !== id)
+            setSessions(latestSessions)
             if (deletingCurrent) {
-              if (nextFirstId) {
-                await switchSession(nextFirstId)
+              const nextSessionId = latestSessions[0]?.id ?? null
+              if (nextSessionId) {
+                await switchSession(nextSessionId)
               } else {
                 await newSession()
               }

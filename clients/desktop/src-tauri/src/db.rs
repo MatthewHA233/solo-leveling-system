@@ -2883,6 +2883,18 @@ impl Database {
     ) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().await;
         let sql = format!(r#"
+            WITH RECURSIVE presence_days(day, end_day) AS (
+                SELECT
+                    date(start_time),
+                    date(COALESCE(end_time, datetime('now', 'localtime')))
+                FROM presence_spans
+                WHERE date(start_time) <= ?2
+                  AND date(COALESCE(end_time, datetime('now', 'localtime'))) >= ?1
+                UNION ALL
+                SELECT date(day, '+1 day'), end_day
+                FROM presence_days
+                WHERE day < end_day
+            )
             SELECT day FROM (
                 SELECT DISTINCT date AS day
                 FROM activity_blocks
@@ -2896,9 +2908,9 @@ impl Database {
                 FROM bili_history
                 WHERE date(view_at, 'unixepoch', 'localtime') BETWEEN ?1 AND ?2
                 UNION
-                SELECT DISTINCT substr(start_time, 1, 10) AS day
-                FROM presence_spans
-                WHERE substr(start_time, 1, 10) BETWEEN ?1 AND ?2
+                SELECT DISTINCT day
+                FROM presence_days
+                WHERE day BETWEEN ?1 AND ?2
                 UNION
                 SELECT DISTINCT substr(start_at, 1, 10) AS day
                 FROM {events_table}
@@ -3021,11 +3033,15 @@ impl Database {
 
     pub async fn get_presence_spans_by_date(&self, date: &str) -> Result<Vec<PresenceSpan>, String> {
         let conn = self.conn.lock().await;
-        let date_prefix = format!("{}%", date);
+        let day_start = format!("{} 00:00:00", date);
         let mut stmt = conn.prepare(
-            "SELECT id, start_time, end_time, state FROM presence_spans WHERE start_time LIKE ? ORDER BY start_time"
+            "SELECT id, start_time, end_time, state
+             FROM presence_spans
+             WHERE start_time < datetime(?1, '+1 day')
+               AND COALESCE(end_time, datetime('now', 'localtime')) > ?1
+             ORDER BY start_time"
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([&date_prefix], |row| PresenceSpan::from_row(row))
+        let rows = stmt.query_map([&day_start], |row| PresenceSpan::from_row(row))
             .map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }

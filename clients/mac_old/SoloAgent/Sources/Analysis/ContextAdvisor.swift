@@ -24,15 +24,9 @@ final class ContextAdvisor {
         let endDate = Date(timeIntervalSince1970: TimeInterval(endTs))
         let activities = persistence.activitiesWithScreenshots(from: startDate, to: endDate)
 
-        // 如果没有精确范围内的记录，fallback 到最近 50 条
-        let records = activities.isEmpty ? persistence.recentActivities(limit: 50) : activities
-
-        guard !records.isEmpty else {
-            // 至少输出主线目标
-            if let quest = config.mainQuest, !quest.isEmpty {
-                return "用户当前主线目标：\(quest)"
-            }
-            return ""
+        let records = activities
+        if records.isEmpty {
+            sections.append("目标时间窗内没有带截图的活动记录。")
         }
 
         // 2. 聚合各 app 使用时长和窗口标题关键词

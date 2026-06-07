@@ -126,6 +126,7 @@ final class FishTTSClient {
                         } else if event == "finish" {
                             receivedFinish = true
                             onFinish?()
+                            stop()
                         }
                     } else {
                         // 裸 PCM（兼容旧协议）
