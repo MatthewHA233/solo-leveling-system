@@ -1161,8 +1161,8 @@ export default function DayNightScreen() {
     }
   }, [selectedDate])
 
-  // 桌面端推同步时，native SoloDb 已经写库，但当前 mounted 的昼夜表不会自动重读。
-  // 同步 HTTP server 在 import 成功后发 SoloDbChanged；这里只在事件到达/回前台时重读。
+  // 桌面端推同步时，native SolevupDb 已经写库，但当前 mounted 的昼夜表不会自动重读。
+  // 同步 HTTP server 在 import 成功后发 SolevupDbChanged；这里只在事件到达/回前台时重读。
   useEffect(() => {
     let alive = true
     let inFlight = false
@@ -1193,7 +1193,7 @@ export default function DayNightScreen() {
         inFlight = false
       }
     }
-    const dbSub = DeviceEventEmitter.addListener('SoloDbChanged', () => {
+    const dbSub = DeviceEventEmitter.addListener('SolevupDbChanged', () => {
       void refreshVisibleData()
     })
     const sub = AppState.addEventListener('change', (state) => {
@@ -1596,7 +1596,7 @@ export default function DayNightScreen() {
     setRedoStack([])
     // 分批写后端：paint 走 tagId / erase 不带 tagId
     if (paintArr.length > 0 && tagId != null) {
-      // SoloDb.paintBlocks 内部事务会同时 bump tag/category 的 last_used_at
+      // SolevupDb.paintBlocks 内部事务会同时 bump tag/category 的 last_used_at
       // （对齐 desktop paint_blocks），LWW 同步到对端，"最近"自动跨设备
       paintBlocks(date, paintArr, tagId).then(() => {
         // 拉回真值刷新 palette，让 recentTags useMemo 能感知新 lastUsedAt

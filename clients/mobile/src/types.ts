@@ -16,7 +16,7 @@ export interface ActivityCategory {
 export interface ActivityTag {
   id: number
   categoryId: number
-  fullPath: string    // "工作,Solo Leveling,手机端"
+  fullPath: string    // "工作,Solevup,手机端"
   leafName: string
   depth: number       // 1..4
   createdAt: string

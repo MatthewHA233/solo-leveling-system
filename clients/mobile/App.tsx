@@ -1,5 +1,5 @@
 /**
- * Solo Leveling System — 手机端
+ * Solevup System — 手机端
  * 昼夜表 / 暗影体 / 洪流域 / 协议志 / 感知
  */
 

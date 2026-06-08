@@ -2,14 +2,14 @@
 // App 自更新（Android）
 //   - 启动时静默拉 OSS latest.json，对比 versionCode 决定要不要提示
 //   - 用户点"立即更新"调 Updater.downloadApk(url) → 完成后 installApk(path)
-//   - OSS bucket lingflow / 路径前缀 solo-leveling/android/，自定义域 assets.lingflow.cn
+//   - OSS bucket lingflow / 路径前缀 solevup/android/，自定义域 assets.lingflow.cn
 //   - 只保留 latest 一份 APK（与 OSS 覆盖式上传策略一致）
 // ══════════════════════════════════════════════
 
 import { NativeModules, Platform } from 'react-native'
 
 // manifest URL 由 native Updater.getUpdateManifestUrl() 提供
-// （build.gradle 从 clients/mobile/sls.properties 读 OSS endpoint/bucket/prefix）
+// （build.gradle 从 clients/mobile/solevup.properties 读 OSS endpoint/bucket/prefix）
 // 不在 TS 硬编码，方便切 OSS / CDN
 
 export interface UpdateManifest {

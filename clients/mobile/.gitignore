@@ -74,9 +74,8 @@ yarn-error.log
 !.yarn/sdks
 !.yarn/versions
 
-# Solo Leveling 本地配置（OSS endpoint / bucket / 路径前缀），勿入 git
-sls.properties
+# Solevup 本地配置（OSS endpoint / bucket / 路径前缀），勿入 git
+solevup.properties
 
 # 发布 changelog 草稿，每次发布前手动改，留着不入库
 CHANGELOG.next.md
-

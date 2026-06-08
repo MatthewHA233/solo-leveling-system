@@ -1,9 +1,9 @@
 // ══════════════════════════════════════════════
-// 数据层 —— 昼夜表 / palette 走真 SQLite (SoloDb native module)
+// 数据层 —— 昼夜表 / palette 走真 SQLite (SolevupDb native module)
 //   全新装时 palette 为空，UI 显示"新建标签"引导；后续可手动 createTag
 //   或 LAN 同步从 desktop 拉过来。
 //   LAN HTTP 路径 (lanFetch / setLanHost) 暂保留壳，Phase 5 LAN 同步引擎接入。
-//   聊天 streamChatReply 仍走 mock 合成（独立功能，未接入 SoloDb）。
+//   聊天 streamChatReply 仍走 mock 合成（独立功能，未接入 SolevupDb）。
 // ══════════════════════════════════════════════
 
 import type {
@@ -16,24 +16,24 @@ import type {
 import { toLocalDateStr } from './time'
 import { mockReply } from './mock'
 import {
-  soloDeleteCategory,
-  soloDeleteTag,
-  soloRenameCategory,
-  soloRenameTagPath,
-  soloEraseBlocks,
-  soloListBlocksForDate,
-  soloListCategories,
-  soloListTags,
-  soloPaintBlocks,
-  soloUpsertCategory,
-  soloUpsertTag,
+  solevupDeleteCategory,
+  solevupDeleteTag,
+  solevupRenameCategory,
+  solevupRenameTagPath,
+  solevupEraseBlocks,
+  solevupListBlocksForDate,
+  solevupListCategories,
+  solevupListTags,
+  solevupPaintBlocks,
+  solevupUpsertCategory,
+  solevupUpsertTag,
   type BlockRow,
   type CategoryRow,
   type TagRow,
-} from './solodb'
+} from './solevupdb'
 
 
-// ── SoloDb → 前端类型映射 ──
+// ── SolevupDb → 前端类型映射 ──
 
 function categoryFromRow(r: CategoryRow): ActivityCategory {
   return {
@@ -68,11 +68,11 @@ function blockFromRow(r: BlockRow): ActivityBlock {
   }
 }
 
-// ── 活动记录 API（主路径走 SoloDb） ──
+// ── 活动记录 API（主路径走 SolevupDb） ──
 
 export async function fetchPalette(): Promise<ActivityPalette> {
   // 不再 seed 硬编码标签库 —— 等用户在 UI 里创建，或 LAN 同步从 desktop 拉过来
-  const [cats, tags] = await Promise.all([soloListCategories(), soloListTags()])
+  const [cats, tags] = await Promise.all([solevupListCategories(), solevupListTags()])
   return {
     categories: cats.map(categoryFromRow),
     tags: tags.map(tagFromRow),
@@ -98,14 +98,14 @@ export async function createTag(fullPath: string, categoryColor?: string): Promi
   const normalized = segs.join(',')
 
   // 先确保 root category 存在
-  const cats = await soloListCategories()
+  const cats = await solevupListCategories()
   let cat = cats.find((c) => c.name === segs[0])
   if (!cat) {
     const usedColors = new Set(cats.map((c) => c.color))
     const color = categoryColor ?? CATEGORY_PALETTE_COLORS.find((c) => !usedColors.has(c)) ??
       CATEGORY_PALETTE_COLORS[cats.length % CATEGORY_PALETTE_COLORS.length]
     const nextSort = (Math.max(0, ...cats.map((c) => c.sortOrder)) || 0) + 1
-    const newId = await soloUpsertCategory({
+    const newId = await solevupUpsertCategory({
       name: segs[0],
       color,
       sortOrder: nextSort,
@@ -122,7 +122,7 @@ export async function createTag(fullPath: string, categoryColor?: string): Promi
     }
   }
 
-  await soloUpsertTag({
+  await solevupUpsertTag({
     categoryId: cat.id,
     fullPath: normalized,
     leafName: segs[segs.length - 1],
@@ -132,12 +132,12 @@ export async function createTag(fullPath: string, categoryColor?: string): Promi
 }
 
 export async function deleteTag(tagId: number): Promise<ActivityPalette> {
-  await soloDeleteTag(tagId)
+  await solevupDeleteTag(tagId)
   return fetchPalette()
 }
 
 export async function deleteCategory(categoryId: number): Promise<ActivityPalette> {
-  await soloDeleteCategory(categoryId)
+  await solevupDeleteCategory(categoryId)
   return fetchPalette()
 }
 
@@ -146,18 +146,18 @@ export async function renameCategory(
   newName: string | null,
   newColor: string | null,
 ): Promise<ActivityPalette> {
-  await soloRenameCategory(categoryId, newName, newColor)
+  await solevupRenameCategory(categoryId, newName, newColor)
   return fetchPalette()
 }
 
 /** newFullPath 含首段分类名，如 "学习,英语,新概念3"；首段必须等于已有分类。 */
 export async function renameTagPath(tagId: number, newFullPath: string): Promise<ActivityPalette> {
-  await soloRenameTagPath(tagId, newFullPath)
+  await solevupRenameTagPath(tagId, newFullPath)
   return fetchPalette()
 }
 
 export async function fetchBlocks(date: Date): Promise<ActivityBlock[]> {
-  const rows = await soloListBlocksForDate(toLocalDateStr(date))
+  const rows = await solevupListBlocksForDate(toLocalDateStr(date))
   return rows.map(blockFromRow)
 }
 
@@ -166,11 +166,11 @@ export async function paintBlocks(
   minutes: number[],
   tagId: number,
 ): Promise<void> {
-  await soloPaintBlocks(toLocalDateStr(date), minutes, tagId)
+  await solevupPaintBlocks(toLocalDateStr(date), minutes, tagId)
 }
 
 export async function eraseBlocks(date: Date, minutes: number[]): Promise<void> {
-  await soloEraseBlocks(toLocalDateStr(date), minutes)
+  await solevupEraseBlocks(toLocalDateStr(date), minutes)
 }
 
 // ── 聊天 API ──

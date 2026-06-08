@@ -79,7 +79,7 @@ const CATEGORY_PALETTE_COLORS = [
 
 function buildInitialPalette(): ActivityPalette {
   return {
-    // 数据快照对齐 desktop solo.db 的 9 cat + 70 tag（2026-05-23 dump），
+    // 数据快照对齐 desktop solevup.db 的 9 cat + 70 tag（2026-05-23 dump），
     // 让 mobile 在 LAN sync 接入前就能感受真实标签量级的 UI 体验
     categories: [
       catRaw(1, '编程', '#38BDF8', 1),
@@ -94,18 +94,18 @@ function buildInitialPalette(): ActivityPalette {
     ],
     tags: [
       tag(1, 1, '编程,氛围编程'),
-      tag(2, 1, '编程,氛围编程,solo-leveling-system项目'),
-      tag(3, 1, '编程,氛围编程,solo-leveling-system项目,使用记录相关的功能'),
-      tag(21, 1, '编程,氛围编程,solo-leveling-system项目,尝试美化UI界面'),
-      tag(26, 1, '编程,氛围编程,solo-leveling-system项目,用工具链精细还原特色UI'),
-      tag(51, 1, '编程,氛围编程,solo-leveling-system项目,移植到macos'),
-      tag(55, 1, '编程,氛围编程,solo-leveling-system项目,移植到手机'),
-      tag(58, 1, '编程,氛围编程,solo-leveling-system项目,编译包相关改动'),
-      tag(59, 1, '编程,氛围编程,solo-leveling-system项目,局域网多端同步功能'),
+      tag(2, 1, '编程,氛围编程,solevup项目'),
+      tag(3, 1, '编程,氛围编程,solevup项目,使用记录相关的功能'),
+      tag(21, 1, '编程,氛围编程,solevup项目,尝试美化UI界面'),
+      tag(26, 1, '编程,氛围编程,solevup项目,用工具链精细还原特色UI'),
+      tag(51, 1, '编程,氛围编程,solevup项目,移植到macos'),
+      tag(55, 1, '编程,氛围编程,solevup项目,移植到手机'),
+      tag(58, 1, '编程,氛围编程,solevup项目,编译包相关改动'),
+      tag(59, 1, '编程,氛围编程,solevup项目,局域网多端同步功能'),
       tag(60, 1, '编程,氛围编程,宝哥的转盘App'),
-      tag(62, 1, '编程,氛围编程,solo-leveling-system项目,新功能探讨计划'),
-      tag(63, 1, '编程,氛围编程,solo-leveling-system项目,主面板开新'),
-      tag(65, 1, '编程,氛围编程,solo-leveling-system项目,动机仪表盘相关功能'),
+      tag(62, 1, '编程,氛围编程,solevup项目,新功能探讨计划'),
+      tag(63, 1, '编程,氛围编程,solevup项目,主面板开新'),
+      tag(65, 1, '编程,氛围编程,solevup项目,动机仪表盘相关功能'),
       tag(4, 2, '社交,QQ聊天'),
       tag(5, 2, '社交,QQ聊天,和女朋友聊天'),
       tag(12, 2, '社交,QQ聊天,和朋友们聊天'),

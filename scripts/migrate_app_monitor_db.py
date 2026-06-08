@@ -2,7 +2,7 @@
 """Materialize app-monitor raw events into compact segments on the host.
 
 This is intentionally a desktop/offline migration:
-1. pull perception.db from the phone with run-as
+1. pull solevup_perception.db from the phone with run-as
 2. save a timestamped backup on the computer
 3. rebuild app_monitor_segments_android for days that still have app-monitor raw
 4. delete only app-monitor raw rows (window/power buckets)
@@ -25,9 +25,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKUP_ROOT = ROOT / "artifacts" / "app-monitor-db-backups"
-PACKAGE = "com.sololevelingsystemmobile"
-WINDOW_BUCKET_ID = "sls-watcher-window_android"
-POWER_BUCKET_ID = "sls-watcher-power_android"
+PACKAGE = "com.solevup.mobile"
+WINDOW_BUCKET_ID = "solevup-watcher-window_android"
+POWER_BUCKET_ID = "solevup-watcher-power_android"
 DAY_MS = 24 * 60 * 60 * 1000
 
 
@@ -332,10 +332,10 @@ def materialize(db_path: Path) -> dict[str, int]:
 
 def pull_db(device: str, out_path: Path) -> None:
   data = run([
-    "adb", "-s", device, "exec-out", "run-as", PACKAGE, "cat", "databases/perception.db"
+    "adb", "-s", device, "exec-out", "run-as", PACKAGE, "cat", "databases/solevup_perception.db"
   ]).stdout
   if not data.startswith(b"SQLite format 3"):
-    raise SystemExit("拉取 perception.db 失败：run-as 输出不是 SQLite DB（需要 debug 包或导出权限）")
+    raise SystemExit("拉取 solevup_perception.db 失败：run-as 输出不是 SQLite DB（需要 debug 包或导出权限）")
   out_path.write_bytes(data)
 
 
@@ -344,14 +344,14 @@ def push_db(device: str, db_path: Path) -> None:
   data = db_path.read_bytes()
   run([
     "adb", "-s", device, "shell",
-    f"run-as {PACKAGE} sh -c 'mkdir -p files && cat > files/perception.migrated.db'"
+    f"run-as {PACKAGE} sh -c 'mkdir -p files && cat > files/solevup_perception.migrated.db'"
   ], input_bytes=data)
   run([
     "adb", "-s", device, "shell",
-    f"run-as {PACKAGE} sh -c 'cp files/perception.migrated.db databases/perception.db "
-    "&& chmod 600 databases/perception.db "
-    "&& rm -f databases/perception.db-journal databases/perception.db-wal databases/perception.db-shm "
-    "files/perception.migrated.db'"
+    f"run-as {PACKAGE} sh -c 'cp files/solevup_perception.migrated.db databases/solevup_perception.db "
+    "&& chmod 600 databases/solevup_perception.db "
+    "&& rm -f databases/solevup_perception.db-journal databases/solevup_perception.db-wal databases/solevup_perception.db-shm "
+    "files/solevup_perception.migrated.db'"
   ])
 
 

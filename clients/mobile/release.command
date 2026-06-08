@@ -1,5 +1,5 @@
 #!/bin/bash
-# Solo Leveling mobile - 一键发布
+# Solevup mobile - 一键发布
 # Finder 双击此文件即可启动 Terminal 运行
 #
 # 发布前先改：
@@ -42,7 +42,7 @@ else
   CHANGELOG=""
 fi
 
-echo "=== Solo Leveling mobile release ==="
+echo "=== Solevup mobile release ==="
 echo "repo: $REPO_ROOT"
 echo ""
 echo "本次 changelog："

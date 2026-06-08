@@ -39,7 +39,7 @@ import {
 import CalendarPopover, { type DayRangeColored } from '../components/CalendarPopover'
 import SharedDateHeader from '../components/SharedDateHeader'
 import { dayPeriodForTs } from '../lib/dayPeriods'
-import { soloGetPref, soloSetPref } from '../lib/solodb'
+import { solevupGetPref, solevupSetPref } from '../lib/solevupdb'
 import { isSameDay, toLocalDateStr } from '../lib/time'
 import { alpha, theme } from '../theme'
 import {
@@ -776,7 +776,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
 
   useEffect(() => {
     let cancelled = false
-    soloGetPref(TORRENT_CALENDAR_CACHE_KEY, '')
+    solevupGetPref(TORRENT_CALENDAR_CACHE_KEY, '')
       .then((raw) => {
         if (cancelled || !raw) return
         const parsed = JSON.parse(raw) as Record<string, DayRangeColored[]>
@@ -795,7 +795,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
     setCalendarRangesByDay((prev) => {
       if (sameCalendarRanges(prev[dayKey], ranges)) return prev
       const next = { ...prev, [dayKey]: ranges }
-      soloSetPref(TORRENT_CALENDAR_CACHE_KEY, JSON.stringify(next)).catch(() => {})
+      solevupSetPref(TORRENT_CALENDAR_CACHE_KEY, JSON.stringify(next)).catch(() => {})
       return next
     })
   }, [formalActions, loading, selectedDate, visibleItems])
@@ -869,7 +869,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
                 adjustsFontSizeToFit
                 minimumFontScale={0.85}
               >
-                {m === 'monitor' ? '应用监控' : m === 'feed' ? '还原卡片' : m === 'action' ? '还原动作' : '原始 SLS 数据'}
+                {m === 'monitor' ? '应用监控' : m === 'feed' ? '还原卡片' : m === 'action' ? '还原动作' : '原始 Solevup 数据'}
               </Text>
             </Pressable>
           ))}
@@ -948,7 +948,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
       <Modal visible={a11yPromptOpen} transparent animationType="fade" onRequestClose={() => setA11yPromptOpen(false)}>
         <Pressable style={styles.helpBackdrop} onPress={() => setA11yPromptOpen(false)}>
           <Pressable style={styles.helpCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.helpTitle}>需要开启 SLS 辅助功能</Text>
+            <Text style={styles.helpTitle}>需要开启 Solevup 辅助功能</Text>
             <Text style={styles.helpText}>
               洪流域依赖辅助功能记录你在 app 里看到的文本。开启后，回到 B 站或其他内容 app，新的文本会进入还原数据。
             </Text>

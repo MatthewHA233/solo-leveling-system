@@ -21,15 +21,15 @@ import {
   type UpdateManifest,
 } from '../lib/updater'
 import {
-  getSoloDbDeviceId,
-  getSoloDbStats,
-  isSoloDbAvailable,
-  soloExportSync,
-  soloImportSync,
-  type SoloDbStats,
+  getSolevupDbDeviceId,
+  getSolevupDbStats,
+  isSolevupDbAvailable,
+  solevupExportSync,
+  solevupImportSync,
+  type SolevupDbStats,
   type SyncExport,
-} from '../lib/solodb'
-// solodb_seed 已删除（不再硬编码 9 类 70 标签 seed）；空 palette 由 UI 创建或 LAN 同步拉取。
+} from '../lib/solevupdb'
+// solevupdb_seed 已删除（不再硬编码 9 类 70 标签 seed）；空 palette 由 UI 创建或 LAN 同步拉取。
 import {
   getSyncServerStatus,
   startSyncServer,
@@ -98,8 +98,8 @@ export default function PerceptionScreen() {
   const [confirmUpdateOpen, setConfirmUpdateOpen] = useState(false)
 
   const [a11yEnabled, setA11yEnabled] = useState<boolean | null>(null)
-  const [soloStats, setSoloStats] = useState<SoloDbStats | null>(null)
-  const [soloDeviceId, setSoloDeviceId] = useState<string>('')
+  const [solevupStats, setSolevupStats] = useState<SolevupDbStats | null>(null)
+  const [solevupDeviceId, setSolevupDeviceId] = useState<string>('')
   const [exportSummary, setExportSummary] = useState<string>('')
   const [serverStatus, setServerStatus] = useState<SyncServerStatus | null>(null)
   const [serverErr, setServerErr] = useState<string>('')
@@ -133,7 +133,7 @@ export default function PerceptionScreen() {
     void refreshClicks()
     void refreshTorrentStats()
     void refreshTorrentReadMode()
-    void refreshSoloDb()
+    void refreshSolevupDb()
     void runSelfImport()
     void autoStartServer()
     void refreshLinkedDevices()
@@ -310,13 +310,13 @@ export default function PerceptionScreen() {
     }
   }
 
-  async function refreshSoloDb() {
+  async function refreshSolevupDb() {
     try {
-      const [id, s] = await Promise.all([getSoloDbDeviceId(), getSoloDbStats()])
-      setSoloDeviceId(id ?? '')
-      setSoloStats(s)
+      const [id, s] = await Promise.all([getSolevupDbDeviceId(), getSolevupDbStats()])
+      setSolevupDeviceId(id ?? '')
+      setSolevupStats(s)
     } catch {
-      setSoloStats(null)
+      setSolevupStats(null)
     }
   }
 
@@ -324,8 +324,8 @@ export default function PerceptionScreen() {
     try {
       // round-trip 测试：export 自己 → 再 import 自己
       // 因 updated_at 完全相等，应该全部 skipped
-      const ex = await soloExportSync(null)
-      const r = await soloImportSync(ex)
+      const ex = await solevupExportSync(null)
+      const r = await solevupImportSync(ex)
       setExportSummary(
         `self-import: cats=${r.activityCategories} tags=${r.activityTags} ` +
         `blocks=${r.activityBlocks} pNodes=${r.planNodes} pBlocks=${r.plannedBlocks} ` +
@@ -338,7 +338,7 @@ export default function PerceptionScreen() {
 
   async function runExport() {
     try {
-      const ex: SyncExport = await soloExportSync(null)
+      const ex: SyncExport = await solevupExportSync(null)
       const firstCat = ex.activityCategories[0]
       const firstTag = ex.activityTags[0]
       setExportSummary(
@@ -712,21 +712,21 @@ export default function PerceptionScreen() {
         <Text style={styles.cardValue}>
           Perception: {isPerceptionAvailable() ? '已加载' : '未加载'}
           {'  ·  '}
-          SoloDb: {isSoloDbAvailable() ? '已加载' : '未加载'}
+          SolevupDb: {isSolevupDbAvailable() ? '已加载' : '未加载'}
         </Text>
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardLabel}>SoloDb (solo.db) · Phase 5 LAN 同步底座</Text>
-        {soloStats ? (
+        <Text style={styles.cardLabel}>SolevupDb (solevup.db) · Phase 5 LAN 同步底座</Text>
+        {solevupStats ? (
           <>
             <Text style={styles.cardValue}>
-              {Object.entries(soloStats.tables)
+              {Object.entries(solevupStats.tables)
                 .map(([k, v]) => `${k.replace('activity_', 'a_').replace('planned_', 'p_').replace('plan_nodes', 'p_nodes').replace('linked_devices', 'links').replace('sync_meta', 'meta')}=${v}`)
                 .join(' · ')}
             </Text>
-            <Text style={styles.cardSub} numberOfLines={1}>device_id: {soloDeviceId || '—'}</Text>
-            <Text style={styles.cardSub} numberOfLines={1}>{soloStats.path}</Text>
+            <Text style={styles.cardSub} numberOfLines={1}>device_id: {solevupDeviceId || '—'}</Text>
+            <Text style={styles.cardSub} numberOfLines={1}>{solevupStats.path}</Text>
           </>
         ) : (
           <Text style={styles.cardValue}>未连通</Text>
@@ -738,7 +738,7 @@ export default function PerceptionScreen() {
           <Pressable style={[styles.btn, styles.btnGhost]} onPress={runSelfImport}>
             <Text style={[styles.btnText, styles.btnGhostText]}>self-import</Text>
           </Pressable>
-          <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshSoloDb}>
+          <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshSolevupDb}>
             <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
           </Pressable>
         </View>
@@ -758,7 +758,7 @@ export default function PerceptionScreen() {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardLabel}>SQLite (perception.db)</Text>
+        <Text style={styles.cardLabel}>SQLite (solevup_perception.db)</Text>
         {dbLoading ? (
           <Text style={styles.cardValue}>加载中…</Text>
         ) : dbError ? (
@@ -805,7 +805,7 @@ export default function PerceptionScreen() {
               还原卡片：{torrentStats.formalCardCount ?? 0} 条 · {fmtBytes(torrentStats.formalCardBytes ?? 0)}
             </Text>
             <Text style={styles.cardSub}>
-              perception.db 文件总量 {fmtBytes(torrentStats.databaseBytes)}
+              solevup_perception.db 文件总量 {fmtBytes(torrentStats.databaseBytes)}
             </Text>
             <Text style={styles.cardSub}>
               raw 上限 {torrentStats.rawLimitMb === 0 ? '不限制' : `${torrentStats.rawLimitMb} MB`}；超过后按本地日期整天删除最早 raw，并保留最新一天
@@ -930,7 +930,7 @@ export default function PerceptionScreen() {
           {a11yEnabled == null ? '检测中…' : a11yEnabled ? '已启用' : '未启用'}
         </Text>
         <Text style={styles.cardSub}>
-          手动启用路径：系统设置 → 辅助功能 → 已下载的应用 → Solo Leveling · 活动感知
+          手动启用路径：系统设置 → 辅助功能 → 已下载的应用 → Solevup · 活动感知
         </Text>
         <View style={styles.btnRow}>
           <Pressable style={styles.btn} onPress={openA11ySettings}>

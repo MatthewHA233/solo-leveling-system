@@ -79,40 +79,40 @@ def versionFile = file("../../VERSION")
 if (versionFile.exists()) {
     versionFile.withInputStream { versionProps.load(it) }
 }
-def slsVersionName = versionProps.getProperty('versionName', '0.0.0.1')
-def slsVersionCode = (versionProps.getProperty('versionCode', '1')) as int
+def solevupVersionName = versionProps.getProperty('versionName', '0.0.0.1')
+def solevupVersionCode = (versionProps.getProperty('versionCode', '1')) as int
 
-// 从 clients/mobile/sls.properties 读 OSS 端点（不入 git）。
-def slsProps = new Properties()
-def slsPropFile = file("../../sls.properties")
-if (slsPropFile.exists()) {
-    slsPropFile.withInputStream { slsProps.load(it) }
+// 从 clients/mobile/solevup.properties 读 OSS 端点（不入 git）。
+def solevupProps = new Properties()
+def solevupPropFile = file("../../solevup.properties")
+if (solevupPropFile.exists()) {
+    solevupPropFile.withInputStream { solevupProps.load(it) }
 }
-def slsOssEndpoint = slsProps.getProperty('ossEndpoint', 'oss-cn-heyuan.aliyuncs.com')
-def slsOssBucket = slsProps.getProperty('ossBucket', 'lingflow')
-def slsOssPrefix = slsProps.getProperty('ossPathPrefix', 'solo-leveling')
+def solevupOssEndpoint = solevupProps.getProperty('ossEndpoint', 'oss-cn-heyuan.aliyuncs.com')
+def solevupOssBucket = solevupProps.getProperty('ossBucket', 'lingflow')
+def solevupOssPrefix = solevupProps.getProperty('ossPathPrefix', 'solevup')
 // 关键：latest.json 走 OSS 原生域，不走 CDN。原因：CDN 边缘节点常忽略
 // Cache-Control: no-cache，缓存几小时甚至几天，用户拿到旧 manifest 误以为没更新。
 // 小文件几百字节，不走加速也无所谓。CDN 留给 APK 用（脚本里 url 字段那个）。
-def slsManifestUrl = "https://${slsOssBucket}.${slsOssEndpoint}/${slsOssPrefix}/android/latest.json"
+def solevupManifestUrl = "https://${solevupOssBucket}.${solevupOssEndpoint}/${solevupOssPrefix}/android/latest.json"
 
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.sololevelingsystemmobile"
+    namespace "com.solevup.mobile"
     defaultConfig {
-        applicationId "com.sololevelingsystemmobile"
+        applicationId "com.solevup.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode slsVersionCode
-        versionName slsVersionName
+        versionCode solevupVersionCode
+        versionName solevupVersionName
         // 给 Kotlin / TS 通过 NativeModule 暴露版本信息（updater 自检用）
-        buildConfigField "String", "SLS_VERSION_NAME", "\"${slsVersionName}\""
-        buildConfigField "int", "SLS_VERSION_CODE", "${slsVersionCode}"
+        buildConfigField "String", "SOLEVUP_VERSION_NAME", "\"${solevupVersionName}\""
+        buildConfigField "int", "SOLEVUP_VERSION_CODE", "${solevupVersionCode}"
         // 给 Updater 暴露 OSS latest.json URL（不硬编码）
-        buildConfigField "String", "SLS_UPDATE_MANIFEST_URL", "\"${slsManifestUrl}\""
+        buildConfigField "String", "SOLEVUP_UPDATE_MANIFEST_URL", "\"${solevupManifestUrl}\""
     }
     buildFeatures {
         buildConfig true

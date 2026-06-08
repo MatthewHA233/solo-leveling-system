@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-Solo Leveling mobile —— 发布 release APK 到阿里云 OSS。
+Solevup mobile —— 发布 release APK 到阿里云 OSS。
 
 流程：
   1. 读 clients/mobile/VERSION 拿 versionName/versionCode
   2. 检查 release APK 是否存在；不存在就跑 `./gradlew assembleRelease`
   3. SHA256 校验
-  4. 上传 APK 到 OSS：solo-leveling/android/releases/sls-{versionName}-vc{code}-{sha}.apk
-     （文件名带 sha 前缀绕开 CDN 旧缓存；OSS 只保留 latest，先清掉旧 sls-*.apk）
-  5. 写 latest.json 上传到 solo-leveling/android/latest.json
+  4. 上传 APK 到 OSS：solevup/android/releases/solevup-{versionName}-vc{code}-{sha}.apk
+     （文件名带 sha 前缀绕开 CDN 旧缓存；OSS 只保留 latest，先清掉旧 solevup-*.apk）
+  5. 写 latest.json 上传到 solevup/android/latest.json
   6. 输出公开访问 URL
 
 OSS 配置：复用 MW_ActivityMonitor/.env（OSS_ACCESS_KEY_ID/SECRET/BUCKET/ENDPOINT），
-路径前缀和自定义域则按 sls 自己的：
+路径前缀和自定义域则按 Solevup 自己的：
 
   OSS_BUCKET_NAME=horizn
   OSS_ENDPOINT=oss-cn-heyuan.aliyuncs.com
   OSS_CUSTOM_DOMAIN=https://assets.lingflow.cn        (可选)
-  SLS_OSS_PATH_PREFIX=solo-leveling                   (默认 solo-leveling)
+  SOLEVUP_OSS_PATH_PREFIX=solevup                   (默认 solevup)
 
 用法：
   python scripts/release_mobile.py                # 用现有 release APK
@@ -79,8 +79,8 @@ ANDROID_DIR = MOBILE_DIR / "android"
 APK_PATH = ANDROID_DIR / "app" / "build" / "outputs" / "apk" / "release" / "app-release.apk"
 VERSION_FILE = MOBILE_DIR / "VERSION"
 
-# sls 自己的 .env（OSS_ACCESS_KEY_* + OSS_BUCKET_NAME + OSS_ENDPOINT +
-# OSS_CUSTOM_DOMAIN + SLS_OSS_PATH_PREFIX）。模板见 .env.example。
+# Solevup 自己的 .env（OSS_ACCESS_KEY_* + OSS_BUCKET_NAME + OSS_ENDPOINT +
+# OSS_CUSTOM_DOMAIN + SOLEVUP_OSS_PATH_PREFIX）。模板见 .env.example。
 LOCAL_ENV = REPO_ROOT / ".env"
 
 
@@ -269,7 +269,7 @@ def main() -> int:
     args = parser.parse_args()
 
     _t_global[0] = time.time()
-    print(f"=== Solo Leveling mobile release ===   (开始 {datetime.now().strftime('%H:%M:%S')})", flush=True)
+    print(f"=== Solevup mobile release ===   (开始 {datetime.now().strftime('%H:%M:%S')})", flush=True)
 
     # ── 步骤 1：环境变量（--build-only 不上传，跳过 OSS 凭证检查） ──
     t = step("加载 .env")
@@ -280,7 +280,7 @@ def main() -> int:
     info(f"  bucket          = {os.getenv('OSS_BUCKET_NAME', 'lingflow')}")
     info(f"  endpoint        = {os.getenv('OSS_ENDPOINT', 'oss-cn-heyuan.aliyuncs.com')}")
     info(f"  customDomain    = {os.getenv('OSS_CUSTOM_DOMAIN', '(空)') or '(空)'}")
-    info(f"  pathPrefix      = {os.getenv('SLS_OSS_PATH_PREFIX', 'solo-leveling')}")
+    info(f"  pathPrefix      = {os.getenv('SOLEVUP_OSS_PATH_PREFIX', 'solevup')}")
     proxies = [k for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy") if os.getenv(k)]
     if proxies:
         info(f"  ⚠ 检测到代理 env: {', '.join(proxies)} —— 可能被国内 OSS 拒绝")
@@ -367,8 +367,8 @@ def main() -> int:
     step_done(t)
 
     # ── 准备路径和 manifest payload ──
-    prefix = os.getenv("SLS_OSS_PATH_PREFIX", "solo-leveling").rstrip("/")
-    apk_key = f"{prefix}/android/releases/sls-{version_name}-vc{version_code}-{sha[:12]}.apk"
+    prefix = os.getenv("SOLEVUP_OSS_PATH_PREFIX", "solevup").rstrip("/")
+    apk_key = f"{prefix}/android/releases/solevup-{version_name}-vc{version_code}-{sha[:12]}.apk"
     manifest_key = f"{prefix}/android/latest.json"
     apk_url = public_url_for_apk(apk_key, bucket_name, endpoint)
     manifest_url = public_url_for_manifest(manifest_key, bucket_name, endpoint)

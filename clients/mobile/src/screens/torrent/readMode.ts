@@ -1,4 +1,4 @@
-import { soloGetPref, soloSetPref } from '../../lib/solodb'
+import { solevupGetPref, solevupSetPref } from '../../lib/solevupdb'
 
 export type TorrentReadMode = 'auto' | 'formal' | 'raw'
 
@@ -9,10 +9,10 @@ export function normalizeTorrentReadMode(value: unknown): TorrentReadMode {
 }
 
 export async function getTorrentReadMode(): Promise<TorrentReadMode> {
-  const raw = await soloGetPref(TORRENT_READ_MODE_PREF_KEY, 'formal')
+  const raw = await solevupGetPref(TORRENT_READ_MODE_PREF_KEY, 'formal')
   return normalizeTorrentReadMode(raw)
 }
 
 export async function setTorrentReadMode(mode: TorrentReadMode): Promise<void> {
-  await soloSetPref(TORRENT_READ_MODE_PREF_KEY, mode)
+  await solevupSetPref(TORRENT_READ_MODE_PREF_KEY, mode)
 }
