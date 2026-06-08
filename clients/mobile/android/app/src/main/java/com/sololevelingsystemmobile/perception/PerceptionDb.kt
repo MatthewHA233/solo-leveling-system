@@ -547,23 +547,29 @@ class PerceptionDb(context: Context) :
     return out
   }
 
-  /** 一次性清掉所有 sls 自身的窗口事件（迁移用，新代码不会再写）。 */
+  /** 一次性清掉所有 sls 自身的窗口事件 / 正式段（迁移用，新代码仅在 a11y 开启时写）。 */
   fun purgeSelfWindowEvents(): Int {
     val db = writableDatabase
+    val ownPackage = appContext.packageName
     var deleted = 0
     db.rawQuery(
       """
       SELECT id FROM perception_events_android
       WHERE bucket_id = 'sls-watcher-window_android'
-        AND data_json LIKE '%"package_name":"com.sololevelingsystemmobile"%'
+        AND data_json LIKE ?
       """.trimIndent(),
-      null,
+      arrayOf("%\"package_name\":\"$ownPackage\"%"),
     ).use { c ->
       while (c.moveToNext()) {
         val id = c.getLong(0)
         deleted += db.delete("perception_events_android", "id = ?", arrayOf(id.toString()))
       }
     }
+    deleted += db.delete(
+      "app_monitor_segments_android",
+      "kind = 'app' AND package_name = ?",
+      arrayOf(ownPackage),
+    )
     return deleted
   }
 
