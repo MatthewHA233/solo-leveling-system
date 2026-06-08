@@ -833,6 +833,19 @@ interface DragState {
   grantTs: number              // grant 时间戳，release 时算时长用于 long-press 防误触
 }
 
+type PaintCommit = {
+  date: Date
+  tagId: number | null
+  paintArr: number[]
+  eraseArr: number[]
+  snapshot: ActivityBlock[]
+}
+
+type FullRowReplaceWarning = {
+  commit: PaintCommit
+  body: string
+}
+
 export default function DayNightScreen() {
   // SafeArea inset 是异步算的 —— 第一次 mount 时 top=0，几 ms 后变成
   // 状态栏 + 刘海高度。App.tsx 用 paddingTop: insets.top 推开整个 root，
@@ -1035,6 +1048,8 @@ export default function DayNightScreen() {
     | { kind: 'category'; id: number; original: string; newName: string; newColor: string }
     | null
   >(null)
+  // 拖拽涂色碰到"原本已填满的一整行"时，先二次确认再真正写库。
+  const [pendingFullRowReplace, setPendingFullRowReplace] = useState<FullRowReplaceWarning | null>(null)
   // 长按标签 / 分类 → 弹确认框删除
   const [confirmDelete, setConfirmDelete] = useState<
     { kind: 'tag' | 'category'; id: number; label: string } | null
@@ -1279,6 +1294,12 @@ export default function DayNightScreen() {
     return cat?.color ?? theme.inkSoft
   }
 
+  const tagLabelForConfirm = (tagId: number | null): string => {
+    if (tagId == null) return '空白'
+    const tag = paletteRef.current?.tags.find((t) => t.id === tagId)
+    return tag?.leafName ?? tag?.fullPath ?? '标签'
+  }
+
   // 选标签 = 仅切换 selected，不算"使用过"（使用过=拖拽涂色，由 paint commit 维护）
   const pickTag = (id: number) => {
     setSelectedTagId(id)
@@ -1515,6 +1536,100 @@ export default function DayNightScreen() {
     d.painted = inRange
   }
 
+  const buildFullRowReplaceWarning = (commit: PaintCommit): FullRowReplaceWarning | null => {
+    if (commit.tagId == null || commit.paintArr.length === 0) return null
+    const paintSet = new Set(commit.paintArr)
+    const before = new Map<number, number>()
+    commit.snapshot.forEach((b) => before.set(b.minute, b.tagId))
+    const replacingTagName = tagLabelForConfirm(commit.tagId)
+    const rows = interactionRef.current.rows
+    const lines: string[] = []
+
+    for (const row of rows) {
+      if (row.kind !== 'full') continue
+      const rowMins = Array.from({ length: row.cols }, (_, col) => row.startMin + col * 5)
+      // "本来填充满一行"按拖拽前快照判断：这一行每个 5min cell 都已有活动。
+      if (!rowMins.every((m) => before.has(m))) continue
+      const touched = rowMins.filter((m) => {
+        const oldTag = before.get(m)
+        return paintSet.has(m) && oldTag != null && oldTag !== commit.tagId
+      })
+      if (touched.length === 0) continue
+
+      let runStart = touched[0]
+      let prev = touched[0]
+      let runTag = before.get(touched[0])!
+      const flush = () => {
+        const from = fmtMinute(runStart)
+        const to = fmtMinute(prev + 5)
+        const oldName = tagLabelForConfirm(runTag)
+        lines.push(`${from} – ${to}「${oldName}」→「${replacingTagName}」`)
+      }
+      for (let i = 1; i < touched.length; i++) {
+        const m = touched[i]
+        const t = before.get(m)!
+        if (m === prev + 5 && t === runTag) {
+          prev = m
+          continue
+        }
+        flush()
+        runStart = m
+        prev = m
+        runTag = t
+      }
+      flush()
+    }
+
+    if (lines.length === 0) return null
+    const shown = lines.slice(0, 6)
+    const more = lines.length > shown.length ? `\n…另有 ${lines.length - shown.length} 段` : ''
+    return {
+      commit,
+      body: `本次拖拽碰到了原本已经填满的一整行。\n\n会被替代的段落：\n${shown.map((l) => `- ${l}`).join('\n')}${more}\n\n请确认这是有意覆盖。`,
+    }
+  }
+
+  const commitPaintEdit = (commit: PaintCommit) => {
+    const { date, tagId, paintArr, eraseArr, snapshot } = commit
+    // 推 undo（snapshot = 操作前的 blocks），清空 redo
+    setUndoStack((prev) => [...prev.slice(-(UNDO_LIMIT - 1)), snapshot])
+    setRedoStack([])
+    // 分批写后端：paint 走 tagId / erase 不带 tagId
+    if (paintArr.length > 0 && tagId != null) {
+      // SoloDb.paintBlocks 内部事务会同时 bump tag/category 的 last_used_at
+      // （对齐 desktop paint_blocks），LWW 同步到对端，"最近"自动跨设备
+      paintBlocks(date, paintArr, tagId).then(() => {
+        // 拉回真值刷新 palette，让 recentTags useMemo 能感知新 lastUsedAt
+        fetchPalette().then(setPalette).catch(() => {})
+      })
+      // 底部 toast：找出本次 paint 覆盖区间在 post-paint blocks 里的合并段，
+      // 显示连片段（含相邻同色已有 block）的起止时间
+      // post-paint blocks 已通过 setBlocks 写过；这里用 snapshot + paintArr + tagId
+      // 重建 nextBlockByMinute 找连片
+      const next = new Map<number, number>()
+      snapshot.forEach((b) => next.set(b.minute, b.tagId))
+      eraseArr.forEach((m) => next.delete(m))
+      paintArr.forEach((m) => next.set(m, tagId))
+      const paintSorted = [...paintArr].sort((a, b) => a - b)
+      const firstM = paintSorted[0]
+      const lastM = paintSorted[paintSorted.length - 1]
+      // 向左扩：起点之前还有同色 → 起点前移
+      let start = firstM
+      while (start - 5 >= 0 && next.get(start - 5) === tagId) start -= 5
+      // 向右扩：终点之后还有同色 → 终点后移
+      let endExcl = lastM + 5
+      while (endExcl < 1440 && next.get(endExcl) === tagId) endExcl += 5
+      const tagName = tagLabelForConfirm(tagId)
+      showPaintToast({
+        name: tagName,
+        time: `${fmtMinute(start)} – ${fmtMinute(endExcl)}`,
+      })
+    }
+    if (eraseArr.length > 0) {
+      eraseBlocks(date, eraseArr)
+    }
+  }
+
   // ── 格子区手势：编辑拖拽涂色 / 查看点按详情 ──
   const cellPan = useRef(
     PanResponder.create({
@@ -1623,44 +1738,13 @@ export default function DayNightScreen() {
           const paintArr = Array.from(d.paintMins)
           const eraseArr = Array.from(d.eraseMins)
           if (paintArr.length === 0 && eraseArr.length === 0) return
-          // 推 undo（snapshot = 操作前的 blocks），清空 redo
-          setUndoStack((prev) => [...prev.slice(-(UNDO_LIMIT - 1)), d.snapshot])
-          setRedoStack([])
-          // 分批写后端：paint 走 tagId / erase 不带 tagId
-          if (paintArr.length > 0 && tagId != null) {
-            // SoloDb.paintBlocks 内部事务会同时 bump tag/category 的 last_used_at
-            // （对齐 desktop paint_blocks），LWW 同步到对端，"最近"自动跨设备
-            paintBlocks(date, paintArr, tagId).then(() => {
-              // 拉回真值刷新 palette，让 recentTags useMemo 能感知新 lastUsedAt
-              fetchPalette().then(setPalette).catch(() => {})
-            })
-            // 底部 toast：找出本次 paint 覆盖区间在 post-paint blocks 里的合并段，
-            // 显示连片段（含相邻同色已有 block）的起止时间
-            // post-paint blocks 已通过 setBlocks 写过；这里用 d.snapshot + paintArr + tagId
-            // 重建 nextBlockByMinute 找连片
-            const next = new Map<number, number>()
-            d.snapshot.forEach((b) => next.set(b.minute, b.tagId))
-            d.eraseMins.forEach((m) => next.delete(m))
-            paintArr.forEach((m) => next.set(m, tagId))
-            const paintSorted = [...paintArr].sort((a, b) => a - b)
-            const firstM = paintSorted[0]
-            const lastM = paintSorted[paintSorted.length - 1]
-            // 向左扩：起点之前还有同色 → 起点前移
-            let start = firstM
-            while (start - 5 >= 0 && next.get(start - 5) === tagId) start -= 5
-            // 向右扩：终点之后还有同色 → 终点后移
-            let endExcl = lastM + 5
-            while (endExcl < 1440 && next.get(endExcl) === tagId) endExcl += 5
-            // 走 paletteRef 拿最新 palette；tagById 是闭包变量永远是首次 render 的空 Map
-            const tagName = paletteRef.current?.tags.find((t) => t.id === tagId)?.leafName ?? '标签'
-            showPaintToast({
-              name: tagName,
-              time: `${fmtMinute(start)} – ${fmtMinute(endExcl)}`,
-            })
+          const commit: PaintCommit = { date, tagId, paintArr, eraseArr, snapshot: d.snapshot }
+          const warning = buildFullRowReplaceWarning(commit)
+          if (warning) {
+            setPendingFullRowReplace(warning)
+            return
           }
-          if (eraseArr.length > 0) {
-            eraseBlocks(date, eraseArr)
-          }
+          commitPaintEdit(commit)
           return
         }
         if (d.moved || !d.tapCell) return
@@ -2863,6 +2947,25 @@ export default function DayNightScreen() {
 	          item?.apply()
 	        }}
 	      />
+
+      <ConfirmDialog
+        open={pendingFullRowReplace != null}
+        title="确认覆盖整行活动"
+        body={pendingFullRowReplace?.body ?? ''}
+        confirmText="覆盖"
+        cancelText="取消"
+        danger
+        onCancel={() => {
+          const item = pendingFullRowReplace
+          setPendingFullRowReplace(null)
+          if (item) setBlocks(item.commit.snapshot)
+        }}
+        onConfirm={() => {
+          const item = pendingFullRowReplace
+          setPendingFullRowReplace(null)
+          if (item) commitPaintEdit(item.commit)
+        }}
+      />
 
 	      {/* 删除确认框 */}
       <ConfirmDialog
