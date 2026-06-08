@@ -152,7 +152,7 @@ pub async fn run_window_watcher(db: Arc<Database>) {
         match effective {
             Some(snapshot) => {
                 let heartbeat = PerceptionHeartbeat {
-                    bucket_id: "sls-watcher-window_windows".to_string(),
+                    bucket_id: "slu-watcher-window_windows".to_string(),
                     bucket_kind: "window".to_string(),
                     event_type: "currentwindow".to_string(),
                     source: product_storage_name(),
@@ -298,7 +298,7 @@ pub async fn run_status_watcher(db: Arc<Database>) {
         };
 
         let heartbeat = PerceptionHeartbeat {
-            bucket_id: "sls-watcher-status_windows".to_string(),
+            bucket_id: "slu-watcher-status_windows".to_string(),
             bucket_kind: "status".to_string(),
             event_type: "afkstatus".to_string(),
             source: product_storage_name(),
@@ -590,7 +590,7 @@ fn sanitize_screenshot_settings(mut settings: ScreenshotSettings) -> ScreenshotS
 }
 
 fn product_storage_name() -> String {
-    let product = option_env!("SLS_PRODUCT_NAME")
+    let product = option_env!("SLU_PRODUCT_NAME")
         .filter(|v| !v.trim().is_empty())
         .unwrap_or(env!("CARGO_PKG_DESCRIPTION"));
     let compact: String = product
@@ -605,7 +605,7 @@ fn product_storage_name() -> String {
 }
 
 fn settings_root() -> PathBuf {
-    if let Ok(path) = std::env::var("SLS_PERCEPTION_DIR") {
+    if let Ok(path) = std::env::var("SLU_PERCEPTION_DIR") {
         if !path.trim().is_empty() {
             return PathBuf::from(path);
         }
@@ -729,7 +729,7 @@ fn matches_blacklist(snapshot: &WindowSnapshot, list: &[WindowBlacklistEntry]) -
 }
 
 fn default_screenshot_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("SLS_SCREENSHOT_DIR") {
+    if let Ok(path) = std::env::var("SLU_SCREENSHOT_DIR") {
         if !path.trim().is_empty() {
             return PathBuf::from(path);
         }

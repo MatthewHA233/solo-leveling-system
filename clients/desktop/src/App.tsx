@@ -356,12 +356,12 @@ export default function App() {
   const RIGHT_PANEL_MIN = 260
   const RIGHT_PANEL_MAX = 820
   const [rightPanelWidth, setRightPanelWidth] = useState<number>(() => {
-    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('sls.rightPanelWidth') : null
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('slu.rightPanelWidth') : null
     const n = stored ? Number(stored) : NaN
     return Number.isFinite(n) && n >= RIGHT_PANEL_MIN && n <= RIGHT_PANEL_MAX ? n : 340
   })
   useEffect(() => {
-    try { localStorage.setItem('sls.rightPanelWidth', String(rightPanelWidth)) } catch {}
+    try { localStorage.setItem('slu.rightPanelWidth', String(rightPanelWidth)) } catch {}
   }, [rightPanelWidth])
   const resizingRef = useRef(false)
   useEffect(() => {
@@ -458,7 +458,7 @@ export default function App() {
   const sessionTitleRef = useRef<string>('新会话')       // 现存标题，用于决定是否触发 AI 重命名
   const persistedBufferRef = useRef<SessionMessage[]>([])  // 已持久化的历史（用于 title 生成的上下文窗口）
   const lastOmniUserInputRef = useRef<string>('')        // Omni 本轮用户输入（文字 or 转写）
-  const audioDirRef = useRef<string>('')                 // 音频根目录（Rust data_local/solo-leveling-system/audio）
+  const audioDirRef = useRef<string>('')                 // 音频根目录（Rust data_local/solevup/audio）
   const pendingAudioRef = useRef<Map<string, { audioPath: string; durationMs: number }>>(new Map())
   const blobAudioUrlsRef = useRef<Set<string>>(new Set())
 
@@ -2521,15 +2521,15 @@ export default function App() {
         overflow: 'visible',
         zIndex: 2,
       }}>
-        {/* ── 左：Logo 图标 + 字标 + SLS-V{version}（从 package.json 注入） ── */}
+        {/* ── 左：Logo 图标 + 字标 + SLU-V{version}（从 package.json 注入） ── */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <img
             src={appIcon}
-            alt="SOLO LEVELING SYSTEM"
+            alt="Solevup"
             draggable={false}
             onContextMenu={(e) => {
               e.preventDefault()
-              navigator.clipboard.writeText('SOLO LEVELING SYSTEM').catch(() => {})
+              navigator.clipboard.writeText('Solevup').catch(() => {})
             }}
             style={{
               height: 28, width: 28, objectFit: 'contain',
@@ -2546,7 +2546,7 @@ export default function App() {
               textShadow: `0 0 8px ${theme.electricBlue}AA`,
               whiteSpace: 'nowrap',
             }}>
-              SOLO LEVELING SYSTEM
+              SOLEVUP
             </span>
             <span style={{
               fontFamily: theme.fontMono,
@@ -2554,7 +2554,7 @@ export default function App() {
               letterSpacing: 2.4, color: theme.electricBlue,
               opacity: 0.6,
             }}>
-              SLS-V{__APP_VERSION__.replace(/\./g, '-')}
+              SLU-V{__APP_VERSION__.replace(/\./g, '-')}
             </span>
           </div>
           <Tooltip content={config.fairyWindowEnabled ? '隐藏 Fairy 桌面窗口' : '启动 Fairy 桌面窗口'}>

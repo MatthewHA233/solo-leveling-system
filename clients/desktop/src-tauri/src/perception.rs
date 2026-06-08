@@ -156,9 +156,10 @@ mod platform {
     }
 
     fn default_screenshot_dir() -> PathBuf {
+        // 跟 db.rs 的 default_data_dir 对齐：新品牌 Solevup。
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("solo-leveling-system")
+            .join("solevup")
             .join("Screenshots")
     }
 }

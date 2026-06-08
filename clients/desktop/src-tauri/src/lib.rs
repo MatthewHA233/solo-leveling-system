@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// SOLO LEVELING SYSTEM — Tauri 后端入口
+// Solevup — Tauri 后端入口
 // ══════════════════════════════════════════════
 
 use tauri::Emitter;
@@ -1678,8 +1678,8 @@ pub fn run() {
             // 全局右 Alt 热键（push-to-talk，无论哪个窗口聚焦都生效）
 
             #[cfg(windows)]
-            if std::env::var("SLS_DISABLE_HOTKEY").ok().as_deref() == Some("1") {
-                log::warn!("[Hotkey] disabled by SLS_DISABLE_HOTKEY=1");
+            if std::env::var("SLU_DISABLE_HOTKEY").ok().as_deref() == Some("1") {
+                log::warn!("[Hotkey] disabled by SLU_DISABLE_HOTKEY=1");
             } else {
                 hotkey::install(app.handle().clone());
             }
@@ -1695,7 +1695,7 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
-                .tooltip("SOLO LEVELING SYSTEM")
+                .tooltip("Solevup")
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "tray_show" => {
                         if let Some(w) = app.get_webview_window("main") {
@@ -1721,7 +1721,7 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            log::info!("[App] SOLO LEVELING SYSTEM 启动完成");
+            log::info!("[App] Solevup 启动完成");
             Ok(())
         })
         .on_window_event(|window, event| {

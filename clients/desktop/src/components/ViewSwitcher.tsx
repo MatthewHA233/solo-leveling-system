@@ -25,7 +25,7 @@ const LABELS: Record<MainViewMode, string> = {
 
 const DEFAULT_ORDER: ReadonlyArray<MainViewMode> = ['motivation', 'daynight', 'torrent']
 // v3 新增洪流域，换 storage key（旧值不再生效，自动 fallback 到 default order）
-const ORDER_STORAGE_KEY = 'sls.viewSwitcher.order.v3'
+const ORDER_STORAGE_KEY = 'slu.viewSwitcher.order.v3'
 
 function loadOrder(): MainViewMode[] {
   try {

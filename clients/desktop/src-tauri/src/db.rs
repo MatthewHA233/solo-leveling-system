@@ -540,11 +540,11 @@ pub struct Database {
 }
 
 impl Database {
-    /// 默认数据目录
+    /// 默认数据目录（新品牌 Solevup）
     pub fn default_data_dir() -> PathBuf {
         dirs::data_local_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("solo-leveling-system")
+            .join("solevup")
     }
 
     /// 初始化数据库（指定路径）
@@ -3614,8 +3614,9 @@ fn get_or_create_device_id(conn: &Connection) -> Result<String, String> {
     Ok(id)
 }
 
+/// 同步配对码哈希种子。
 pub fn sync_pair_code(device_id: &str) -> String {
-    let hash = stable_hash_hex(&format!("solo-leveling-system:sync:v1:{device_id}"));
+    let hash = stable_hash_hex(&format!("solevup:sync:v1:{device_id}"));
     format!("{}-{}", &hash[0..4], &hash[4..8]).to_uppercase()
 }
 
@@ -3633,7 +3634,8 @@ const ALIAS_FRUITS: &[&str] = &[
 ];
 
 pub fn generate_alias(device_id: &str) -> String {
-    let hex = stable_hash_hex(&format!("solo-leveling-system:alias:v1:{device_id}"));
+    // 跟 sync_pair_code 一致，用 Solevup 的稳定种子生成设备别名。
+    let hex = stable_hash_hex(&format!("solevup:alias:v1:{device_id}"));
     let bytes = hex.as_bytes();
     let parse_u32 = |slice: &[u8]| -> u32 {
         std::str::from_utf8(slice).ok()

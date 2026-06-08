@@ -931,7 +931,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
               display: 'grid', gap: 6,
             }}>
               <GpuPrefRow
-                label="SOLO LEVELING SYSTEM"
+                label="Solevup"
                 path={gpuPref.self_exe_path}
                 set={gpuPref.self_exe_pref_set}
               />

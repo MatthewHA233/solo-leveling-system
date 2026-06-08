@@ -8,8 +8,8 @@
 //
 // 例：
 //   cargo run --release -- \
-//     ../../src-tauri/target/x86_64-pc-windows-msvc/debug/solo_leveling_system.pdb \
-//     --from-log "$env:LOCALAPPDATA/solo-leveling-system/panic.log"
+//     ../../src-tauri/target/x86_64-pc-windows-msvc/debug/Solevup.pdb \
+//     --from-log "$env:LOCALAPPDATA/solevup/panic.log"
 
 use std::env;
 use std::fs::File;
@@ -49,7 +49,7 @@ fn main() -> ExitCode {
     let rvas: Vec<u32> = if args[2] == "--from-log" {
         let log_path = args.get(3).cloned().unwrap_or_else(|| {
             std::env::var("LOCALAPPDATA")
-                .map(|p| format!("{}/solo-leveling-system/panic.log", p))
+                .map(|p| format!("{}/solevup/panic.log", p))
                 .unwrap_or_default()
         });
         match std::fs::read_to_string(&log_path) {

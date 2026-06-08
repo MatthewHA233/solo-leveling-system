@@ -5,7 +5,7 @@
 //   <exe 完整路径> = "GpuPreference=2;"   (1=节能, 2=高性能, 0=系统默认)
 //
 // HKCU 不需要管理员权限。Tauri 应用在 setup 阶段就能配好两条：
-//   1) solo-leveling-system.exe 自身
+//   1) Solevup.exe 自身
 //   2) msedgewebview2.exe（WebView2 子进程，渲染实际跑这里——这条才是关键）
 //
 // msedgewebview2.exe 路径带版本号，我们从 EdgeUpdate Clients 注册表动态查最新版本。
@@ -23,9 +23,9 @@ const HIGH_PERF_VALUE: &str = "GpuPreference=2;";
 
 #[derive(Debug, Serialize, Clone)]
 pub struct GpuPrefStatus {
-    /// solo-leveling-system.exe 的完整路径
+    /// Solevup.exe 的完整路径
     pub self_exe_path: String,
-    /// solo-leveling-system.exe 是否已写入"高性能"偏好
+    /// Solevup.exe 是否已写入"高性能"偏好
     pub self_exe_pref_set: bool,
     /// 检测到的 msedgewebview2.exe 完整路径（None 表示找不到，可能 WebView2 Runtime 未安装）
     pub webview2_path: Option<String>,
@@ -113,7 +113,7 @@ pub fn apply(enable: bool) -> Result<GpuPrefStatus, String> {
                 .map_err(|e| format!("写 webview2 偏好失败: {}", e))?;
         }
         log::info!(
-            "[GpuPref] 已为 solo-leveling-system.exe{} 设置高性能偏好",
+            "[GpuPref] 已为 Solevup.exe{} 设置高性能偏好",
             if webview2.is_some() {
                 " 与 msedgewebview2.exe"
             } else {

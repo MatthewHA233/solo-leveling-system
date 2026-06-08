@@ -4207,7 +4207,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "solo-leveling-system"
+name = "solevup"
 version = "0.1.3"
 dependencies = [
  "axum",

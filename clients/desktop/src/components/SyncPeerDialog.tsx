@@ -101,7 +101,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
   const [links, setLinks] = useState<LinkedDevice[]>([])
   const [discovering, setDiscovering] = useState(false)
   const [manualOpen, setManualOpen] = useState(false)
-  const [manualUrl, setManualUrl] = useState(() => localStorage.getItem('sls.sync.peerUrl') ?? '')
+  const [manualUrl, setManualUrl] = useState(() => localStorage.getItem('slu.sync.peerUrl') ?? '')
   const [manualBusy, setManualBusy] = useState(false)
   const [busyLinkId, setBusyLinkId] = useState<string | null>(null)
   const [logOpen, setLogOpen] = useState(false)
@@ -301,7 +301,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
     setManualBusy(true)
     try {
       const hello = await fetchSyncHello(manualUrl)
-      localStorage.setItem('sls.sync.peerUrl', manualUrl)
+      localStorage.setItem('slu.sync.peerUrl', manualUrl)
       const url = new URL(manualUrl.startsWith('http') ? manualUrl : `http://${manualUrl}`)
       const ip = url.hostname
       const port = Number(url.port || 49733)

@@ -5,7 +5,7 @@
 
 import type { ModelCallLog } from '../local-api'
 
-const STORAGE_KEY = 'solo-leveling-system-memory'
+const STORAGE_KEY = 'solevup-memory'
 const MAX_MESSAGES = 40
 
 // ── Types ──
