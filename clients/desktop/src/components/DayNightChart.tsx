@@ -1,9 +1,9 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import type { CSSProperties } from 'react'
-import { Pencil, Undo2, Redo2 } from 'lucide-react'
+import { Pencil, Undo2, Redo2, X } from 'lucide-react'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from '../types'
 import type { PerceptionSpan, BiliSpan } from '../lib/local-api'
-import { theme } from '../theme'
+import { theme, hud } from '../theme'
 import { HudFrameSkeleton, HudTabButton, CornerArt, ChartHeaderFrame, ChartHeaderButtons } from './hud'
 import type { CornerPos } from './hud'
 import Tooltip from './Tooltip'
@@ -2781,18 +2781,53 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate, recordLayer, isToday, p.minutesPerCol, p.colStride])
 
-  // 图例：从感知 tags 提取一级标签
+  // 图例：从感知 tags 提取一级标签，带每分类累计时长 + 子标签明细
   const tagLegend = useMemo(() => {
-    const map = new Map<string, string>() // name → color
+    const toMin = (dt: string) => {
+      const t = dt.split(' ')[1] ?? ''
+      const [h = 0, m = 0] = t.split(':').map(Number)
+      return h * 60 + m
+    }
+    type Entry = { color: string; mins: number; subTagMap: Map<string, number> }
+    const map = new Map<string, Entry>()
     ;(perceptionSpans ?? []).filter((s) => s.track === 'tags').forEach((s) => {
       const { parts } = parseTagTitle(s.title)
       const firstName = parts[0]
-      if (firstName && !map.has(firstName)) {
-        map.set(firstName, s.color ?? '#4488ff')
-      }
+      if (!firstName) return
+      const mins = Math.max(0, toMin(s.end_at) - toMin(s.start_at))
+      const subName = parts.slice(1).join('/') || ''
+      // 局部 Map 的 mutable 累加是安全的 — useMemo 内新建对象，无外部副作用
+      let entry = map.get(firstName)
+      if (!entry) { entry = { color: s.color ?? '#4488ff', mins: 0, subTagMap: new Map() }; map.set(firstName, entry) }
+      entry.mins += mins
+      if (subName) entry.subTagMap.set(subName, (entry.subTagMap.get(subName) ?? 0) + mins)
     })
     return [...map.entries()]
+      .map(([name, v]) => ({
+        name, color: v.color, mins: v.mins,
+        subTags: [...v.subTagMap.entries()].map(([n, m]) => ({ name: n, mins: m })).sort((a, b) => b.mins - a.mins),
+      }))
+      .sort((a, b) => b.mins - a.mins)
   }, [perceptionSpans])
+
+  const [legendOpen, setLegendOpen] = useState(false)
+  const [expandedChip, setExpandedChip] = useState<string | null>(null)
+  const [chipPos, setChipPos] = useState<{ x: number; bottom: number } | null>(null)
+
+  const CHIP_PW = 240
+  const handleChipClick = (name: string, e: React.MouseEvent<HTMLButtonElement>) => {
+    if (expandedChip === name) {
+      setExpandedChip(null)
+      setChipPos(null)
+    } else {
+      const rect = e.currentTarget.getBoundingClientRect()
+      const rawX = rect.left + rect.width / 2
+      const clampedX = Math.max(CHIP_PW / 2 + 8, Math.min(rawX, window.innerWidth - CHIP_PW / 2 - 8))
+      setExpandedChip(name)
+      setChipPos({ x: clampedX, bottom: window.innerHeight - rect.top + 6 })
+      setLegendOpen(false)
+    }
+  }
 
   const tagSpans = (perceptionSpans ?? []).filter((s) => s.track === 'tags')
   const totalTagMinutes = tagSpans.reduce((sum, s) => {
@@ -2973,66 +3008,276 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
         />
       </div>
 
-      {/* 图例（HUD 风格） */}
+      {/* 底部：百分比条 + 横向分类胶囊 */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 14,
-        padding: '6px 14px 8px', flexWrap: 'wrap',
+        padding: '7px 14px 8px',
         borderTop: `1px solid ${hexToRgba(theme.electricBlue, 0.12)}`,
         background: `linear-gradient(180deg, ${hexToRgba(theme.electricBlue, 0.03)} 0%, transparent 100%)`,
       }}>
-        <span style={{
-          fontFamily: theme.fontMono, fontSize: 10.5, fontWeight: 700,
-          letterSpacing: 2, color: theme.electricBlue,
-          textShadow: `0 0 6px ${hexToRgba(theme.electricBlue, 0.55)}`,
-          paddingRight: 8,
-          borderRight: `1px solid ${hexToRgba(theme.electricBlue, 0.45)}`,
-        }}>
-          标签图例
-        </span>
-        {tagLegend.map(([name, color]) => (
-          <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{
-              width: 14, height: 10, flexShrink: 0,
-              clipPath: 'polygon(2px 0, calc(100% - 2px) 0, 100% 2px, 100% calc(100% - 2px), calc(100% - 2px) 100%, 2px 100%, 0 calc(100% - 2px), 0 2px)',
-              WebkitClipPath: 'polygon(2px 0, calc(100% - 2px) 0, 100% 2px, 100% calc(100% - 2px), calc(100% - 2px) 100%, 2px 100%, 0 calc(100% - 2px), 0 2px)',
-              background: color,
-              borderLeft: `2px solid ${color}`,
-            }} />
-            <span style={{
-              fontFamily: theme.fontBody,
-              fontSize: 12, fontWeight: 600,
-              color: theme.textPrimary,
-              letterSpacing: 0.3,
-            }}>
-              {name}
-            </span>
-          </div>
-        ))}
-        <span style={{
-          marginLeft: 'auto',
-          display: 'inline-flex', alignItems: 'center', gap: 6,
-          fontFamily: theme.fontMono,
-          fontSize: 11, fontWeight: 700,
-          color: theme.textPrimary,
-          letterSpacing: 0.8,
-          padding: '3px 11px',
-          border: `1px solid ${hexToRgba(theme.electricBlue, 0.55)}`,
-          clipPath: 'polygon(3px 0, calc(100% - 3px) 0, 100% 3px, 100% calc(100% - 3px), calc(100% - 3px) 100%, 3px 100%, 0 calc(100% - 3px), 0 3px)',
-          WebkitClipPath: 'polygon(3px 0, calc(100% - 3px) 0, 100% 3px, 100% calc(100% - 3px), calc(100% - 3px) 100%, 3px 100%, 0 calc(100% - 3px), 0 3px)',
-          background: `linear-gradient(90deg, ${hexToRgba(theme.electricBlue, 0.14)} 0%, ${hexToRgba(theme.electricBlue, 0.04)} 100%)`,
-          boxShadow: `0 0 8px ${hexToRgba(theme.electricBlue, 0.25)}, inset 0 0 6px ${hexToRgba(theme.electricBlue, 0.08)}`,
-        }}>
-          <span style={{ color: theme.electricBlue, textShadow: `0 0 6px ${hexToRgba(theme.electricBlue, 0.85)}` }}>
-            {tagSpans.length}
+        {tagLegend.length > 0 ? (
+          <>
+            {/* 百分比条：点击打开分类弹窗 */}
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => { setLegendOpen((o) => !o); setExpandedChip(null); setChipPos(null) }}
+              onKeyDown={(e) => e.key === 'Enter' && setLegendOpen((o) => !o)}
+              title={`${Math.floor(totalTagMinutes / 60)}h ${totalTagMinutes % 60}m · 点击查看分类`}
+              style={{
+                display: 'flex', height: 5, borderRadius: 3, overflow: 'hidden',
+                cursor: 'pointer', gap: 1, marginBottom: 7,
+                background: hexToRgba(theme.electricBlue, 0.08),
+              }}
+            >
+              {tagLegend.map((s) => (
+                <div key={s.name} style={{
+                  flex: s.mins, background: s.color,
+                  filter: 'saturate(1.4) brightness(1.1)',
+                }} />
+              ))}
+              {totalTagMinutes < 1440 && (
+                <div style={{ flex: 1440 - totalTagMinutes, background: hexToRgba(theme.electricBlue, 0.04) }} />
+              )}
+            </div>
+
+            {/* 横向滑动分类胶囊，每个胶囊可单独点开子标签弹窗 */}
+            <div style={{
+              display: 'flex', gap: 5, overflowX: 'auto',
+              scrollbarWidth: 'none', alignItems: 'center',
+            } as CSSProperties}>
+              {tagLegend.map((s) => {
+                const h = Math.floor(s.mins / 60)
+                const m = s.mins % 60
+                const label = h > 0 ? `${h}h${m > 0 ? `${m}m` : ''}` : `${m}m`
+                const active = expandedChip === s.name
+                return (
+                  <button
+                    key={s.name}
+                    onClick={(e) => handleChipClick(s.name, e)}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 5,
+                      padding: '3px 8px 3px 6px', borderRadius: 10, flexShrink: 0,
+                      background: active ? `${s.color}33` : `${s.color}1a`,
+                      border: `1px solid ${active ? s.color : `${s.color}44`}`,
+                      whiteSpace: 'nowrap', cursor: 'pointer',
+                      boxShadow: active ? `0 0 8px ${s.color}66` : 'none',
+                      transition: 'all 0.12s ease',
+                    }}
+                  >
+                    <span style={{
+                      width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                      background: s.color, boxShadow: `0 0 5px ${s.color}aa`,
+                      display: 'inline-block',
+                    }} />
+                    <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: theme.textSecondary }}>
+                      {s.name}
+                    </span>
+                    <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: s.color, fontWeight: 700 }}>
+                      {label}
+                    </span>
+                  </button>
+                )
+              })}
+              {/* 段数 + 总时长徽章 */}
+              <div style={{
+                marginLeft: 'auto', flexShrink: 0,
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '3px 10px', borderRadius: 10,
+                background: hexToRgba(theme.electricBlue, 0.1),
+                border: `1px solid ${hexToRgba(theme.electricBlue, 0.35)}`,
+              }}>
+                <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: theme.electricBlue, fontWeight: 700 }}>
+                  {tagSpans.length}
+                </span>
+                <span style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted }}>段</span>
+                <span style={{ fontFamily: theme.fontMono, fontSize: 9.5, color: hexToRgba(theme.electricBlue, 0.45) }}>·</span>
+                <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: theme.electricBlue, fontWeight: 700 }}>
+                  {Math.floor(totalTagMinutes / 60)}h{totalTagMinutes % 60 > 0 ? `${totalTagMinutes % 60}m` : ''}
+                </span>
+              </div>
+            </div>
+          </>
+        ) : (
+          <span style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted, letterSpacing: 0.5 }}>
+            今日无标签记录
           </span>
-          <span style={{ color: theme.textPrimary }}>段</span>
-          <span style={{ color: hexToRgba(theme.electricBlue, 0.6) }}>·</span>
-          <span style={{ color: theme.electricBlue, textShadow: `0 0 6px ${hexToRgba(theme.electricBlue, 0.85)}` }}>
-            {totalTagMinutes}
-          </span>
-          <span style={{ color: theme.textPrimary }}>分</span>
-        </span>
+        )}
       </div>
+
+      {/* ── 弹窗 1：百分比条点击 → 分类总览弹窗（ModelDialog 风格） ── */}
+      {legendOpen && (
+        <>
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 900, background: 'rgba(2,6,16,0.78)' }}
+            onClick={() => setLegendOpen(false)}
+          />
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'fixed', left: '50%', top: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 440, maxHeight: '72vh',
+              display: 'flex', flexDirection: 'column',
+              zIndex: 901,
+              background: theme.hudFill,
+              border: `1px solid ${theme.hudFrame}`,
+              clipPath: hud.chamfer12,
+              WebkitClipPath: hud.chamfer12,
+              boxShadow: `0 24px 80px rgba(0,0,0,0.8), 0 0 60px ${theme.hudHalo}, inset 0 1px 0 rgba(255,255,255,0.04)`,
+              overflow: 'hidden',
+            }}
+          >
+            <div style={{ position: 'absolute', inset: 0, background: hud.scanlines, opacity: 0.45, pointerEvents: 'none', zIndex: 0 }} />
+
+            {/* Header */}
+            <div style={{
+              position: 'relative', zIndex: 1,
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '13px 18px 11px',
+              borderBottom: `1px solid ${hexToRgba(theme.electricBlue, 0.2)}`,
+              flexShrink: 0,
+            }}>
+              <div>
+                <span style={{ fontFamily: theme.fontDisplay, fontSize: 12, fontWeight: 700, letterSpacing: 2.5, color: theme.electricBlue, textShadow: `0 0 10px ${theme.electricBlue}99` }}>
+                  标签时段分布
+                </span>
+                <span style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted, marginLeft: 10, letterSpacing: 0.5 }}>
+                  {Math.floor(totalTagMinutes / 60)}h {totalTagMinutes % 60}m · {tagSpans.length} 段
+                </span>
+              </div>
+              <button
+                onClick={() => setLegendOpen(false)}
+                style={{ background: 'none', border: `1px solid ${hexToRgba(theme.electricBlue, 0.2)}`, borderRadius: 3, cursor: 'pointer', color: theme.textMuted, display: 'flex', alignItems: 'center', padding: '3px 5px' }}
+              >
+                <X size={12} />
+              </button>
+            </div>
+
+            {/* 顶部比例色条，内缩 18px 不贴边 */}
+            <div style={{ margin: '0 18px 2px', flexShrink: 0, zIndex: 1, position: 'relative' }}>
+              <div style={{ display: 'flex', height: 4, borderRadius: 2, overflow: 'hidden', gap: 1 }}>
+                {tagLegend.map((s) => (
+                  <div key={s.name} style={{ flex: s.mins, background: s.color, filter: 'saturate(1.5) brightness(1.15)' }} />
+                ))}
+                {totalTagMinutes < 1440 && <div style={{ flex: 1440 - totalTagMinutes, background: hexToRgba(theme.electricBlue, 0.05) }} />}
+              </div>
+            </div>
+
+            {/* 分类列表（可滚动） */}
+            <div style={{ position: 'relative', zIndex: 1, overflowY: 'auto', scrollbarWidth: 'none', padding: '12px 18px 16px', flex: 1 } as CSSProperties}>
+              {tagLegend.map((s, idx) => {
+                const pct = totalTagMinutes > 0 ? Math.round(s.mins / totalTagMinutes * 100) : 0
+                const h = Math.floor(s.mins / 60), m = s.mins % 60
+                const timeLabel = h > 0 ? `${h}h${m > 0 ? ` ${m}m` : ''}` : `${m}m`
+                return (
+                  <div key={s.name} style={{ marginBottom: idx < tagLegend.length - 1 ? 14 : 0 }}>
+                    {/* 分类 header 行 */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 5 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: s.color, boxShadow: `0 0 6px ${s.color}` }} />
+                      <span style={{ fontFamily: theme.fontMono, fontSize: 12, fontWeight: 700, color: theme.textPrimary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: 0.3 }}>{s.name}</span>
+                      <span style={{ fontFamily: theme.fontMono, fontSize: 11, color: s.color, fontWeight: 700, flexShrink: 0, minWidth: 44, textAlign: 'right' }}>{timeLabel}</span>
+                      <span style={{ fontFamily: theme.fontMono, fontSize: 9.5, color: theme.textMuted, flexShrink: 0, minWidth: 28, textAlign: 'right' }}>{pct}%</span>
+                    </div>
+                    <div style={{ paddingLeft: 13 }}>
+                      {/* 分类占比 fill bar */}
+                      <div style={{ height: 4, background: hexToRgba(s.color, 0.1), borderRadius: 2, marginBottom: 8, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${pct}%`, background: s.color, filter: 'saturate(1.4) brightness(1.1)', borderRadius: 2, transition: 'width 0.3s ease' }} />
+                      </div>
+                      {/* 子标签列表 */}
+                      {s.subTags.map((st) => {
+                        const stPct = s.mins > 0 ? Math.round(st.mins / s.mins * 100) : 0
+                        const sh = Math.floor(st.mins / 60), sm = st.mins % 60
+                        const stLabel = sh > 0 ? `${sh}h${sm > 0 ? ` ${sm}m` : ''}` : `${sm}m`
+                        return (
+                          <div key={st.name} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5, paddingLeft: 2 }}>
+                            <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: theme.textSecondary, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {st.name}
+                            </span>
+                            <div style={{ width: 56, height: 2, background: hexToRgba(s.color, 0.12), borderRadius: 1, overflow: 'hidden', flexShrink: 0 }}>
+                              <div style={{ height: '100%', width: `${stPct}%`, background: s.color, opacity: 0.75, borderRadius: 1 }} />
+                            </div>
+                            <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: hexToRgba(s.color, 0.85), fontWeight: 600, minWidth: 40, textAlign: 'right', flexShrink: 0 }}>
+                              {stLabel}
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── 弹窗 2：胶囊点击 → 子标签明细小弹窗，定位在胶囊正上方 ── */}
+      {expandedChip && chipPos && (() => {
+        const cat = tagLegend.find((s) => s.name === expandedChip)
+        if (!cat) return null
+        return (
+          <>
+            <div
+              style={{ position: 'fixed', inset: 0, zIndex: 900 }}
+              onClick={() => { setExpandedChip(null); setChipPos(null) }}
+            />
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: 'fixed',
+                left: chipPos.x, bottom: chipPos.bottom,
+                transform: 'translateX(-50%)',
+                zIndex: 901,
+                width: 240,
+                background: theme.hudFill,
+                border: `1px solid ${theme.hudFrame}`,
+                clipPath: hud.chamfer8,
+                WebkitClipPath: hud.chamfer8,
+                boxShadow: `0 8px 32px rgba(0,0,0,0.75), 0 0 24px ${theme.hudHalo}, inset 0 1px 0 rgba(255,255,255,0.04)`,
+                overflow: 'hidden',
+              }}
+            >
+              <div style={{ position: 'absolute', inset: 0, background: hud.scanlines, opacity: 0.5, pointerEvents: 'none' }} />
+              {/* Header */}
+              <div style={{
+                position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '9px 12px 7px',
+                borderBottom: `1px solid ${hexToRgba(cat.color, 0.25)}`,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ width: 7, height: 7, borderRadius: '50%', background: cat.color, boxShadow: `0 0 5px ${cat.color}`, display: 'inline-block' }} />
+                  <span style={{ fontFamily: theme.fontMono, fontSize: 11, fontWeight: 700, color: cat.color, letterSpacing: 0.8 }}>{cat.name}</span>
+                </div>
+                <button
+                  onClick={() => { setExpandedChip(null); setChipPos(null) }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: theme.textMuted, display: 'flex', alignItems: 'center', padding: 3 }}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+              {/* 子标签列表 */}
+              <div style={{ position: 'relative', padding: '8px 12px 10px' }}>
+                {cat.subTags.length > 0 ? cat.subTags.map((st) => {
+                  const pct = cat.mins > 0 ? Math.round(st.mins / cat.mins * 100) : 0
+                  const h = Math.floor(st.mins / 60), m = st.mins % 60
+                  const label = h > 0 ? `${h}h${m > 0 ? ` ${m}m` : ''}` : `${m}m`
+                  return (
+                    <div key={st.name} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: theme.textSecondary, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{st.name}</span>
+                      <div style={{ width: 60, height: 3, background: hexToRgba(cat.color, 0.12), borderRadius: 2, overflow: 'hidden', flexShrink: 0 }}>
+                        <div style={{ height: '100%', width: `${pct}%`, background: cat.color, filter: 'saturate(1.3) brightness(1.1)', borderRadius: 2 }} />
+                      </div>
+                      <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: cat.color, fontWeight: 700, minWidth: 32, textAlign: 'right', flexShrink: 0 }}>{label}</span>
+                    </div>
+                  )
+                }) : (
+                  <span style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted }}>无子标签</span>
+                )}
+              </div>
+            </div>
+          </>
+        )
+      })()}
     </div>
   )
 }

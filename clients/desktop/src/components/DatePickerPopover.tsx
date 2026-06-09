@@ -6,8 +6,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { theme, hud } from '../theme'
-import { fetchActivityBlocks, fetchBiliDayCounts } from '../lib/local-api'
+import { fetchActivityBlocks, fetchActivityPalette, fetchBiliDayCounts } from '../lib/local-api'
 import type { BiliDayCount } from '../lib/local-api'
+import type { ActivityPalette } from '../types'
 import Tooltip from './Tooltip'
 
 interface Props {
@@ -41,11 +42,34 @@ function dayKey(d: Date): string {
 }
 
 // 一段标签时间区间（当日相对分钟，已裁剪到 [0,1440]）
-type TagRange = readonly [number, number]
+// color 取自 tag 所属 category 的颜色 —— 跟手机端 CalendarPopover 同款做法
+interface TagRange {
+  readonly startMin: number
+  readonly endMin: number
+  readonly color: string
+}
 
 // 模块级缓存：跨打开/关闭日历保留已抓数据
 const tagRangesCache = new Map<string, TagRange[]>()
 const inflight = new Map<string, Promise<TagRange[]>>()
+
+// Palette 缓存（categories + tags），所有 day 共用一份，避免 42 天都重复拉
+let paletteCache: ActivityPalette | null = null
+let palettePromise: Promise<ActivityPalette> | null = null
+
+async function getPalette(): Promise<ActivityPalette> {
+  if (paletteCache) return paletteCache
+  if (palettePromise) return palettePromise
+  palettePromise = fetchActivityPalette()
+    .then((p) => { paletteCache = p; palettePromise = null; return p })
+    .catch(() => {
+      palettePromise = null
+      const empty: ActivityPalette = { categories: [], tags: [] }
+      paletteCache = empty
+      return empty
+    })
+  return palettePromise
+}
 
 export function invalidateActivityRangeCache(date?: Date) {
   if (date) {
@@ -56,6 +80,9 @@ export function invalidateActivityRangeCache(date?: Date) {
   }
   tagRangesCache.clear()
   inflight.clear()
+  // 标签库可能也变了（用户加/删分类、改颜色），一起清
+  paletteCache = null
+  palettePromise = null
 }
 
 async function getTagRangesForDay(d: Date): Promise<TagRange[]> {
@@ -64,21 +91,25 @@ async function getTagRangesForDay(d: Date): Promise<TagRange[]> {
   if (inflight.has(key)) return inflight.get(key)!
   const p = (async () => {
     try {
-      const blocks = await fetchActivityBlocks(d)
+      const [blocks, palette] = await Promise.all([fetchActivityBlocks(d), getPalette()])
+      const tagById = new Map(palette.tags.map((t) => [t.id, t]))
+      const catById = new Map(palette.categories.map((c) => [c.id, c]))
+      const sorted = [...blocks]
+        .filter((b) => b.minute >= 0 && b.minute < 1440)
+        .sort((a, b) => a.minute - b.minute)
       const out: TagRange[] = []
-      const minutes = [...new Set(blocks.map((b) => b.minute))]
-        .filter((m) => m >= 0 && m < 1440)
-        .sort((a, b) => a - b)
-      let start: number | null = null
-      let prev: number | null = null
-      for (const minute of minutes) {
-        if (start === null || prev === null || minute !== prev + 5) {
-          if (start !== null && prev !== null) out.push([start, Math.min(1440, prev + 5)])
-          start = minute
+      for (const b of sorted) {
+        const tag = tagById.get(b.tagId)
+        const cat = tag ? catById.get(tag.categoryId) : undefined
+        const color = cat?.color ?? theme.electricBlue
+        const last = out[out.length - 1]
+        if (last && last.color === color && b.minute === last.endMin) {
+          // 相邻同色 → 合段
+          ;(last as { endMin: number }).endMin = Math.min(1440, b.minute + 5)
+        } else {
+          out.push({ startMin: b.minute, endMin: Math.min(1440, b.minute + 5), color })
         }
-        prev = minute
       }
-      if (start !== null && prev !== null) out.push([start, Math.min(1440, prev + 5)])
       tagRangesCache.set(key, out)
       return out
     } catch {
@@ -266,13 +297,16 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose,
           letter-spacing: 0.3px;
           background: transparent;
           border: 1px solid transparent;
-          color: ${theme.textPrimary};
+          /* 默认数字用次级文字色，让日历背景更冷静、整体不抢眼 */
+          color: ${theme.textSecondary};
           cursor: pointer;
-          transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+          transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
           border-radius: 4px;
         }
-        .dpp-cell:hover { background: ${theme.glassHover}; border-color: ${theme.glassBorder}; }
-        .dpp-cell.muted { color: ${theme.textMuted}; }
+        .dpp-cell:hover { background: ${theme.glassHover}; border-color: ${theme.glassBorder}; opacity: 1; }
+        /* 非当前月：整体 opacity 降低，让数字 + DayRing 一起暗下去（不光暗数字） */
+        .dpp-cell.muted { color: ${theme.textMuted}; opacity: 0.32; }
+        .dpp-cell.muted:hover { opacity: 0.7; }
         .dpp-cell.today {
           color: ${theme.electricBlue};
           text-shadow: 0 0 6px ${theme.electricBlue}AA;
@@ -411,7 +445,7 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose,
             }
 
             const ranges = tagRanges[k] ?? []
-            const totalMin = ranges.reduce((sum, [a, b]) => sum + (b - a), 0)
+            const totalMin = ranges.reduce((sum, r) => sum + (r.endMin - r.startMin), 0)
             return (
               <Tooltip
                 key={d.toISOString()}
@@ -522,19 +556,22 @@ function BiliCountBadge({ watched, downloaded, transcribed, active }: {
 }
 
 // 单元格背后的环形：把当日标签时间段作为多段弧绘制
-// 24h 表盘布局：正午（720min）在顶部，午夜（0/1440min）在底部，
-// 顺时针推进 → 06:00 在左、18:00 在右（白天=上半圈，夜间=下半圈）
+// 24h 钟表布局：0:00（午夜）在正北顶部，12:00（正午）在底部，
+// 顺时针推进 → 06:00 在右、18:00 在左（与传统钟表一致，只不过单位是小时不是分钟）
+// 弧段颜色 = category.color（手机端同源逻辑）。叠加 HUD 化滤镜：
+//   1) saturate 1.55 + brightness 1.1：让 category 颜色在暗底上"亮起来"
+//   2) drop-shadow 用本地 cyan/teal 作 halo：跟全局 HUD 描线视觉对齐
 function DayRing({ ranges, active }: { ranges: readonly TagRange[]; active: boolean }) {
   const SIZE = 26
   const STROKE = 1.6
   const R = (SIZE - STROKE) / 2
   const C = 2 * Math.PI * R
-  const color = active ? theme.electricBlue : theme.flameTeal
+  const haloColor = active ? theme.electricBlue : theme.flameTeal
 
   // SVG <circle> 的 dash 起点在 3 点钟（最右），顺时针推进。
   // 加上 rotate(-90deg) 后起点变为 12 点钟。
-  // 时间分钟 m → dash 偏移：noon(720) 映到 0，时间正向流逝顺时针走。
-  const minToOffset = (m: number) => ((m - 720 + 1440) % 1440) / 1440 * C
+  // 时间分钟 m → dash 偏移：minute 0（午夜）映到 0（顶），时间正向流逝顺时针走。
+  const minToOffset = (m: number) => (m / 1440) * C
 
   return (
     <svg
@@ -545,26 +582,26 @@ function DayRing({ ranges, active }: { ranges: readonly TagRange[]; active: bool
         transform: 'translate(-50%, -50%) rotate(-90deg)',
         pointerEvents: 'none',
         zIndex: 0,
-        filter: `drop-shadow(0 0 4px ${color}77)`,
+        filter: `saturate(1.55) brightness(1.1) drop-shadow(0 0 ${active ? 5 : 3}px ${haloColor}${active ? 'b3' : '77'})`,
       }}
     >
       {/* 底环：极淡，作为时间表盘背景 */}
       <circle
         cx={SIZE / 2} cy={SIZE / 2} r={R}
         fill="none"
-        stroke={`${color}1f`}
+        stroke={`${haloColor}1f`}
         strokeWidth={STROKE * 0.6}
       />
-      {/* 多段弧：每个 range 一段 */}
-      {ranges.map(([a, b], i) => {
-        const arcLen = (b - a) / 1440 * C
-        const off = minToOffset(a)
+      {/* 多段弧：每段用各自 tag 所属 category 的颜色 */}
+      {ranges.map((r, i) => {
+        const arcLen = (r.endMin - r.startMin) / 1440 * C
+        const off = minToOffset(r.startMin)
         return (
           <circle
             key={i}
             cx={SIZE / 2} cy={SIZE / 2} r={R}
             fill="none"
-            stroke={color}
+            stroke={r.color}
             strokeWidth={STROKE}
             strokeLinecap="round"
             strokeDasharray={`${arcLen} ${C}`}

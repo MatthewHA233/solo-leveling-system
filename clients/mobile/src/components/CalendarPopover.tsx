@@ -81,11 +81,12 @@ const RING_STROKE = 2
 const RING_R = (RING_SIZE - RING_STROKE) / 2
 const RING_C = 2 * Math.PI * RING_R
 
-/** 单日 cell 背景环。复刻 desktop DayRing：正午顶部、午夜底部、顺时针推进。
+/** 单日 cell 背景环。复刻 desktop DayRing：24h 钟表，0:00（午夜）在正北顶部，
+ *  12:00（正午）在底部，顺时针推进 → 06:00 在右、18:00 在左。
  *  SVG 默认起点在 3 点钟；用内层 <G rotate -90> 让起点跑到 12 点钟。
  *  （RN 端不能用 View transform —— 那只旋转 View 不旋转 SVG 内部坐标系） */
 function DayRing({ ranges }: { ranges: readonly DayRangeColored[] }) {
-  const minToOffset = (m: number) => ((m - 720 + 1440) % 1440) / 1440 * RING_C
+  const minToOffset = (m: number) => (m / 1440) * RING_C
   const center = RING_SIZE / 2
   return (
     <View pointerEvents="none" style={ringStyles.wrap}>
