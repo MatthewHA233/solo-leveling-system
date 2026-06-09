@@ -268,7 +268,9 @@ function HudSelectRow({
       style={{
         display: 'grid',
         gridTemplateColumns: hasMeter || hint
-          ? '12px minmax(0, 1fr) 132px 16px'
+          ? hasMeter
+            ? '12px minmax(0, 1fr) max-content 16px'
+            : '12px minmax(0, 1fr) max-content'
           : '12px minmax(0, 1fr)',
         alignItems: 'center',
         gap: 8,
@@ -308,6 +310,7 @@ function HudSelectRow({
           color: theme.textMuted,
           letterSpacing: 0.3,
           minWidth: 0,
+          maxWidth: 132,
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',

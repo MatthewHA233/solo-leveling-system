@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { theme } from '../theme'
 
-export type MainViewMode = 'motivation' | 'daynight' | 'torrent'
+export type MainViewMode = 'motivation' | 'motivation_static' | 'daynight' | 'torrent' | 'torrent_static'
 
 interface Props {
   readonly viewMode: MainViewMode
@@ -19,13 +19,17 @@ interface Props {
 
 const LABELS: Record<MainViewMode, string> = {
   motivation: '今日协议',
+  motivation_static: '协议志(静态示范)',
   daynight: '昼夜表',
   torrent: '洪流域',
+  torrent_static: '洪流域(静态示范)',
 }
 
-const DEFAULT_ORDER: ReadonlyArray<MainViewMode> = ['motivation', 'daynight', 'torrent']
-// v3 新增洪流域，换 storage key（旧值不再生效，自动 fallback 到 default order）
-const ORDER_STORAGE_KEY = 'slu.viewSwitcher.order.v3'
+const DEFAULT_ORDER: ReadonlyArray<MainViewMode> = ['motivation', 'motivation_static', 'daynight', 'torrent', 'torrent_static']
+// v6 新增协议志静态示范，换 storage key
+const ORDER_STORAGE_KEY = 'slu.viewSwitcher.order.v6'
+
+const ALL_MODES: ReadonlyArray<MainViewMode> = ['motivation', 'motivation_static', 'daynight', 'torrent', 'torrent_static']
 
 function loadOrder(): MainViewMode[] {
   try {
@@ -33,7 +37,7 @@ function loadOrder(): MainViewMode[] {
     if (!raw) return [...DEFAULT_ORDER]
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return [...DEFAULT_ORDER]
-    const valid = parsed.filter((x): x is MainViewMode => x === 'motivation' || x === 'daynight' || x === 'torrent')
+    const valid = parsed.filter((x): x is MainViewMode => ALL_MODES.includes(x as MainViewMode))
     for (const k of DEFAULT_ORDER) if (!valid.includes(k)) valid.push(k)
     return valid.slice(0, DEFAULT_ORDER.length)
   } catch {

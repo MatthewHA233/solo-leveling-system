@@ -2,8 +2,9 @@
 // TranscribePrepOverlay — 转录等待期 HUD 文字层
 //
 // 真实流程：
-//   1) uploading：本地 MP4 整文件 → DashScope OSS（单文件上传）
-//   2) streaming：模型从同一 OSS URL 抽取音频+画面 → 时间戳段落
+//   1) extracting：本地视频 → FFmpeg 提取音轨
+//   2) uploading：本地音频 → DashScope OSS
+//   3) streaming：ASR FileTrans 任务处理 → 时间戳段落
 //
 // 设计：canvas 粒子作中央"反应堆"由 TranscribeIdleAnimation 在父层提供。
 // 本组件叠加 HUD 文字 + 顶/底 DOM 粒子流（SOURCE ↓ 反应堆 ↓ SINK），
@@ -12,17 +13,20 @@
 
 import { theme } from '../theme'
 
-const ACCENT = '#b378ff'
-const VIDEO_COLOR = '#7DF9FF'
+const ACCENT = '#00d7e8'
+const SIGNAL = '#00ffe0'
+const AMBER = '#ffb454'
+const VIDEO_COLOR = '#7df9ff'
 
 interface Props {
-  stage: 'uploading' | 'streaming'
+  stage: 'extracting' | 'uploading' | 'streaming'
 }
 
 export default function TranscribePrepOverlay({ stage }: Props) {
-  const isUpload = stage === 'uploading'
-  const srcColor = isUpload ? VIDEO_COLOR : ACCENT
-  const sinkColor = isUpload ? ACCENT : VIDEO_COLOR
+  const isStreaming = stage === 'streaming'
+  const srcColor = isStreaming ? SIGNAL : VIDEO_COLOR
+  const sinkColor = stage === 'uploading' ? AMBER : ACCENT
+  const copy = phaseCopy(stage)
 
   return (
     <div style={{
@@ -37,32 +41,57 @@ export default function TranscribePrepOverlay({ stage }: Props) {
 
       {/* 顶部 SOURCE + 入流 */}
       <div style={{ flexShrink: 0 }}>
-        {isUpload ? (
-          <SrcLabel tag="SOURCE" title="本地视频" meta="MP4 / MOV · 整文件上传" color={srcColor} />
-        ) : (
-          <SrcLabel tag="SOURCE · OSS" title="QWEN3.5-OMNI-PLUS" meta="模型已就位 · 多模态读取" color={srcColor} />
-        )}
+        <SrcLabel tag={copy.sourceTag} title={copy.sourceTitle} meta={copy.sourceMeta} color={srcColor} />
         <FlowBar color={srcColor} />
       </div>
 
       {/* 中央阶段标签（带扫光 + 光标） */}
-      {isUpload ? (
-        <CenterTag label="PUT · 媒体上传中" sub="chunked · multipart" />
-      ) : (
-        <CenterTag label="ATTENTION · 跨模态对齐" sub="audio ⇄ video · token sync" />
-      )}
+      <CenterTag label={copy.centerLabel} sub={copy.centerSub} color={stage === 'uploading' ? AMBER : ACCENT} />
 
       {/* 底部出流 + SINK */}
       <div style={{ flexShrink: 0 }}>
         <FlowBar color={sinkColor} />
-        {isUpload ? (
-          <SinkLabel tag="SINK · DASHSCOPE" title="OSS 存储桶" meta="等待握手 · 准备接收" color={sinkColor} />
-        ) : (
-          <SinkLabel tag="SINK" title="时间戳段落" meta="等待首段对齐" color={sinkColor} />
-        )}
+        <SinkLabel tag={copy.sinkTag} title={copy.sinkTitle} meta={copy.sinkMeta} color={sinkColor} />
       </div>
     </div>
   )
+}
+
+function phaseCopy(stage: Props['stage']) {
+  if (stage === 'extracting') {
+    return {
+      sourceTag: 'SOURCE · LOCAL',
+      sourceTitle: '本地视频',
+      sourceMeta: 'MP4 / MOV · 读取音轨',
+      centerLabel: 'EXTRACT · 音轨提取中',
+      centerSub: 'ffmpeg · audio only',
+      sinkTag: 'SINK · CACHE',
+      sinkTitle: '本地音频缓存',
+      sinkMeta: '生成 m4a · 准备上传',
+    }
+  }
+  if (stage === 'uploading') {
+    return {
+      sourceTag: 'SOURCE · AUDIO',
+      sourceTitle: '本地音频',
+      sourceMeta: 'M4A · 仅上传音轨',
+      centerLabel: 'PUT · 音频上传中',
+      centerSub: 'dashscope oss · multipart',
+      sinkTag: 'SINK · DASHSCOPE',
+      sinkTitle: 'OSS 临时文件',
+      sinkMeta: '等待握手 · 准备提交 ASR',
+    }
+  }
+  return {
+    sourceTag: 'SOURCE · OSS',
+    sourceTitle: 'ASR FILETRANS',
+    sourceMeta: '任务已提交 · 等待结果',
+    centerLabel: 'ASR · 语音识别中',
+    centerSub: 'sentence timestamp · polling',
+    sinkTag: 'SINK',
+    sinkTitle: '时间戳段落',
+    sinkMeta: '等待句级时间轴',
+  }
 }
 
 interface LabelProps { tag: string; title: string; meta: string; color: string }
@@ -115,20 +144,20 @@ function SinkLabel({ tag, title, meta, color }: LabelProps) {
   )
 }
 
-function CenterTag({ label, sub }: { label: string; sub: string }) {
+function CenterTag({ label, sub, color }: { label: string; sub: string; color: string }) {
   return (
     <div style={{
       alignSelf: 'center', textAlign: 'center',
       position: 'relative',
       padding: '6px 16px',
-      border: `1px solid ${ACCENT}99`,
-      background: 'rgba(8,4,16,0.6)',
+      border: `1px solid ${color}88`,
+      background: 'rgba(1, 10, 14, 0.68)',
       backdropFilter: 'blur(2px)',
       WebkitBackdropFilter: 'blur(2px)',
       clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)',
       WebkitClipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)',
       overflow: 'hidden',
-      boxShadow: `0 0 16px ${ACCENT}44`,
+      boxShadow: `0 0 16px ${color}2e`,
     }}>
       {/* 内部横向扫光 */}
       <div style={{
@@ -140,7 +169,7 @@ function CenterTag({ label, sub }: { label: string; sub: string }) {
           position: 'absolute',
           top: 0, bottom: 0,
           width: '40%',
-          background: `linear-gradient(90deg, transparent, ${ACCENT}33 50%, transparent)`,
+          background: `linear-gradient(90deg, transparent, ${color}2e 50%, transparent)`,
           animation: 'tpx-sweep 1.8s linear infinite',
         }} />
       </div>
@@ -148,14 +177,14 @@ function CenterTag({ label, sub }: { label: string; sub: string }) {
       <div style={{
         position: 'relative',
         fontFamily: theme.fontMono, fontSize: 10, fontWeight: 700,
-        letterSpacing: 3, color: ACCENT,
-        textShadow: `0 0 8px ${ACCENT}AA`,
+        letterSpacing: 3, color,
+        textShadow: `0 0 8px ${color}77`,
         whiteSpace: 'nowrap',
       }}>
         {label}
         <span style={{
           display: 'inline-block', marginLeft: 4, width: 6,
-          color: ACCENT,
+          color,
           animation: 'tpx-blink 0.9s steps(2) infinite',
         }}>▍</span>
       </div>

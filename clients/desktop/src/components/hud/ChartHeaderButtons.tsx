@@ -35,6 +35,10 @@ interface Props {
   readonly onUndo: () => void
   readonly onRedo: () => void
   readonly onRecordLayerChange: (layer: 'actual' | 'plan') => void
+
+  // 六边形主按钮 label override（不传时默认 '记录' / '记录中'，daynight 语义）
+  readonly hexLabel?: string
+  readonly hexLabelActive?: string
 }
 
 const CHART_CORNER_CUT = 18
@@ -59,6 +63,8 @@ export function ChartHeaderButtons({
   onUndo,
   onRedo,
   onRecordLayerChange,
+  hexLabel = '记录',
+  hexLabelActive = '记录中',
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
@@ -203,7 +209,7 @@ export function ChartHeaderButtons({
             tooltip={editMode ? `退出${recordLayerLabel}编辑 (Ctrl+E)` : `编辑${recordLayerLabel} (Ctrl+E)`}
             disableFlexCenter
           >
-            <HexLabel label={editMode ? '记录中' : '记录'} color={mainColor} lit={editMode} />
+            <HexLabel label={editMode ? hexLabelActive : hexLabel} color={mainColor} lit={editMode} />
           </BtnHTML>
 
           {/* ③ 恢复（常驻；editMode=false 时整体置灰） */}

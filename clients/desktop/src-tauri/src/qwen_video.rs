@@ -16,7 +16,12 @@
 use reqwest::multipart::{Form, Part};
 use serde::Deserialize;
 use std::path::Path;
+use std::time::Duration;
 use tauri::AppHandle;
+use tokio::time::timeout;
+
+const DASHSCOPE_UPLOAD_TIMEOUT_SECS: u64 = 180;
+const AUDIO_EXTRACT_TIMEOUT_SECS: u64 = 180;
 
 #[derive(Debug, Deserialize)]
 struct PolicyResponse {
@@ -51,6 +56,8 @@ async fn upload_to_dashscope(api_key: &str, model: &str, path: &Path) -> Result<
     let filename = sanitize_filename(&raw_filename);
 
     let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(DASHSCOPE_UPLOAD_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("HTTP client 构建失败: {}", e))?;
 
@@ -58,6 +65,7 @@ async fn upload_to_dashscope(api_key: &str, model: &str, path: &Path) -> Result<
         "https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model={}",
         model
     );
+    log::info!("[QwenVideo] 请求上传凭证 model={} file={}", model, path.display());
     let policy_resp = client
         .get(&policy_url)
         .bearer_auth(api_key)
@@ -85,9 +93,16 @@ async fn upload_to_dashscope(api_key: &str, model: &str, path: &Path) -> Result<
             size_mb, model, p.max_file_size_mb
         ));
     }
+    log::info!(
+        "[QwenVideo] 上传凭证就绪 file={:.1}MB max={}MB expire={}s",
+        size_mb,
+        p.max_file_size_mb,
+        p.expire_in_seconds
+    );
 
     let object_key = format!("{}/{}", p.upload_dir.trim_end_matches('/'), filename);
     let file_bytes = std::fs::read(path).map_err(|e| format!("读取文件失败: {}", e))?;
+    log::info!("[QwenVideo] 开始上传 {} → {}", path.display(), p.upload_host);
 
     let form = Form::new()
         .text("OSSAccessKeyId", p.oss_access_key_id.clone())
@@ -178,8 +193,10 @@ pub async fn qwen_audio_extract(
     #[cfg(windows)]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     let out = cmd
-        .output()
+        .output();
+    let out = timeout(Duration::from_secs(AUDIO_EXTRACT_TIMEOUT_SECS), out)
         .await
+        .map_err(|_| format!("音频提取超时（>{}s）", AUDIO_EXTRACT_TIMEOUT_SECS))?
         .map_err(|e| format!("ffmpeg 音频提取失败: {e}"))?;
 
     if !out.status.success() {

@@ -530,6 +530,21 @@ pub struct BiliTranscriptCache {
     pub visual_at: Option<String>,
     pub audio_at: Option<String>,
     pub combined_at: Option<String>,
+    pub history: Vec<BiliTranscriptRun>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BiliTranscriptRun {
+    pub id: String,
+    pub asset_id: String,
+    pub bvid: String,
+    pub download_path: String,
+    pub kind: String,
+    pub text: String,
+    pub model_id: Option<String>,
+    pub prompt_type: Option<String>,
+    pub source: String,
+    pub created_at: String,
 }
 
 // ── 数据库管理 ──
@@ -1016,6 +1031,69 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_bili_assets_bvid ON bili_video_assets(bvid);
             CREATE INDEX IF NOT EXISTS idx_bili_assets_status ON bili_video_assets(download_status);
             CREATE INDEX IF NOT EXISTS idx_bili_assets_created ON bili_video_assets(created_at DESC);
+
+            -- B 站转录历史：每次转录都保留一个版本，latest 字段仍留在 bili_video_assets 便于旧 UI 快速读取
+            CREATE TABLE IF NOT EXISTS bili_transcript_runs (
+                id TEXT PRIMARY KEY,
+                asset_id TEXT NOT NULL REFERENCES bili_video_assets(id) ON DELETE CASCADE,
+                bvid TEXT NOT NULL,
+                download_path TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                text TEXT NOT NULL,
+                model_id TEXT,
+                prompt_type TEXT,
+                source TEXT NOT NULL DEFAULT 'manual',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_bili_transcript_runs_asset_kind
+                ON bili_transcript_runs(asset_id, kind, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_bili_transcript_runs_path
+                ON bili_transcript_runs(download_path, created_at DESC);
+
+            INSERT OR IGNORE INTO bili_transcript_runs (
+                id, asset_id, bvid, download_path, kind, text, source, created_at
+            )
+            SELECT a.id || ':visual:' || COALESCE(a.visual_transcribed_at, a.updated_at, a.created_at),
+                   a.id, a.bvid, a.download_path, 'visual', a.visual_transcript, 'legacy_latest',
+                   COALESCE(a.visual_transcribed_at, a.updated_at, a.created_at)
+            FROM bili_video_assets a
+            WHERE a.download_path IS NOT NULL
+              AND a.visual_transcript IS NOT NULL
+              AND trim(a.visual_transcript) <> ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM bili_transcript_runs r
+                  WHERE r.asset_id = a.id AND r.kind = 'visual'
+              );
+
+            INSERT OR IGNORE INTO bili_transcript_runs (
+                id, asset_id, bvid, download_path, kind, text, source, created_at
+            )
+            SELECT a.id || ':audio:' || COALESCE(a.audio_transcribed_at, a.updated_at, a.created_at),
+                   a.id, a.bvid, a.download_path, 'audio', a.audio_transcript, 'legacy_latest',
+                   COALESCE(a.audio_transcribed_at, a.updated_at, a.created_at)
+            FROM bili_video_assets a
+            WHERE a.download_path IS NOT NULL
+              AND a.audio_transcript IS NOT NULL
+              AND trim(a.audio_transcript) <> ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM bili_transcript_runs r
+                  WHERE r.asset_id = a.id AND r.kind = 'audio'
+              );
+
+            INSERT OR IGNORE INTO bili_transcript_runs (
+                id, asset_id, bvid, download_path, kind, text, source, created_at
+            )
+            SELECT a.id || ':combined:' || COALESCE(a.combined_transcribed_at, a.updated_at, a.created_at),
+                   a.id, a.bvid, a.download_path, 'combined', a.combined_transcript, 'legacy_latest',
+                   COALESCE(a.combined_transcribed_at, a.updated_at, a.created_at)
+            FROM bili_video_assets a
+            WHERE a.download_path IS NOT NULL
+              AND a.combined_transcript IS NOT NULL
+              AND trim(a.combined_transcript) <> ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM bili_transcript_runs r
+                  WHERE r.asset_id = a.id AND r.kind = 'combined'
+              );
 
             -- 模型库（id + 通用元信息）
             CREATE TABLE IF NOT EXISTS model_registry (
@@ -3902,22 +3980,59 @@ impl Database {
                 rusqlite::Error::QueryReturnedNoRows => Ok(None),
                 other => Err(format!("查询转录缓存失败: {}", other)),
             })?;
+        let mut stmt = conn
+            .prepare(
+                r#"SELECT id, asset_id, bvid, download_path, kind, text,
+                          model_id, prompt_type, source, created_at
+                   FROM bili_transcript_runs
+                   WHERE download_path = ?
+                   ORDER BY created_at DESC, rowid DESC
+                   LIMIT 80"#,
+            )
+            .map_err(|e| format!("准备查询转录历史失败: {}", e))?;
+        let history = stmt
+            .query_map(params![download_path], |r| {
+                Ok(BiliTranscriptRun {
+                    id: r.get(0)?,
+                    asset_id: r.get(1)?,
+                    bvid: r.get(2)?,
+                    download_path: r.get(3)?,
+                    kind: r.get(4)?,
+                    text: r.get(5)?,
+                    model_id: r.get(6)?,
+                    prompt_type: r.get(7)?,
+                    source: r.get(8)?,
+                    created_at: r.get(9)?,
+                })
+            })
+            .map_err(|e| format!("查询转录历史失败: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("读取转录历史失败: {}", e))?;
         Ok(match row {
             Some((v, a, c, va, aa, ca)) => BiliTranscriptCache {
                 visual: v, audio: a, combined: c,
                 visual_at: va, audio_at: aa, combined_at: ca,
+                history,
             },
             None => BiliTranscriptCache {
                 visual: None, audio: None, combined: None,
                 visual_at: None, audio_at: None, combined_at: None,
+                history,
             },
         })
     }
 
     /// 按 download_path 写入指定 kind 的转录文本（"visual" / "audio" / "combined"）
     pub async fn update_bili_transcript_by_path(
-        &self, download_path: &str, kind: &str, text: &str,
-    ) -> Result<(), String> {
+        &self,
+        download_path: &str,
+        kind: &str,
+        text: &str,
+        model_id: Option<String>,
+        prompt_type: Option<String>,
+        source: Option<String>,
+        save_history: bool,
+    ) -> Result<Option<BiliTranscriptRun>, String> {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn.lock().await;
         let sql = match kind {
@@ -3937,7 +4052,52 @@ impl Database {
         if n == 0 {
             return Err(format!("未找到对应资产记录: {}", download_path));
         }
-        Ok(())
+        if !save_history || text.trim().is_empty() {
+            return Ok(None);
+        }
+
+        let asset: (String, String, String) = conn
+            .query_row(
+                r#"SELECT id, bvid, download_path
+                   FROM bili_video_assets
+                   WHERE download_path = ? AND download_status = 'done'
+                   ORDER BY updated_at DESC LIMIT 1"#,
+                params![download_path],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|e| format!("读取转录资产失败: {}", e))?;
+        let run = BiliTranscriptRun {
+            id: Uuid::new_v4().to_string(),
+            asset_id: asset.0,
+            bvid: asset.1,
+            download_path: asset.2,
+            kind: kind.to_string(),
+            text: text.to_string(),
+            model_id,
+            prompt_type,
+            source: source.unwrap_or_else(|| "manual".to_string()),
+            created_at: now,
+        };
+        conn.execute(
+            r#"INSERT INTO bili_transcript_runs (
+                   id, asset_id, bvid, download_path, kind, text,
+                   model_id, prompt_type, source, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            params![
+                &run.id,
+                &run.asset_id,
+                &run.bvid,
+                &run.download_path,
+                &run.kind,
+                &run.text,
+                run.model_id.as_deref(),
+                run.prompt_type.as_deref(),
+                &run.source,
+                &run.created_at,
+            ],
+        )
+        .map_err(|e| format!("写入转录历史失败: {}", e))?;
+        Ok(Some(run))
     }
 }
 
@@ -4662,6 +4822,8 @@ impl Database {
 
     // ── model_call_log ──
 
+    const QWEN3_ASR_FLASH_FILETRANS_PRICE_PER_SECOND_CNY: f64 = 0.00022;
+
     /// 按当前价目折算成本（0 token 各模态返回 0）。
     /// 区间命中：用 prompt token 总和（含所有模态）匹配 tier_min/tier_max。
     /// 输出：completion_audio_tokens > 0 → 整段输出按 audio 价（文本不计费）；否则按 text 价。
@@ -4690,6 +4852,22 @@ impl Database {
             total += price(req.completion_text_tokens, tier.price_output_text);
         }
         Some(total)
+    }
+
+    /// ASR FileTrans 按音频秒数计费，不走 token 价目。
+    fn compute_asr_duration_cost(req: &LogModelCallRequest) -> Option<f64> {
+        if !req.success || req.model_id != "qwen3-asr-flash-filetrans" {
+            return None;
+        }
+        let metadata = req.metadata.as_deref()?;
+        let parsed: serde_json::Value = serde_json::from_str(metadata).ok()?;
+        let seconds = parsed
+            .get("usageSeconds")
+            .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64)))?;
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return None;
+        }
+        Some(seconds * Self::QWEN3_ASR_FLASH_FILETRANS_PRICE_PER_SECOND_CNY)
     }
 
     fn billable_token_count(req: &LogModelCallRequest, tiers: &[ModelPricingTier]) -> i64 {
@@ -4749,7 +4927,8 @@ impl Database {
             rows.filter_map(|r| r.ok()).collect()
         };
 
-        let gross_cost = Self::compute_cost(&req, &tiers);
+        let gross_cost = Self::compute_cost(&req, &tiers)
+            .or_else(|| Self::compute_asr_duration_cost(&req));
         let billable_tokens = if req.success {
             Self::billable_token_count(&req, &tiers)
         } else {

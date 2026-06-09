@@ -6,7 +6,7 @@
 //
 // 三种 stage：
 //   idle       —— 原 18s 完整循环（双流 → 球 → 时间戳 → 复位）
-//   uploading  —— 持续中央细管柱，紫色，沿 z 向下流（PUT 上传感）
+//   uploading  —— 持续中央细管柱，青色，沿 z 向下流（PUT 上传感）
 //   streaming  —— 在 progress 0-0.55 之间 ping-pong 循环（双流 ↔ 球，跨模态注意力）
 // ══════════════════════════════════════════════
 
@@ -18,10 +18,10 @@ const COLS = 40
 
 const C = {
   video: [125, 249, 255] as RGB,
-  audio: [255, 124, 216] as RGB,
+  audio: [255, 180, 84] as RGB,
   core: [255, 170, 0] as RGB,
   text: [110, 255, 140] as RGB,
-  accent: [179, 120, 255] as RGB,
+  accent: [0, 215, 232] as RGB,
 }
 
 type RGB = [number, number, number]

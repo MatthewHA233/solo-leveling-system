@@ -916,13 +916,25 @@ async fn update_bili_transcript(
     file_path: String,
     kind: String,
     text: String,
+    model_id: Option<String>,
+    prompt_type: Option<String>,
+    source: Option<String>,
+    save_history: Option<bool>,
     state: tauri::State<'_, Arc<AppState>>,
-) -> Result<(), String> {
+) -> Result<Option<db::BiliTranscriptRun>, String> {
     let db = {
         let g = state.db.read().await;
         g.as_ref().ok_or("数据库未初始化")?.clone()
     };
-    db.update_bili_transcript_by_path(&file_path, &kind, &text).await
+    db.update_bili_transcript_by_path(
+        &file_path,
+        &kind,
+        &text,
+        model_id,
+        prompt_type,
+        source,
+        save_history.unwrap_or(true),
+    ).await
 }
 
 // ── 模型审计：registry / bindings / call_log ──
@@ -1772,6 +1784,7 @@ pub fn run() {
             get_bili_transcripts,
             update_bili_transcript,
             qwen_asr::qwen_asr_transcribe,
+            qwen_asr::qwen_asr_filetrans,
             qwen_video::qwen_video_upload,
             qwen_video::qwen_audio_extract,
             ffmpeg::ensure_h264_playable,

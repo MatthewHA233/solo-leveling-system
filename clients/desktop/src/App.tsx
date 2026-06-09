@@ -62,7 +62,9 @@ import { pcm16ChunksToWavBlob } from './lib/voice/voice-recorder'
 // UI
 import DayNightChart from './components/DayNightChart'
 import MotivationDashboard from './components/MotivationDashboard'
+import ProtocolDemoPanel from './components/ProtocolDemoPanel'
 import TorrentFieldPanel from './components/TorrentFieldPanel'
+import TorrentFieldDemoPanel from './components/TorrentFieldDemoPanel'
 import ViewSwitcher, { type MainViewMode } from './components/ViewSwitcher'
 import ChatPanel from './components/ChatPanel'
 import SessionPicker from './components/SessionPicker'
@@ -333,7 +335,7 @@ export default function App() {
   const [showModels, setShowModels] = useState(false)
   const [showSync, setShowSync] = useState(false)
 
-  // 主舞台视图模式：今日/当日协议（默认首屏）/ 昼夜表 / 洪流域
+  // 主舞台视图模式：协议志（默认首屏）/ 昼夜表 / 洪流域
   const [mainView, setMainView] = useState<MainViewMode>('motivation')
   // tab 行 hover 状态 — 平时两卡完全重叠；hover 时背后卡向上滑出露顶（Aceternity tabs 行为）
   const [tabsHovering, setTabsHovering] = useState(false)
@@ -711,7 +713,7 @@ export default function App() {
       date.getDate() === now.getDate()
   }, [])
   const selectedDateIsToday = isToday(selectedDate)
-  const protocolViewLabel = selectedDateIsToday ? '今日协议' : '当日协议'
+  const protocolViewLabel = '协议志'
 
   const refreshActiveGoals = useCallback(() => {
     fetchGoals('active')
@@ -2467,7 +2469,13 @@ export default function App() {
   }, [revokeTrackedBlobAudioUrls])
 
   const mainPanelStyle = (mode: MainViewMode): React.CSSProperties => {
-    const panelOrder: Record<MainViewMode, number> = { motivation: 0, daynight: 1, torrent: 2 }
+    const panelOrder: Record<MainViewMode, number> = {
+      motivation: 0,
+      motivation_static: 1,
+      daynight: 2,
+      torrent: 3,
+      torrent_static: 4,
+    }
     const active = mainView === mode
     const distance = Math.abs(panelOrder[mode] - panelOrder[mainView])
     const inactiveOpacity = Math.max(0.16, 0.42 - distance * 0.12)
@@ -2941,8 +2949,14 @@ export default function App() {
                 }}
               />
             </div>
+            <div style={mainPanelStyle('motivation_static')}>
+              <ProtocolDemoPanel />
+            </div>
             <div style={mainPanelStyle('torrent')}>
               <TorrentFieldPanel />
+            </div>
+            <div style={mainPanelStyle('torrent_static')}>
+              <TorrentFieldDemoPanel />
             </div>
           </div>
         </div>

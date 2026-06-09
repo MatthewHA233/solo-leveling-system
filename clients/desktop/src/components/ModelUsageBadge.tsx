@@ -30,12 +30,34 @@ function totalOutput(call: ModelCallLog): number {
   return call.completion_text_tokens + call.completion_audio_tokens
 }
 
+function parseMetadata(metadata: string | null): Record<string, unknown> {
+  if (!metadata) return {}
+  try {
+    const parsed = JSON.parse(metadata)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function formatSeconds(value: unknown): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null
+  const sec = Math.round(value)
+  const min = Math.floor(sec / 60)
+  const rest = sec % 60
+  return min > 0 ? `${min}m ${rest}s` : `${rest}s`
+}
+
 export default function ModelUsageBadge({ call, compact = false, minimal = false }: Props) {
   if (!call) return null
   const saved = call.free_quota_saved_cny ?? 0
   const cost = call.cost_cny ?? 0
   const gross = cost + saved
   const accent = saved > 0 ? theme.expGreen : cost > 0 ? theme.dangerRed : theme.expGreen
+  const metadata = parseMetadata(call.metadata)
+  const asrDuration = formatSeconds(metadata.usageSeconds)
   const content = (
     <div style={{ display: 'grid', gap: 6, minWidth: 210 }}>
       <div style={{ color: theme.electricBlue, fontFamily: theme.fontMono, fontWeight: 800 }}>{call.model_id}</div>
@@ -45,6 +67,7 @@ export default function ModelUsageBadge({ call, compact = false, minimal = false
       <Line label="理论成本" value={formatCny(gross)} color={theme.textSecondary} />
       <Line label="输入" value={formatTokens(totalInput(call))} color={theme.textSecondary} />
       <Line label="输出" value={formatTokens(totalOutput(call))} color={theme.textSecondary} />
+      {asrDuration && <Line label="ASR 音频时长" value={asrDuration} color={theme.textSecondary} />}
       <Line label="时间" value={new Date(call.started_at).toLocaleTimeString('zh-CN')} color={theme.textMuted} />
     </div>
   )
@@ -88,6 +111,7 @@ export default function ModelUsageBadge({ call, compact = false, minimal = false
       }}>
         <ReceiptText size={compact ? 11 : 12} />
         {formatCny(cost)}
+        {asrDuration && <span style={{ color: theme.textSecondary }}>ASR {asrDuration}</span>}
         {saved > 0 && <span style={{ color: theme.expGreen }}>省 {formatCny(saved)}</span>}
       </span>
     </Tooltip>
