@@ -547,10 +547,15 @@ async fn scan_bailian_free_quota(
 
     let model_codes_json = serde_json::to_string(&model_codes).map_err(|e| e.to_string())?;
     let token_json = serde_json::to_string(&token).map_err(|e| e.to_string())?;
+    // 走控制台「免费额度」页同款网关接口（queryFreeTierQuotaAsyn，两段式：提交任务→轮询），
+    // 按类目一次拉全量再内存匹配，几秒扫完全部模型；不再逐模型开详情页解析 DOM。
     let js = format!(r#"(async()=>{{
 const modelCodes = {model_codes_json};
 const TOKEN = {token_json};
-const BASE = 'https://bailian.console.aliyun.com/cn-beijing/?tab=model';
+// 五个合法枚举（2026-06-11 从免费额度页五个 tab 的 URL hash 逐一确认）：
+// 大语言=Text / 视觉=Vision / 全模态=Multimodal / 语音=Audio / 向量=Embedding
+const MODEL_TYPES = ['Text', 'Multimodal', 'Audio', 'Embedding', 'Vision'];
+const GW = 'https://bailian-cs.console.aliyun.com/data/api.json?action=BroadScopeAspnGateway&product=sfm_bailian&api=zeldaEasy.broadscope-bailian.freeTrial.queryFreeTierQuotaAsyn&_v=undefined';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const post = async (payload) => {{
   await fetch('http://localhost:49733/api/bailian/quota_result', {{
@@ -588,130 +593,121 @@ const pageLooksLoggedIn = () => {{
   if (!body.trim()) return false;
   return !texts.some((text) => text === '登录') && !body.includes('请登录');
 }};
-const waitForQuota = async (code) => {{
-  const deadline = Date.now() + 18000;
-  while (Date.now() < deadline) {{
-    const body = document.body.textContent || '';
-    if (body.includes('免费额度') && body.includes(code)) return true;
-    await sleep(500);
+const gwCall = async (secToken, reqData) => {{
+  const params = {{
+    Api: 'zeldaEasy.broadscope-bailian.freeTrial.queryFreeTierQuotaAsyn',
+    V: '1.0',
+    Data: {{
+      queryFreeTierQuotaRequest: reqData,
+      cornerstoneParam: {{
+        feTraceId: crypto.randomUUID(),
+        feURL: location.href,
+        protocol: 'V2',
+        console: 'ONE_CONSOLE',
+        productCode: 'p_efm',
+        domain: 'bailian.console.aliyun.com',
+        consoleSite: 'BAILIAN_ALIYUN',
+        xsp_lang: 'zh-CN',
+      }},
+    }},
+  }};
+  const body = 'params=' + encodeURIComponent(JSON.stringify(params)) + '&region=cn-beijing&sec_token=' + encodeURIComponent(secToken);
+  const r = await fetch(GW, {{
+    method: 'POST',
+    credentials: 'include',
+    headers: {{ 'content-type': 'application/x-www-form-urlencoded' }},
+    body,
+  }});
+  const j = await r.json();
+  return (j && j.data && j.data.DataV2 && j.data.DataV2.data && j.data.DataV2.data.data) || null;
+}};
+const fetchQuotaType = async (secToken, modelType) => {{
+  const submit = await gwCall(secToken, {{ modelType, needOverviewInfo: true, needFreeTierOnlyStatus: true }});
+  const taskId = submit && submit.taskId;
+  if (!taskId) return null;
+  for (let i = 0; i < 20; i += 1) {{
+    await sleep(700);
+    const poll = await gwCall(secToken, {{ taskId }});
+    if (poll && poll.freeTierQuotas) return poll.freeTierQuotas;
   }}
-  return false;
+  return null;
 }};
-const quotaSignature = (code) => {{
-  const texts = getLines();
-  const tokenText = texts.find((text) => /^[\d,]+\/[\d,]+$/.test(text)) || '';
-  const notSupportedText = texts.find((text) => text.includes('不支持')) || '';
-  const expireText = texts.find((text) => text.includes('过期')) || '';
-  const body = document.body.textContent || '';
-  return body.includes(code) && (tokenText || notSupportedText)
-    ? [tokenText, notSupportedText, expireText].join('|')
-    : '';
+const fmtDate = (ms) => {{
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '/' + pad(d.getMonth() + 1) + '/' + pad(d.getDate());
 }};
-const waitForQuotaStable = async (code) => {{
-  const deadline = Date.now() + 22000;
-  let last = '';
-  let stable = 0;
-  while (Date.now() < deadline) {{
-    const sig = quotaSignature(code);
-    if (sig) {{
-      if (sig === last) stable += 1;
-      else {{
-        last = sig;
-        stable = 1;
-      }}
-      if (stable >= 2) return true;
-    }}
-    await sleep(500);
+const rowFromQuota = (code, q) => {{
+  const now = new Date().toISOString();
+  if (!q) {{
+    return {{
+      model_id: code, has_free_quota: false, not_supported: false,
+      used_tokens: 0, total_tokens: 0, remaining_tokens: 0,
+      used_percent: null, expire_date: null, raw_quota: null,
+      scanned_at: now, error_message: '额度接口未返回该模型（五个类目均无）',
+    }};
   }}
-  return false;
-}};
-const parseIntToken = (value) => Number.parseInt(String(value || '0').replace(/,/g, ''), 10) || 0;
-const parseCurrent = (code) => {{
-  const texts = getLines();
-  const anchor = texts.findIndex((t) => t.includes('免费额度'));
-  const windowTexts = anchor >= 0 ? texts.slice(anchor, anchor + 30) : texts;
-  const tokenText = windowTexts.find((text) => /^[\d,]+\/[\d,]+$/.test(text)) || '0/0';
-  const [remainingRaw, totalRaw] = tokenText.split('/');
-  const parsedRemaining = parseIntToken(remainingRaw);
-  const parsedTotal = parseIntToken(totalRaw);
-  const isZeroQuotaExhausted = tokenText.replace(/\s/g, '') === '0/0';
-  const remaining = isZeroQuotaExhausted ? 0 : parsedRemaining;
-  const total = isZeroQuotaExhausted ? 1000000 : parsedTotal;
+  if (q.quotaStatus !== 'VALID') {{
+    return {{
+      model_id: code, has_free_quota: false, not_supported: true,
+      used_tokens: 0, total_tokens: 0, remaining_tokens: 0,
+      used_percent: null, expire_date: null, raw_quota: JSON.stringify(q),
+      scanned_at: now, error_message: null,
+    }};
+  }}
+  const total = Math.round(q.quotaInitTotal || 0);
+  const remaining = Math.round(q.quotaTotal || 0);
   const used = Math.max(0, total - remaining);
-  const notSupported = !isZeroQuotaExhausted && windowTexts.some((t) => t.includes('不支持开启'));
-  const expireText = windowTexts.find((text) => text.startsWith('过期时间'));
-  const scales = new Set(['0%', '10%', '50%', '100%']);
-  const usedPercent = windowTexts.find((text) => /^\d+%$/.test(text) && !scales.has(text)) || null;
+  const usedPercent = typeof q.quotaTotalPercentage === 'number'
+    ? Math.max(0, Math.min(100, Math.round(100 - q.quotaTotalPercentage))) + '%'
+    : null;
   return {{
-    model_id: code,
-    has_free_quota: !notSupported && total > 0,
-    not_supported: notSupported,
-    used_tokens: used,
-    total_tokens: total,
-    remaining_tokens: remaining,
+    model_id: code, has_free_quota: total > 0, not_supported: false,
+    used_tokens: used, total_tokens: total, remaining_tokens: remaining,
     used_percent: usedPercent,
-    expire_date: expireText ? expireText.replace(/^过期时间[：:]\s*/, '').trim() : null,
-    raw_quota: tokenText,
-    scanned_at: new Date().toISOString(),
-    error_message: null,
+    expire_date: q.quotaValidityPeriod ? fmtDate(q.quotaValidityPeriod) : null,
+    raw_quota: JSON.stringify(q),
+    scanned_at: now, error_message: null,
   }};
 }};
 try {{
-  const results = [];
   await progress({{ stage: 'start', total: modelCodes.length, scanned: 0, ok: 0, failed: 0 }});
   await waitForLoginShell();
   if (!pageLooksLoggedIn()) {{
     throw new Error('BAILIAN_NOT_LOGGED_IN');
   }}
-  for (let index = 0; index < modelCodes.length; index += 1) {{
-    const code = modelCodes[index];
-    await progress({{ stage: 'model_start', model_id: code, index: index + 1, total: modelCodes.length }});
-    try {{
-      window.location.hash = '/model-market/detail/' + encodeURIComponent(code) + '?serviceSite=asia-pacific-china';
-      await sleep(1300);
-      const ok = await waitForQuotaStable(code);
-      if (!ok) throw new Error('timeout waiting for quota section');
-      await sleep(600);
-      const row = parseCurrent(code);
-      results.push(row);
-      await progress({{
-        stage: row.error_message ? 'model_error' : 'model_done',
-        model_id: code,
-        index: index + 1,
-        total: modelCodes.length,
-        row,
-        scanned: results.length,
-        ok: results.filter((r) => !r.error_message).length,
-        failed: results.filter((r) => r.error_message).length,
-      }});
-    }} catch (error) {{
-      const row = {{
-        model_id: code,
-        has_free_quota: false,
-        not_supported: false,
-        used_tokens: 0,
-        total_tokens: 0,
-        remaining_tokens: 0,
-        used_percent: null,
-        expire_date: null,
-        raw_quota: null,
-        scanned_at: new Date().toISOString(),
-        error_message: error?.message || String(error),
-      }};
-      results.push(row);
-      await progress({{
-        stage: 'model_error',
-        model_id: code,
-        index: index + 1,
-        total: modelCodes.length,
-        row,
-        scanned: results.length,
-        ok: results.filter((r) => !r.error_message).length,
-        failed: results.filter((r) => r.error_message).length,
-        error: row.error_message,
-      }});
+  const secToken = (window.ALIYUN_CONSOLE_CONFIG && window.ALIYUN_CONSOLE_CONFIG.SEC_TOKEN) || null;
+  if (!secToken) {{
+    throw new Error('BAILIAN_SEC_TOKEN_MISSING');
+  }}
+  // 按类目拉全量额度，合并成 model -> quota 映射
+  const quotaByModel = new Map();
+  for (const type of MODEL_TYPES) {{
+    await progress({{ stage: 'model_start', model_id: '类目 ' + type, index: 0, total: modelCodes.length }});
+    const list = await fetchQuotaType(secToken, type);
+    if (list) {{
+      for (const q of list) {{
+        if (q && q.model && !quotaByModel.has(q.model)) quotaByModel.set(q.model, q);
+      }}
     }}
-    await sleep(400);
+  }}
+  if (quotaByModel.size === 0) {{
+    throw new Error('额度接口未返回任何模型（接口结构可能已变化）');
+  }}
+  const results = [];
+  for (const code of modelCodes) {{
+    const row = rowFromQuota(code, quotaByModel.get(code));
+    results.push(row);
+    await progress({{
+      stage: row.error_message ? 'model_error' : 'model_done',
+      model_id: code,
+      index: results.length,
+      total: modelCodes.length,
+      row,
+      scanned: results.length,
+      ok: results.filter((r) => !r.error_message).length,
+      failed: results.filter((r) => r.error_message).length,
+    }});
   }}
   await progress({{
     stage: 'finish',

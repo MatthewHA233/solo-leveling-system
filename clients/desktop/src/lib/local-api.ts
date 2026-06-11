@@ -829,7 +829,7 @@ export async function closePresenceSpan(id: string, endTime: string): Promise<vo
 // 通过 tauri invoke 调用，不走 HTTP
 // ══════════════════════════════════════════════
 
-export type ModelCategory = 'text' | 'omni' | 'realtime'
+export type ModelCategory = 'text' | 'omni' | 'realtime' | 'embedding'
 
 export interface ModelPricingTier {
   tier_min_tokens: number

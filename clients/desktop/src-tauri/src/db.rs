@@ -1098,7 +1098,7 @@ impl Database {
             -- 模型库（id + 通用元信息）
             CREATE TABLE IF NOT EXISTS model_registry (
                 id TEXT PRIMARY KEY,
-                category TEXT NOT NULL,           -- 'text' | 'omni' | 'realtime'
+                category TEXT NOT NULL,           -- 'text' | 'omni' | 'realtime' | 'embedding'
                 provider TEXT NOT NULL DEFAULT 'dashscope',
                 display_name TEXT,
                 modalities TEXT,                  -- JSON 数组：['text','image','video','audio_in','audio_out']
@@ -4154,7 +4154,7 @@ impl Goal {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ModelDef {
     pub id: String,
-    pub category: String,                 // 'text' | 'omni' | 'realtime'
+    pub category: String,                 // 'text' | 'omni' | 'realtime' | 'embedding'
     pub provider: String,
     pub display_name: Option<String>,
     pub modalities: Option<String>,       // JSON
@@ -4280,6 +4280,20 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
     // ids 第一项为主 id（display_name 取它），其余为同价表别名（每个独立成行）
     // tier 字段顺序：(min, max, in_text, in_image, in_video, in_audio, out_text, out_audio)
     let seeds: Vec<Seed> = vec![
+        // ── Qwen3.7 文本（2026-05 上线；价目 2026-06-11 从控制台模型广场详情页人工核对，存原价）──
+        // max 无阶梯；06-08 快照较 05-20 增加视觉模态理解（价目相同）
+        (&["qwen3.7-max", "qwen3.7-max-2026-06-08", "qwen3.7-max-2026-05-20", "qwen3.7-max-2026-05-17"], "text", "Qwen3.7 Max", &["text"], 1_048_576, &[
+            (0, None, Some(12.0), None, None, None, Some(36.0), None),
+        ]),
+        (&["qwen3.7-max-preview"], "text", "Qwen3.7 Max Preview", &["text"], 1_048_576, &[
+            (0, None, Some(12.0), None, None, None, Some(36.0), None),
+        ]),
+        // plus 阶梯两档：≤256K / 256K~1M
+        (&["qwen3.7-plus", "qwen3.7-plus-2026-05-26"], "text", "Qwen3.7 Plus", &["text","image","video"], 1_048_576, &[
+            (0,       Some(262_144),   Some(2.0), Some(2.0), Some(2.0), None, Some(8.0),  None),
+            (262_144, Some(1_048_576), Some(6.0), Some(6.0), Some(6.0), None, Some(24.0), None),
+        ]),
+
         // ── Qwen3.6 文本 ──
         (&["qwen3.6-max-preview"], "text", "Qwen3.6 Max Preview", &["text"], 262_144, &[
             (0,        Some(131_072), Some(9.0),  None, None, None, Some(54.0), None),
@@ -4343,6 +4357,27 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
         (&["qwen3.5-omni-flash-realtime", "qwen3.5-omni-flash-realtime-2026-03-15"], "realtime", "Qwen3.5 Omni Flash Realtime", &["text","image","audio_in","audio_out"], 0, &[
             (0, None, Some(3.3),  Some(3.3),  None, Some(27.0), Some(20.0), Some(107.0)),
         ]),
+
+        // ── 向量嵌入 / 重排序（无输出 token 计费；context_window 存单次最大输入）──
+        (&["text-embedding-v4"], "embedding", "Text Embedding V4", &["text"], 8_192, &[
+            (0, None, Some(0.5), None, None, None, None, None),
+        ]),
+        (&["text-embedding-v3"], "embedding", "Text Embedding V3", &["text"], 8_192, &[
+            (0, None, Some(0.5), None, None, None, None, None),
+        ]),
+        // 视觉向量/重排序（价目 2026-06-11 控制台核对；文本/图片输入分价，存 price_input_text/image）
+        (&["qwen3-vl-embedding"], "embedding", "Qwen3 VL Embedding", &["text","image"], 32_768, &[
+            (0, None, Some(0.7), Some(1.8), None, None, None, None),
+        ]),
+        (&["qwen3-vl-rerank"], "embedding", "Qwen3 VL Rerank", &["text","image"], 122_880, &[
+            (0, None, Some(0.7), Some(1.8), None, None, None, None),
+        ]),
+        (&["tongyi-embedding-vision-plus", "tongyi-embedding-vision-plus-2026-03-06"], "embedding", "通义 Embedding Vision Plus", &["text","image"], 0, &[
+            (0, None, Some(0.5), Some(0.5), None, None, None, None),
+        ]),
+        (&["tongyi-embedding-vision-flash", "tongyi-embedding-vision-flash-2026-03-06"], "embedding", "通义 Embedding Vision Flash", &["text","image"], 0, &[
+            (0, None, Some(0.15), Some(0.15), None, None, None, None),
+        ]),
     ];
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -4390,6 +4425,25 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
             }
             written += 1;
         }
+    }
+
+    // 个别模型的补充说明（折扣 / 限流 / 免费额度等计费特例；价目本体在 model_pricing）
+    let notes: &[(&str, &str)] = &[
+        ("qwen3.7-plus", "阶梯计费(≤256K/256K~1M)；当前限时8折、Batch Chat 5折，库内存原价；缓存命中 0.4/1.2 元/百万；免费额度至 2026-09-01"),
+        ("qwen3.7-max", "无阶梯；当前限时5折(实付6/18)，库内存原价；缓存命中 2.4、显式缓存创建 15/命中 1.2"),
+        ("qwen3.7-max-preview", "预览版：无折扣；限流低(RPM 60/TPM 50万)；免费额度至 2026-08-24"),
+        ("text-embedding-v4", "Qwen3-Embedding 系列；Batch 调用半价 0.25 元/百万；维度 64~2048 可选；单次最大输入 8192 token；无免费额度"),
+        ("text-embedding-v3", "Batch 调用半价 0.25 元/百万；维度 64~1024 可选；单次最大输入 8192 token；无免费额度"),
+        ("qwen3-vl-embedding", "视觉-文本向量；最大输入 32K；无免费额度"),
+        ("qwen3-vl-rerank", "视觉-文本重排序（输出相关度分数，非向量）；最大输入 120K；无免费额度"),
+        ("tongyi-embedding-vision-plus", "免费额度挂在 -2026-03-06 快照 id 上（100 万，至 2026-07-23），基础别名无额度"),
+        ("tongyi-embedding-vision-flash", "免费额度挂在 -2026-03-06 快照 id 上（100 万，至 2026-06-19），基础别名无额度"),
+    ];
+    for (id, note) in notes {
+        conn.execute(
+            "UPDATE model_registry SET notes = ? WHERE id = ?",
+            params![note, id],
+        ).map_err(|e| e.to_string())?;
     }
 
     log::info!("[Database] model_registry 种子写入 {} 个模型", written);

@@ -2021,6 +2021,7 @@ function LibraryTab({
               { value: 'text', label: '文本' },
               { value: 'omni', label: 'Omni 全模态' },
               { value: 'realtime', label: 'Realtime' },
+              { value: 'embedding', label: '向量嵌入' },
             ]}
             onChange={(v) => onCategory(v as ModelCategory)}
           />
@@ -2061,6 +2062,7 @@ function LibraryTab({
 function modelCategoryAccent(cat: ModelCategory): string {
   if (cat === 'omni') return theme.flameTeal
   if (cat === 'realtime') return theme.warningOrange
+  if (cat === 'embedding') return theme.shadowPurple
   return theme.electricBlue
 }
 
@@ -2389,6 +2391,7 @@ function ModelEditor({
                   { value: 'text', label: '文本' },
                   { value: 'omni', label: 'Omni 全模态' },
                   { value: 'realtime', label: 'Realtime' },
+                  { value: 'embedding', label: '向量嵌入' },
                 ]}
                 onChange={(v) => setDraft((m) => ({ ...m, category: v as ModelCategory }))}
               />
