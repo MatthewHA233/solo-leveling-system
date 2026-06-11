@@ -1394,6 +1394,8 @@ pub fn create_router(
         .route("/api/goals/{id}", axum::routing::put(update_goal).delete(delete_goal))
         .route("/api/presence/spans", get(get_presence_spans).post(upsert_presence_span))
         .route("/api/presence/spans/{id}/close", axum::routing::put(close_presence_span))
+        .route("/api/focus/rules", get(get_focus_rules))
+        .route("/api/focus/heartbeat", post(recv_focus_heartbeat))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -1401,6 +1403,20 @@ pub fn create_router(
                 .allow_headers(Any),
         )
         .with_state(state)
+}
+
+// ── 专注锁：扩展规则下发 + 心跳 ──
+// nm_host 轮询取规则（GET）并上报扩展在线（POST）。无需 ApiState，直接读全局共享态。
+
+async fn get_focus_rules() -> Json<ApiResponse<crate::focus_lock::FocusRulesSnapshot>> {
+    let snapshot = crate::focus_lock::shared().lock().unwrap().snapshot.clone();
+    Json(ApiResponse::ok(snapshot))
+}
+
+async fn recv_focus_heartbeat() -> Json<ApiResponse<()>> {
+    crate::focus_lock::shared().lock().unwrap().last_ext_heartbeat_ms =
+        crate::focus_lock::now_ms();
+    Json(ApiResponse::ok(()))
 }
 
 pub async fn start_server(

@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Solevup 专注锁",
+  "version": "0.1.0",
+  "description": "Solevup 桌面端的网站屏蔽执行器——专注期间拦截分心网站。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAriaFdhyIi2QVAsONLM4aV7MjNNj2aUQsntftIi3OPbVJFZqgg8PMTrI2xyE94ZzD1OJ53w4uxS8En9OP30RPJbUEsmHoQJBsFyn7XiPm+htwbmrKWSxBKIsOC5CHFuwWv3jIsr6hieRMapyJ8oiL2sr5w3vP685GUBaW7H4mfz2DYrpmJ6qibaN3/ulOCoUU2V1w9/THnKiG8agr/SxrFqRz1xUHkABNnXASVlmFUF9aDeoiAUsuvnte97LY8O8dmlelkRj+YWw8AoLbmzlWwdkakkXtnSQ43i0mN8n6PdbFSSjqWqtqIuv515r/vuoLIFboBP3oYMyUGE54JZrhNQIDAQAB",
+  "minimum_chrome_version": "121",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "run_at": "document_start",
+      "all_frames": false,
+      "js": ["matcher.js", "content.js"]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["blocked.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "permissions": [
+    "declarativeNetRequest",
+    "nativeMessaging",
+    "tabs",
+    "alarms",
+    "storage"
+  ],
+  "host_permissions": ["<all_urls>"]
+}

@@ -65,6 +65,7 @@ import MotivationDashboard from './components/MotivationDashboard'
 import ProtocolDemoPanel from './components/ProtocolDemoPanel'
 import TorrentFieldPanel from './components/TorrentFieldPanel'
 import TorrentFieldDemoPanel from './components/TorrentFieldDemoPanel'
+import FocusPanel from './components/FocusPanel'
 import ViewSwitcher, { type MainViewMode } from './components/ViewSwitcher'
 import ChatPanel from './components/ChatPanel'
 import SessionPicker from './components/SessionPicker'
@@ -2475,6 +2476,7 @@ export default function App() {
       daynight: 2,
       torrent: 3,
       torrent_static: 4,
+      focus: 5,
     }
     const active = mainView === mode
     const distance = Math.abs(panelOrder[mode] - panelOrder[mainView])
@@ -2957,6 +2959,9 @@ export default function App() {
             </div>
             <div style={mainPanelStyle('torrent_static')}>
               <TorrentFieldDemoPanel />
+            </div>
+            <div style={mainPanelStyle('focus')}>
+              <FocusPanel selectedDate={selectedDate} perceptionSpans={perceptionSpans} />
             </div>
           </div>
         </div>

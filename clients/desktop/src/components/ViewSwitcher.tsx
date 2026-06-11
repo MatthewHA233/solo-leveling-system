@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { theme } from '../theme'
 
-export type MainViewMode = 'motivation' | 'motivation_static' | 'daynight' | 'torrent' | 'torrent_static'
+export type MainViewMode = 'motivation' | 'motivation_static' | 'daynight' | 'torrent' | 'torrent_static' | 'focus'
 
 interface Props {
   readonly viewMode: MainViewMode
@@ -23,13 +23,14 @@ const LABELS: Record<MainViewMode, string> = {
   daynight: '昼夜表',
   torrent: '洪流域',
   torrent_static: '洪流域(静态示范)',
+  focus: '专注锁',
 }
 
-const DEFAULT_ORDER: ReadonlyArray<MainViewMode> = ['motivation', 'motivation_static', 'daynight', 'torrent', 'torrent_static']
+const DEFAULT_ORDER: ReadonlyArray<MainViewMode> = ['motivation', 'motivation_static', 'daynight', 'torrent', 'torrent_static', 'focus']
 // v6 新增协议志静态示范，换 storage key
 const ORDER_STORAGE_KEY = 'slu.viewSwitcher.order.v6'
 
-const ALL_MODES: ReadonlyArray<MainViewMode> = ['motivation', 'motivation_static', 'daynight', 'torrent', 'torrent_static']
+const ALL_MODES: ReadonlyArray<MainViewMode> = ['motivation', 'motivation_static', 'daynight', 'torrent', 'torrent_static', 'focus']
 
 function loadOrder(): MainViewMode[] {
   try {

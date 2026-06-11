@@ -15,6 +15,7 @@ mod qwen_omni;
 mod qwen_video;
 mod bili_download;
 mod ffmpeg;
+mod focus_lock;
 #[cfg(windows)]
 mod gpu_pref;
 #[cfg(windows)]
@@ -1590,6 +1591,7 @@ pub fn run() {
     let bili_state = Arc::new(BiliState::new());
     let bailian_state = Arc::new(BailianState::new());
     let bili_dl_state = Arc::new(BiliDownloadState::new());
+    let focus_lock_state = Arc::new(focus_lock::FocusLockState::new());
 
     // 把 DB 注入到下载状态（用于写资产表）
     if let Some(db_for_dl) = db.clone() {
@@ -1608,11 +1610,18 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(state)
         .manage(bili_state.clone())
         .manage(bailian_state.clone())
         .manage(bili_dl_state.clone())
+        .manage(focus_lock_state)
         .setup(move |app| {
+            // 注册专注锁 Native Messaging host（幂等；失败只降级，不阻断启动）
+            focus_lock::register_native_host();
+            // 启动扩展掉线阶梯惩罚监控（常驻；无活跃网站组时近乎零开销）
+            focus_lock::spawn_enforcement_watcher(app.handle().clone());
+
             // 启动 HTTP 服务器（在 Tauri runtime 内）
             if let Some(db_clone) = db.clone() {
                 let bili_clone = bili_state.clone();
@@ -1814,6 +1823,11 @@ pub fn run() {
             #[cfg(windows)] get_gpu_pref_status,
             #[cfg(windows)] set_gpu_pref_high_performance,
             restart_app,
+            focus_lock::focus_lock_start,
+            focus_lock::focus_lock_stop,
+            focus_lock::focus_lock_get_active,
+            focus_lock::focus_lock_check_capability,
+            focus_lock::focus_lock_ext_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
