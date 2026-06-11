@@ -3017,12 +3017,15 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
         {tagLegend.length > 0 ? (
           <>
             {/* 百分比条：点击打开分类弹窗 */}
+            <Tooltip
+              content={`${Math.floor(totalTagMinutes / 60)}h ${totalTagMinutes % 60}m · 点击查看分类`}
+              display="block"
+            >
             <div
               role="button"
               tabIndex={0}
               onClick={() => { setLegendOpen((o) => !o); setExpandedChip(null); setChipPos(null) }}
               onKeyDown={(e) => e.key === 'Enter' && setLegendOpen((o) => !o)}
-              title={`${Math.floor(totalTagMinutes / 60)}h ${totalTagMinutes % 60}m · 点击查看分类`}
               style={{
                 display: 'flex', height: 5, borderRadius: 3, overflow: 'hidden',
                 cursor: 'pointer', gap: 1, marginBottom: 7,
@@ -3039,6 +3042,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
                 <div style={{ flex: 1440 - totalTagMinutes, background: hexToRgba(theme.electricBlue, 0.04) }} />
               )}
             </div>
+            </Tooltip>
 
             {/* 横向滑动分类胶囊，每个胶囊可单独点开子标签弹窗 */}
             <div style={{

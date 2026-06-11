@@ -9,6 +9,7 @@ import { useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { hud, theme } from '../theme'
 import { HudFrame } from './hud'
+import Tooltip from './Tooltip'
 
 type SourceKind = 'article' | 'video' | 'chat' | 'flomo' | 'code' | 'image'
 type SourceFilter = 'all' | SourceKind
@@ -744,19 +745,20 @@ function AnchorPill({
 }) {
   const meta = anchorMeta[anchor.kind]
   return (
-    <span
-      style={{
-        ...styles.anchorPill,
-        color: meta.color,
-        borderColor: `${meta.color}66`,
-        background: `${meta.color}10`,
-        maxWidth: compact ? 206 : undefined,
-      }}
-      title={anchor.note}
-    >
-      <b>{meta.code}</b>
-      {anchor.label}
-    </span>
+    <Tooltip content={anchor.note}>
+      <span
+        style={{
+          ...styles.anchorPill,
+          color: meta.color,
+          borderColor: `${meta.color}66`,
+          background: `${meta.color}10`,
+          maxWidth: compact ? 206 : undefined,
+        }}
+      >
+        <b>{meta.code}</b>
+        {anchor.label}
+      </span>
+    </Tooltip>
   )
 }
 

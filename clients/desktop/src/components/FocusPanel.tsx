@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import type { PerceptionSpan } from '../lib/local-api'
 import { hud, theme } from '../theme'
+import Tooltip from './Tooltip'
 
 // ── 数据类型 ──────────────────────────────────
 
@@ -970,13 +971,14 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
         <div style={{ padding: '13px 14px 10px', display: 'flex', alignItems: 'center', gap: 8, borderBottom: `1px solid ${theme.hudFrameSoft}` }}>
           <Shield size={14} color={theme.electricBlue} />
           <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: theme.electricBlue, fontFamily: theme.fontBody, letterSpacing: '0.08em' }}>专注锁</span>
-          <span
-            title={extConnected ? 'Chrome 扩展已连接，网站屏蔽由扩展执行' : 'Chrome 扩展未连接，网站屏蔽退化为 hosts 兜底'}
-            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, fontFamily: theme.fontMono, color: extConnected ? theme.expGreen : theme.textMuted }}
-          >
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: extConnected ? theme.expGreen : theme.textMuted, boxShadow: extConnected ? `0 0 6px ${theme.expGreen}` : 'none' }} />
-            扩展
-          </span>
+          <Tooltip content={extConnected ? 'Chrome 扩展已连接，网站屏蔽由扩展执行' : 'Chrome 扩展未连接，网站屏蔽退化为 hosts 兜底'}>
+            <span
+              style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, fontFamily: theme.fontMono, color: extConnected ? theme.expGreen : theme.textMuted }}
+            >
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: extConnected ? theme.expGreen : theme.textMuted, boxShadow: extConnected ? `0 0 6px ${theme.expGreen}` : 'none' }} />
+              扩展
+            </span>
+          </Tooltip>
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -1056,17 +1058,18 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
                   }}
                 />
               ) : (
-                <span
-                  onClick={() => {
-                    setEditName(selectedGroup.name)
-                    setEditingName(true)
-                    setTimeout(() => nameInputRef.current?.focus(), 20)
-                  }}
-                  style={{ flex: 1, fontSize: 13.5, fontWeight: 700, color: theme.textPrimary, fontFamily: theme.fontBody, cursor: 'text' }}
-                  title="点击重命名"
-                >
-                  {selectedGroup.name}
-                </span>
+                <Tooltip content="点击重命名" wrapStyle={{ flex: 1, minWidth: 0 }}>
+                  <span
+                    onClick={() => {
+                      setEditName(selectedGroup.name)
+                      setEditingName(true)
+                      setTimeout(() => nameInputRef.current?.focus(), 20)
+                    }}
+                    style={{ flex: 1, fontSize: 13.5, fontWeight: 700, color: theme.textPrimary, fontFamily: theme.fontBody, cursor: 'text' }}
+                  >
+                    {selectedGroup.name}
+                  </span>
+                </Tooltip>
               )}
               {selectedGroup.isActive && (
                 <span style={{ fontSize: 11, color: theme.expGreen, padding: '2px 8px', borderRadius: 3, background: 'rgba(0,255,136,0.1)', border: '1px solid rgba(0,255,136,0.25)', fontFamily: theme.fontMono }}>

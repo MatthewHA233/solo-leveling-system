@@ -5,6 +5,7 @@ import type { ActivityPalette, ActivityTag, PlanNode } from '../types'
 import { addPlanNode, deletePlanNode, updatePlanNode } from '../lib/local-api'
 import { hud, theme } from '../theme'
 import { HudFrame } from './hud'
+import Tooltip from './Tooltip'
 
 interface Props {
   readonly selectedDate: Date
@@ -416,15 +417,16 @@ function PlanNodeCard({
         boxShadow: selected ? `0 0 12px ${theme.electricBlue}44` : 'none',
       }}
     >
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={(e) => { e.stopPropagation(); onToggleDone() }}
-        style={styles.doneButton}
-        title={completed ? '标记为待安排' : '标记为完成'}
-      >
-        {completed ? <Check size={13} /> : <Circle size={13} />}
-      </button>
+      <Tooltip content={completed ? '标记为待安排' : '标记为完成'}>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={(e) => { e.stopPropagation(); onToggleDone() }}
+          style={styles.doneButton}
+        >
+          {completed ? <Check size={13} /> : <Circle size={13} />}
+        </button>
+      </Tooltip>
       <div style={styles.cardBody}>
         <div style={{
           ...styles.cardTitle,
@@ -452,15 +454,16 @@ function PlanNodeCard({
           </button>
         </div>
       </div>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={(e) => { e.stopPropagation(); onDelete() }}
-        style={styles.deleteButton}
-        title="删除计划节点"
-      >
-        <Trash2 size={12} />
-      </button>
+      <Tooltip content="删除计划节点">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={(e) => { e.stopPropagation(); onDelete() }}
+          style={styles.deleteButton}
+        >
+          <Trash2 size={12} />
+        </button>
+      </Tooltip>
     </article>
   )
 }

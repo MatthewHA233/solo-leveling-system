@@ -13,6 +13,7 @@ import { parseGoalTags } from '../lib/local-api'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock } from '../types'
 import { hud, theme } from '../theme'
 import { HudFrameSkeleton, CornerArt } from './hud'
+import Tooltip from './Tooltip'
 
 const BLOCK_MINUTES = 5
 const SLOTS_PER_DAY = 1440 / BLOCK_MINUTES   // 288
@@ -749,22 +750,34 @@ function PhaseAxis({
           const isCurrent = i === currentPhaseIdx
           const isGap = p.planNodeId == null
           return (
-            <div
+            <Tooltip
               key={p.key}
-              style={{
-                ...styles.phaseSegment,
+              content={`${hhmm(p.startMinute)}–${hhmm(p.endMinute)} ${p.planNode?.title ?? '留白'}`}
+              display="block"
+              wrapStyle={{
+                position: 'absolute',
+                top: 0,
+                bottom: 0,
                 left: `${left}%`,
                 width: `${width}%`,
+                zIndex: isFocus ? 2 : 1,
+              }}
+            >
+            <div
+              style={{
+                ...styles.phaseSegment,
+                position: 'absolute',
+                inset: 0,
+                left: 0,
+                width: 'auto',
                 background: isGap
                   ? 'transparent'
                   : (isFocus ? color : color + '55'),
                 opacity: isGap ? 0.4 : 1,
                 outline: isFocus ? `1px solid ${theme.textPrimary}` : 'none',
                 outlineOffset: '-1px',
-                zIndex: isFocus ? 2 : 1,
               }}
               onClick={() => onSelect(i)}
-              title={`${hhmm(p.startMinute)}–${hhmm(p.endMinute)} ${p.planNode?.title ?? '留白'}`}
             >
               {!isGap && width > 4 && (
                 <span style={styles.phaseSegmentLabel}>{p.planNode?.title}</span>
@@ -779,6 +792,7 @@ function PhaseAxis({
                 }} />
               )}
             </div>
+            </Tooltip>
           )
         })}
         <div style={{ ...styles.nowMarker, left: `${(currentMinute / totalMinutes) * 100}%` }} />

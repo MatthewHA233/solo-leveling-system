@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { PerceptionSpan } from '../lib/local-api'
 import { theme } from '../theme'
 import ConfirmDialog from './ConfirmDialog'
+import Tooltip from './Tooltip'
 
 interface Props {
   span: PerceptionSpan
@@ -305,11 +306,14 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
         }}>
           {shotTimeStr}
         </span>
+        <Tooltip
+          content={ignored ? '已加入忽略' : '以后忽视这个窗口（不记录、不截图）'}
+          wrapStyle={{ flexShrink: 0 }}
+        >
         <button
           type="button"
           onClick={() => setConfirmOpen(true)}
           disabled={ignored || !span.group_name}
-          title={ignored ? '已加入忽略' : '以后忽视这个窗口（不记录、不截图）'}
           style={{
             flexShrink: 0,
             width: 22, height: 22,
@@ -324,6 +328,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
         >
           {ignored ? <Check size={12} /> : <EyeOff size={12} />}
         </button>
+        </Tooltip>
       </div>
 
       {/* 截图（HUD frame：斜切 + 彩色边框 + 角 L 标）*/}

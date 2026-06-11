@@ -597,20 +597,21 @@ export default function BiliTranscribePanel({
           {title}
         </span>
         {localMediaPath && (
-          <span
-            title={localMediaPath}
-            style={{
-              maxWidth: '32%',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              fontFamily: theme.fontMono,
-              fontSize: 9,
-              color: theme.textMuted,
-            }}
-          >
-            AUDIO: {localMediaPath}
-          </span>
+          <Tooltip content={localMediaPath} wrapStyle={{ maxWidth: '32%', minWidth: 0 }}>
+            <span
+              style={{
+                maxWidth: '100%',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                fontFamily: theme.fontMono,
+                fontSize: 9,
+                color: theme.textMuted,
+              }}
+            >
+              AUDIO: {localMediaPath}
+            </span>
+          </Tooltip>
         )}
       </div>
 

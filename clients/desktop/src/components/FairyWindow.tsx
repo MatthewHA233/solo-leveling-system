@@ -10,6 +10,7 @@ import { emit, listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow, LogicalSize, PhysicalPosition } from '@tauri-apps/api/window'
 import FairyHUD, { type FairyState } from './FairyHUD'
+import Tooltip from './Tooltip'
 import HudSelect from './HudSelect'
 import { MagneticButton } from './NeonUI'
 import { hud, theme } from '../theme'
@@ -818,9 +819,9 @@ function FairyMiniChat({
           }}
         />
         <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 6, marginTop: 8 }}>
+          <Tooltip content={isOmniMode ? '当前：Omni 全模态，点击切换普通聊天' : '当前：普通聊天，点击切换 Omni 全模态'}>
           <button
             type="button"
-            title={isOmniMode ? '当前：Omni 全模态，点击切换普通聊天' : '当前：普通聊天，点击切换 Omni 全模态'}
             onClick={() => onModeChange(isOmniMode ? 'regular' : 'omni')}
             style={{
               background: isOmniMode ? `${theme.shadowPurple}18` : `${theme.electricBlue}12`,
@@ -843,6 +844,7 @@ function FairyMiniChat({
           >
             {isOmniMode ? <Radio size={12} /> : <MessageSquare size={12} />}
           </button>
+          </Tooltip>
           <button
             className="send-btn"
             type="button"

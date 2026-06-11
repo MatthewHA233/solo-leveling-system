@@ -11,6 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Check } from 'lucide-react'
 import { theme } from '../theme'
+import Tooltip from './Tooltip'
 
 export interface HudSelectOption<T extends string> {
   readonly value: T
@@ -320,8 +321,8 @@ function HudSelectRow({
         </span>
       )}
       {hasMeter && (
+        <Tooltip content={`${Math.round(pct)}%`}>
         <span
-          title={`${Math.round(pct)}%`}
           style={{
             width: 16,
             height: 16,
@@ -347,6 +348,7 @@ function HudSelectRow({
             />
           </svg>
         </span>
+        </Tooltip>
       )}
     </div>
   )
