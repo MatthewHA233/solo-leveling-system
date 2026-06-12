@@ -10,6 +10,7 @@ import com.solevup.mobile.perception.PerceptionPackage
 import com.solevup.mobile.solevupdb.SolevupDbPackage
 import com.solevup.mobile.syncclient.SyncClientPackage
 import com.solevup.mobile.syncserver.SyncServerPackage
+import com.solevup.mobile.omni.OmniPackage
 import com.solevup.mobile.updater.UpdaterPackage
 
 class MainApplication : Application(), ReactApplication {
@@ -24,6 +25,7 @@ class MainApplication : Application(), ReactApplication {
           add(SyncServerPackage())
           add(SyncClientPackage())
           add(UpdaterPackage())
+          add(OmniPackage())
         },
     )
   }
