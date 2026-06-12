@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Hash, Image as ImageIcon, Type, List, ListOrdered, AtSign, Send, Check, ChevronDown, ChevronUp, Pencil } from 'lucide-react'
+import { Hash, Image as ImageIcon, Type, List, ListOrdered, AtSign, Send, Check, ChevronDown, ChevronUp, Pencil, Plus } from 'lucide-react'
 import { hud, theme } from '../theme'
 import { HudFrameSkeleton, HudTabButton, CornerArt, ChartHeaderFrame } from './hud'
-import type { ContextFeedItem, AnchorBinding, AnchorRef } from '../lib/local-api'
-import { fetchContextFeed, addContextCard, deleteContextCard, updateContextCard, fetchCardBindings, deleteBinding } from '../lib/local-api'
-import AnchorTextRenderer, { AnchorChip } from './AnchorTextRenderer'
+import type { ContextFeedItem, AnchorBinding, AnchorRef, AnchorCategory } from '../lib/local-api'
+import { fetchContextFeed, addContextCard, deleteContextCard, updateContextCard, fetchCardBindings, deleteBinding, addBinding, updateAnchor, addAnchorToBinding } from '../lib/local-api'
+import AnchorTextRenderer, { AnchorChip, ANCHOR_CAT_COLOR, ANCHOR_CAT_SHORT } from './AnchorTextRenderer'
 import AnchorFieldMap from './AnchorFieldMap'
 import CardHoverEffect from './CardHoverEffect'
 import TranscriptPlayerWindow from './TranscriptPlayerWindow'
@@ -592,29 +592,36 @@ function useCardAnchors(cardId: string, enabled: boolean) {
 }
 
 // ── 想法卡片（你的话；纯文本 + 锚点标签，不可框选、不进语境库）────
+// 编辑态锚点草稿：id=null 表示本次新增（保存时才落库）
+interface DraftAnchor { id: string | null; keyword: string; category: AnchorCategory }
+
+const CAT_ORDER: readonly AnchorCategory[] = ['motive', 'view', 'practice']
+
 function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
   readonly item: ContextFeedItem
   readonly onRemove: (id: string) => void
   readonly onJumpToContext?: (cardId: string) => void
 }) {
-  const [anchors, setAnchors] = useState<AnchorRef[]>([])
+  const [bindings, setBindings] = useState<AnchorBinding[]>([])
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  const [draftAnchors, setDraftAnchors] = useState<DraftAnchor[]>([])
   const [saving, setSaving] = useState(false)
+
+  const anchors = useMemo<AnchorRef[]>(() => {
+    const seen = new Set<string>()
+    return bindings.flatMap((b) => b.anchors).filter((a) => {
+      if (seen.has(a.id)) return false
+      seen.add(a.id)
+      return true
+    })
+  }, [bindings])
 
   useEffect(() => {
     let alive = true
     const load = () => {
       fetchCardBindings(item.id)
-        .then((bs) => {
-          if (!alive) return
-          const seen = new Set<string>()
-          setAnchors(bs.flatMap((b) => b.anchors).filter((a) => {
-            if (seen.has(a.id)) return false
-            seen.add(a.id)
-            return true
-          }))
-        })
+        .then((bs) => { if (alive) setBindings(bs) })
         .catch(() => {})
     }
     load()
@@ -626,15 +633,48 @@ function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
     }
   }, [item.id])
 
+  const beginEdit = () => {
+    setDraft(item.text)
+    setDraftAnchors(anchors.map((a) => ({ id: a.id, keyword: a.keyword, category: a.category })))
+    setEditing(true)
+  }
+
   const saveEdit = async () => {
     const text = draft.trim()
-    if (!text || text === item.text) {
+    if (!text) {
       setEditing(false)
       return
     }
     setSaving(true)
     try {
-      await updateContextCard(item.id, text)
+      if (text !== item.text) await updateContextCard(item.id, text)
+
+      // 锚点草稿 diff：已有的改句子/类别走 PATCH；新增的挂到整卡绑定（没有就先建）
+      const origById = new Map(anchors.map((a) => [a.id, a]))
+      let bindingId = bindings.find((b) => b.start_pos === 0)?.id ?? bindings[0]?.id ?? null
+      for (const d of draftAnchors) {
+        const kw = d.keyword.trim()
+        if (d.id) {
+          const orig = origById.get(d.id)
+          if (!orig) continue
+          const patch: { keyword?: string; category?: AnchorCategory } = {}
+          if (kw && kw !== orig.keyword) patch.keyword = kw
+          if (d.category !== orig.category) patch.category = d.category
+          if (patch.keyword !== undefined || patch.category !== undefined) await updateAnchor(d.id, patch)
+        } else if (kw) {
+          if (bindingId) {
+            await addAnchorToBinding(bindingId, kw, d.category)
+          } else {
+            const created = await addBinding({
+              card_id: item.id, start_pos: 0, end_pos: text.length,
+              selected_text: text, user_speech: text,
+              anchors: [{ keyword: kw, category: d.category }],
+            })
+            bindingId = created.id
+          }
+        }
+      }
+
       setEditing(false)
       window.dispatchEvent(new CustomEvent('solevup:context-updated'))
     } catch (e) {
@@ -654,7 +694,9 @@ function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
         {/* 语境标签完整显示（超宽省略）；有来源卡 id 时可点击跳转到语境库对应卡 */}
         {item.source_label && (
           item.source_card_id && onJumpToContext ? (
-            <Tooltip content="跳转到语境卡">
+            // wrapStyle 必须给 Tooltip 包裹层：flex 收缩约束打在内层按钮上没用，
+            // 包裹层 min-width:auto 不肯收缩会撑出右边界、挤掉编辑/删除按钮
+            <Tooltip content="跳转到语境卡" display="flex" wrapStyle={{ minWidth: 0, flexShrink: 1 }}>
               <button
                 type="button"
                 onClick={() => onJumpToContext(item.source_card_id!)}
@@ -675,7 +717,7 @@ function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
             <Tooltip content="编辑">
               <button
                 type="button"
-                onClick={() => { setDraft(item.text); setEditing(true) }}
+                onClick={beginEdit}
                 style={styles.memoDelete}
               >
                 <Pencil size={11} />
@@ -721,14 +763,94 @@ function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
       ) : (
         <p style={styles.memoBody}>{item.text}</p>
       )}
-      {anchors.length > 0 && (
+      {editing ? (
+        // 编辑态锚点草稿：点类别前缀循环切换、点句子原位改字、+ 新增；取消全不保存，打勾才落库
         <div style={styles.anchorChips}>
-          {anchors.map((a) => (
-            <AnchorChip key={a.id} anchor={a} />
+          {draftAnchors.map((d, i) => (
+            <EditableAnchorChip
+              key={d.id ?? `new-${i}`}
+              value={d}
+              onCycleCategory={() => setDraftAnchors((prev) => prev.map((x, j) =>
+                j === i ? { ...x, category: CAT_ORDER[(CAT_ORDER.indexOf(x.category) + 1) % CAT_ORDER.length] } : x))}
+              onKeywordChange={(kw) => setDraftAnchors((prev) => prev.map((x, j) =>
+                j === i ? { ...x, keyword: kw } : x))}
+            />
           ))}
+          <Tooltip content="添加锚点句">
+            <button
+              type="button"
+              onClick={() => setDraftAnchors((prev) => [...prev, { id: null, keyword: '', category: 'motive' }])}
+              style={styles.anchorAddBtn}
+            >
+              <Plus size={11} />
+            </button>
+          </Tooltip>
         </div>
+      ) : (
+        anchors.length > 0 && (
+          <div style={styles.anchorChips}>
+            {anchors.map((a) => (
+              <AnchorChip key={a.id} anchor={a} />
+            ))}
+          </div>
+        )
       )}
     </article>
+  )
+}
+
+// ── 编辑态锚点 chip：类别段可点循环切换，句子段原位 input ────────
+function EditableAnchorChip({ value, onCycleCategory, onKeywordChange }: {
+  readonly value: DraftAnchor
+  readonly onCycleCategory: () => void
+  readonly onKeywordChange: (kw: string) => void
+}) {
+  const c = ANCHOR_CAT_COLOR[value.category]
+  // 动态估宽：CJK 按 1em、ASCII 按 0.55em，外加余量（mono 小字号下足够准）
+  const w = Math.max(5, value.keyword.split('').reduce(
+    (acc, ch) => acc + (ch.charCodeAt(0) > 255 ? 1 : 0.55), 0) + 1.5)
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'stretch',
+      maxWidth: '100%',
+      borderRadius: 3,
+      overflow: 'hidden',
+      border: `1px solid ${c}55`,
+      fontFamily: theme.fontMono,
+      fontSize: 10.5,
+      lineHeight: 1.5,
+    }}>
+      <Tooltip content="切换类别" display="flex">
+        <button
+          type="button"
+          onClick={onCycleCategory}
+          style={{
+            display: 'flex', alignItems: 'center',
+            background: c, color: '#051018',
+            fontWeight: 700, padding: '1px 5px', letterSpacing: '0.08em',
+            flexShrink: 0, border: 'none', cursor: 'pointer',
+            fontFamily: theme.fontMono, fontSize: 10.5,
+          }}
+        >
+          {ANCHOR_CAT_SHORT[value.category]}
+        </button>
+      </Tooltip>
+      <input
+        value={value.keyword}
+        placeholder="锚点句…"
+        autoFocus={value.id === null && !value.keyword}
+        onChange={(e) => onKeywordChange(e.target.value)}
+        style={{
+          background: `${c}14`, color: c,
+          padding: '1px 7px', border: 'none', outline: 'none',
+          fontFamily: theme.fontMono, fontSize: 10.5,
+          // content-box：估宽只管文字，padding 在宽度之外，不削尾字
+          boxSizing: 'content-box',
+          width: `${w}em`, maxWidth: 280, minWidth: 0,
+        }}
+      />
+    </span>
   )
 }
 
@@ -1452,6 +1574,20 @@ const styles: Record<string, CSSProperties> = {
     flexWrap: 'wrap',
     gap: 5,
     marginTop: 8,
+  },
+  // 编辑态"添加锚点句"按钮：虚线空 chip
+  anchorAddBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 24,
+    alignSelf: 'stretch',
+    borderRadius: 3,
+    border: `1px dashed ${theme.textMuted}66`,
+    background: 'transparent',
+    color: theme.textMuted,
+    cursor: 'pointer',
+    padding: 0,
   },
   // ── 逐句转录（可调旋钮：行距 / 时间戳列宽 / 字号）──
   transcriptList: {

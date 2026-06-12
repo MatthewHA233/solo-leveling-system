@@ -418,3 +418,4 @@ function AnchorTooltip({
 
 export const ANCHOR_CAT_COLOR = CAT_COLOR
 export const ANCHOR_CAT_LABEL = CAT_LABEL
+export const ANCHOR_CAT_SHORT = CAT_SHORT

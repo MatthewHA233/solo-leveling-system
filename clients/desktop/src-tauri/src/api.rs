@@ -22,7 +22,7 @@ use crate::db::{
     AppendChatMessagesRequest, ChatMessage, ChatSession, Database, UpdateChatSessionRequest,
     BiliHistoryRow, UpsertBiliItem, BiliSpan, BiliDayCount, Goal, PresenceSpan,
     ActivityCategory, ActivityTag, ActivityBlock, ActivityPalette, PlanNode, PlannedBlock,
-    ContextFeedItem, BindingRow, AnchorEmbeddingRow,
+    ContextFeedItem, BindingRow, AnchorRef, AnchorEmbeddingRow,
     AddCategoryRequest, AddTagRequest, PaintBlocksRequest, EraseBlocksRequest,
     AddPlanNodeRequest, UpdatePlanNodeRequest, PaintPlannedBlocksRequest,
     UpdateCategoryRequest, RenamePathRequest, PerceptionSpan, SyncExport, SyncImportResult,
@@ -1397,20 +1397,55 @@ async fn update_context_card(
 
 #[derive(Deserialize)]
 struct UpdateAnchorBody {
-    keyword: String,
+    keyword: Option<String>,
+    category: Option<String>, // motive | view | practice
 }
+
+const ANCHOR_CATEGORIES: [&str; 3] = ["motive", "view", "practice"];
 
 async fn update_anchor(
     State(s): State<ApiState>,
     Path(id): Path<String>,
     Json(body): Json<UpdateAnchorBody>,
 ) -> Json<ApiResponse<()>> {
+    let keyword = body.keyword.map(|k| k.trim().to_string());
+    if let Some(k) = &keyword {
+        if k.is_empty() {
+            return Json(ApiResponse::error("锚点句不能为空"));
+        }
+    }
+    if let Some(c) = &body.category {
+        if !ANCHOR_CATEGORIES.contains(&c.as_str()) {
+            return Json(ApiResponse::error("非法锚点类别"));
+        }
+    }
+    match s.db.update_anchor(&id, keyword.as_deref(), body.category.as_deref()).await {
+        Ok(_)  => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct AddBindingAnchorBody {
+    keyword: String,
+    category: String,
+}
+
+/// POST /api/context/bindings/{id}/anchors — 往已有绑定追加一条锚点（同名同类复用）
+async fn add_binding_anchor(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<AddBindingAnchorBody>,
+) -> Json<ApiResponse<AnchorRef>> {
     let keyword = body.keyword.trim().to_string();
     if keyword.is_empty() {
         return Json(ApiResponse::error("锚点句不能为空"));
     }
-    match s.db.update_anchor_keyword(&id, &keyword).await {
-        Ok(_)  => Json(ApiResponse::ok(())),
+    if !ANCHOR_CATEGORIES.contains(&body.category.as_str()) {
+        return Json(ApiResponse::error("非法锚点类别"));
+    }
+    match s.db.add_anchor_to_binding(&id, &keyword, &body.category).await {
+        Ok(a)  => Json(ApiResponse::ok(a)),
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -1610,6 +1645,7 @@ pub fn create_router(
         .route("/api/context/cards/{id}/bindings", get(get_card_bindings))
         .route("/api/context/bindings", post(add_binding))
         .route("/api/context/bindings/{id}", delete(delete_binding))
+        .route("/api/context/bindings/{id}/anchors", post(add_binding_anchor))
         .route("/api/anchors/embeddings", get(get_anchor_embeddings).post(upsert_anchor_embeddings))
         .route("/api/anchors/cluster-names", get(get_cluster_names).post(upsert_cluster_name))
         .route("/api/anchors/{id}", patch(update_anchor))

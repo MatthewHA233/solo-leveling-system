@@ -3431,25 +3431,73 @@ impl Database {
         Ok(())
     }
 
-    /// 编辑锚点句；语义变了 → 删该锚点向量（下次打开地图重嵌入）+ 清簇名缓存（重新起名）
-    pub async fn update_anchor_keyword(&self, id: &str, keyword: &str) -> Result<(), String> {
+    /// 编辑锚点句 / 类别（至少传一个）。
+    /// keyword 变了 → 删该锚点向量（下次打开地图重嵌入）；两种变更都清簇名缓存（重新起名/分区）
+    pub async fn update_anchor(&self, id: &str, keyword: Option<&str>, category: Option<&str>) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        let changed = conn.execute(
-            "UPDATE anchors SET keyword = ?, updated_at = datetime('now') WHERE id = ?",
-            params![keyword, id],
-        ).map_err(|e| {
+        let uniq_err = |e: rusqlite::Error| {
             if e.to_string().contains("UNIQUE") {
                 "同类下已存在相同锚点句".to_string()
             } else {
                 e.to_string()
             }
-        })?;
+        };
+        let changed = match (keyword, category) {
+            (Some(k), Some(c)) => conn.execute(
+                "UPDATE anchors SET keyword = ?, category = ?, updated_at = datetime('now') WHERE id = ?",
+                params![k, c, id],
+            ).map_err(uniq_err)?,
+            (Some(k), None) => conn.execute(
+                "UPDATE anchors SET keyword = ?, updated_at = datetime('now') WHERE id = ?",
+                params![k, id],
+            ).map_err(uniq_err)?,
+            (None, Some(c)) => conn.execute(
+                "UPDATE anchors SET category = ?, updated_at = datetime('now') WHERE id = ?",
+                params![c, id],
+            ).map_err(uniq_err)?,
+            (None, None) => return Err("没有要更新的字段".to_string()),
+        };
         if changed == 0 {
             return Err("锚点不存在".to_string());
         }
-        conn.execute("DELETE FROM anchor_embeddings WHERE anchor_id = ?", [id]).map_err(|e| e.to_string())?;
+        if keyword.is_some() {
+            conn.execute("DELETE FROM anchor_embeddings WHERE anchor_id = ?", [id]).map_err(|e| e.to_string())?;
+        }
         conn.execute("DELETE FROM anchor_cluster_names", []).map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// 往已有绑定上追加一条锚点（同名同类复用全局锚点）；成员集变了 → 清簇名缓存
+    pub async fn add_anchor_to_binding(&self, binding_id: &str, keyword: &str, category: &str) -> Result<AnchorRef, String> {
+        let conn = self.conn.lock().await;
+        let exists: bool = conn
+            .query_row("SELECT 1 FROM context_anchor_bindings WHERE id = ?", [binding_id], |_| Ok(true))
+            .unwrap_or(false);
+        if !exists {
+            return Err("绑定不存在".to_string());
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let anchor_id: String = match conn.query_row(
+            "SELECT id FROM anchors WHERE keyword = ? AND category = ?",
+            params![keyword, category],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(id) => id,
+            Err(_) => {
+                let id = uuid::Uuid::new_v4().to_string();
+                conn.execute(
+                    "INSERT INTO anchors (id, keyword, category, created_at, updated_at) VALUES (?,?,?,?,?)",
+                    params![id, keyword, category, now, now],
+                ).map_err(|e| e.to_string())?;
+                id
+            }
+        };
+        conn.execute(
+            "INSERT OR IGNORE INTO binding_anchors (binding_id, anchor_id) VALUES (?, ?)",
+            params![binding_id, anchor_id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM anchor_cluster_names", []).map_err(|e| e.to_string())?;
+        Ok(AnchorRef { id: anchor_id, keyword: keyword.to_string(), category: category.to_string() })
     }
 
     // ── Anchor Embeddings（锚点域地图：语义向量 + 簇名缓存）──

@@ -896,15 +896,32 @@ export async function updateContextCard(id: string, text: string, sourceLabel?: 
   if (!json.success) throw new Error(json.error || '更新想法卡失败')
 }
 
-/** 编辑锚点句（后端会删旧向量并清簇名缓存，下次打开地图自动重嵌入/重起名） */
-export async function updateAnchorKeyword(id: string, keyword: string): Promise<void> {
+/** 编辑锚点句 / 类别（至少传一个；后端按需删旧向量并清簇名缓存，下次打开地图自动重嵌入/重起名） */
+export async function updateAnchor(id: string, patch: { keyword?: string; category?: AnchorCategory }): Promise<void> {
   const res = await fetch(`${API_BASE}/api/anchors/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ keyword }),
+    body: JSON.stringify(patch),
   })
   const json: ApiResponse<void> = await res.json()
-  if (!json.success) throw new Error(json.error || '更新锚点句失败')
+  if (!json.success) throw new Error(json.error || '更新锚点失败')
+}
+
+/** 编辑锚点句（updateAnchor 的便捷封装，Fairy 工具在用） */
+export async function updateAnchorKeyword(id: string, keyword: string): Promise<void> {
+  return updateAnchor(id, { keyword })
+}
+
+/** 往已有绑定追加一条锚点（同名同类复用全局锚点） */
+export async function addAnchorToBinding(bindingId: string, keyword: string, category: AnchorCategory): Promise<AnchorRef> {
+  const res = await fetch(`${API_BASE}/api/context/bindings/${bindingId}/anchors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keyword, category }),
+  })
+  const json: ApiResponse<AnchorRef> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '添加锚点失败')
+  return json.data
 }
 
 // ── Anchor Embeddings（锚点域地图：语义向量 + 簇名缓存）──
