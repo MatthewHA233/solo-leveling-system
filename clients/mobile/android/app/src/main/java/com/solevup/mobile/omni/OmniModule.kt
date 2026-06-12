@@ -158,6 +158,7 @@ class OmniModule(private val reactContext: ReactApplicationContext) :
   // 就绪前采集的 append 先缓存、commit 先挂起，session.updated 后按序补发。
   private val pendingAudio = ArrayList<String>()
   @Volatile private var pendingCommit = false
+  @Volatile private var pendingTranscribeOnly = false
 
   private fun flushPendingOnReady() {
     val w = ws ?: return
@@ -169,6 +170,10 @@ class OmniModule(private val reactContext: ReactApplicationContext) :
       pendingCommit = false
       w.send(JSONObject().put("type", "input_audio_buffer.commit").toString())
       w.send(JSONObject().put("type", "response.create").toString())
+    }
+    if (pendingTranscribeOnly) {
+      pendingTranscribeOnly = false
+      w.send(JSONObject().put("type", "input_audio_buffer.commit").toString())
     }
   }
 
@@ -297,6 +302,28 @@ class OmniModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  /** 左上滑转文字：停录 + 仅 commit（不发 response.create）→ 服务端只回用户转写 */
+  @ReactMethod
+  fun stopAndTranscribe(promise: Promise) {
+    try {
+      stopRecordingInternal()
+      val w = ws
+      if (w == null) {
+        promise.reject("OMNI_NOT_CONNECTED", "Omni 未连接")
+        return
+      }
+      if (!sessionReady) {
+        pendingTranscribeOnly = true
+        promise.resolve(true)
+        return
+      }
+      w.send(JSONObject().put("type", "input_audio_buffer.commit").toString())
+      promise.resolve(true)
+    } catch (e: Throwable) {
+      promise.reject("OMNI_TRANSCRIBE_FAILED", e.message, e)
+    }
+  }
+
   /** 打断/取消：停录、停播、断连（与 desktop omni_stop 同语义） */
   @ReactMethod
   fun stop(promise: Promise) {
@@ -358,6 +385,7 @@ class OmniModule(private val reactContext: ReactApplicationContext) :
     stopPlayer()
     synchronized(pendingAudio) { pendingAudio.clear() }
     pendingCommit = false
+    pendingTranscribeOnly = false
     ws?.let { w -> try { w.close(1000, "bye") } catch (_: Throwable) {} }
     ws = null
     sessionReady = false

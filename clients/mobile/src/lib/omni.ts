@@ -11,6 +11,7 @@ interface OmniNative {
   connect(apiKey: string, model: string, voice: string, systemPrompt: string): Promise<boolean>
   startRecording(): Promise<boolean>
   stopAndCommit(): Promise<boolean>
+  stopAndTranscribe(): Promise<boolean>
   stop(): Promise<boolean>
 }
 
@@ -71,6 +72,11 @@ export async function omniStartRecording(): Promise<void> {
 export async function omniStopAndCommit(): Promise<void> {
   if (!Native) throw new Error('Omni native module 不可用')
   await Native.stopAndCommit()
+}
+
+export async function omniStopAndTranscribe(): Promise<void> {
+  if (!Native) throw new Error('Omni native module 不可用')
+  await Native.stopAndTranscribe()
 }
 
 export async function omniStop(): Promise<void> {
