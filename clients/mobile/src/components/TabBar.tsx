@@ -5,7 +5,7 @@
 import { useEffect, useRef } from 'react'
 import type { ReactElement } from 'react'
 import { Animated, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native'
-import Svg, { Circle, Path, Rect } from 'react-native-svg'
+import Svg, { Circle, G, Path, Rect } from 'react-native-svg'
 import { theme } from '../theme'
 import FairyOrb, { type FairyOrbState } from './FairyOrb'
 
@@ -43,10 +43,12 @@ function IconCalendar({ active, size = 23 }: IconProps) {
       {/* 月亮：阴鱼眼（同底色圆遮挡留左下弯月） */}
       <Circle cx="12" cy="16.5" r="3.0" fill="#D6E4FF" />
       <Circle cx="13.7" cy="15.2" r="3.0" fill="#2E4FC2" />
-      {/* 四角星（夜域右侧） */}
-      <Path d="M18.6 9.3 L19.06 10.14 L19.9 10.6 L19.06 11.06 L18.6 11.9 L18.14 11.06 L17.3 10.6 L18.14 10.14 Z" fill="#D6E4FF" />
-      <Path d="M15.9 12.3 L16.25 12.95 L16.9 13.3 L16.25 13.65 L15.9 14.3 L15.55 13.65 L14.9 13.3 L15.55 12.95 Z" fill="#D6E4FF" />
-      <Path d="M19.2 13.85 L19.46 14.34 L19.95 14.6 L19.46 14.86 L19.2 15.35 L18.94 14.86 L18.45 14.6 L18.94 14.34 Z" fill="#D6E4FF" />
+      {/* 四角星（夜域右侧，整体微移左下） */}
+      <G transform="translate(-0.4 0.4)">
+        <Path d="M18.6 9.3 L19.06 10.14 L19.9 10.6 L19.06 11.06 L18.6 11.9 L18.14 11.06 L17.3 10.6 L18.14 10.14 Z" fill="#D6E4FF" />
+        <Path d="M15.9 12.3 L16.25 12.95 L16.9 13.3 L16.25 13.65 L15.9 14.3 L15.55 13.65 L14.9 13.3 L15.55 12.95 Z" fill="#D6E4FF" />
+        <Path d="M19.2 13.85 L19.46 14.34 L19.95 14.6 L19.46 14.86 L19.2 15.35 L18.94 14.86 L18.45 14.6 L18.94 14.34 Z" fill="#D6E4FF" />
+      </G>
     </Svg>
   )
 }
@@ -88,6 +90,8 @@ function IconScroll({ active, size = 23 }: IconProps) {
   // 协议志：高达头 — 细锐金 V / 钢蓝盔 / 窄眼带双绿眼 / 白面罩双缝 / 小红下巴
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" opacity={active ? 1 : 0.45}>
+      {/* 整体放大 1.18 并居中（原内容 bbox 中心 12,10.4，比其余三个图标偏小） */}
+      <G transform="translate(12 12) scale(1.26) translate(-12 -10.4)">
       {/* 细锐 V 天线（两片细长三角） */}
       <Path d="M11.5 6.4 L7.0 2.6 L8.3 2.2 L12 5.2 Z" fill="#F2C14E" />
       <Path d="M12.5 6.4 L17.0 2.6 L15.7 2.2 L12 5.2 Z" fill="#F2C14E" />
@@ -111,6 +115,7 @@ function IconScroll({ active, size = 23 }: IconProps) {
       <Path d="M8.3 12.4 L8.9 13.8 M15.7 12.4 L15.1 13.8" stroke="#33415A" strokeWidth="0.9" strokeLinecap="round" />
       {/* 小红下巴 */}
       <Path d="M10.9 16.9 H13.1 L12 18.6 Z" fill="#E5484D" />
+      </G>
     </Svg>
   )
 }
