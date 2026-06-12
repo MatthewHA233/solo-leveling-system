@@ -65,4 +65,6 @@ export interface ChatMessage {
   audio?: ChatAudioAttachment
   streaming?: boolean
   mode?: AiMode
+  /** 思考模型的推演过程（reasoningDelta 流式累积；不进对话历史，仅 UI 展示+持久化） */
+  reasoning?: string
 }
