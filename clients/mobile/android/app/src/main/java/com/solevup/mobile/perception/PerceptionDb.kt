@@ -408,7 +408,7 @@ class PerceptionDb(context: Context) :
     return out
   }
 
-  /** 写入屏幕 / 解锁 / 感知服务事件（screen_on / screen_off / unlocked / service_started）。
+  /** 写入屏幕 / 解锁 / 感知服务事件（screen_on / screen_off / unlocked / service_started / service_stopped）。
    *  AUDIT-018: start_at/end_at 必须用真实 eventTimeMs 派生，不能用 nowIso()。
    *  否则异步 executor 排队、应用忙碌、跨过 span 结束边界时，真实落在 span
    *  内的事件因为写入时间在 span 外被 powerEventsInRange() 漏掉，影响"花了多久"。 */
@@ -773,7 +773,10 @@ class PerceptionDb(context: Context) :
         )
       }
 
-      val screenOffTimes = ArrayList<Long>()
+      // 闭合点：screen_off / service_stopped 在该时刻截断当前段；
+      // service_started 表示此前存在监控断档（服务被关时连 screen_off 都收不到），
+      // 当前段闭合到最后一次已知事件时间，断档期不计入任何应用
+      val cutoffs = ArrayList<Pair<Long, String>>()
       if (rawPowerMinMs != null) {
         db.rawQuery(
           """
@@ -790,8 +793,10 @@ class PerceptionDb(context: Context) :
             val obj = try { org.json.JSONObject(raw) } catch (_: Throwable) { continue }
             val eventTimeMs = obj.optLong("event_time_ms", 0L)
             val event = obj.optString("event")
-            if (event == "screen_off" && eventTimeMs >= dayStartMs && eventTimeMs < dayEndMs) {
-              screenOffTimes.add(eventTimeMs)
+            if ((event == "screen_off" || event == "service_stopped" || event == "service_started") &&
+              eventTimeMs >= dayStartMs && eventTimeMs < dayEndMs
+            ) {
+              cutoffs.add(eventTimeMs to event)
             }
           }
         }
@@ -800,8 +805,10 @@ class PerceptionDb(context: Context) :
       var current = rawWindowMinMs?.let { loadLastAppSegmentBefore(db, dateKey, it) }
       var currentDirty = false
       var currentLastEventMs = current?.startMs ?: rawWindowMinMs ?: dayStartMs
-      fun firstScreenOffAfter(fromMs: Long, toMs: Long): Long? =
-        screenOffTimes.firstOrNull { it > fromMs && it <= toMs }
+      fun firstCutoffAfter(fromMs: Long, toMs: Long): Pair<Long, String>? =
+        cutoffs.firstOrNull { it.first > fromMs && it.first <= toMs }
+      fun cutoffCloseTs(cut: Pair<Long, String>, lastEventMs: Long): Long =
+        if (cut.second == "service_started") lastEventMs else cut.first
       fun closeCurrentAt(tsMs: Long) {
         val draft = current ?: return
         draft.endMs = tsMs.coerceAtLeast(draft.startMs)
@@ -832,7 +839,7 @@ class PerceptionDb(context: Context) :
           if (isMonitorNoise(packageName, className, windowTitle)) continue
 
           if (current != null) {
-            firstScreenOffAfter(currentLastEventMs, eventTimeMs)?.let { closeCurrentAt(it) }
+            firstCutoffAfter(currentLastEventMs, eventTimeMs)?.let { closeCurrentAt(cutoffCloseTs(it, currentLastEventMs)) }
           }
           if (current != null && current!!.packageName == packageName) {
             val draft = current!!
@@ -869,7 +876,9 @@ class PerceptionDb(context: Context) :
         }
       }
       if (current != null && currentDirty) {
-        firstScreenOffAfter(currentLastEventMs, dayEndMs)?.let { current!!.endMs = it.coerceAtLeast(current!!.startMs) }
+        firstCutoffAfter(currentLastEventMs, dayEndMs)?.let {
+          current!!.endMs = cutoffCloseTs(it, currentLastEventMs).coerceAtLeast(current!!.startMs)
+        }
         saveAppSegment(db, current!!)
       }
 

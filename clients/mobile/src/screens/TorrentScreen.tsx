@@ -466,6 +466,7 @@ function powerEventLabel(event: string): string {
   if (event === 'screen_off') return '屏幕熄灭'
   if (event === 'unlocked') return '解锁手机'
   if (event === 'service_started') return '感知服务启动'
+  if (event === 'service_stopped') return '感知服务停止'
   return event
 }
 
@@ -474,10 +475,22 @@ function powerEventTone(event: string): string {
   if (event === 'screen_off') return POWER_SCREEN_OFF_COLOR
   if (event === 'unlocked') return POWER_UNLOCKED_COLOR
   if (event === 'service_started') return POWER_SERVICE_COLOR
+  if (event === 'service_stopped') return POWER_SCREEN_OFF_COLOR
   return theme.accent
 }
 
 function MonitorPowerIcon({ event }: { event: string }) {
+  if (event === 'service_stopped') {
+    return (
+      <View style={[styles.monitorPowerIcon, { backgroundColor: alpha(POWER_SCREEN_OFF_COLOR, 0.08), borderColor: alpha(POWER_SCREEN_OFF_COLOR, 0.22) }]}>
+        <Svg width={22} height={22} viewBox="0 0 1024 1024">
+          <Path d="M512 592a80 80 0 1 0 0-160 80 80 0 0 0 0 160z" fill={POWER_SCREEN_OFF_COLOR} />
+          <Path d="M235.072 201.6A414.944 414.944 0 0 0 96 512c0 123.36 53.76 234.176 139.072 310.336l-21.312 23.904a446.816 446.816 0 0 1-149.6-322.688L64 512c0-132.864 57.824-252.224 149.728-334.272l21.344 23.904z m575.168-23.872A446.88 446.88 0 0 1 960 512l-0.16 11.552a446.848 446.848 0 0 1-149.6 322.688l-21.344-23.904A414.88 414.88 0 0 0 928 512c0-123.392-53.76-234.208-139.104-310.4l21.344-23.872z" fill={alpha(POWER_SCREEN_OFF_COLOR, 0.45)} />
+          <Path d="M280 744 L744 280" stroke={POWER_SCREEN_OFF_COLOR} strokeWidth="56" strokeLinecap="round" />
+        </Svg>
+      </View>
+    )
+  }
   if (event === 'service_started') {
     return (
       <View style={[styles.monitorPowerIcon, { backgroundColor: alpha(POWER_SERVICE_COLOR, 0.08), borderColor: alpha(POWER_SERVICE_COLOR, 0.22) }]}>

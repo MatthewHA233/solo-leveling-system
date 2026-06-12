@@ -370,6 +370,15 @@ class SolevupAccessibilityService : AccessibilityService() {
       try { unregisterReceiver(powerReceiver) } catch (_: Throwable) {}
       powerReceiverRegistered = false
     }
+    // 用户手动关闭无障碍走正常销毁路径：记 service_stopped，聚合用它闭合
+    // 当前 app 段，避免断档期被算进最后一个前台应用的使用时长。
+    // executor.shutdown() 会先执行完已排队任务，这条写入不会丢。
+    val ts = System.currentTimeMillis()
+    try {
+      executor.execute {
+        try { db.insertPowerEvent("service_stopped", ts) } catch (_: Throwable) {}
+      }
+    } catch (_: Throwable) {}
     executor.shutdown()
     super.onDestroy()
   }
