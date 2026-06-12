@@ -282,6 +282,10 @@ export default function TorrentFieldPanel() {
               onDraftChange={setThoughtDraft}
               onSubmit={submitThought}
               onRemove={requestRemove}
+              onJumpToContext={(cardId) => {
+                setSubview('context')
+                setJumpCardId(cardId)
+              }}
             />
           ) : subview === 'context' ? (
             <ThoughtDock
@@ -331,6 +335,7 @@ function ThoughtDock({
   onDraftChange,
   onSubmit,
   onRemove,
+  onJumpToContext,
 }: {
   readonly draft: string
   readonly cards: readonly ContextFeedItem[]
@@ -338,6 +343,7 @@ function ThoughtDock({
   readonly onDraftChange: (text: string) => void
   readonly onSubmit: () => void
   readonly onRemove: (id: string) => void
+  readonly onJumpToContext?: (cardId: string) => void
 }) {
   return (
     <section style={styles.flomoBoard}>
@@ -349,6 +355,7 @@ function ThoughtDock({
         onDraftChange={onDraftChange}
         onSubmit={onSubmit}
         onRemove={onRemove}
+        onJumpToContext={onJumpToContext}
       />
     </section>
   )
@@ -395,6 +402,7 @@ function FlomoMain({
   onDraftChange,
   onSubmit,
   onRemove,
+  onJumpToContext,
 }: {
   readonly draft: string
   readonly cards: readonly ContextFeedItem[]
@@ -402,6 +410,7 @@ function FlomoMain({
   readonly onDraftChange: (text: string) => void
   readonly onSubmit: () => void
   readonly onRemove: (id: string) => void
+  readonly onJumpToContext?: (cardId: string) => void
 }) {
   const [focused, setFocused] = useState(false)
   // 锁定卡（粘性悬浮）：移开鼠标不熄灭，直到悬浮别的卡或离开本界面；
@@ -527,7 +536,7 @@ function FlomoMain({
                   >
                     {card.kind === 'bili_transcript'
                       ? <BiliContextCard item={card} />
-                      : <ThoughtMemoCard item={card} onRemove={onRemove} />}
+                      : <ThoughtMemoCard item={card} onRemove={onRemove} onJumpToContext={onJumpToContext} />}
                   </CardHoverEffect>
                 ))}
               </div>
@@ -653,9 +662,10 @@ function FloatingSpeak({ selectedText, rect, speech, busy, onChange, onSubmit, o
 }
 
 // ── 想法卡片（你的话；纯文本 + 锚点标签，不可框选、不进语境库）────
-function ThoughtMemoCard({ item, onRemove }: {
+function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
   readonly item: ContextFeedItem
   readonly onRemove: (id: string) => void
+  readonly onJumpToContext?: (cardId: string) => void
 }) {
   const [anchors, setAnchors] = useState<AnchorRef[]>([])
   const [editing, setEditing] = useState(false)
@@ -710,7 +720,26 @@ function ThoughtMemoCard({ item, onRemove }: {
       style={{ ...styles.memoCard, ...(editing ? styles.memoCardEditing : null) }}
     >
       <div style={styles.memoMeta}>
-        <span>{formatTimeOnly(item.created_at)}{item.source_label ? ` · ${item.source_label}` : ''}</span>
+        <span style={{ flexShrink: 0 }}>{formatTimeOnly(item.created_at)}</span>
+        {/* 语境标签完整显示（超宽省略）；有来源卡 id 时可点击跳转到语境库对应卡 */}
+        {item.source_label && (
+          item.source_card_id && onJumpToContext ? (
+            <Tooltip content="跳转到语境卡">
+              <button
+                type="button"
+                onClick={() => onJumpToContext(item.source_card_id!)}
+                style={styles.memoSourceLink}
+                onMouseEnter={(e) => (e.currentTarget.style.color = theme.electricBlue)}
+                onMouseLeave={(e) => (e.currentTarget.style.color = theme.textMuted)}
+              >
+                · {item.source_label}
+              </button>
+            </Tooltip>
+          ) : (
+            <span style={styles.memoSourceText}>· {item.source_label}</span>
+          )
+        )}
+        <span style={{ flex: 1 }} />
         {!editing && (
           <span style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <Tooltip content="编辑">
@@ -1265,6 +1294,30 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: theme.fontMono,
     fontSize: 10,
     letterSpacing: '0.1em',
+  },
+  // 语境来源标签：完整显示、超宽省略；可点击形态继承字色，hover 转电蓝
+  memoSourceLink: {
+    border: 'none',
+    background: 'transparent',
+    color: theme.textMuted,
+    fontFamily: theme.fontMono,
+    fontSize: 10,
+    letterSpacing: '0.1em',
+    padding: 0,
+    cursor: 'pointer',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    minWidth: 0,
+    flexShrink: 1,
+    transition: 'color 0.15s',
+  },
+  memoSourceText: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    minWidth: 0,
+    flexShrink: 1,
   },
   memoDelete: {
     width: 18,

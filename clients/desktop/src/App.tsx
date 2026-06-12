@@ -16,6 +16,7 @@ import {
 import type { PerceptionSpan, BiliSpan, ModelCallLog, LinkedDevice, SyncPeer, Goal } from './lib/local-api'
 import { distillThought } from './lib/thought-distill'
 import { anchorToContext } from './lib/anchor-to-context'
+import { locateSegment } from './lib/segment-locate'
 import { fetchBiliTranscriptPlain } from './lib/bili-transcript'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from './types'
 import { theme, hud } from './theme'
@@ -2413,24 +2414,28 @@ export default function App() {
             // 锚定器判"与语境无关/不值得"返回 null → 回落独立沉淀，想法不能丢
             const r = target ? await anchorToContext(target.text, speech) : null
             if (target && r) {
-              // 想法卡（绑定语境来源）
-              const thoughtId = await addContextCard(r.thought, `语境·${target.title.slice(0, 16)}`)
-              // 语境卡上定位 AI 复制的原文片段 → 建锚点（高亮在转录上）
+              // 想法卡（绑定语境来源：完整标题入标签，cardId 入 source_card_id 供点击跳转）
+              const thoughtId = await addContextCard(r.thought, `语境·${target.title}`, undefined, target.cardId)
+              // 语境卡上定位 AI 复制的原文片段 → 建锚点（高亮在转录上）。
+              // 模型复制常悄悄改标点/空白，用归一化模糊定位代替裸 indexOf；
+              // selected_text 取原文切片（位置坐标是原文的，不能存模型副本）。
               // source_card_id 指向想法卡：删想法卡时语境卡上这条同源绑定一起级联清掉
               let highlighted = false
               if (r.segment) {
-                const idx = target.text.indexOf(r.segment)
-                if (idx >= 0) {
+                const span = locateSegment(target.text, r.segment)
+                if (span) {
                   await addBinding({
                     card_id: target.cardId,
-                    start_pos: idx,
-                    end_pos: idx + r.segment.length,
-                    selected_text: r.segment,
+                    start_pos: span.start,
+                    end_pos: span.end,
+                    selected_text: target.text.slice(span.start, span.end),
                     user_speech: r.thought,
                     anchors: r.anchors,
                     source_card_id: thoughtId,
                   })
                   highlighted = true
+                } else {
+                  console.warn('[Anchor] 原文片段定位失败，语境卡上不建高亮（想法卡照常）。模型给的片段：', r.segment.slice(0, 120))
                 }
               }
               // 想法卡本身也挂锚点（标签）

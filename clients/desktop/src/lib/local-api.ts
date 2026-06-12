@@ -803,6 +803,7 @@ export interface ContextFeedItem {
   readonly bvid: string | null
   readonly ref_path: string | null         // bili download_path，展开转录全文用
   readonly source_label: string | null     // thought 语境标签
+  readonly source_card_id: string | null   // thought 来源语境卡 id（语境标签点击跳转用）
   readonly created_at: string
 }
 
@@ -813,11 +814,11 @@ export async function fetchContextFeed(): Promise<ContextFeedItem[]> {
   return json.data
 }
 
-export async function addContextCard(text: string, sourceLabel?: string, createdAt?: string): Promise<string> {
+export async function addContextCard(text: string, sourceLabel?: string, createdAt?: string, sourceCardId?: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/context/cards`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, source_label: sourceLabel ?? null, created_at: createdAt ?? null }),
+    body: JSON.stringify({ text, source_label: sourceLabel ?? null, source_card_id: sourceCardId ?? null, created_at: createdAt ?? null }),
   })
   const json: ApiResponse<string> = await res.json()
   if (!json.success || !json.data) throw new Error(json.error || '添加语境卡失败')

@@ -488,6 +488,7 @@ const createThoughtCard: Tool = {
             },
           },
           source_label: { type: 'string', description: '可选语境来源标签，格式 "语境·<来源短名>"。这段话源于某视频/文章时传' },
+          source_card_id: { type: 'string', description: '可选来源语境卡 card_id（如主人当前选中的 B 站语境卡）。传了主人就能从想法卡一键跳回语境' },
         },
         required: ['text'],
       },
@@ -498,6 +499,9 @@ const createThoughtCard: Tool = {
     if (!text) return '缺少参数：text'
     const sourceLabel = typeof args.source_label === 'string' && args.source_label.trim()
       ? args.source_label.trim().slice(0, 24)
+      : undefined
+    const sourceCardId = typeof args.source_card_id === 'string' && args.source_card_id.trim()
+      ? args.source_card_id.trim()
       : undefined
     const valid: AnchorCategory[] = ['motive', 'view', 'practice']
     const anchors = Array.isArray(args.anchors)
@@ -510,7 +514,7 @@ const createThoughtCard: Tool = {
         }).slice(0, 3)
       : []
 
-    const cardId = await addContextCard(text, sourceLabel)
+    const cardId = await addContextCard(text, sourceLabel, undefined, sourceCardId)
     // 整卡绑定（start_pos=0），挂上锚点
     await addBinding({
       card_id: cardId,

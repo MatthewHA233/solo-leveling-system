@@ -852,6 +852,7 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN usage_json TEXT");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN reasoning TEXT");
         let _ = conn.execute_batch("ALTER TABLE context_anchor_bindings ADD COLUMN source_card_id TEXT");
+        let _ = conn.execute_batch("ALTER TABLE context_cards ADD COLUMN source_card_id TEXT");
 
         // 渐进式迁移：bili_video_assets 转录字段（旧数据库无此列时自动追加）
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN visual_transcript TEXT");
@@ -888,11 +889,14 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
 
             -- 语境卡：用户主动产生的语境（v1 仅想法卡，kind 预留微信/知乎等来源）
+            -- source_card_id：想法卡的来源语境卡 id（如 B 站卡 bvid）——
+            -- 前端「语境·xxx」标签点击跳转靠它，不依赖语境卡上高亮绑定是否建成
             CREATE TABLE IF NOT EXISTS context_cards (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL DEFAULT 'thought',
                 text TEXT NOT NULL DEFAULT '',
                 source_label TEXT,
+                source_card_id TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -3175,11 +3179,11 @@ impl Database {
 
     // ── Context Cards（语境卡）──
 
-    pub async fn add_context_card(&self, id: &str, text: &str, source_label: Option<&str>, created_at: &str) -> Result<(), String> {
+    pub async fn add_context_card(&self, id: &str, text: &str, source_label: Option<&str>, source_card_id: Option<&str>, created_at: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
         conn.execute(
-            "INSERT INTO context_cards (id, kind, text, source_label, created_at, updated_at) VALUES (?, 'thought', ?, ?, ?, ?)",
-            params![id, text, source_label, created_at, created_at],
+            "INSERT INTO context_cards (id, kind, text, source_label, source_card_id, created_at, updated_at) VALUES (?, 'thought', ?, ?, ?, ?, ?)",
+            params![id, text, source_label, source_card_id, created_at, created_at],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -3221,7 +3225,7 @@ impl Database {
         // 想法卡
         {
             let mut stmt = conn.prepare(
-                "SELECT id, text, source_label, created_at FROM context_cards WHERE kind = 'thought'"
+                "SELECT id, text, source_label, source_card_id, created_at FROM context_cards WHERE kind = 'thought'"
             ).map_err(|e| e.to_string())?;
             let rows = stmt.query_map([], |row| {
                 Ok(ContextFeedItem {
@@ -3233,7 +3237,8 @@ impl Database {
                     bvid: None,
                     ref_path: None,
                     source_label: row.get::<_, Option<String>>(2)?,
-                    created_at: row.get::<_, String>(3)?,
+                    source_card_id: row.get::<_, Option<String>>(3)?,
+                    created_at: row.get::<_, String>(4)?,
                 })
             }).map_err(|e| e.to_string())?;
             for r in rows.flatten() { out.push(r); }
@@ -3267,6 +3272,7 @@ impl Database {
                     bvid: Some(bvid),
                     ref_path: path,
                     source_label: None,
+                    source_card_id: None,
                     created_at: at,
                 })
             }).map_err(|e| e.to_string())?;
@@ -4558,6 +4564,7 @@ pub struct ContextFeedItem {
     pub bvid: Option<String>,
     pub ref_path: Option<String>,      // bili download_path，前端展开转录全文用
     pub source_label: Option<String>,  // thought 的语境标签
+    pub source_card_id: Option<String>, // thought 的来源语境卡 id（语境标签点击跳转用）
     pub created_at: String,
 }
 

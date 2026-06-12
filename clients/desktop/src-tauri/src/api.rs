@@ -1292,6 +1292,7 @@ async fn get_context_feed(
 struct AddContextCardBody {
     text: String,
     source_label: Option<String>,
+    source_card_id: Option<String>, // 来源语境卡 id（语境标签点击跳转用）
     created_at: Option<String>,  // 迁移老想法卡时传入以保留原始时间
 }
 
@@ -1301,7 +1302,7 @@ async fn add_context_card(
 ) -> Json<ApiResponse<String>> {
     let id = uuid::Uuid::new_v4().to_string();
     let created_at = body.created_at.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-    match s.db.add_context_card(&id, &body.text, body.source_label.as_deref(), &created_at).await {
+    match s.db.add_context_card(&id, &body.text, body.source_label.as_deref(), body.source_card_id.as_deref(), &created_at).await {
         Ok(_)  => Json(ApiResponse::ok(id)),
         Err(e) => Json(ApiResponse::error(&e)),
     }

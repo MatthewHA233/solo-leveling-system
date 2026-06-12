@@ -383,7 +383,7 @@ export function buildDynamicContext(params: DynamicContextParams = {}): string {
       : `B站语境卡《${f.title ?? '未命名'}》`
     const guide = f.kind === 'thought'
       ? '。要看完整正文/锚点就调 GetThoughtCards 并把这个 card_id 传给 card_id 参数（不要塞进 keyword）；要改它就用这个 card_id 调 UpdateThoughtCard'
-      : '。它是 B 站视频的语境卡（不是想法卡，不要用 GetThoughtCards/UpdateThoughtCard 查改它），下面就是视频转录正文，直接依据它回答'
+      : '。它是 B 站视频的语境卡（不是想法卡，不要用 GetThoughtCards/UpdateThoughtCard 查改它），下面就是视频转录正文，直接依据它回答；若要调 CreateThoughtCard 替主人沉淀，把这个 card_id 传给 source_card_id（连同 source_label）'
     sections.push(
       `# 主人当前选中的卡片\n主人在洪流域用鼠标锁定了一张${head}，card_id: ${f.cardId}。` +
       `主人说"这张卡片 / 这个视频 / 这条 memo"时指的就是它，正文已附在下面，一般不用再查` +
