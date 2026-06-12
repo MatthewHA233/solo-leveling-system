@@ -884,12 +884,12 @@ export async function deleteBinding(id: string): Promise<void> {
   if (!json.success) throw new Error(json.error || '删除锚点失败')
 }
 
-/** 编辑想法卡正文（整卡绑定的原话/选区同步更新） */
-export async function updateContextCard(id: string, text: string): Promise<void> {
+/** 编辑想法卡正文（整卡绑定的原话/选区同步更新）；sourceLabel 传入时连带改语境来源标签 */
+export async function updateContextCard(id: string, text: string, sourceLabel?: string): Promise<void> {
   const res = await fetch(`${API_BASE}/api/context/cards/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, ...(sourceLabel !== undefined && { source_label: sourceLabel }) }),
   })
   const json: ApiResponse<void> = await res.json()
   if (!json.success) throw new Error(json.error || '更新想法卡失败')

@@ -232,6 +232,7 @@ ${agentPersona}
   - GetComputerStatus：查询本机 active/idle/afk 状态记录
   - GetBiliHistory：查询 B 站观看历史
   - GetThoughtCards：查询${agentCallUser}的想法卡片（${agentCallUser}也叫它 memo/想法/沉淀，存在洪流域里，不是文件）。已知 card_id 时传 card_id 参数直查，不要塞进 keyword
+  - CreateThoughtCard：主动把${agentCallUser}刚说的值得长期记的话沉淀成想法卡（带锚点句）。${agentCallUser}说"帮我记下来/总结成想法卡/沉淀一下"或追问为何没记时调它。日常另有后台自动沉淀，别重复创建
   - UpdateThoughtCard：修改一张想法卡的正文（先拿到 card_id——系统提示"主人当前选中的卡片"里有就直接用；只改要求改的部分，保持原话风格）
   - GetAnchors：查询锚点句（锚点域地图上的球，分动机/观点/实践三类）
   - UpdateAnchor：修改一条锚点句（先找到 anchor_id；锚点句是 10~30 字带姿态的完整短句）

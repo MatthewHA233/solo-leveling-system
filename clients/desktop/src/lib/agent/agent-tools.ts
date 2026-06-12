@@ -3,7 +3,7 @@
 // ══════════════════════════════════════════════
 
 import { invoke } from '@tauri-apps/api/core'
-import { fetchPerceptionSpans, fetchBiliSpans, fetchActivityBlocks, fetchActivityPalette, fetchContextFeed, fetchCardBindings, updateContextCard, updateAnchorKeyword } from '../local-api'
+import { fetchPerceptionSpans, fetchBiliSpans, fetchActivityBlocks, fetchActivityPalette, fetchContextFeed, fetchCardBindings, addContextCard, addBinding, updateContextCard, updateAnchorKeyword } from '../local-api'
 import type { PerceptionSpan, BiliSpan, AnchorCategory } from '../local-api'
 import type { ActivityPalette } from '../../types'
 import type { ToolDefinition } from '../llm/types'
@@ -456,6 +456,76 @@ const getThoughtCards: Tool = {
   },
 }
 
+// ── CreateThoughtCard ──
+
+const createThoughtCard: Tool = {
+  definition: {
+    type: 'function',
+    function: {
+      name: 'CreateThoughtCard',
+      description:
+        '把主人刚说的某段值得长期记的话，主动沉淀成一张想法卡（存进洪流域）。' +
+        '日常聊天里会有后台自动沉淀，但当主人明确要求"帮我记下来 / 总结成想法卡 / 沉淀一下"、' +
+        '或主人追问为何没记时，用本工具主动创建。' +
+        '正文保持主人的原话风格、贴近原意，不要替换术语或加你的评论。' +
+        'anchors 是从这段话提取的锚点句：10~30 字带姿态的完整短句（不是名词碎片、不带触发条件前缀），' +
+        '按说话姿态归三类——motive(刺激·动机) / view(观点·看法) / practice(教程·实践)。' +
+        '只有真的调用本工具并收到"已创建"结果后，才能告诉主人记好了——绝不允许只口头宣称。',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: '想法卡正文（贴近主人原话，轻润色通顺即可）' },
+          anchors: {
+            type: 'array',
+            description: '锚点句列表（0~3 条）',
+            items: {
+              type: 'object',
+              properties: {
+                keyword: { type: 'string', description: '10~30 字带姿态的完整锚点句' },
+                category: { type: 'string', enum: ['motive', 'view', 'practice'], description: '锚点三类' },
+              },
+              required: ['keyword', 'category'],
+            },
+          },
+          source_label: { type: 'string', description: '可选语境来源标签，格式 "语境·<来源短名>"。这段话源于某视频/文章时传' },
+        },
+        required: ['text'],
+      },
+    },
+  },
+  async execute(args) {
+    const text = typeof args.text === 'string' ? args.text.trim() : ''
+    if (!text) return '缺少参数：text'
+    const sourceLabel = typeof args.source_label === 'string' && args.source_label.trim()
+      ? args.source_label.trim().slice(0, 24)
+      : undefined
+    const valid: AnchorCategory[] = ['motive', 'view', 'practice']
+    const anchors = Array.isArray(args.anchors)
+      ? args.anchors.flatMap((x) => {
+          if (!x || typeof x !== 'object') return []
+          const o = x as Record<string, unknown>
+          const keyword = typeof o.keyword === 'string' ? o.keyword.trim() : ''
+          const category = o.category as AnchorCategory
+          return keyword && valid.includes(category) ? [{ keyword, category }] : []
+        }).slice(0, 3)
+      : []
+
+    const cardId = await addContextCard(text, sourceLabel)
+    // 整卡绑定（start_pos=0），挂上锚点
+    await addBinding({
+      card_id: cardId,
+      start_pos: 0,
+      end_pos: text.length,
+      selected_text: text,
+      user_speech: text,
+      anchors,
+    })
+    window.dispatchEvent(new CustomEvent('solevup:context-updated'))
+    const kw = anchors.map((a) => a.keyword).join('、')
+    return `已创建想法卡 ${cardId.slice(0, 8)}${sourceLabel ? `（语境标签：${sourceLabel}）` : ''}${kw ? `（锚点：${kw}）` : ''}，正文：\n${text}`
+  },
+}
+
 // ── UpdateThoughtCard ──
 
 const updateThoughtCard: Tool = {
@@ -464,14 +534,16 @@ const updateThoughtCard: Tool = {
     function: {
       name: 'UpdateThoughtCard',
       description:
-        '修改一张想法卡的正文（全文替换）。先用 GetThoughtCards 找到目标卡拿到 card_id，' +
+        '修改一张想法卡的正文（全文替换），可选同时改语境来源标签。先用 GetThoughtCards 找到目标卡拿到 card_id，' +
         '然后提供修改后的完整新正文——保持主人的原话风格，只改主人要求改的部分，不要顺手润色其他内容。' +
-        '修改正文不会自动更新锚点句。改完把新正文复述给主人确认。',
+        '修改正文不会自动更新锚点句。' +
+        '重要：只有真的调用本工具并收到"已更新"结果后，才能告诉主人改好了——绝不允许只口头宣称已修改。',
       parameters: {
         type: 'object',
         properties: {
           card_id: { type: 'string', description: '目标想法卡的 card_id（GetThoughtCards 返回的完整 id 或其前缀）' },
           new_text: { type: 'string', description: '修改后的完整新正文（全文替换）' },
+          source_label: { type: 'string', description: '语境来源标签，格式 "语境·<来源短名>"（如 "语境·UI去AI味视频"）。主人要求补语境来源时传这个' },
         },
         required: ['card_id', 'new_text'],
       },
@@ -481,6 +553,9 @@ const updateThoughtCard: Tool = {
     const cardId = typeof args.card_id === 'string' ? args.card_id.trim() : ''
     const newText = typeof args.new_text === 'string' ? args.new_text.trim() : ''
     if (!cardId || !newText) return '缺少参数：card_id 或 new_text'
+    const sourceLabel = typeof args.source_label === 'string' && args.source_label.trim()
+      ? args.source_label.trim().slice(0, 24)
+      : undefined
 
     // 容错：允许 id 前缀
     let id = cardId
@@ -491,9 +566,9 @@ const updateThoughtCard: Tool = {
       if (hits.length > 1) return `card_id 前缀 ${cardId} 匹配到多张卡，请用完整 id`
       id = hits[0].id
     }
-    await updateContextCard(id, newText)
+    await updateContextCard(id, newText, sourceLabel)
     window.dispatchEvent(new CustomEvent('solevup:context-updated'))
-    return `已更新想法卡 ${id.slice(0, 8)}，新正文：\n${newText}`
+    return `已更新想法卡 ${id.slice(0, 8)}${sourceLabel ? `（语境标签：${sourceLabel}）` : ''}，新正文：\n${newText}`
   },
 }
 
@@ -691,6 +766,7 @@ const ALL_TOOLS: readonly Tool[] = [
   getComputerStatus,
   getBiliHistory,
   getThoughtCards,
+  createThoughtCard,
   updateThoughtCard,
   getAnchors,
   updateAnchor,
