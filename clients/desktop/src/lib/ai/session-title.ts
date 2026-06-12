@@ -99,7 +99,7 @@ export async function generateSessionTitle(
   if (!text.trim()) return null
 
   try {
-    const titleModel = await getFeatureModel('session_title', 'qwen3.5-flash')
+    const titleModel = await getFeatureModel('session_title', 'qwen3.6-flash')
     const reply = await chatOnce(
       config,
       [
@@ -130,7 +130,9 @@ export async function generateSessionTitle(
     // 3) 兜底：取第一行非空文本
     const firstLine = raw.split('\n').map((s) => s.trim()).find((s) => s.length > 0)
     return firstLine ? sanitize(firstLine) : null
-  } catch {
+  } catch (e) {
+    // 不能静默吞掉：免费额度耗尽（403）曾让标题生成断了三周毫无声息
+    console.error('[SessionTitle] 标题生成失败', e)
     return null
   }
 }

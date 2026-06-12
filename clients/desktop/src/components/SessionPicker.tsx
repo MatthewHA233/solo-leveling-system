@@ -5,13 +5,16 @@
 // ══════════════════════════════════════════════
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { MessageSquare, Plus, Search, X, Trash2 } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { MessageSquare, Pencil, Plus, Search, Sparkles, X, Trash2 } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { theme } from '../theme'
 import { HudFrame } from './hud'
 import Tooltip from './Tooltip'
 import type { ChatSessionInfo, SessionSearchHit } from '../lib/agent/agent-memory'
-import { searchChatSessions } from '../lib/agent/agent-memory'
+import { searchChatSessions, fetchSessionMessages, patchSession } from '../lib/agent/agent-memory'
+import { generateSessionTitle } from '../lib/ai/session-title'
+import { loadConfig } from '../lib/agent/agent-config'
 import type { ModelDef, ModelFreeQuota } from '../lib/local-api'
 import { getFeatureModel, listModelFreeQuotas, setFeatureModel } from '../lib/model-audit'
 import { MODEL_SELECT_POPUP_WIDTH, modelSelectOption } from '../lib/model-display'
@@ -26,18 +29,24 @@ interface Props {
   readonly onNewSession: () => void
   readonly onDelete: (id: string) => void
   readonly onClose: () => void
+  /** 重命名/重新生成标题后让父级重拉会话列表 */
+  readonly onRefresh?: () => void
 }
 
 const clip4 = `polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)`
 
 export default function SessionPicker({
-  sessions, currentSessionId, dockRight = 340, onSelect, onNewSession, onDelete, onClose,
+  sessions, currentSessionId, dockRight = 340, onSelect, onNewSession, onDelete, onClose, onRefresh,
 }: Props) {
   const [query, setQuery] = useState('')
   const [confirmId, setConfirmId] = useState<string | null>(null)
+  // 右键菜单 + 行内重命名 + 重新起标题进行中（Set：多个会话可并发重新起标题，互不顶掉状态）
+  const [menu, setMenu] = useState<{ x: number; y: number; session: ChatSessionInfo } | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [regenIds, setRegenIds] = useState<ReadonlySet<string>>(new Set())
   const [models, setModels] = useState<ModelDef[]>([])
   const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
-  const [titleModel, setTitleModel] = useState('qwen3.5-flash')
+  const [titleModel, setTitleModel] = useState('qwen3.6-flash')
   const [serverHits, setServerHits] = useState<SessionSearchHit[] | null>(null)
   const [searching, setSearching] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -59,7 +68,7 @@ export default function SessionPicker({
         const [modelRows, quotaRows, boundModel] = await Promise.all([
           invoke<ModelDef[]>('list_models'),
           listModelFreeQuotas(),
-          getFeatureModel('session_title', 'qwen3.5-flash'),
+          getFeatureModel('session_title', 'qwen3.6-flash'),
         ])
         if (cancelled) return
         setModels(modelRows)
@@ -135,17 +144,74 @@ export default function SessionPicker({
     } catch {}
   }, [])
 
+  // 右键菜单：点击任意处 / Esc / 再次右键 关闭
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(null) }
+    window.addEventListener('click', close)
+    window.addEventListener('contextmenu', close, true)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('contextmenu', close, true)
+      window.removeEventListener('keydown', onKey, true)
+    }
+  }, [menu])
+
+  const commitRename = useCallback(async (id: string, raw: string) => {
+    setEditingId(null)
+    const title = raw.trim()
+    if (!title) return
+    try {
+      await patchSession(id, { title })
+      onRefresh?.()
+    } catch (e) {
+      console.error('[SessionPicker] 重命名失败', e)
+    }
+  }, [onRefresh])
+
+  const regenTitle = useCallback(async (s: ChatSessionInfo) => {
+    setMenu(null)
+    let alreadyRunning = false
+    setRegenIds((prev) => {
+      if (prev.has(s.id)) { alreadyRunning = true; return prev }
+      const next = new Set(prev)
+      next.add(s.id)
+      return next
+    })
+    if (alreadyRunning) return
+    try {
+      const msgs = await fetchSessionMessages(s.id)
+      if (msgs.length === 0) return
+      const title = await generateSessionTitle(msgs, loadConfig())
+      if (title) {
+        await patchSession(s.id, { title })
+        onRefresh?.()
+      }
+    } catch (e) {
+      console.error('[SessionPicker] 重新生成标题失败', e)
+    } finally {
+      setRegenIds((prev) => {
+        const next = new Set(prev)
+        next.delete(s.id)
+        return next
+      })
+    }
+  }, [onRefresh])
+
   const accent = theme.electricBlue
 
   return (
     <div
-      className="session-picker-root"
+      // right-panel-hud：借用右栏注入的 HUD 滚动条样式（同色细滚动条）
+      className="session-picker-root right-panel-hud"
       style={{
         position: 'fixed',
-        top: 60,
+        top: 52, // 与右侧暗影系统面板顶边对齐（顶栏高 52）
         right: dockRight,
         bottom: 0,
-        width: 308,
+        width: 272, // 比暗影系统窄一档（历史列表不需要那么宽）
         display: 'flex', flexDirection: 'column',
         background: `
           linear-gradient(180deg, rgba(4,10,26,0.96) 0%, rgba(2,6,14,0.98) 100%)
@@ -161,11 +227,11 @@ export default function SessionPicker({
       {/* 开灯瞬间的纵向亮闪，从左侧边切入 */}
       <div className="session-picker-edge-flash" />
 
-      {/* 与其它 HUD 面板一致的装饰框 */}
+      {/* 与其它 HUD 面板一致的装饰框（top label 对仗 ChatPanel 的 CHAT · SHADOW） */}
       <HudFrame
         color={accent}
         accent={theme.warningOrange}
-        topLabel="历史会话"
+        topLabel="SESSION · LOG"
         bottomLabel="ARCHIVE"
         showNotchTop
         showNotchBottom
@@ -175,23 +241,50 @@ export default function SessionPicker({
         cornerSize={14}
       />
 
-      {/* Header */}
+      {/* Header：版式对齐暗影系统头部（同 padding/底线/渐变 + 发光标题 + 徽章） */}
       <div style={{
         position: 'relative', zIndex: 1,
+        padding: '18px 18px 10px', // 比 ChatPanel 多 4px：补齐其根容器的 4px 内距，标题行视觉平齐
+        borderBottom: `1px solid ${theme.hudFrameSoft}`,
         display: 'flex', alignItems: 'center', gap: 8,
-        padding: '18px 18px 10px',
+        background: `linear-gradient(90deg, ${accent}08 0%, transparent 100%)`,
         flexShrink: 0,
       }}>
-        <span style={{ flex: 1 }} />
-        <span style={{
-          fontSize: 9.5, color: theme.textPrimary,
-          fontFamily: theme.fontMono, letterSpacing: 1,
-          padding: '1px 6px',
-          border: `1px solid ${theme.hudFrameSoft}`,
-          clipPath: clip4, WebkitClipPath: clip4,
-        }}>
-          {searching ? '...' : `${filtered.length}/${sessions.length}`}
-        </span>
+        {/* 左占位 = 右侧 X 宽度，让标题组真正水平居中 */}
+        <span style={{ width: 24, flexShrink: 0 }} />
+        <div style={{ flex: 1, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            height: 16,
+            fontSize: 12.5, fontWeight: 800,
+            lineHeight: '16px',
+            fontFamily: "'Microsoft YaHei UI', 'Noto Sans SC', sans-serif",
+            color: accent, letterSpacing: 2.5,
+            textShadow: `0 0 10px ${accent}AA, 0 0 20px ${accent}44`,
+            transform: 'translateY(-1px)',
+          }}>
+            历史会话
+          </span>
+          {/* 计数徽章：对仗 ONLINE 徽章的几何 */}
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            height: 17,
+            fontSize: 8.5, fontWeight: 700,
+            lineHeight: 1,
+            letterSpacing: 1.6,
+            color: accent,
+            padding: '0 7px',
+            border: `1px solid ${accent}55`,
+            clipPath: clip4, WebkitClipPath: clip4,
+            background: `${accent}14`,
+            fontFamily: theme.fontMono,
+            textShadow: `0 0 6px ${accent}88`,
+          }}>
+            {searching ? '···' : `${filtered.length}/${sessions.length}`}
+          </span>
+        </div>
         <Tooltip content="收起 (Esc)">
         <button
           onClick={onClose}
@@ -200,8 +293,9 @@ export default function SessionPicker({
             border: `1px solid ${accent}55`,
             clipPath: clip4, WebkitClipPath: clip4,
             cursor: 'pointer',
-            color: accent, padding: '3px 4px',
+            color: accent, padding: '4px 5px',
             display: 'flex', alignItems: 'center',
+            flexShrink: 0,
           }}
         >
           <X size={12} />
@@ -336,40 +430,147 @@ export default function SessionPicker({
             highlight={query.trim()}
             active={hit.session.id === currentSessionId}
             confirming={confirmId === hit.session.id}
+            editing={editingId === hit.session.id}
+            regenerating={regenIds.has(hit.session.id)}
             onClick={() => onSelect(hit.session.id)}
             onJumpToSnippet={(timestamp) => onSelect(hit.session.id, timestamp)}
             onRequestDelete={() => setConfirmId(hit.session.id)}
             onConfirmDelete={() => { onDelete(hit.session.id); setConfirmId(null) }}
             onCancelDelete={() => setConfirmId(null)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              setMenu({
+                x: Math.min(e.clientX, window.innerWidth - 170),
+                y: Math.min(e.clientY, window.innerHeight - 130),
+                session: hit.session,
+              })
+            }}
+            onCommitRename={(title) => void commitRename(hit.session.id, title)}
+            onCancelRename={() => setEditingId(null)}
           />
         ))}
       </div>
+
+      {/* 右键菜单（portal 到 body，避免被面板 overflow 裁剪）*/}
+      {menu && createPortal(
+        <div
+          style={{
+            position: 'fixed',
+            left: menu.x,
+            top: menu.y,
+            zIndex: 3000,
+            minWidth: 152,
+            padding: 4,
+            background: 'rgba(4,10,26,0.97)',
+            border: `1px solid ${accent}55`,
+            clipPath: clip4,
+            WebkitClipPath: clip4,
+            boxShadow: `0 10px 28px rgba(0,0,0,0.6), inset 0 0 24px ${accent}08`,
+            fontFamily: theme.fontBody,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <ContextMenuItem
+            icon={<Pencil size={12} />}
+            label="重命名"
+            onClick={() => { setEditingId(menu.session.id); setMenu(null) }}
+          />
+          <ContextMenuItem
+            icon={<Sparkles size={12} />}
+            label="重新生成标题"
+            onClick={() => { void regenTitle(menu.session) }}
+          />
+          <div style={{ height: 1, margin: '3px 6px', background: theme.hudFrameSoft }} />
+          <ContextMenuItem
+            icon={<Trash2 size={12} />}
+            label="删除"
+            danger
+            onClick={() => { setConfirmId(menu.session.id); setMenu(null) }}
+          />
+        </div>,
+        document.body,
+      )}
     </div>
   )
 }
 
+function ContextMenuItem({ icon, label, danger, onClick }: {
+  icon: React.ReactNode
+  label: string
+  danger?: boolean
+  onClick: () => void
+}) {
+  const color = danger ? theme.dangerRed : theme.textPrimary
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        width: '100%',
+        padding: '6px 10px',
+        background: 'transparent',
+        border: 'none',
+        color,
+        fontSize: 11.5,
+        fontFamily: theme.fontBody,
+        letterSpacing: 0.5,
+        cursor: 'pointer',
+        textAlign: 'left',
+        transition: 'background 0.12s',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = danger ? `${theme.dangerRed}1E` : `${theme.electricBlue}18`
+      }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+    >
+      {icon}
+      {label}
+    </button>
+  )
+}
+
 function SessionRow({
-  session, snippets, highlight, active, confirming, onClick, onJumpToSnippet, onRequestDelete, onConfirmDelete, onCancelDelete,
+  session, snippets, highlight, active, confirming, editing, regenerating,
+  onClick, onJumpToSnippet, onRequestDelete, onConfirmDelete, onCancelDelete,
+  onContextMenu, onCommitRename, onCancelRename,
 }: {
   session: ChatSessionInfo
   snippets: readonly { role: string; excerpt: string; timestamp: string }[]
   highlight: string
   active: boolean
   confirming: boolean
+  editing: boolean
+  regenerating: boolean
   onClick: () => void
   onJumpToSnippet: (timestamp: string) => void
   onRequestDelete: () => void
   onConfirmDelete: () => void
   onCancelDelete: () => void
+  onContextMenu: (e: React.MouseEvent) => void
+  onCommitRename: (title: string) => void
+  onCancelRename: () => void
 }) {
   const updated = formatRelativeTime(session.updated_at)
   const title = session.title?.trim() || '未命名会话'
   const preview = session.summary?.trim() || ''
 
+  // 行内重命名只触发一次提交：Enter/Esc 后 unmount 的 blur 不能再 commit
+  const renameDoneRef = useRef(false)
+  useEffect(() => { if (editing) renameDoneRef.current = false }, [editing])
+  const finishRename = (value: string) => {
+    if (renameDoneRef.current) return
+    renameDoneRef.current = true
+    const t = value.trim()
+    if (!t || t === title) onCancelRename()
+    else onCommitRename(t)
+  }
+
   return (
     <div
       className="session-row"
-      onClick={confirming ? undefined : onClick}
+      onClick={confirming || editing ? undefined : onClick}
+      onContextMenu={onContextMenu}
       style={{
         position: 'relative',
         padding: '8px 14px',
@@ -417,14 +618,41 @@ function SessionRow({
             display: 'flex', alignItems: 'center', gap: 6,
             marginBottom: preview || snippets.length > 0 ? 2 : 0,
           }}>
-            <div style={{
-              flex: 1, minWidth: 0,
-              fontSize: 12, fontWeight: 600,
-              color: active ? theme.electricBlue : theme.textPrimary,
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            }}>
-              <Highlight text={title} keyword={highlight} />
-            </div>
+            {editing ? (
+              <input
+                autoFocus
+                defaultValue={title}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  e.stopPropagation()
+                  if (e.key === 'Enter') finishRename((e.target as HTMLInputElement).value)
+                  if (e.key === 'Escape') { renameDoneRef.current = true; onCancelRename() }
+                }}
+                onBlur={(e) => finishRename(e.target.value)}
+                style={{
+                  flex: 1, minWidth: 0,
+                  fontSize: 12, fontWeight: 600,
+                  color: theme.textPrimary,
+                  fontFamily: theme.fontBody,
+                  background: 'rgba(0,229,255,0.07)',
+                  border: `1px solid ${theme.electricBlue}66`,
+                  padding: '1px 5px',
+                  outline: 'none',
+                }}
+              />
+            ) : (
+              <div style={{
+                flex: 1, minWidth: 0,
+                fontSize: 12, fontWeight: 600,
+                color: active ? theme.electricBlue : theme.textPrimary,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                opacity: regenerating ? 0.45 : 1,
+              }}>
+                {regenerating
+                  ? '重新起标题中…'
+                  : <Highlight text={title} keyword={highlight} />}
+              </div>
+            )}
             <div style={{
               fontSize: 11, color: theme.textPrimary,
               fontFamily: theme.fontMono, flexShrink: 0,
