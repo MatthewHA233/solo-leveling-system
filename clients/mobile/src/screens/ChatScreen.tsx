@@ -23,47 +23,17 @@ import type {
   ChatImageAttachment,
   ChatMessage,
 } from '../types'
-import { mockWaveform } from '../lib/mock'
 import { fmtDuration } from '../lib/time'
-import { runQueryLoop } from '../lib/llm/query-loop'
-import { createAssistantMessage, createUserMessage } from '../lib/llm/types'
-import type { Message } from '../lib/llm/types'
-import {
-  DEFAULT_CONFIG,
-  buildSystemPrompt,
-  getDashScopeApiKey,
-  loadConfig,
-  updateConfig,
-} from '../lib/agent/agent-config'
 import type { AgentConfig } from '../lib/agent/agent-config'
+import { useChatController } from '../lib/agent/use-chat-controller'
 import ModelCenter from '../components/ModelCenter'
-import {
-  solevupAppendChatMessages,
-  solevupCleanupEmptyChatSessions,
-  solevupCreateChatSession,
-  solevupGetActiveModelApiKey,
-  solevupGetChatMessages,
-  solevupGetFeatureBinding,
-  solevupInsertModelCallLog,
-  solevupListChatSessions,
-  solevupPatchChatSession,
-  type ChatMessageDbRow,
-  type ChatSessionRow,
-} from '../lib/solevupdb'
 import SessionsSheet from '../components/SessionsSheet'
 import QuickModelSheet from '../components/QuickModelSheet'
 import { getModelDef } from '../lib/models/registry'
-import { generateSessionTitle } from '../lib/ai/session-title'
-import {
-  ensureMicPermission,
-  omniConnect,
-  omniStartRecording,
-  omniStop,
-  omniStopAndCommit,
-  subscribeOmni,
-} from '../lib/omni'
-
-const DEFAULT_OMNI_MODEL = 'qwen3.5-omni-flash-realtime'
+import { getDashScopeApiKey } from '../lib/agent/agent-config'
+import { solevupGetFeatureBinding } from '../lib/solevupdb'
+import { ensureMicPermission } from '../lib/omni'
+import { useStableKeyboardInset } from '../lib/use-keyboard-inset'
 
 
 // 占位图（纯 RN 演示用色块，接入相册后换真实图）
@@ -82,12 +52,18 @@ function nextId(): string {
   return `m${Date.now()}_${idSeq}`
 }
 
-export default function ChatScreen() {
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+export default function ChatScreen({ bottomInset = 0 }: { bottomInset?: number }) {
+  // ── 全局 controller（与全局浮层共享同一会话） ──
+  const ctrl = useChatController()
+  const { messages, isProcessing, sessionId, config } = ctrl
+  const keyboardInset = useStableKeyboardInset(true)
+  // 弹层容器已消化 bottomInset，剩余抬升让输入面板下边界精确贴键盘上沿
+  const kbPad = Math.max(0, keyboardInset - bottomInset)
+
+  // ── 本地 UI 状态 ──
   const [input, setInput] = useState('')
   const [pendingImages, setPendingImages] = useState<ChatImageAttachment[]>([])
   const [aiMode, setAiMode] = useState<AiMode>('omni')
-  const [isProcessing, setIsProcessing] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [recording, setRecording] = useState(false)
   const [recordMs, setRecordMs] = useState(0)
@@ -96,75 +72,11 @@ export default function ChatScreen() {
   const [quickModelOpen, setQuickModelOpen] = useState(false)
   const [boundModels, setBoundModels] = useState<{ fairy_chat: string; fairy_omni_chat: string }>({
     fairy_chat: 'qwen3.6-flash',
-    fairy_omni_chat: DEFAULT_OMNI_MODEL,
+    fairy_omni_chat: 'qwen3.5-omni-flash-realtime',
   })
-  const [sessionId, setSessionId] = useState<string | null>(null)
-  const sessionIdRef = useRef<string | null>(null)
-  useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
-  const [config, setConfig] = useState<AgentConfig>(DEFAULT_CONFIG)
 
   const scrollRef = useRef<ScrollView>(null)
-  const cancelStreamRef = useRef<(() => void) | null>(null)
   const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const configRef = useRef<AgentConfig>(DEFAULT_CONFIG)
-  // LLM 对话历史（llm Message 类型，与 desktop conversationRef 同构）
-  const conversationRef = useRef<Message[]>([])
-
-  // 切换会话：装载消息 + 重建 LLM 对话历史
-  const switchToSession = useCallback(async (s: ChatSessionRow) => {
-    setSessionId(s.id)
-    setSessionsOpen(false)
-    try {
-      const rows = await solevupGetChatMessages(s.id)
-      setMessages(rows.map((r) => ({
-        id: r.id,
-        role: (r.role === 'user' || r.role === 'agent' || r.role === 'system' ? r.role : 'system') as ChatMessage['role'],
-        content: r.content ?? '',
-        timestamp: Date.parse(r.timestamp) || Date.now(),
-        reasoning: r.reasoning ?? undefined,
-        audio: r.durationMs
-          ? { durationMs: r.durationMs, waveform: mockWaveform(26), transcript: r.content ?? undefined }
-          : undefined,
-      })))
-      conversationRef.current = rows
-        .filter((r) => (r.role === 'user' || r.role === 'agent') && (r.content ?? '').trim())
-        .slice(-12)
-        .map((r) => (r.role === 'user' ? createUserMessage(r.content!) : createAssistantMessage(r.content!)))
-    } catch {
-      setMessages([])
-      conversationRef.current = []
-    }
-  }, [])
-
-  const createNewSession = useCallback(async () => {
-    const s = await solevupCreateChatSession().catch(() => null)
-    if (!s) return
-    setSessionId(s.id)
-    setSessionsOpen(false)
-    setMessages([])
-    conversationRef.current = []
-  }, [])
-
-  // 会话标题：消息够 4 条且仍是「新会话」时用 session_title 绑定模型生成（对齐 desktop）
-  const titleDoneRef = useRef<Set<string>>(new Set())
-  const maybeGenerateTitle = useCallback(async (sid: string, msgs: ChatMessage[]) => {
-    if (titleDoneRef.current.has(sid)) return
-    const meaningful = msgs.filter((m) => m.role !== 'system' && (m.content || m.audio?.transcript))
-    if (meaningful.length < 4) return
-    const current = (await solevupListChatSessions(50).catch(() => []))
-      .find((x) => x.id === sid)
-    if (!current || current.title !== '新会话') { titleDoneRef.current.add(sid); return }
-    titleDoneRef.current.add(sid)
-    const syncedKey = await solevupGetActiveModelApiKey().catch(() => null)
-    const apiKey = syncedKey?.apiKey || getDashScopeApiKey(configRef.current)
-    if (!apiKey) return
-    const model = (await solevupGetFeatureBinding('session_title').catch(() => null)) || 'qwen3.6-flash'
-    const title = await generateSessionTitle(msgs, {
-      apiKey, apiBase: configRef.current.openaiApiBase, model,
-    })
-    if (title) void solevupPatchChatSession(sid, title, null).catch(() => {})
-  }, [])
-
 
   const refreshBoundModels = useCallback(() => {
     void Promise.all([
@@ -179,61 +91,11 @@ export default function ChatScreen() {
   }, [])
 
   useEffect(() => {
-    loadConfig().then((cfg) => {
-      configRef.current = cfg
-      setConfig(cfg)
-    })
     refreshBoundModels()
-    // 会话初始化（对齐 desktop initChatSession：最近会话 <4h 恢复，否则新建）
-    void (async () => {
-      try {
-        const recent = (await solevupListChatSessions(1))[0]
-        let activeId: string | null = null
-        if (recent && Date.now() - Date.parse(recent.updatedAt) < 4 * 3_600_000) {
-          await switchToSession(recent)
-          activeId = recent.id
-        } else {
-          const s = await solevupCreateChatSession()
-          if (s) { setSessionId(s.id); activeId = s.id }
-        }
-        // except 必须是当前激活会话：否则刚新建的空会话会被自己清掉，
-        // 后续消息 append 到已删除会话被外键拒绝 → 历史全丢
-        void solevupCleanupEmptyChatSessions(activeId).catch(() => {})
-      } catch {}
-    })()
-  }, [switchToSession])
-
-  // 会话持久化（debounce；INSERT OR REPLACE by id 幂等，流式中间态也安全）
-  useEffect(() => {
-    if (!sessionId || messages.length === 0) return
-    const t = setTimeout(() => {
-      const rows: ChatMessageDbRow[] = messages.map((m) => ({
-        id: m.id,
-        role: m.role,
-        content: m.content || (m.audio?.transcript ?? ''),
-        timestamp: new Date(m.timestamp).toISOString(),
-        durationMs: m.audio?.durationMs ?? null,
-        reasoning: m.reasoning ?? null,
-      }))
-      void solevupAppendChatMessages(sessionId, rows).catch(() => {})
-    }, 600)
-    return () => clearTimeout(t)
-  }, [messages, sessionId])
-
-  const handleConfigSave = useCallback((updates: Partial<AgentConfig>) => {
-    setConfig((prev) => {
-      const next = updateConfig(prev, updates)
-      configRef.current = next
-      return next
-    })
-  }, [])
-
-  useEffect(() => {
     return () => {
-      cancelStreamRef.current?.()
       if (recordTimerRef.current) clearInterval(recordTimerRef.current)
     }
-  }, [])
+  }, [refreshBoundModels])
 
   const scrollToEnd = useCallback(() => {
     requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }))
@@ -243,240 +105,43 @@ export default function ChatScreen() {
     scrollToEnd()
   }, [messages, scrollToEnd])
 
-  // 真实 LLM 流式回复（与 desktop handleSend 同构：runQueryLoop + conversationRef 紧凑历史）
-  // key/模型优先用 LAN 同步过来的 model_api_keys / feature_bindings，手填仅作 fallback
-  const runAgentReply = useCallback(
-    (req: { text: string; hasImages: boolean; hasAudio: boolean; imageCount: number }) => {
-      setIsProcessing(true)
-      const agentId = nextId()
-      setMessages((prev) => [
-        ...prev,
-        { id: agentId, role: 'agent', content: '', timestamp: Date.now(), streaming: true },
-      ])
-
-      const abort = new AbortController()
-      cancelStreamRef.current = () => abort.abort()
-
-      const userMsg = createUserMessage(req.text)
-      void (async () => {
-        const cfg = configRef.current
-        // 同步过来的激活 key 优先（desktop 同步），fallback 到模型面板手填
-        const syncedKey = await solevupGetActiveModelApiKey().catch(() => null)
-        const apiKey = syncedKey?.apiKey || getDashScopeApiKey(cfg)
-        if (!apiKey) {
-          setMessages((prev) => [
-            ...prev.filter((m) => m.id !== agentId),
-            {
-              id: nextId(),
-              role: 'system',
-              content: '未配置 API Key — 与电脑同步一次，或点右上角「模型」手动填入',
-              timestamp: Date.now(),
-            },
-          ])
-          setIsProcessing(false)
-          cancelStreamRef.current = null
-          setModelSheetOpen(true)
-          return
-        }
-        // 模型：feature_bindings 的 fairy_chat 绑定优先（与 desktop getFeatureModel 同语义）
-        const boundModel = await solevupGetFeatureBinding('fairy_chat').catch(() => null)
-        const model = boundModel || cfg.chatModel
-
-        try {
-          const result = await runQueryLoop({
-            messages: [...conversationRef.current.slice(-20), userMsg],
-            systemPrompt: buildSystemPrompt(cfg),
-            apiOptions: {
-              apiKey,
-              apiBase: cfg.openaiApiBase,
-              model,
-              maxTokens: 8000,
-              signal: abort.signal,
-              feature: 'fairy_chat',
-              // 用量落库（本机 model_call_log，下轮同步推回 desktop）
-              onUsageLogged: (info) => {
-                void solevupInsertModelCallLog({
-                  apiKeyId: syncedKey?.id ?? null,
-                  feature: info.feature,
-                  modelId: info.modelId,
-                  startedAt: info.startedAt,
-                  durationMs: info.durationMs,
-                  promptTextTokens: info.usage.prompt_tokens ?? 0,
-                  completionTextTokens: info.usage.completion_tokens ?? 0,
-                  success: true,
-                }).catch(() => {})
-              },
-            },
-            maxIterations: 1, // 第一版无工具调用，单轮即止
-            onEvent: (ev) => {
-              if (ev.type === 'textDelta') {
-                setMessages((prev) =>
-                  prev.map((m) => (m.id === agentId ? { ...m, content: m.content + ev.delta } : m)),
-                )
-              } else if (ev.type === 'reasoningDelta') {
-                // 推演通道：思考流只进 UI（reasoning 字段），不进对话历史（对齐 desktop）
-                setMessages((prev) =>
-                  prev.map((m) => (m.id === agentId ? { ...m, reasoning: (m.reasoning ?? '') + ev.delta } : m)),
-                )
-              } else if (ev.type === 'error') {
-                setMessages((prev) => [
-                  ...prev.map((m) => (m.id === agentId ? { ...m, streaming: false } : m)),
-                  { id: nextId(), role: 'system' as const, content: `错误：${ev.message}`, timestamp: Date.now() },
-                ])
-              }
-            },
-          })
-          // 紧凑化历史（对齐 desktop：保留最近 12 条）
-          conversationRef.current = [...conversationRef.current, userMsg, ...result].slice(-12)
-          if (sessionIdRef.current) {
-            setMessages((prev) => {
-              void maybeGenerateTitle(sessionIdRef.current!, prev)
-              return prev
-            })
-          }
-        } catch (e) {
-          if (!abort.signal.aborted) {
-            setMessages((prev) => [
-              ...prev,
-              { id: nextId(), role: 'system', content: `请求失败：${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() },
-            ])
-          }
-        } finally {
-          setMessages((prev) =>
-            prev.map((m) => (m.id === agentId ? { ...m, streaming: false } : m)),
-          )
-          setIsProcessing(false)
-          cancelStreamRef.current = null
-        }
-      })()
-    },
-    [],
-  )
+  const handleConfigSave = useCallback((updates: Partial<AgentConfig>) => {
+    ctrl.updateConfig(updates)
+  }, [ctrl])
 
   const handleSend = useCallback(() => {
     const text = input.trim()
     if ((!text && pendingImages.length === 0) || isProcessing) return
-    const imgs = pendingImages
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: nextId(),
-        role: 'user',
-        content: text,
-        timestamp: Date.now(),
-        images: imgs.length > 0 ? imgs : undefined,
-      },
-    ])
     setInput('')
     setPendingImages([])
-    runAgentReply({ text, hasImages: imgs.length > 0, hasAudio: false, imageCount: imgs.length })
-  }, [input, pendingImages, isProcessing, runAgentReply])
+    void ctrl.sendText(text)
+  }, [input, pendingImages, isProcessing, ctrl])
 
-  // ── Omni 实时语音（native OmniModule：WS + 录音 + 播放都在 Kotlin） ──
-  const omniAgentIdRef = useRef<string | null>(null)
-  const omniUserIdRef = useRef<string | null>(null)
-
-  // 订阅 omni 事件（文字 delta / 用户转写 / usage / 状态）
-  useEffect(() => {
-    return subscribeOmni({
-      onText: (delta) => {
-        const id = omniAgentIdRef.current
-        if (!id) return
-        setMessages((prev) =>
-          prev.map((m) => (m.id === id ? { ...m, content: m.content + delta } : m)),
-        )
-      },
-      onUserTranscript: (text) => {
-        const id = omniUserIdRef.current
-        if (!id) return
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === id && m.audio ? { ...m, audio: { ...m.audio, transcript: text } } : m,
-          ),
-        )
-      },
-      onUsage: (model, usage) => {
-        void (async () => {
-          const key = await solevupGetActiveModelApiKey().catch(() => null)
-          void solevupInsertModelCallLog({
-            apiKeyId: key?.id ?? null,
-            feature: 'fairy_omni_chat',
-            modelId: model,
-            startedAt: new Date().toISOString(),
-            promptTextTokens: usage.input_tokens ?? usage.prompt_tokens ?? 0,
-            completionTextTokens: usage.output_tokens ?? usage.completion_tokens ?? 0,
-            success: true,
-          }).catch(() => {})
-        })()
-      },
-      onStatus: (status, message) => {
-        if (status === 'audio_done' || status === 'disconnected') {
-          const id = omniAgentIdRef.current
-          if (id) {
-            setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, streaming: false } : m)))
-            omniAgentIdRef.current = null
-          }
-          setIsProcessing(false)
-        } else if (status === 'error') {
-          setMessages((prev) => [
-            ...prev,
-            { id: nextId(), role: 'system', content: `Omni 错误：${message ?? '未知'}`, timestamp: Date.now() },
-          ])
-          setIsProcessing(false)
-        }
-      },
-    })
-  }, [])
-
+  // ── 聊天页内按住说话（与全局手势同一 controller 链路） ──
   const startRecording = useCallback(() => {
     if (isProcessing) return
     if (aiMode !== 'omni') {
-      setMessages((prev) => [
-        ...prev,
-        { id: nextId(), role: 'system', content: '语音对话请切换到 Omni 全模态模式（右上角）', timestamp: Date.now() },
-      ])
+      ctrl.pushSystemNote('语音对话请切换到 Omni 全模态模式（右上角）')
       return
     }
     setRecording(true)
     setRecordMs(0)
     recordTimerRef.current = setInterval(() => setRecordMs((ms) => ms + 100), 100)
-
-    // 按下立即开录（native 在 WS 就绪前缓存 chunk），连接并行建立
     void (async () => {
       const ok = await ensureMicPermission()
       if (!ok) {
         setRecording(false)
-        setMessages((prev) => [
-          ...prev,
-          { id: nextId(), role: 'system', content: '未授予麦克风权限', timestamp: Date.now() },
-        ])
+        ctrl.pushSystemNote('未授予麦克风权限')
         return
       }
       try {
-        await omniStartRecording()
-        const cfg = configRef.current
-        const syncedKey = await solevupGetActiveModelApiKey().catch(() => null)
-        const apiKey = syncedKey?.apiKey || getDashScopeApiKey(cfg)
-        if (!apiKey) {
-          await omniStop()
-          setRecording(false)
-          setMessages((prev) => [
-            ...prev,
-            { id: nextId(), role: 'system', content: '未配置 API Key — 先与电脑同步或在「模型」里填入', timestamp: Date.now() },
-          ])
-          return
-        }
-        const boundModel = await solevupGetFeatureBinding('fairy_omni_chat').catch(() => null)
-        await omniConnect(apiKey, boundModel || DEFAULT_OMNI_MODEL, '', buildSystemPrompt(cfg))
+        await ctrl.startVoice()
       } catch (e) {
         setRecording(false)
-        setMessages((prev) => [
-          ...prev,
-          { id: nextId(), role: 'system', content: `语音启动失败：${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() },
-        ])
+        ctrl.pushSystemNote(`语音启动失败：${e instanceof Error ? e.message : String(e)}`)
       }
     })()
-  }, [isProcessing, aiMode])
+  }, [isProcessing, aiMode, ctrl])
 
   const stopRecording = useCallback(() => {
     if (recordTimerRef.current) {
@@ -489,29 +154,11 @@ export default function ChatScreen() {
     setRecordMs(0)
     if (aiMode !== 'omni') return
     if (ms < 500) {
-      void omniStop()
+      ctrl.cancelVoice()
       return
     }
-    // 用户语音气泡（转写到达后由 onUserTranscript 填充）+ AI 回复气泡
-    const userId = nextId()
-    const agentId = nextId()
-    omniUserIdRef.current = userId
-    omniAgentIdRef.current = agentId
-    const audio: ChatAudioAttachment = { durationMs: ms, waveform: mockWaveform(26) }
-    setMessages((prev) => [
-      ...prev,
-      { id: userId, role: 'user', content: '', timestamp: Date.now(), audio },
-      { id: agentId, role: 'agent', content: '', timestamp: Date.now(), streaming: true },
-    ])
-    setIsProcessing(true)
-    void omniStopAndCommit().catch((e) => {
-      setMessages((prev) => [
-        ...prev.map((m) => (m.id === agentId ? { ...m, streaming: false } : m)),
-        { id: nextId(), role: 'system' as const, content: `发送失败：${e instanceof Error ? e.message : String(e)}`, timestamp: Date.now() },
-      ])
-      setIsProcessing(false)
-    })
-  }, [recording, recordMs, aiMode])
+    ctrl.stopVoiceCommit(ms)
+  }, [recording, recordMs, aiMode, ctrl])
 
   const toggleImage = useCallback((img: ChatImageAttachment) => {
     setPendingImages((prev) =>
@@ -527,7 +174,7 @@ export default function ChatScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.root}
+      style={[styles.root, kbPad > 0 && { paddingBottom: kbPad }]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       {/* ── 头部 ── */}
@@ -679,8 +326,8 @@ export default function ChatScreen() {
         fallbackApiKey={getDashScopeApiKey(config)}
         apiBase={config.openaiApiBase}
         onClose={() => setSessionsOpen(false)}
-        onSelect={(sess) => { void switchToSession(sess) }}
-        onCreate={() => { void createNewSession() }}
+        onSelect={(sess) => { void ctrl.switchToSession(sess); setSessionsOpen(false) }}
+        onCreate={() => { void ctrl.newSession(); setSessionsOpen(false) }}
       />
       <QuickModelSheet
         visible={quickModelOpen}
