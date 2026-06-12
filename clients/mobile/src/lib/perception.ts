@@ -210,6 +210,7 @@ interface PerceptionNative {
   hasUsageAccess(): Promise<boolean>
   openUsageAccessSettings(): Promise<boolean>
   collectUsageStats(rangeMs: number): Promise<CollectUsageResult>
+  queryUsageByEvents(startMs: number, endMs: number): Promise<ForegroundUsage[]>
   getLatestUsageSummary(): Promise<UsageSummary | null>
   isAccessibilityEnabled(): Promise<boolean>
   openAccessibilitySettings(): Promise<boolean>
@@ -389,6 +390,18 @@ export async function insertDbProbe(): Promise<ProbeInsertResult | null> {
 export async function hasUsageAccess(): Promise<boolean> {
   if (!Native) return false
   return Native.hasUsageAccess()
+}
+
+export type ForegroundUsage = {
+  packageName: string
+  appLabel: string
+  totalMs: number
+}
+
+/** queryEvents 精确统计区间内各 app 前台时长（系统对照，不落库） */
+export async function queryUsageByEvents(startMs: number, endMs: number): Promise<ForegroundUsage[]> {
+  if (!Native) throw new Error('Perception native module unavailable')
+  return Native.queryUsageByEvents(startMs, endMs)
 }
 
 export async function openUsageAccessSettings(): Promise<boolean> {

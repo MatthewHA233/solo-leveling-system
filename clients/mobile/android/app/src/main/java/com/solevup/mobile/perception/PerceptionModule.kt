@@ -91,6 +91,27 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  /** queryEvents 精确统计 [startMs, endMs) 各 app 前台时长（系统对照用，不落库）。 */
+  @ReactMethod
+  fun queryUsageByEvents(startMs: Double, endMs: Double, promise: Promise) {
+    try {
+      val list = UsageStatsCollector.queryForegroundByEvents(reactContext, startMs.toLong(), endMs.toLong())
+      val arr = Arguments.createArray()
+      for (u in list) {
+        arr.pushMap(Arguments.createMap().apply {
+          putString("packageName", u.packageName)
+          putString("appLabel", u.appLabel)
+          putDouble("totalMs", u.totalMs.toDouble())
+        })
+      }
+      promise.resolve(arr)
+    } catch (_: UsageAccessNotGranted) {
+      promise.reject("USAGE_ACCESS_DENIED", "PACKAGE_USAGE_STATS not granted")
+    } catch (e: Throwable) {
+      promise.reject("QUERY_USAGE_EVENTS_FAILED", e.message, e)
+    }
+  }
+
   /** 读最近一条 app.usage_summary 事件并展开为 apps 列表，方便 UI 直接渲染。 */
   @ReactMethod
   fun getLatestUsageSummary(promise: Promise) {

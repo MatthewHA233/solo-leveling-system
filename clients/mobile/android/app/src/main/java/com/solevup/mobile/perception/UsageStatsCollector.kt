@@ -152,6 +152,57 @@ object UsageStatsCollector {
     )
   }
 
+  data class ForegroundUsage(val packageName: String, val appLabel: String, val totalMs: Long)
+
+  /**
+   * queryEvents 逐事件精确统计 [startMs, endMs) 内各 app 前台时长。
+   * 与 queryUsageStats(INTERVAL_BEST) 不同：不受 bucket 边界污染，
+   * 口径可与 a11y app_monitor_segments 当日汇总直接对比。
+   * RESUMED/PAUSED 配对累加；区间始/末仍在前台的按区间边界闭合。
+   */
+  fun queryForegroundByEvents(context: Context, startMs: Long, endMs: Long): List<ForegroundUsage> {
+    if (!hasUsageAccess(context)) throw UsageAccessNotGranted()
+    val mgr = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+    val pm = context.packageManager
+    val ownPkg = context.packageName
+    val effEnd = minOf(endMs, System.currentTimeMillis())
+    val resumedType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED
+    } else {
+      @Suppress("DEPRECATION") android.app.usage.UsageEvents.Event.MOVE_TO_FOREGROUND
+    }
+    val pausedType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      android.app.usage.UsageEvents.Event.ACTIVITY_PAUSED
+    } else {
+      @Suppress("DEPRECATION") android.app.usage.UsageEvents.Event.MOVE_TO_BACKGROUND
+    }
+    val totals = HashMap<String, Long>()
+    val openAt = HashMap<String, Long>() // pkg -> 进前台时刻
+    val events = mgr.queryEvents(startMs, effEnd)
+    val ev = android.app.usage.UsageEvents.Event()
+    while (events.hasNextEvent()) {
+      events.getNextEvent(ev)
+      val pkg = ev.packageName ?: continue
+      if (pkg == ownPkg) continue
+      when (ev.eventType) {
+        resumedType -> if (!openAt.containsKey(pkg)) openAt[pkg] = ev.timeStamp
+        pausedType -> {
+          val st = openAt.remove(pkg)
+          if (st != null) {
+            totals[pkg] = (totals[pkg] ?: 0L) + (ev.timeStamp - st).coerceAtLeast(0L)
+          }
+        }
+      }
+    }
+    for ((pkg, st) in openAt) {
+      totals[pkg] = (totals[pkg] ?: 0L) + (effEnd - st).coerceAtLeast(0L)
+    }
+    return totals.entries
+      .filter { it.value > 0L }
+      .sortedByDescending { it.value }
+      .map { ForegroundUsage(it.key, resolveAppLabel(pm, it.key), it.value) }
+  }
+
   private fun resolveAppLabel(pm: PackageManager, pkg: String): String {
     return try {
       val ai = pm.getApplicationInfo(pkg, 0)

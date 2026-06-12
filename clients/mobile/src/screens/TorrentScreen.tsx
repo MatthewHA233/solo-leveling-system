@@ -37,6 +37,7 @@ import {
   type WindowEvent,
 } from '../lib/perception'
 import CalendarPopover, { type DayRangeColored } from '../components/CalendarPopover'
+import UsageCompareSheet, { type A11yUsageRow } from '../components/UsageCompareSheet'
 import SharedDateHeader from '../components/SharedDateHeader'
 import { dayPeriodForTs } from '../lib/dayPeriods'
 import { solevupGetPref, solevupSetPref } from '../lib/solevupdb'
@@ -572,6 +573,26 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
   const [appIconCache, setAppIconCache] = useState<Record<string, string>>({})
   const [calendarRangesByDay, setCalendarRangesByDay] = useState<Record<string, DayRangeColored[]>>({})
   const [monitorSegments, setMonitorSegments] = useState<AppMonitorSegment[]>([])
+  const [usageCompareOpen, setUsageCompareOpen] = useState(false)
+  // 系统对照：a11y segments 当日按 app 汇总
+  const a11yUsageRows = useMemo<A11yUsageRow[]>(() => {
+    const byPkg = new Map<string, A11yUsageRow>()
+    for (const seg of monitorSegments) {
+      if (seg.kind !== 'app' || !seg.packageName) continue
+      const dur = Math.max(0, (seg.endMs || seg.startMs) - seg.startMs)
+      const cur = byPkg.get(seg.packageName)
+      if (cur) {
+        cur.totalMs += dur
+      } else {
+        byPkg.set(seg.packageName, {
+          packageName: seg.packageName,
+          appLabel: seg.appLabel || seg.packageName,
+          totalMs: dur,
+        })
+      }
+    }
+    return [...byPkg.values()]
+  }, [monitorSegments])
   const [monitorLoading, setMonitorLoading] = useState(false)
   const [monitorRefreshing, setMonitorRefreshing] = useState(false)
   const [formalActions, setFormalActions] = useState<TorrentFormalAction[]>([])
@@ -898,6 +919,11 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
             {sortOrder === 'desc' ? '新→旧 ↓' : '旧→新 ↑'}
           </Text>
         </Pressable>
+        {viewMode === 'monitor' && (
+          <Pressable onPress={() => setUsageCompareOpen(true)} style={[styles.sortFloat, styles.compareFloat]}>
+            <Text style={styles.sortFloatText}>系统对照</Text>
+          </Pressable>
+        )}
         {viewMode === 'monitor' ? (
           <AppMonitorView
             segments={monitorSegments}
@@ -948,6 +974,13 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
           />
         )}
       </View>
+      <UsageCompareSheet
+        visible={usageCompareOpen}
+        onClose={() => setUsageCompareOpen(false)}
+        startMs={selectedDayBounds.startMs}
+        endMs={Math.min(selectedDayBounds.endMs, Date.now())}
+        a11yRows={a11yUsageRows}
+      />
       <CalendarPopover
         open={calendarOpen}
         selectedDate={selectedDate}
@@ -2131,6 +2164,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   sortFloatText: { fontSize: 11, color: theme.inkSoft, fontWeight: '700' },
+  compareFloat: { right: 88 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   emptyInline: { paddingTop: 60, alignItems: 'center', paddingHorizontal: 24 },
   emptyHint: { fontSize: 13, color: theme.inkSoft, textAlign: 'center', lineHeight: 22 },
