@@ -167,12 +167,15 @@ export default function TabBar({
   onCenterPress,
   voice,
   orbState = 'idle',
+  orbAway = false,
 }: {
   active: TabKey
   onChange: (key: TabKey) => void
   onCenterPress: () => void
   voice: VoiceGestureHandlers
   orbState?: FairyOrbState
+  /** 球「跑出去了」（录音游走中）：中央按钮留空位，回家后再现身 */
+  orbAway?: boolean
 }) {
   // 中央按钮：短按 = 弹出/收起底部对话条；长按(320ms) = 全局语音手势（move/release 透传给上层判区）
   const longActiveRef = useRef(false)
@@ -223,7 +226,9 @@ export default function TabBar({
       {SIDE_TABS_LEFT.map((t) => <SideTab key={t.key} tab={t} active={active} onChange={onChange} />)}
       <View style={styles.centerSlot}>
         <View style={styles.centerBtn} {...pan.panHandlers}>
-          <FairyOrb size={46} state={orbState} />
+          <View style={{ opacity: orbAway ? 0 : 1 }}>
+            <FairyOrb size={46} state={orbState} />
+          </View>
         </View>
         <Text style={[styles.label, { color: theme.inkFaint, fontWeight: '500' }]}>
           暗影体

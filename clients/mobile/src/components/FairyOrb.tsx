@@ -21,6 +21,9 @@ interface Props {
   /** 球面（280 盘）的显示直径；光晕按比例向外溢出 */
   readonly size?: number
   readonly state?: FairyOrbState
+  /** 受控注视方向（400 体系球心偏移）：提供时 listening 不再随机扫视，
+   *  眼组 spring 看向该方向 —— 录音游走时「往哪跑就往哪看」用 */
+  readonly gazeTarget?: { x: number; y: number } | null
 }
 
 const VB = 400
@@ -37,7 +40,7 @@ const GYRO_PATH =
   'L 5 170 L 27.4 151.7 ' +
   'A 145 145 0 0 1 151.7 27.4 Z'
 
-export default function FairyOrb({ size = 46, state = 'idle' }: Props) {
+export default function FairyOrb({ size = 46, state = 'idle', gazeTarget = null }: Props) {
   // size 指球面(280)直径 → 画布按 400 体系放大，光晕溢出按钮
   const canvas = (size * VB) / 280
   const stateRef = useRef(state)
@@ -83,11 +86,20 @@ export default function FairyOrb({ size = 46, state = 'idle' }: Props) {
   }, [ballDeg])
 
   // listening：saccade（600~2000ms 随机注视点，半径 18~43px desktop 体系）
+  // gazeTarget 提供时改为受控注视（移动方向 = 注视方向）
   useEffect(() => {
     if (state !== 'listening') {
       Animated.parallel([
         Animated.timing(eyeX, { toValue: 0, duration: 300, useNativeDriver: true }),
         Animated.timing(eyeY, { toValue: 0, duration: 300, useNativeDriver: true }),
+      ]).start()
+      return
+    }
+    if (gazeTarget) {
+      const kk = canvas / VB
+      Animated.parallel([
+        Animated.spring(eyeX, { toValue: gazeTarget.x * kk, useNativeDriver: true, speed: 9, bounciness: 5 }),
+        Animated.spring(eyeY, { toValue: gazeTarget.y * kk, useNativeDriver: true, speed: 9, bounciness: 5 }),
       ]).start()
       return
     }
@@ -105,7 +117,7 @@ export default function FairyOrb({ size = 46, state = 'idle' }: Props) {
     }
     move()
     return () => { alive = false }
-  }, [state, eyeX, eyeY, canvas])
+  }, [state, eyeX, eyeY, canvas, gazeTarget])
 
   const scale = breath.interpolate({
     inputRange: [0, 1],

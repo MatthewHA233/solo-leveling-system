@@ -38,6 +38,7 @@ function AppContent() {
 
   // ── 全局语音手势状态 ──
   const [voiceActive, setVoiceActive] = useState(false)
+  const [orbAway, setOrbAway] = useState(false)
   const [voiceZone, setVoiceZone] = useState<VoiceZone>('send')
   const [recordMs, setRecordMs] = useState(0)
   const [panelOpen, setPanelOpen] = useState(false)
@@ -65,6 +66,7 @@ function AppContent() {
   const voice: VoiceGestureHandlers = {
     onStart: () => {
       setVoiceActive(true)
+      setOrbAway(true)
       setVoiceZone('send')
       zoneRef.current = 'send'
       setRecordMs(0)
@@ -141,6 +143,7 @@ function AppContent() {
           onChange={(k) => { setPanelOpen(false); setTab(k) }}
           onCenterPress={() => setPanelOpen((v) => !v)}
           voice={voice}
+          orbAway={orbAway}
           orbState={
             voiceActive
               ? 'listening'
@@ -156,8 +159,13 @@ function AppContent() {
       {/* 暗影体临时面板：顶部拖拽调高，点击外部收起 */}
       <AgentPanel visible={panelOpen} onClose={() => setPanelOpen(false)} />
 
-      {/* 按住说话手势浮层（最顶层） */}
-      <VoiceGestureOverlay visible={voiceActive} zone={voiceZone} recordMs={recordMs} />
+      {/* 按住说话手势浮层（最顶层）；fairy 回家后中央球再现身 */}
+      <VoiceGestureOverlay
+        visible={voiceActive}
+        zone={voiceZone}
+        recordMs={recordMs}
+        onReturnedHome={() => setOrbAway(false)}
+      />
     </View>
   )
 }
