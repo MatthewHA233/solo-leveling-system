@@ -374,16 +374,19 @@ export function buildDynamicContext(params: DynamicContextParams = {}): string {
   // D6 — 主人当前锁定的卡片（洪流域粘性悬浮）
   if (params.focusedCard) {
     const f = params.focusedCard
+    // 想法卡短，全文便宜；B 站转录长，给足正文但设上限控 token
+    const limit = f.kind === 'thought' ? 600 : 4000
+    const body = f.text.length > limit ? `${f.text.slice(0, limit)}…（转录超长已截断）` : f.text
     const head = f.kind === 'thought'
       ? `想法卡${f.sourceLabel ? `（${f.sourceLabel}）` : ''}`
-      : `B站语境卡《${f.title ?? '未命名'}》${f.kind === 'bili_transcript' ? '（下面是转录摘要）' : ''}`
-    const body = f.text.length > 600 ? `${f.text.slice(0, 600)}…` : f.text
+      : `B站语境卡《${f.title ?? '未命名'}》`
+    const guide = f.kind === 'thought'
+      ? '。要看完整正文/锚点就调 GetThoughtCards 并把这个 card_id 传给 card_id 参数（不要塞进 keyword）；要改它就用这个 card_id 调 UpdateThoughtCard'
+      : '。它是 B 站视频的语境卡（不是想法卡，不要用 GetThoughtCards/UpdateThoughtCard 查改它），下面就是视频转录正文，直接依据它回答'
     sections.push(
       `# 主人当前选中的卡片\n主人在洪流域用鼠标锁定了一张${head}，card_id: ${f.cardId}。` +
-      `主人说"这张卡片 / 这个想法 / 这条 memo"时指的就是它，正文已附在下面（超长会截断），一般不用再查` +
-      `${f.kind === 'thought'
-        ? '。要看完整正文/锚点就调 GetThoughtCards 并把这个 card_id 传给 card_id 参数（不要塞进 keyword）；要改它就用这个 card_id 调 UpdateThoughtCard'
-        : ''}：\n${body}`,
+      `主人说"这张卡片 / 这个视频 / 这条 memo"时指的就是它，正文已附在下面，一般不用再查` +
+      `${guide}：\n${body}`,
     )
   }
 

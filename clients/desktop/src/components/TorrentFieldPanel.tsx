@@ -11,6 +11,7 @@ import { extractAnchors } from '../lib/anchor-extract'
 import AnchorTextRenderer, { AnchorChip } from './AnchorTextRenderer'
 import AnchorFieldMap from './AnchorFieldMap'
 import CardHoverEffect from './CardHoverEffect'
+import { fetchBiliTranscriptPlain } from '../lib/bili-transcript'
 import ConfirmDialog from './ConfirmDialog'
 import Tooltip from './Tooltip'
 
@@ -174,6 +175,8 @@ export default function TorrentFieldPanel() {
     try {
       await deleteContextCard(card.id)
       await reload()
+      // 级联删掉的锚点/绑定要让别处实时跟随（展开中的转录高亮、bili 卡 chips、锚点域）
+      window.dispatchEvent(new CustomEvent('solevup:context-updated'))
     } catch (e) {
       console.error('[Torrent] 删除语境卡失败', e)
     }
@@ -424,6 +427,7 @@ function FlomoMain({
         title: card.title,
         text: card.text,
         sourceLabel: card.source_label,
+        refPath: card.ref_path, // B 站卡的转录文件路径（注视即锚定要后台拉全文）
       },
     }))
   }, [hoveredCard, cards])
@@ -431,6 +435,16 @@ function FlomoMain({
   // 离开本界面（切 tab / 切页面卸载）→ 解除锁定广播
   useEffect(() => () => {
     window.dispatchEvent(new CustomEvent('solevup:card-focus', { detail: { clear: true } }))
+  }, [])
+
+  // 右侧聊天栏"取消注视"也走 card-focus 的 clear 语义 → 本地锁定框跟着熄灭
+  useEffect(() => {
+    const onFocusEvent = (e: Event) => {
+      const d = (e as CustomEvent).detail as { clear?: boolean } | undefined
+      if (d?.clear) setHoveredCard(null)
+    }
+    window.addEventListener('solevup:card-focus', onFocusEvent)
+    return () => window.removeEventListener('solevup:card-focus', onFocusEvent)
   }, [])
 
   return (
@@ -558,8 +572,9 @@ function useCardAnchors(cardId: string, enabled: boolean) {
       try { anchors = await extractAnchors(speech, pending.text) }
       catch (e) { console.error('[Anchor] AI 提取失败，仍保留原话', e) }
       // ① 框选区域写下的想法 → 独立想法卡片（进想法卡片 tab，不进语境库）
-      await addContextCard(speech.trim())
+      const thoughtId = await addContextCard(speech.trim())
       // ② 语境卡上这段留锚点标记（语境文段 ↔ 你的想法 ↔ 关键词）
+      //    source_card_id 指向想法卡：删想法卡时本绑定级联清掉
       await addBinding({
         card_id: cardId,
         start_pos: pending.start,
@@ -567,6 +582,7 @@ function useCardAnchors(cardId: string, enabled: boolean) {
         selected_text: pending.text,
         user_speech: speech.trim(),
         anchors,
+        source_card_id: thoughtId,
       })
       setPending(null)
       setSpeech('')
@@ -758,27 +774,6 @@ function ThoughtMemoCard({ item, onRemove }: {
 }
 
 // ── B 站转录语境卡（封面 + 标题 + 摘要 + 展开全文）────────────
-interface BiliTranscriptCacheResp {
-  readonly visual: string | null
-  readonly audio: string | null
-  readonly combined: string | null
-}
-
-// ASR 转录是逐句 JSONL（{"start","end","text"}），抽成纯文本展示；非 JSON 行原样保留
-function jsonlToPlain(raw: string): string {
-  return raw
-    .split('\n')
-    .map((line) => {
-      const t = line.trim()
-      if (!t) return ''
-      try {
-        const obj = JSON.parse(t) as { text?: unknown }
-        if (typeof obj.text === 'string') return obj.text
-      } catch { /* 非 JSON 行 */ }
-      return t
-    })
-    .join('')
-}
 
 function BiliContextCard({ item }: { readonly item: ContextFeedItem }) {
   const [expanded, setExpanded] = useState(false)
@@ -814,16 +809,9 @@ function BiliContextCard({ item }: { readonly item: ContextFeedItem }) {
     if (loading) return
     if (!expanded && fullText === null && item.ref_path) {
       setLoading(true)
-      try {
-        const cache = await invoke<BiliTranscriptCacheResp>('get_bili_transcripts', { filePath: item.ref_path })
-        const raw = cache.combined || cache.audio || cache.visual || ''
-        setFullText(raw ? jsonlToPlain(raw) : '（无转录文本）')
-      } catch (e) {
-        console.error('[Torrent] 读取转录失败', e)
-        setFullText('（读取转录失败）')
-      } finally {
-        setLoading(false)
-      }
+      const plain = await fetchBiliTranscriptPlain(item.ref_path)
+      setFullText(plain ?? '（无转录文本）')
+      setLoading(false)
     }
     setExpanded((v) => !v)
   }

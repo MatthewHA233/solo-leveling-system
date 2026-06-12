@@ -62,10 +62,15 @@ export async function anchorToContext(contextText: string, userText: string): Pr
   let full = ''
   for await (const chunk of stream) {
     if (chunk.type === 'textDelta') full += chunk.delta
-    else if (chunk.type === 'error') return null
+    else if (chunk.type === 'error') {
+      console.error('[AnchorToContext] API 错误：', chunk.message)
+      return null
+    }
   }
 
-  return parseResult(full)
+  const parsed = parseResult(full)
+  if (!parsed) console.warn('[AnchorToContext] 判定不锚定/解析失败，模型原始输出：', full.slice(0, 400))
+  return parsed
 }
 
 function parseResult(raw: string): ContextAnchorResult | null {
@@ -73,7 +78,9 @@ function parseResult(raw: string): ContextAnchorResult | null {
   if (!m) return null
   try {
     const obj = JSON.parse(m[0]) as Record<string, unknown>
-    if (obj.worth !== true) return null // 值得性闸门：模型判不值得就什么都不记
+    // 值得性闸门：只有显式 worth:false 才拒——小模型偶尔漏掉 worth 字段，
+    // 但只要给出了实质 thought 就放行（漏字段 ≠ 不值得）
+    if (obj.worth === false) return null
     const segment = typeof obj.segment === 'string' ? obj.segment.trim() : ''
     const thought = typeof obj.thought === 'string' ? obj.thought.trim() : ''
     if (!thought) return null // 至少要有想法

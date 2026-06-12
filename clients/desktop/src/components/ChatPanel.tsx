@@ -3,7 +3,7 @@
 // ══════════════════════════════════════════════
 
 import { useCallback, useMemo, useRef, useEffect, useState } from 'react'
-import { Send, MessageSquare, Camera, Cpu, Volume2, VolumeX, Bug, Radio, History } from 'lucide-react'
+import { Send, MessageSquare, Camera, Cpu, Eye, Volume2, VolumeX, Bug, Radio, History, X } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { theme } from '../theme'
 import type { ChatMessage, OmniDebugInfo } from '../App'
@@ -33,6 +33,8 @@ interface Props {
   /** 传输日志表头呼号：来自 AI 人设配置（名称 / 称呼用户为），不硬编码 */
   readonly agentName?: string
   readonly userCallsign?: string
+  /** 主人在洪流域锁定的卡片（Fairy 正注视的目标），显示注视提示条 */
+  readonly gazeTarget?: { kind: 'thought' | 'bili_transcript'; title: string | null; text: string } | null
   readonly aiMode?: 'regular' | 'omni'
   readonly onToggleAiMode?: () => void
   readonly cameraReady?: boolean
@@ -45,7 +47,7 @@ interface Props {
   readonly sessionsOpen?: boolean
 }
 
-export default function ChatPanel({ messages, isProcessing, onSend, agentName = 'Fairy', userCallsign = '主人', aiMode = 'omni', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
+export default function ChatPanel({ messages, isProcessing, onSend, agentName = 'Fairy', userCallsign = '主人', gazeTarget = null, aiMode = 'omni', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
   const [input, setInput] = useState('')
   const [models, setModels] = useState<ModelDef[]>([])
   const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
@@ -222,12 +224,16 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
         {onOpenSessions && (
           <HistoryToggle on={!!sessionsOpen} onClick={onOpenSessions} />
         )}
+        {/* 标题组绝对居中（不受左右两组宽度影响） */}
         <div style={{
-          height: 24,
-          display: 'inline-flex',
+          position: 'absolute',
+          left: 0, right: 0, top: 0, bottom: 0,
+          paddingTop: 2, // 补偿头部上下 padding 差（14/10）
+          display: 'flex',
           alignItems: 'center',
+          justifyContent: 'center',
           gap: 8,
-          flexShrink: 0,
+          pointerEvents: 'none',
         }}>
           <span style={{
             display: 'inline-flex',
@@ -366,6 +372,45 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
           info={activeOmniDebug}
           onClose={() => setActiveOmniDebug(null)}
         />
+      )}
+
+      {/* ── 注视提示条：Fairy 正注视主人锁定的卡片 ── */}
+      {gazeTarget && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 7,
+          padding: '5px 18px',
+          borderTop: `1px solid ${theme.hudFrameSoft}`,
+          background: `linear-gradient(90deg, ${theme.electricBlue}0A, transparent)`,
+          fontFamily: theme.fontMono,
+          fontSize: 9.5,
+          letterSpacing: 1,
+          color: HEADER_COLOR,
+          flexShrink: 0,
+        }}>
+          <Eye size={11} style={{ color: theme.electricBlue, flexShrink: 0, animation: 'glowPulse 2.4s ease-in-out infinite' }} />
+          <span style={{ color: HEADER_NAME_COLOR, fontWeight: 700, flexShrink: 0 }}>注视中</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
+            {gazeTarget.kind === 'thought' ? '想法卡' : `B站语境《${gazeTarget.title ?? '未命名'}》`} · {gazeTarget.text.slice(0, 42)}
+          </span>
+          <Tooltip content="取消注视">
+            <button
+              onClick={() => {
+                // 广播 clear：App 清注视状态，洪流域 FlomoMain 熄灭锁定框
+                window.dispatchEvent(new CustomEvent('solevup:card-focus', { detail: { clear: true } }))
+              }}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: HEADER_COLOR, padding: 1,
+                display: 'flex', alignItems: 'center', flexShrink: 0,
+                transition: 'color 0.15s',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = theme.dangerRed)}
+              onMouseLeave={(e) => (e.currentTarget.style.color = HEADER_COLOR)}
+            >
+              <X size={11} />
+            </button>
+          </Tooltip>
+        </div>
       )}
 
       {/* ── Input ── */}

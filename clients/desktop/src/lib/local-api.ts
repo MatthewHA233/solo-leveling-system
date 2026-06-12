@@ -865,6 +865,8 @@ export async function addBinding(input: {
   selected_text: string
   user_speech: string
   anchors: Array<{ keyword: string; category: AnchorCategory }>
+  /** 同源想法卡 id：语境卡上的绑定由某张想法卡派生时填，删想法卡级联删本绑定 */
+  source_card_id?: string
 }): Promise<AnchorBinding> {
   const res = await fetch(`${API_BASE}/api/context/bindings`, {
     method: 'POST',

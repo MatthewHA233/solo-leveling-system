@@ -16,6 +16,7 @@ import {
 import type { PerceptionSpan, BiliSpan, ModelCallLog, LinkedDevice, SyncPeer, Goal } from './lib/local-api'
 import { distillThought } from './lib/thought-distill'
 import { anchorToContext } from './lib/anchor-to-context'
+import { fetchBiliTranscriptPlain } from './lib/bili-transcript'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from './types'
 import { theme, hud } from './theme'
 
@@ -470,7 +471,17 @@ export default function App() {
     title: string | null
     text: string
     sourceLabel: string | null
+    refPath: string | null   // B 站卡的转录文件路径（注视即锚定）
   } | null>(null)
+  // 同步一份 state 给 ChatPanel 显示"注视中"提示条
+  const [gazeTarget, setGazeTarget] = useState<{
+    kind: 'thought' | 'bili_transcript'
+    title: string | null
+    text: string
+  } | null>(null)
+  // 本会话最近注视过的 B 站语境（解锁/切页不丢）：沉淀时的兜底锚定目标。
+  // 误挂风险由锚定器的相关性闸门兜住——想法与该语境无关时会判 worth:false 回落独立沉淀
+  const lastBiliContextRef = useRef<{ cardId: string; title: string | null; refPath: string | null } | null>(null)
 
   // ── Session 持久化 ──
   const sessionIdRef = useRef<string | null>(null)
@@ -2071,10 +2082,12 @@ export default function App() {
         title?: string | null
         text?: string
         sourceLabel?: string | null
+        refPath?: string | null
         clear?: boolean
       }
       if (d.clear) {
         focusedCardRef.current = null
+        setGazeTarget(null)
       } else if (d.cardId && d.kind && typeof d.text === 'string') {
         focusedCardRef.current = {
           cardId: d.cardId,
@@ -2082,6 +2095,20 @@ export default function App() {
           title: d.title ?? null,
           text: d.text,
           sourceLabel: d.sourceLabel ?? null,
+          refPath: d.refPath ?? null,
+        }
+        setGazeTarget({ kind: d.kind, title: d.title ?? null, text: d.text })
+        // B 站卡的 text 只是 150 字摘要：后台拉全文转录替换，
+        // D6 注入全文 Fairy 才答得了视频内容（fetch 有记忆化，不重复读盘）
+        if (d.kind === 'bili_transcript' && d.refPath) {
+          // 记住最近注视的 B 站语境（解锁不丢），沉淀时兜底锚定
+          lastBiliContextRef.current = { cardId: d.cardId, title: d.title ?? null, refPath: d.refPath }
+          const cardId = d.cardId
+          void fetchBiliTranscriptPlain(d.refPath).then((full) => {
+            if (full && focusedCardRef.current?.cardId === cardId) {
+              focusedCardRef.current = { ...focusedCardRef.current, text: full }
+            }
+          })
         }
       }
     }
@@ -2363,25 +2390,45 @@ export default function App() {
       if (text.trim()) {
         const speech = text.trim()
         const active = activeContextRef.current
+        const focused = focusedCardRef.current
         void (async () => {
           try {
-            if (active) {
-              const r = await anchorToContext(active.text, speech)
-              if (!r) return
+            // 锚定目标三级链：展开转录 > 当前注视的 B 站卡 > 本会话最近注视过的 B 站卡。
+            // 最后一级解决"聊着聊着切走了锁定但想法明明源于语境"的常见场景；
+            // 误挂由锚定器的相关性闸门兜住（无关 → null → 回落独立沉淀）
+            let target = active
+            if (!target && focused?.kind === 'bili_transcript') {
+              const fullText = await fetchBiliTranscriptPlain(focused.refPath)
+              if (fullText) {
+                target = { cardId: focused.cardId, text: fullText, title: focused.title ?? '语境卡' }
+              }
+            }
+            if (!target && lastBiliContextRef.current) {
+              const last = lastBiliContextRef.current
+              const fullText = await fetchBiliTranscriptPlain(last.refPath)
+              if (fullText) {
+                target = { cardId: last.cardId, text: fullText, title: last.title ?? '语境卡' }
+              }
+            }
+            // 锚定器判"与语境无关/不值得"返回 null → 回落独立沉淀，想法不能丢
+            const r = target ? await anchorToContext(target.text, speech) : null
+            if (target && r) {
               // 想法卡（绑定语境来源）
-              const thoughtId = await addContextCard(r.thought, `语境·${active.title.slice(0, 16)}`)
+              const thoughtId = await addContextCard(r.thought, `语境·${target.title.slice(0, 16)}`)
               // 语境卡上定位 AI 复制的原文片段 → 建锚点（高亮在转录上）
+              // source_card_id 指向想法卡：删想法卡时语境卡上这条同源绑定一起级联清掉
               let highlighted = false
               if (r.segment) {
-                const idx = active.text.indexOf(r.segment)
+                const idx = target.text.indexOf(r.segment)
                 if (idx >= 0) {
                   await addBinding({
-                    card_id: active.cardId,
+                    card_id: target.cardId,
                     start_pos: idx,
                     end_pos: idx + r.segment.length,
                     selected_text: r.segment,
                     user_speech: r.thought,
                     anchors: r.anchors,
+                    source_card_id: thoughtId,
                   })
                   highlighted = true
                 }
@@ -3397,6 +3444,7 @@ export default function App() {
                     onSend={handleSend}
                     agentName={config.agentName}
                     userCallsign={config.agentCallUser}
+                    gazeTarget={gazeTarget}
                     aiMode={config.aiMode}
                     onToggleAiMode={() => handleConfigUpdate({ aiMode: config.aiMode === 'omni' ? 'regular' : 'omni' })}
                     cameraReady={presence.ready}
