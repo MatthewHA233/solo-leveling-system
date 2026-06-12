@@ -1333,6 +1333,7 @@ struct AddBindingBody {
     selected_text: String,
     user_speech: String,
     anchors: Vec<AnchorInput>,
+    source_card_id: Option<String>, // 同源想法卡 id（删它时本绑定级联）
 }
 
 async fn add_binding(
@@ -1345,6 +1346,7 @@ async fn add_binding(
     match s.db.add_anchor_binding(
         &body.card_id, body.start_pos, body.end_pos,
         &body.selected_text, &body.user_speech, &anchors,
+        body.source_card_id.as_deref(),
     ).await {
         Ok(row) => Json(ApiResponse::ok(row)),
         Err(e)  => Json(ApiResponse::error(&e)),
@@ -1374,6 +1376,7 @@ async fn delete_binding(
 #[derive(Deserialize)]
 struct UpdateContextCardBody {
     text: String,
+    source_label: Option<String>,   // 语境来源标签（如 "语境·xxx"）；缺省不改
 }
 
 async fn update_context_card(
@@ -1385,7 +1388,7 @@ async fn update_context_card(
     if text.is_empty() {
         return Json(ApiResponse::error("正文不能为空"));
     }
-    match s.db.update_context_card_text(&id, &text).await {
+    match s.db.update_context_card_text(&id, &text, body.source_label.as_deref()).await {
         Ok(_)  => Json(ApiResponse::ok(())),
         Err(e) => Json(ApiResponse::error(&e)),
     }

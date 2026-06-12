@@ -851,6 +851,7 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN usage_json TEXT");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN reasoning TEXT");
+        let _ = conn.execute_batch("ALTER TABLE context_anchor_bindings ADD COLUMN source_card_id TEXT");
 
         // 渐进式迁移：bili_video_assets 转录字段（旧数据库无此列时自动追加）
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN visual_transcript TEXT");
@@ -908,6 +909,8 @@ impl Database {
             );
 
             -- 语境绑定（桥梁）：卡内某文段位置 + 你贴上去的原话（不 AI 总结、不共享）
+            -- source_card_id：同源想法卡 id——语境卡上的绑定若由某张想法卡派生，
+            -- 删那张想法卡时这条绑定要一起级联（否则锚点被它引用着永远成不了孤儿）
             CREATE TABLE IF NOT EXISTS context_anchor_bindings (
                 id TEXT PRIMARY KEY,
                 card_id TEXT NOT NULL,
@@ -915,6 +918,7 @@ impl Database {
                 end_pos INTEGER NOT NULL,
                 selected_text TEXT NOT NULL,
                 user_speech TEXT NOT NULL,
+                source_card_id TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_bindings_card ON context_anchor_bindings(card_id);
@@ -3184,12 +3188,16 @@ impl Database {
     /// 连同其向量清掉，并清簇名缓存（成员集变了，下次重新起名）
     pub async fn delete_context_card(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
+        // 本卡的绑定 + 由本卡派生挂在其他卡上的同源绑定（如语境卡上的高亮）一起级联
         conn.execute(
             "DELETE FROM binding_anchors WHERE binding_id IN
-             (SELECT id FROM context_anchor_bindings WHERE card_id = ?)",
-            [id],
+             (SELECT id FROM context_anchor_bindings WHERE card_id = ? OR source_card_id = ?)",
+            params![id, id],
         ).map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM context_anchor_bindings WHERE card_id = ?", [id]).map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM context_anchor_bindings WHERE card_id = ? OR source_card_id = ?",
+            params![id, id],
+        ).map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM context_cards WHERE id = ?", [id]).map_err(|e| e.to_string())?;
         conn.execute(
             "DELETE FROM anchor_embeddings WHERE anchor_id IN
@@ -3287,14 +3295,15 @@ impl Database {
         selected_text: &str,
         user_speech: &str,
         anchors: &[(String, String)], // (keyword, category)
+        source_card_id: Option<&str>, // 同源想法卡 id（删它时本绑定级联）
     ) -> Result<BindingRow, String> {
         let conn = self.conn.lock().await;
         let now = chrono::Utc::now().to_rfc3339();
         let binding_id = uuid::Uuid::new_v4().to_string();
 
         conn.execute(
-            "INSERT INTO context_anchor_bindings (id, card_id, start_pos, end_pos, selected_text, user_speech, created_at) VALUES (?,?,?,?,?,?,?)",
-            params![binding_id, card_id, start_pos, end_pos, selected_text, user_speech, now],
+            "INSERT INTO context_anchor_bindings (id, card_id, start_pos, end_pos, selected_text, user_speech, source_card_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            params![binding_id, card_id, start_pos, end_pos, selected_text, user_speech, source_card_id, now],
         ).map_err(|e| e.to_string())?;
 
         let mut anchor_refs: Vec<AnchorRef> = Vec::new();
@@ -3374,16 +3383,34 @@ impl Database {
         let conn = self.conn.lock().await;
         conn.execute("DELETE FROM binding_anchors WHERE binding_id = ?", [id]).map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM context_anchor_bindings WHERE id = ?", [id]).map_err(|e| e.to_string())?;
+        // 孤儿回收（与 delete_context_card 同语义）：失去全部绑定的锚点连带向量/簇名缓存一起清，
+        // 否则它会永远留在锚点域地图上
+        conn.execute(
+            "DELETE FROM anchor_embeddings WHERE anchor_id IN
+             (SELECT id FROM anchors WHERE id NOT IN (SELECT anchor_id FROM binding_anchors))",
+            [],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM anchors WHERE id NOT IN (SELECT anchor_id FROM binding_anchors)",
+            [],
+        ).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM anchor_cluster_names", []).map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    /// 编辑想法卡正文；整卡绑定（start_pos=0）的 selected_text/user_speech/end_pos 同步更新
-    pub async fn update_context_card_text(&self, id: &str, text: &str) -> Result<(), String> {
+    /// 编辑想法卡正文（可选连带语境来源标签）；整卡绑定（start_pos=0）的 selected_text/user_speech/end_pos 同步更新
+    pub async fn update_context_card_text(&self, id: &str, text: &str, source_label: Option<&str>) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        let changed = conn.execute(
-            "UPDATE context_cards SET text = ? WHERE id = ?",
-            params![text, id],
-        ).map_err(|e| e.to_string())?;
+        let changed = match source_label {
+            Some(label) => conn.execute(
+                "UPDATE context_cards SET text = ?, source_label = ? WHERE id = ?",
+                params![text, label, id],
+            ).map_err(|e| e.to_string())?,
+            None => conn.execute(
+                "UPDATE context_cards SET text = ? WHERE id = ?",
+                params![text, id],
+            ).map_err(|e| e.to_string())?,
+        };
         if changed == 0 {
             return Err("卡片不存在".to_string());
         }
