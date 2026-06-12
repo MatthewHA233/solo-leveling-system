@@ -3,8 +3,8 @@
 // ══════════════════════════════════════════════
 
 import { invoke } from '@tauri-apps/api/core'
-import { fetchPerceptionSpans, fetchBiliSpans, fetchActivityBlocks, fetchActivityPalette } from '../local-api'
-import type { PerceptionSpan, BiliSpan } from '../local-api'
+import { fetchPerceptionSpans, fetchBiliSpans, fetchActivityBlocks, fetchActivityPalette, fetchContextFeed, fetchCardBindings, updateContextCard, updateAnchorKeyword } from '../local-api'
+import type { PerceptionSpan, BiliSpan, AnchorCategory } from '../local-api'
 import type { ActivityPalette } from '../../types'
 import type { ToolDefinition } from '../llm/types'
 
@@ -52,20 +52,33 @@ function filterByTime<T extends { start_at: string; end_at: string }>(
   })
 }
 
+/** keyword 参数 → 小写关键词列表。
+ *  防御 Qwen 函数调用的双重编码毛病：数组会被序列化成字符串 '["a","b"]' 传进来，
+ *  直接拿这串字面量做子串匹配永远查不到（曾导致 AI 误判"没有匹配的想法卡"而重复建卡）。*/
+function normalizeKeywords(keyword: unknown): string[] {
+  if (typeof keyword === 'string') {
+    const t = keyword.trim()
+    if (t.startsWith('[') && t.endsWith(']')) {
+      try {
+        const parsed: unknown = JSON.parse(t)
+        if (Array.isArray(parsed)) return normalizeKeywords(parsed)
+      } catch { /* 不是合法 JSON 数组就按普通子串处理 */ }
+    }
+    return t ? [t.toLowerCase()] : []
+  }
+  if (Array.isArray(keyword)) {
+    return keyword.flatMap((k) => (typeof k === 'string' && k.trim() ? [k.trim().toLowerCase()] : []))
+  }
+  return []
+}
+
 /** 按关键词过滤（大小写不敏感子串匹配，支持单个字符串或字符串数组取并集） */
 function filterByKeyword<T>(
   spans: T[],
   keyword: unknown,
   getFields: (s: T) => string[],
 ): T[] {
-  const kws: string[] = []
-  if (typeof keyword === 'string' && keyword.trim()) {
-    kws.push(keyword.toLowerCase())
-  } else if (Array.isArray(keyword)) {
-    for (const k of keyword) {
-      if (typeof k === 'string' && k.trim()) kws.push(k.toLowerCase())
-    }
-  }
+  const kws = normalizeKeywords(keyword)
   if (kws.length === 0) return spans
   return spans.filter(s => {
     const fields = getFields(s).map(f => f.toLowerCase())
@@ -374,6 +387,215 @@ const getBiliHistory: Tool = {
   },
 }
 
+// ── GetThoughtCards ──
+
+const getThoughtCards: Tool = {
+  definition: {
+    type: 'function',
+    function: {
+      name: 'GetThoughtCards',
+      description:
+        '查询主人的想法卡片（主人也可能叫它 memo / 想法 / 沉淀 / 卡片，都是同一个东西，存在洪流域里，不是文件）。' +
+        '返回每张卡的 card_id、时间、来源、正文与锚点句。' +
+        '主人说"改一下我那条想法/memo"时，先用这个找到目标卡，再用 UpdateThoughtCard 修改。' +
+        '已知 card_id（如系统提示里"主人当前选中的卡片"）就传 card_id 直查，不要把 id 塞进 keyword。' +
+        'keyword 可传字符串或字符串数组（取并集）。返回"没有匹配的想法卡"则换更宽泛的词试一次，仍没有就如实告知。',
+      parameters: {
+        type: 'object',
+        properties: {
+          card_id: {
+            type: 'string',
+            description: '按 card_id 直查单张卡（完整 id 或前缀）。已知 id 时优先用这个',
+          },
+          keyword: {
+            description: '按正文/来源标签过滤（大小写不敏感子串）。可以是字符串或字符串数组（数组取并集）',
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+          },
+          days: { type: 'number', description: '只看最近 N 天，缺省看全部' },
+        },
+        required: [],
+      },
+    },
+  },
+  async execute(args) {
+    const feed = await fetchContextFeed()
+    let cards = feed.filter(c => c.kind === 'thought')
+    if (typeof args.days === 'number' && args.days > 0) {
+      const cutoff = Date.now() - args.days * 86_400_000
+      cards = cards.filter(c => {
+        let v = c.created_at.includes('T') ? c.created_at : c.created_at.replace(' ', 'T')
+        if (v.length > 10 && !/[Z+]/.test(v.slice(10))) v += 'Z'
+        const t = new Date(v).getTime()
+        return Number.isNaN(t) || t >= cutoff
+      })
+    }
+    // card_id 直查（前缀容错）；模型有时仍会把 id 塞进 keyword，所以 keyword 匹配域也含 id 兜底
+    const cardIdArg = typeof args.card_id === 'string' ? args.card_id.trim() : ''
+    if (cardIdArg) cards = cards.filter(c => c.id.startsWith(cardIdArg))
+    cards = filterByKeyword(cards, args.keyword, c => [c.text, c.source_label ?? '', c.id])
+    if (cards.length === 0) return '没有匹配的想法卡'
+
+    const lines = await Promise.all(cards.slice(0, 20).map(async c => {
+      const bs = await fetchCardBindings(c.id).catch(() => [])
+      const seen = new Set<string>()
+      const anchors = bs.flatMap(b => b.anchors).filter(a => {
+        if (seen.has(a.id)) return false
+        seen.add(a.id)
+        return true
+      })
+      const anchorText = anchors.length
+        ? `\n  锚点：${anchors.map(a => `[${a.category}] ${a.keyword} (anchor_id: ${a.id})`).join('；')}`
+        : ''
+      return `card_id: ${c.id}\n  ${c.created_at.slice(0, 16)}${c.source_label ? ` · ${c.source_label}` : ''}\n  正文：${c.text}${anchorText}`
+    }))
+    const more = cards.length > 20 ? `\n\n（共 ${cards.length} 张，只显示前 20 张，可用 keyword 缩小范围）` : ''
+    return lines.join('\n\n') + more
+  },
+}
+
+// ── UpdateThoughtCard ──
+
+const updateThoughtCard: Tool = {
+  definition: {
+    type: 'function',
+    function: {
+      name: 'UpdateThoughtCard',
+      description:
+        '修改一张想法卡的正文（全文替换）。先用 GetThoughtCards 找到目标卡拿到 card_id，' +
+        '然后提供修改后的完整新正文——保持主人的原话风格，只改主人要求改的部分，不要顺手润色其他内容。' +
+        '修改正文不会自动更新锚点句。改完把新正文复述给主人确认。',
+      parameters: {
+        type: 'object',
+        properties: {
+          card_id: { type: 'string', description: '目标想法卡的 card_id（GetThoughtCards 返回的完整 id 或其前缀）' },
+          new_text: { type: 'string', description: '修改后的完整新正文（全文替换）' },
+        },
+        required: ['card_id', 'new_text'],
+      },
+    },
+  },
+  async execute(args) {
+    const cardId = typeof args.card_id === 'string' ? args.card_id.trim() : ''
+    const newText = typeof args.new_text === 'string' ? args.new_text.trim() : ''
+    if (!cardId || !newText) return '缺少参数：card_id 或 new_text'
+
+    // 容错：允许 id 前缀
+    let id = cardId
+    if (cardId.length < 36) {
+      const feed = await fetchContextFeed()
+      const hits = feed.filter(c => c.kind === 'thought' && c.id.startsWith(cardId))
+      if (hits.length === 0) return `找不到 card_id 为 ${cardId} 的想法卡（先用 GetThoughtCards 查询）`
+      if (hits.length > 1) return `card_id 前缀 ${cardId} 匹配到多张卡，请用完整 id`
+      id = hits[0].id
+    }
+    await updateContextCard(id, newText)
+    window.dispatchEvent(new CustomEvent('solevup:context-updated'))
+    return `已更新想法卡 ${id.slice(0, 8)}，新正文：\n${newText}`
+  },
+}
+
+// ── GetAnchors / UpdateAnchor ──
+
+interface AnchorSummary {
+  id: string
+  keyword: string
+  category: AnchorCategory
+  bindings: number
+}
+
+/** 汇总全部锚点（含想法卡与语境卡的绑定计数） */
+async function collectAllAnchors(): Promise<AnchorSummary[]> {
+  const feed = await fetchContextFeed()
+  const map = new Map<string, AnchorSummary>()
+  const perCard = await Promise.all(feed.map(c => fetchCardBindings(c.id).catch(() => [])))
+  for (const bindings of perCard) {
+    for (const b of bindings) {
+      for (const a of b.anchors) {
+        const cur = map.get(a.id)
+        if (cur) cur.bindings += 1
+        else map.set(a.id, { id: a.id, keyword: a.keyword, category: a.category, bindings: 1 })
+      }
+    }
+  }
+  return [...map.values()].sort((x, y) => y.bindings - x.bindings)
+}
+
+const getAnchors: Tool = {
+  definition: {
+    type: 'function',
+    function: {
+      name: 'GetAnchors',
+      description:
+        '查询主人的锚点句（锚点域地图上的球；一句带姿态的完整短句，分 motive动机/view观点/practice实践 三类）。' +
+        '返回 anchor_id、分类、锚点句、被锚定次数。主人说"改一下那个锚点/锚点句"时先用这个找到目标，再用 UpdateAnchor 修改。',
+      parameters: {
+        type: 'object',
+        properties: {
+          keyword: {
+            description: '按锚点句内容过滤（大小写不敏感子串）。可以是字符串或字符串数组（数组取并集）',
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  async execute(args) {
+    let anchors = await collectAllAnchors()
+    anchors = filterByKeyword(anchors, args.keyword, a => [a.keyword])
+    if (anchors.length === 0) return '没有匹配的锚点句'
+    return anchors
+      .map(a => `anchor_id: ${a.id}\n  [${a.category}] ${a.keyword}（${a.bindings} 处绑定）`)
+      .join('\n\n')
+  },
+}
+
+const updateAnchor: Tool = {
+  definition: {
+    type: 'function',
+    function: {
+      name: 'UpdateAnchor',
+      description:
+        '修改一条锚点句。先用 GetAnchors 或 GetThoughtCards 拿到 anchor_id。' +
+        '锚点句应是 10~30 字、带姿态的完整短句（读得出主人的冲动/判断/做法），不是压缩关键词；' +
+        '且不带触发条件/来源（"看完视频后"这类前缀去掉——锚点要跨语境共享，触发语境由绑定单独记录）。' +
+        '修改后锚点域会自动重新嵌入、重新聚簇、重新起山名。改完把新锚点句复述给主人确认。',
+      parameters: {
+        type: 'object',
+        properties: {
+          anchor_id: { type: 'string', description: '目标锚点的 anchor_id（完整 id 或其前缀）' },
+          new_keyword: { type: 'string', description: '修改后的完整锚点句' },
+        },
+        required: ['anchor_id', 'new_keyword'],
+      },
+    },
+  },
+  async execute(args) {
+    const anchorId = typeof args.anchor_id === 'string' ? args.anchor_id.trim() : ''
+    const newKeyword = typeof args.new_keyword === 'string' ? args.new_keyword.trim() : ''
+    if (!anchorId || !newKeyword) return '缺少参数：anchor_id 或 new_keyword'
+
+    // 容错：允许 id 前缀
+    let id = anchorId
+    if (anchorId.length < 36) {
+      const anchors = await collectAllAnchors()
+      const hits = anchors.filter(a => a.id.startsWith(anchorId))
+      if (hits.length === 0) return `找不到 anchor_id 为 ${anchorId} 的锚点（先用 GetAnchors 查询）`
+      if (hits.length > 1) return `anchor_id 前缀 ${anchorId} 匹配到多条锚点，请用完整 id`
+      id = hits[0].id
+    }
+    await updateAnchorKeyword(id, newKeyword)
+    window.dispatchEvent(new CustomEvent('solevup:context-updated'))
+    return `已更新锚点句 ${id.slice(0, 8)}：${newKeyword}\n（锚点域将自动重新嵌入与聚簇）`
+  },
+}
+
 // ── Read ──
 
 const readFile: Tool = {
@@ -468,6 +690,10 @@ const ALL_TOOLS: readonly Tool[] = [
   getActivityTags,
   getComputerStatus,
   getBiliHistory,
+  getThoughtCards,
+  updateThoughtCard,
+  getAnchors,
+  updateAnchor,
   readFile,
   writeFile,
   editFile,

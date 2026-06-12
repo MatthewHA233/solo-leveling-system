@@ -231,6 +231,10 @@ ${agentPersona}
   - GetActivityTags：查询本机活动标签记录
   - GetComputerStatus：查询本机 active/idle/afk 状态记录
   - GetBiliHistory：查询 B 站观看历史
+  - GetThoughtCards：查询${agentCallUser}的想法卡片（${agentCallUser}也叫它 memo/想法/沉淀，存在洪流域里，不是文件）。已知 card_id 时传 card_id 参数直查，不要塞进 keyword
+  - UpdateThoughtCard：修改一张想法卡的正文（先拿到 card_id——系统提示"主人当前选中的卡片"里有就直接用；只改要求改的部分，保持原话风格）
+  - GetAnchors：查询锚点句（锚点域地图上的球，分动机/观点/实践三类）
+  - UpdateAnchor：修改一条锚点句（先找到 anchor_id；锚点句是 10~30 字带姿态的完整短句）
   - Read：读取本地文件
   - Write：写入本地文件
   - Edit：编辑本地文件
@@ -301,6 +305,14 @@ export interface DynamicContextParams {
     state: 'present' | 'absent' | 'unknown'
     durationSeconds: number
   }
+  // D6 — 主人在洪流域鼠标锁定的卡片（粘性悬浮选中，说"这张卡片"时指它）
+  focusedCard?: {
+    cardId: string
+    kind: 'thought' | 'bili_transcript'
+    title: string | null
+    text: string
+    sourceLabel: string | null
+  }
 }
 
 export function buildDynamicContext(params: DynamicContextParams = {}): string {
@@ -357,6 +369,22 @@ export function buildDynamicContext(params: DynamicContextParams = {}): string {
 
   if (d4Lines.length > 0) {
     sections.push(`# 近期活动（过去1小时）\n${d4Lines.join('\n\n')}`)
+  }
+
+  // D6 — 主人当前锁定的卡片（洪流域粘性悬浮）
+  if (params.focusedCard) {
+    const f = params.focusedCard
+    const head = f.kind === 'thought'
+      ? `想法卡${f.sourceLabel ? `（${f.sourceLabel}）` : ''}`
+      : `B站语境卡《${f.title ?? '未命名'}》${f.kind === 'bili_transcript' ? '（下面是转录摘要）' : ''}`
+    const body = f.text.length > 600 ? `${f.text.slice(0, 600)}…` : f.text
+    sections.push(
+      `# 主人当前选中的卡片\n主人在洪流域用鼠标锁定了一张${head}，card_id: ${f.cardId}。` +
+      `主人说"这张卡片 / 这个想法 / 这条 memo"时指的就是它，正文已附在下面（超长会截断），一般不用再查` +
+      `${f.kind === 'thought'
+        ? '。要看完整正文/锚点就调 GetThoughtCards 并把这个 card_id 传给 card_id 参数（不要塞进 keyword）；要改它就用这个 card_id 调 UpdateThoughtCard'
+        : ''}：\n${body}`,
+    )
   }
 
   // D5 — 存在感（摄像头实时检测）
