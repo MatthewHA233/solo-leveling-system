@@ -792,6 +792,167 @@ export async function deleteGoal(id: string): Promise<void> {
   if (!json.success) throw new Error(json.error || '删除目标失败')
 }
 
+// ── Context Cards（语境卡流）──
+
+export interface ContextFeedItem {
+  readonly id: string
+  readonly kind: 'thought' | 'bili_transcript'
+  readonly text: string                    // thought=想法全文；bili=转录摘要
+  readonly title: string | null            // bili=视频标题
+  readonly cover_url: string | null        // bili=封面
+  readonly bvid: string | null
+  readonly ref_path: string | null         // bili download_path，展开转录全文用
+  readonly source_label: string | null     // thought 语境标签
+  readonly created_at: string
+}
+
+export async function fetchContextFeed(): Promise<ContextFeedItem[]> {
+  const res = await fetch(`${API_BASE}/api/context/feed`)
+  const json: ApiResponse<ContextFeedItem[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '查询语境流失败')
+  return json.data
+}
+
+export async function addContextCard(text: string, sourceLabel?: string, createdAt?: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/context/cards`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, source_label: sourceLabel ?? null, created_at: createdAt ?? null }),
+  })
+  const json: ApiResponse<string> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '添加语境卡失败')
+  return json.data
+}
+
+export async function deleteContextCard(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/context/cards/${id}`, { method: 'DELETE' })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '删除语境卡失败')
+}
+
+// ── 锚点绑定（语境片段 ↔ 原话 ↔ 关键词）──
+
+export type AnchorCategory = 'motive' | 'view' | 'practice'
+
+export interface AnchorRef {
+  readonly id: string
+  readonly keyword: string
+  readonly category: AnchorCategory
+}
+
+export interface AnchorBinding {
+  readonly id: string
+  readonly card_id: string
+  readonly start_pos: number
+  readonly end_pos: number
+  readonly selected_text: string
+  readonly user_speech: string       // 你的原话，不 AI 总结
+  readonly created_at: string
+  readonly anchors: AnchorRef[]
+}
+
+export async function fetchCardBindings(cardId: string): Promise<AnchorBinding[]> {
+  const res = await fetch(`${API_BASE}/api/context/cards/${cardId}/bindings`)
+  const json: ApiResponse<AnchorBinding[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '查询锚点失败')
+  return json.data
+}
+
+export async function addBinding(input: {
+  card_id: string
+  start_pos: number
+  end_pos: number
+  selected_text: string
+  user_speech: string
+  anchors: Array<{ keyword: string; category: AnchorCategory }>
+}): Promise<AnchorBinding> {
+  const res = await fetch(`${API_BASE}/api/context/bindings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const json: ApiResponse<AnchorBinding> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '保存锚点失败')
+  return json.data
+}
+
+export async function deleteBinding(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/context/bindings/${id}`, { method: 'DELETE' })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '删除锚点失败')
+}
+
+/** 编辑想法卡正文（整卡绑定的原话/选区同步更新） */
+export async function updateContextCard(id: string, text: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/context/cards/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '更新想法卡失败')
+}
+
+/** 编辑锚点句（后端会删旧向量并清簇名缓存，下次打开地图自动重嵌入/重起名） */
+export async function updateAnchorKeyword(id: string, keyword: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/anchors/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keyword }),
+  })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '更新锚点句失败')
+}
+
+// ── Anchor Embeddings（锚点域地图：语义向量 + 簇名缓存）──
+
+export interface AnchorEmbeddingRecord {
+  readonly anchor_id: string
+  readonly model: string
+  readonly dims: number
+  readonly vector: string   // JSON 数组文本
+}
+
+export async function fetchAnchorEmbeddings(): Promise<AnchorEmbeddingRecord[]> {
+  const res = await fetch(`${API_BASE}/api/anchors/embeddings`)
+  const json: ApiResponse<AnchorEmbeddingRecord[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '查询锚点向量失败')
+  return json.data
+}
+
+export async function saveAnchorEmbeddings(items: AnchorEmbeddingRecord[]): Promise<void> {
+  if (items.length === 0) return
+  const res = await fetch(`${API_BASE}/api/anchors/embeddings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+  })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '保存锚点向量失败')
+}
+
+export interface ClusterNameRecord {
+  readonly member_hash: string
+  readonly name: string
+}
+
+export async function fetchClusterNames(): Promise<ClusterNameRecord[]> {
+  const res = await fetch(`${API_BASE}/api/anchors/cluster-names`)
+  const json: ApiResponse<ClusterNameRecord[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '查询簇名缓存失败')
+  return json.data
+}
+
+export async function saveClusterName(memberHash: string, name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/anchors/cluster-names`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ member_hash: memberHash, name }),
+  })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '保存簇名失败')
+}
+
 // ── Presence Spans ──
 
 export interface PresenceSpanRecord {

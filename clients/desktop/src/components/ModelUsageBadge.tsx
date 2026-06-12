@@ -12,7 +12,11 @@ interface Props {
 
 function formatCny(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return '¥0.00'
-  if (n < 0.01 && n > 0) return `¥${n.toFixed(4)}`
+  if (n < 0.01 && n > 0) {
+    // 极小成本（如单次嵌入 ¥0.000012）按有效数字展示，不被固定位数抹成 0
+    const digits = Math.min(8, Math.max(4, 1 - Math.floor(Math.log10(n))))
+    return `¥${n.toFixed(digits)}`
+  }
   return `¥${n.toFixed(2)}`
 }
 

@@ -174,7 +174,11 @@ export function loadConfig(): AgentConfig {
           (cleaned as Record<string, unknown>)[k] = v
         }
       }
-      const migrated = { ...DEFAULT_CONFIG, ...cleaned }
+      const merged = { ...DEFAULT_CONFIG, ...cleaned }
+      // 迁移：存量配置里已下架的旧模型名（qwen-plus/turbo/max 一代）改写为现代默认
+      const migrated = /^qwen-(plus|turbo|max)/.test(merged.openaiCardModel ?? '')
+        ? { ...merged, openaiCardModel: DEFAULT_CONFIG.openaiCardModel }
+        : merged
       const dashscopeApiKey = migrated.dashscopeApiKey
         ?? migrated.openaiApiKey
         ?? migrated.omniApiKey

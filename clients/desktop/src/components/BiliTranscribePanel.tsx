@@ -313,6 +313,8 @@ export default function BiliTranscribePanel({
           setTranscriptHistory((items) => [run, ...items.filter((item) => item.id !== run.id)])
           setActiveHistoryId(run.id)
           setResult((s) => ({ ...s, cachedAt: run.created_at }))
+          // 转录完成 → 该视频成为语境卡，通知洪流域实时刷新
+          window.dispatchEvent(new CustomEvent('solevup:context-updated'))
         })
         .catch((e) => console.warn('[Transcribe] 写入 ASR 转录失败', e))
     } catch (e) {
