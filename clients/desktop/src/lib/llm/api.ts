@@ -17,6 +17,7 @@ import type { Message, UserMessage, AssistantMessage, ContentBlock, ToolDefiniti
 
 export type ApiStreamChunk =
   | { type: 'textDelta'; delta: string }
+  | { type: 'reasoningDelta'; delta: string }   // 思考模型（enable_thinking）的推理流
   | { type: 'toolCallDelta'; index: number; id: string | null; name: string | null; argsDelta: string | null }
   | { type: 'done'; stopReason: string; inputTokens: number; outputTokens: number }
   | { type: 'error'; status: number; message: string }
@@ -154,6 +155,7 @@ interface SSEChunk {
   choices?: {
     delta?: {
       content?: string
+      reasoning_content?: string   // 思考模型的推理增量（content 之前到达）
       tool_calls?: {
         index?: number
         id?: string
@@ -209,7 +211,9 @@ export function queryModel(
         timestamp: new Date().toISOString(),
       })
 
-      const response = await fetch(url, {
+      // enable_thinking=false 给普通 Qwen3.x 降首 token 延迟与成本；
+      // 但思考特化模型（如 qwen3.7-max）只允许 true，发 false 会 400 —— 收到该错误就剥掉参数重试一次
+      const makeInit = (withThinkingOff: boolean): RequestInit => ({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -221,11 +225,27 @@ export function queryModel(
           stream: true,
           stream_options: { include_usage: true },
           max_tokens: maxTokens,
-          enable_thinking: false,  // Qwen3.x 默认开思考模式，主对话链路统一关闭以降低首 token 延迟与 token 成本
+          ...(withThinkingOff && { enable_thinking: false }),
           ...(options.tools && options.tools.length > 0 && { tools: options.tools }),
         }),
         signal,
       })
+
+      let response = await fetch(url, makeInit(true))
+      if (response.status === 400) {
+        const errText = await response.text().catch(() => '')
+        if (errText.includes('enable_thinking')) {
+          response = await fetch(url, makeInit(false))
+        } else {
+          stream.enqueue({
+            type: 'error',
+            status: 400,
+            message: `API 错误 400: ${errText.slice(0, 300) || '(无响应体)'}`,
+          })
+          stream.done()
+          return
+        }
+      }
 
       if (!response.ok) {
         const text = await response.text().catch(() => '(无响应体)')
@@ -303,6 +323,10 @@ export function queryModel(
               if (!choice) continue
 
               const delta = choice.delta
+
+              if (delta?.reasoning_content) {
+                stream.enqueue({ type: 'reasoningDelta', delta: delta.reasoning_content })
+              }
 
               if (delta?.content) {
                 stream.enqueue({ type: 'textDelta', delta: delta.content })

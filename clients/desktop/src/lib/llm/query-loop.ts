@@ -46,6 +46,7 @@ export interface ToolResult {
 
 export type QueryEvent =
   | { type: 'textDelta'; delta: string; messageId: string }
+  | { type: 'reasoningDelta'; delta: string; messageId: string }   // 思考模型推理流（只进 UI，不进对话历史）
   | { type: 'toolCallStarted'; call: ToolCall }
   | { type: 'toolCallDone'; call: ToolCall; result: string }
   | { type: 'turnComplete'; stopReason: StopReason }
@@ -159,6 +160,11 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
           case 'textDelta':
             accText += chunk.delta
             onEvent?.({ type: 'textDelta', delta: chunk.delta, messageId: currentMsgId })
+            break
+
+          case 'reasoningDelta':
+            // 推理流只供 UI 展示；不计入 accText（思考不属于对话历史/TTS）
+            onEvent?.({ type: 'reasoningDelta', delta: chunk.delta, messageId: currentMsgId })
             break
 
           case 'toolCallDelta': {
