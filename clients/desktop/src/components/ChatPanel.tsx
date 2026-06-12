@@ -3,7 +3,7 @@
 // ══════════════════════════════════════════════
 
 import { useCallback, useMemo, useRef, useEffect, useState } from 'react'
-import { Send, MessageSquare, Camera, Volume2, VolumeX, Bug, Radio, History } from 'lucide-react'
+import { Send, MessageSquare, Camera, Cpu, Volume2, VolumeX, Bug, Radio, History } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { theme } from '../theme'
 import type { ChatMessage, OmniDebugInfo } from '../App'
@@ -18,27 +18,6 @@ import Tooltip from './Tooltip'
 import HudSelect from './HudSelect'
 import ModelUsageBadge from './ModelUsageBadge'
 
-// 气泡倒角 clip-path（尖角留"尾巴"侧用于指向发送者）
-// 用户：右下为尾，其余三角 8px 斜切
-const bubbleClipUser = `polygon(
-  8px 0,
-  calc(100% - 8px) 0,
-  100% 8px,
-  100% 100%,
-  8px 100%,
-  0 calc(100% - 8px),
-  0 8px
-)`
-// AI：左下为尾
-const bubbleClipAgent = `polygon(
-  8px 0,
-  calc(100% - 8px) 0,
-  100% 8px,
-  100% calc(100% - 8px),
-  calc(100% - 8px) 100%,
-  0 100%,
-  0 8px
-)`
 // 输入框 / 按钮通用 4px 八角切角
 const clip4 = `polygon(
   4px 0, calc(100% - 4px) 0,
@@ -51,6 +30,9 @@ interface Props {
   readonly messages: readonly ChatMessage[]
   readonly isProcessing: boolean
   readonly onSend: (text: string) => void
+  /** 传输日志表头呼号：来自 AI 人设配置（名称 / 称呼用户为），不硬编码 */
+  readonly agentName?: string
+  readonly userCallsign?: string
   readonly aiMode?: 'regular' | 'omni'
   readonly onToggleAiMode?: () => void
   readonly cameraReady?: boolean
@@ -63,7 +45,7 @@ interface Props {
   readonly sessionsOpen?: boolean
 }
 
-export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'omni', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
+export default function ChatPanel({ messages, isProcessing, onSend, agentName = 'Fairy', userCallsign = '主人', aiMode = 'omni', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
   const [input, setInput] = useState('')
   const [models, setModels] = useState<ModelDef[]>([])
   const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
@@ -318,7 +300,8 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
         style={{
           flex: 1, overflowY: 'auto',
           padding: '14px 14px',
-          display: 'flex', flexDirection: 'column', gap: 10,
+          display: 'flex', flexDirection: 'column', gap: 17, // 条目间留足气口，两侧消息不纠缠
+
         }}
       >
         {messages.length === 0 && (
@@ -359,6 +342,8 @@ export default function ChatPanel({ messages, isProcessing, onSend, aiMode = 'om
           <Bubble
             key={msg.id}
             message={msg}
+            agentName={agentName}
+            userCallsign={userCallsign}
             onDebug={msg.debugSnapshots ? () => setActiveDebugSnaps(msg.debugSnapshots!) : undefined}
             onOmniDebug={msg.omniDebugInfo ? () => setActiveOmniDebug(msg.omniDebugInfo!) : undefined}
           />
@@ -696,14 +681,15 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
   const playedBars = Math.round(progress * WAVEFORM_BARS)
   const ringFilled = progress * RING_CIRC
 
+  // 音频块：中性语言（细边低填充），主人侧切角随外层、Fairy 侧嵌在帧内
   return (
     <div style={{
+      position: 'relative',
       display: 'flex', alignItems: 'center', gap: 10,
       padding: '10px 14px',
       minWidth: 230, maxWidth: 290,
-      background: `linear-gradient(135deg, ${theme.electricBlue}F0 0%, ${theme.electricBlue}B8 100%)`,
-      clipPath: bubbleClipUser,
-      boxShadow: `0 0 14px ${theme.electricBlue}55`,
+      background: 'rgba(0,229,255,0.07)',
+      border: '1px solid rgba(0,229,255,0.12)',
     }}>
       <audio
         ref={audioRef}
@@ -719,7 +705,7 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
           <div style={{
             position: 'absolute', inset: -4,
             borderRadius: '50%',
-            background: 'rgba(255,255,255,0.12)',
+            background: `${theme.electricBlue}1E`,
             animation: 'audioPulse 1.4s ease-in-out infinite',
           }} />
         )}
@@ -730,10 +716,10 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
           style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
         >
           <circle cx={BTN/2} cy={BTN/2} r={RING_R}
-            fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="2.5" />
+            fill="none" stroke={`${theme.electricBlue}30`} strokeWidth="2" />
           <circle cx={BTN/2} cy={BTN/2} r={RING_R}
-            fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth="2.5"
-            strokeLinecap="round"
+            fill="none" stroke={theme.electricBlue} strokeWidth="2"
+            strokeLinecap="butt"
             strokeDasharray={`${ringFilled} ${RING_CIRC}`}
             transform={`rotate(-90 ${BTN/2} ${BTN/2})`}
           />
@@ -745,10 +731,11 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
           style={{
             position: 'absolute', inset: 4,
             borderRadius: '50%',
-            background: 'rgba(0,0,0,0.28)',
-            border: 'none', color: '#fff', cursor: 'pointer',
+            background: `${theme.electricBlue}14`,
+            border: 'none', color: theme.electricBlue, cursor: 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 13, paddingLeft: playing ? 0 : 2,
+            fontSize: 12, paddingLeft: playing ? 0 : 2,
+            textShadow: `0 0 6px ${theme.electricBlue}88`,
           }}
         >
           {playing ? '⏸' : '▶'}
@@ -757,26 +744,27 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
 
       {/* ── 波形 + 时间 ── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2, height: 32 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 32 }}>
           {bars.map((amp, i) => {
             const played  = i < playedBars
             const current = i === playedBars && playing
             return (
               <div key={i} style={{
-                flex: 1, borderRadius: 3,
+                flex: 1,
                 height: `${Math.max(14, amp * 100)}%`,
-                background: played ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.30)',
+                background: played ? theme.electricBlue : `${theme.electricBlue}3D`,
+                boxShadow: played ? `0 0 4px ${theme.electricBlue}66` : undefined,
                 transform: current ? 'scaleY(1.2)' : 'scaleY(1)',
-                transformOrigin: 'center',
+                transformOrigin: 'bottom',
               }} />
             )
           })}
         </div>
 
         <div style={{
-          fontSize: 10, fontWeight: 600,
-          color: 'rgba(255,255,255,0.72)',
-          fontFamily: theme.fontBody, letterSpacing: 0.3,
+          fontSize: 9.5, fontWeight: 600,
+          color: HEADER_COLOR,
+          fontFamily: theme.fontMono, letterSpacing: 1,
         }}>
           {playing ? fmtSec(progress * duration) : fmtSec(duration)}
         </div>
@@ -785,149 +773,342 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
   )
 }
 
-// ── Bubble ──
+// ══════════════════════════════════════════════
+// 传输日志视觉系统 — 废弃"聊天气泡"隐喻
+//   右栏是一块通讯终端，不是聊天软件：
+//   · AI（暗影系统）= 终端自身的输出：不装盒子，文字直接印在面板上
+//   · 主人 = 发出的数据包：低填充矩形舱单 + 对角角标（与洪流域锁定框同语法）
+//   · 思考 = 推演通道遥测：内凹井 + 暗青 mono 流式 + 块光标
+//   · 系统/工具 = 日志行：mono 左对齐 :: 前缀，错误染警示色
+// ══════════════════════════════════════════════
 
-function Bubble({ message, onDebug, onOmniDebug }: { message: ChatMessage; onDebug?: () => void; onOmniDebug?: () => void }) {
+// ── 可调旋钮 ──
+const HEADER_FONT_SIZE = 10                      // 表头字号
+const HEADER_COLOR = 'rgba(126,190,228,0.62)'    // 表头辅助信息色（时间戳等）
+const HEADER_NAME_COLOR = '#BFE9FF'              // 呼号名字色（要醒目）
+const FRAME_BORDER = 'rgba(0,229,255,0.16)'      // Fairy 科幻帧细边
+const FRAME_BG = 'rgba(3,10,22,0.52)'            // Fairy 帧底色
+const FRAME_TICK = 11                            // Fairy 帧角括号边长
+const FRAME_TICK_W = 1.5                         // Fairy 帧角括号线宽
+const PACKET_BG = 'rgba(0,229,255,0.12)'         // 主人消息底色
+const PACKET_TEXT = '#E8F8FF'                    // 主人消息文字
+const PACKET_CHAMFER = 10                        // 主人消息右上切角
+const WELL_BG = 'rgba(2,9,20,0.72)'              // 推演井底色
+const WELL_TEXT = 'rgba(168,196,216,0.92)'       // 推演文字
+const LOG_COLOR = 'rgba(110,142,168,0.66)'       // 系统日志行
+
+// 主人消息：右上单切角（与 Fairy 的角括号帧形成明确的两种剪影）
+const packetClip = `polygon(0 0, calc(100% - ${PACKET_CHAMFER}px) 0, 100% ${PACKET_CHAMFER}px, 100% 100%, 0 100%)`
+
+function fmtClock(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/** Fairy 科幻帧的四角括号（AI 专属语法：锁定框/HUD 帧）*/
+function frameTick(pos: 'tl' | 'tr' | 'bl' | 'br'): React.CSSProperties {
+  const base: React.CSSProperties = {
+    position: 'absolute',
+    width: FRAME_TICK, height: FRAME_TICK,
+    borderColor: `${theme.electricBlue}AA`,
+    borderStyle: 'solid', borderWidth: 0,
+    pointerEvents: 'none',
+  }
+  switch (pos) {
+    case 'tl': return { ...base, top: -1, left: -1, borderTopWidth: FRAME_TICK_W, borderLeftWidth: FRAME_TICK_W }
+    case 'tr': return { ...base, top: -1, right: -1, borderTopWidth: FRAME_TICK_W, borderRightWidth: FRAME_TICK_W }
+    case 'bl': return { ...base, bottom: -1, left: -1, borderBottomWidth: FRAME_TICK_W, borderLeftWidth: FRAME_TICK_W }
+    case 'br': return { ...base, bottom: -1, right: -1, borderBottomWidth: FRAME_TICK_W, borderRightWidth: FRAME_TICK_W }
+  }
+}
+
+/** 呼号行：名字 + 时刻（呼号来自 AI 人设配置，不硬编码；无横贯引线）*/
+function MsgMeta({ side, label, ts, actions }: {
+  side: 'in' | 'out'
+  label: string
+  ts: string
+  actions?: React.ReactNode
+}) {
+  const name = (
+    <span style={{ color: HEADER_NAME_COLOR, fontWeight: 700, textShadow: `0 0 7px ${theme.electricBlue}55` }}>
+      {label}
+    </span>
+  )
+  const base: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: 7,
+    fontFamily: theme.fontMono,
+    fontSize: HEADER_FONT_SIZE,
+    letterSpacing: 1.3,
+    color: HEADER_COLOR,
+    userSelect: 'none',
+  }
+  return side === 'in' ? (
+    <div style={{ ...base, marginBottom: 4 }}>
+      <span style={{ color: theme.electricBlue }}>◂</span>
+      {name}
+      <span>{fmtClock(ts)}</span>
+      <span style={{ flex: 1 }} />
+      {actions}
+    </div>
+  ) : (
+    <div style={{ ...base, justifyContent: 'flex-end', marginBottom: 4 }}>
+      <span>{fmtClock(ts)}</span>
+      {name}
+      <span style={{ color: theme.electricBlue }}>▸</span>
+    </div>
+  )
+}
+
+/** 表头里的小动作按钮（debug 等）：融进表头而不是挂在气泡边上 */
+function HeaderIconBtn({ tip, onClick, children }: {
+  tip: string
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <Tooltip content={tip}>
+      <button
+        onClick={onClick}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          color: HEADER_COLOR, padding: '0 1px',
+          display: 'flex', alignItems: 'center', flexShrink: 0,
+          transition: 'color 0.15s',
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.color = theme.electricBlue)}
+        onMouseLeave={(e) => (e.currentTarget.style.color = HEADER_COLOR)}
+      >
+        {children}
+      </button>
+    </Tooltip>
+  )
+}
+
+// ── 推演通道（思考模型的推理流）──
+// 流式期间自动展开、贴底滚动（终端 tail）；正文开始后自动折叠成一行遥测读数，可手动展开回看
+
+function ReasoningBlock({ text, answered }: { text: string; answered: boolean }) {
+  const [userToggle, setUserToggle] = useState<boolean | null>(null)
+  const expanded = userToggle ?? !answered
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (expanded && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [text, expanded])
+
+  const charLabel = text.length >= 1000 ? `${(text.length / 1000).toFixed(1)}K` : String(text.length)
+
+  return (
+    <div style={{ margin: '0 0 8px' }}>
+      <button
+        type="button"
+        onClick={() => setUserToggle(!expanded)}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          background: 'transparent', border: 'none', padding: 0,
+          color: 'rgba(168,216,244,0.95)',
+          fontSize: 10.5, fontFamily: theme.fontMono,
+          fontWeight: 700,
+          letterSpacing: 1.4, cursor: 'pointer',
+          textShadow: `0 0 6px ${theme.electricBlue}44`,
+        }}
+      >
+        <Cpu
+          size={12}
+          style={{
+            color: theme.electricBlue,
+            ...(answered ? {} : { animation: 'glowPulse 1.2s ease-in-out infinite' }),
+          }}
+        />
+        {answered ? (
+          <>推演通道 · {charLabel} 字 {expanded ? '▾' : '▸'}</>
+        ) : (
+          <>
+            推演通道 · 接收中
+            <span style={{ color: theme.electricBlue, animation: 'glowPulse 1s ease-in-out infinite' }}>▌</span>
+          </>
+        )}
+      </button>
+      {expanded && (
+        <div
+          ref={scrollRef}
+          style={{
+            marginTop: 4,
+            maxHeight: 170,
+            overflowY: 'auto',
+            padding: '6px 10px',
+            background: WELL_BG,
+            borderTop: '1px solid rgba(0,229,255,0.10)',
+            borderBottom: '1px solid rgba(0,229,255,0.10)',
+            fontFamily: theme.fontMono,
+            fontSize: 11,
+            lineHeight: 1.62,
+            color: WELL_TEXT,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {text}
+          {!answered && (
+            <span style={{ color: theme.electricBlue, animation: 'glowPulse 1s ease-in-out infinite' }}>▌</span>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── 日志条目（原 Bubble）──
+
+function Bubble({ message, agentName, userCallsign, onDebug, onOmniDebug }: {
+  message: ChatMessage
+  agentName: string
+  userCallsign: string
+  onDebug?: () => void
+  onOmniDebug?: () => void
+}) {
+  // 系统/工具消息 → 终端日志行
   if (message.role === 'system') {
+    const isErr = message.content.startsWith('错误')
     return (
       <div style={{
-        textAlign: 'center', fontSize: 11,
-        color: theme.textMuted, padding: '4px 0',
-        fontFamily: theme.fontBody,
+        display: 'flex', gap: 6,
+        padding: '1px 0 1px 2px',
+        fontFamily: theme.fontMono,
+        fontSize: 10,
+        lineHeight: 1.6,
+        color: isErr ? `${theme.dangerRed}BB` : LOG_COLOR,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
       }}>
-        — {message.content} —
+        <span aria-hidden style={{ flexShrink: 0, opacity: 0.55 }}>::</span>
+        <span>{message.content}</span>
       </div>
     )
   }
 
   const isUser = message.role === 'user'
 
-  // 语音消息 → 音频气泡 + ASR 转写文字（气泡下方）
+  // 主人语音 → 呼号行 + 音频波形 + 转写
   if (isUser && message.audioUrl) {
     return (
-      <div data-msg-ts={message.timestamp} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, animation: 'fadeSlideIn 0.2s ease' }}>
-        <AudioBubble audioUrl={message.audioUrl} durationMs={message.durationMs} />
-        {message.transcript && (
-          <div style={{
-            maxWidth: 290,
-            fontSize: 11.5,
-            color: theme.textSecondary,
-            padding: '3px 10px',
-            fontFamily: theme.fontBody,
-            lineHeight: 1.5,
-            textAlign: 'right',
-            fontStyle: 'italic',
-          }}>
-            {message.transcript}
-          </div>
-        )}
+      <div data-msg-ts={message.timestamp} style={{ animation: 'fadeSlideIn 0.2s ease' }}>
+        <MsgMeta side="out" label={userCallsign} ts={message.timestamp} />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5 }}>
+          <AudioBubble audioUrl={message.audioUrl} durationMs={message.durationMs} />
+          {message.transcript && (
+            <div style={{
+              maxWidth: 290,
+              fontSize: 11.5,
+              color: theme.textSecondary,
+              padding: '0 2px',
+              fontFamily: theme.fontBody,
+              lineHeight: 1.5,
+              textAlign: 'right',
+              fontStyle: 'italic',
+            }}>
+              {message.transcript}
+            </div>
+          )}
+        </div>
       </div>
     )
   }
 
+  // 主人文字 → 右上切角实底块（与 Fairy 的角括号帧形成两种明确剪影）
+  if (isUser) {
+    return (
+      <div data-msg-ts={message.timestamp} style={{ animation: 'fadeSlideIn 0.2s ease' }}>
+        <MsgMeta side="out" label={userCallsign} ts={message.timestamp} />
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <div style={{
+            maxWidth: '86%',
+            padding: '8px 12px',
+            background: PACKET_BG,
+            clipPath: packetClip,
+            WebkitClipPath: packetClip,
+            color: PACKET_TEXT,
+            fontSize: 13,
+            fontFamily: theme.fontBody,
+            lineHeight: 1.65,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}>
+            {message.content}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Fairy → 呼号行在帧外，科幻帧（细边 + 四角括号，AI 专属语法）只包内容
   return (
-    <div data-msg-ts={message.timestamp} style={{
-      display: 'flex',
-      justifyContent: isUser ? 'flex-end' : 'flex-start',
-      alignItems: 'flex-end',
-      gap: 4,
-      animation: 'fadeSlideIn 0.2s ease',
-    }}>
+    <div data-msg-ts={message.timestamp} style={{ animation: 'fadeSlideIn 0.2s ease' }}>
+      <MsgMeta
+        side="in"
+        label={agentName}
+        ts={message.timestamp}
+        actions={
+          <>
+            {onDebug && (
+              <HeaderIconBtn tip="查看本轮 AI 请求" onClick={onDebug}>
+                <Bug size={10} />
+              </HeaderIconBtn>
+            )}
+            {onOmniDebug && (
+              <HeaderIconBtn tip="查看本轮 Omni 上下文" onClick={onOmniDebug}>
+                <Radio size={10} />
+              </HeaderIconBtn>
+            )}
+          </>
+        }
+      />
       <div style={{
         position: 'relative',
-        maxWidth: '88%',
-        padding: isUser ? '9px 14px' : '9px 14px 9px 16px',
-        clipPath: isUser ? bubbleClipUser : bubbleClipAgent,
-        fontSize: 13,
-        fontFamily: theme.fontBody,
-        lineHeight: 1.6,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        ...(isUser
-          ? {
-              background: `linear-gradient(135deg, ${theme.electricBlue}E6 0%, ${theme.electricBlue}B0 60%, ${theme.electricBlue}88 100%)`,
-              color: '#001820',
-              fontWeight: 500,
-              boxShadow: `0 0 12px ${theme.electricBlue}55`,
-            }
-          : {
-              background: `linear-gradient(135deg, rgba(8,16,32,0.92) 0%, rgba(4,10,24,0.88) 100%)`,
-              color: theme.textPrimary,
-              boxShadow: `inset 0 0 10px ${theme.electricBlue}14, 0 0 8px rgba(0,229,255,0.10)`,
-            }),
+        border: `1px solid ${FRAME_BORDER}`,
+        background: FRAME_BG,
+        padding: '9px 12px',
       }}>
-        {/* AI 气泡：左侧发光指示条（代表信号源） */}
-        {!isUser && (
-          <span aria-hidden style={{
-            position: 'absolute',
-            left: 0, top: 6, bottom: 6,
-            width: 2,
-            background: theme.electricBlue,
-            boxShadow: `0 0 6px ${theme.electricBlue}`,
-            opacity: 0.75,
-          }} />
+        <span aria-hidden style={frameTick('tl')} />
+        <span aria-hidden style={frameTick('tr')} />
+        <span aria-hidden style={frameTick('bl')} />
+        <span aria-hidden style={frameTick('br')} />
+        {message.reasoning && (
+          <ReasoningBlock text={message.reasoning} answered={message.content.length > 0} />
         )}
-        {message.content}
-        {!isUser && message.usage && <ModelUsageBadge call={message.usage} minimal />}
-        {!isUser && message.audioUrl && (
+        <div style={{
+          fontSize: 13,
+          fontFamily: theme.fontBody,
+          lineHeight: 1.7,
+          color: theme.textPrimary,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}>
+          {message.content}
+          {message.usage && <ModelUsageBadge call={message.usage} minimal />}
+        </div>
+        {message.audioUrl && (
           <div style={{ marginTop: 6 }}>
             <AudioBubble audioUrl={message.audioUrl} />
           </div>
         )}
       </div>
-      {/* Debug 按钮（普通模式）：有快照时显示 */}
-      {!isUser && onDebug && (
-        <Tooltip content="查看本轮 AI 请求">
-        <button
-          onClick={onDebug}
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer',
-            color: 'rgba(255,255,255,0.45)', padding: 2,
-            display: 'flex', alignItems: 'center',
-            flexShrink: 0,
-            transition: 'color 0.15s',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.85)')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(255,255,255,0.45)')}
-        >
-          <Bug size={11} />
-        </button>
-        </Tooltip>
-      )}
-      {/* Omni Debug 按钮：Omni 回复气泡上显示 */}
-      {!isUser && onOmniDebug && (
-        <Tooltip content="查看本轮 Omni 上下文">
-        <button
-          onClick={onOmniDebug}
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer',
-            color: 'rgba(167,139,250,0.55)', padding: 2,
-            display: 'flex', alignItems: 'center',
-            flexShrink: 0,
-            transition: 'color 0.15s',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = 'rgba(167,139,250,0.95)')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = 'rgba(167,139,250,0.55)')}
-        >
-          <Radio size={11} />
-        </button>
-        </Tooltip>
-      )}
     </div>
   )
 }
 
-// ── Typing Dots ──
+// ── Typing Dots（日志行风格：与传输日志同语言，不再装盒）──
 
 function TypingDots() {
   return (
     <div style={{
-      display: 'inline-flex', gap: 6, padding: '6px 12px',
+      display: 'inline-flex', gap: 6, padding: '2px 0 2px 2px',
       alignItems: 'center',
       alignSelf: 'flex-start',
-      background: 'rgba(4,10,24,0.7)',
-      border: `1px solid ${theme.hudFrameSoft}`,
-      clipPath: bubbleClipAgent,
       fontFamily: theme.fontMono,
       fontSize: 9,
       letterSpacing: 1.8,

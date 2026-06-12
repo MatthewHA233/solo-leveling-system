@@ -11,8 +11,11 @@ import {
   fetchActivityPalette, fetchActivityBlocks, paintActivityBlocks, eraseActivityBlocks,
   fetchPlanNodes, fetchPlannedBlocks, paintPlannedBlocks, erasePlannedBlocks,
   fetchSyncLinks, fetchSyncPeers, runSyncLink,
+  addContextCard, addBinding,
 } from './lib/local-api'
 import type { PerceptionSpan, BiliSpan, ModelCallLog, LinkedDevice, SyncPeer, Goal } from './lib/local-api'
+import { distillThought } from './lib/thought-distill'
+import { anchorToContext } from './lib/anchor-to-context'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from './types'
 import { theme, hud } from './theme'
 
@@ -22,6 +25,7 @@ import type { AgentConfig } from './lib/agent/agent-config'
 import { getFeatureModel, logModelUsage, realtimeUsageToDashScope, type RealtimeUsage } from './lib/model-audit'
 import { buildSystemPrompt, buildConversationSummary } from './lib/ai/prompt-templates'
 import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from './lib/ai/prompt-templates'
+import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
 
 // LLM Engine（新）
 import { runQueryLoop } from './lib/llm/query-loop'
@@ -111,6 +115,7 @@ export interface ChatMessage {
   readonly role: 'user' | 'agent' | 'system'
   readonly content: string
   readonly timestamp: string
+  readonly reasoning?: string            // 思考模型的推理过程（流式累积，仅展示不入历史）
   readonly audioUrl?: string             // 语音消息的 blob URL（可播放）
   readonly durationMs?: number           // 录音时长（毫秒）
   readonly transcript?: string           // ASR 转写文本（语音消息专用）
@@ -182,6 +187,7 @@ function sessionMessagesToChatMessages(msgs: readonly SessionMessage[], audioDir
       // transcript 就是 content（语音消息 content 存的是转写文本）
       ...(audioUrl && content ? { transcript: content } : {}),
       ...(m.usage ? { usage: m.usage } : {}),
+      ...(m.reasoning ? { reasoning: m.reasoning } : {}),
     })
   }
   return out
@@ -455,6 +461,16 @@ export default function App() {
   // LLM 对话历史（新类型系统），与 UI 展示的 chatMessages 分离
   const conversationRef = useRef<Message[]>([])
   const handleSendRef = useRef<HandleSend | null>(null)
+  // 当前对话绑定的语境卡（语境库里展开转录的那张）；聊天锚定到它
+  const activeContextRef = useRef<{ cardId: string; text: string; title: string } | null>(null)
+  // 主人在洪流域鼠标锁定的卡片（粘性悬浮）；注入 system prompt，说"这张卡片"时 AI 立刻知道
+  const focusedCardRef = useRef<{
+    cardId: string
+    kind: 'thought' | 'bili_transcript'
+    title: string | null
+    text: string
+    sourceLabel: string | null
+  } | null>(null)
 
   // ── Session 持久化 ──
   const sessionIdRef = useRef<string | null>(null)
@@ -1962,11 +1978,17 @@ export default function App() {
   }, [])
 
   // ── System Prompt Builder（两套协议共用） ──
-  const refreshSystemPrompt = useCallback(async () => {
+  const refreshSystemPrompt = useCallback(async (userText?: string) => {
     const cfg = configRef.current
     const oneHourAgo = Date.now() - 60 * 60 * 1000
     const today = new Date()
     const toHHmm = (s: string) => s.slice(11, 16)
+
+    // 意图驱动：有 userText 按意图裁剪上下文段；无（定时/Omni 热读）则全量
+    const intent = userText ? classifyIntent(userText) : null
+    const wantActivity = !intent || intent.activity
+    const wantBili = !intent || intent.bili
+    const wantGoals = !intent || intent.goals
 
     const [goalsRes, perceptionSpans, activityBlocksRes, activityPaletteRes, biliSpans] = await Promise.allSettled([
       fetchGoals('active'),
@@ -1985,9 +2007,11 @@ export default function App() {
     const currentPalette = activityPaletteRes.status === 'fulfilled' ? activityPaletteRes.value : activityPalette
     const activityTags = activityBlocksToContextRecords(todayBlocks, currentPalette, oneHourAgo, today)
 
-    const appUsage: AppUsageRecord[] = perceptionData
+    const appUsageRaw: AppUsageRecord[] = perceptionData
       .filter((s) => s.track === 'apps' && new Date(s.end_at).getTime() >= oneHourAgo)
       .map((s) => ({ startTime: toHHmm(s.start_at), endTime: toHHmm(s.end_at), appName: s.title, windowTitle: s.group_name ?? '' }))
+    // 瘦身：去终端 spinner 噪音、合并连续同进程段、限量
+    const appUsage = compactAppUsage(appUsageRaw)
 
     const biliHistory: BiliRecord[] = biliSpans.status === 'fulfilled'
       ? biliSpans.value
@@ -1995,10 +2019,19 @@ export default function App() {
           .map((s) => ({ time: toHHmm(s.start_at), title: s.title, url: `https://www.bilibili.com/video/${s.bvid}` }))
       : []
 
+    // 按意图选择性注入；传 undefined 的段 buildDynamicContext 会自动跳过
     const base = buildSystemPrompt(
       cfg.agentName, cfg.agentPersona, cfg.agentCallUser,
       cfg.mainQuest,
-      { goals, activityTags, appUsage, biliHistory, presence },
+      {
+        goals: wantGoals ? goals : undefined,
+        activityTags: wantActivity ? activityTags : undefined,
+        appUsage: wantActivity ? appUsage : undefined,
+        biliHistory: wantBili ? biliHistory : undefined,
+        presence,
+        // 锁定卡不走意图裁剪：体量小且主人随时可能说"这张卡片"
+        focusedCard: focusedCardRef.current ?? undefined,
+      },
     )
     const history = buildConversationSummary(
       chatMessagesRef.current.map((m) => ({ role: m.role, content: m.content || m.transcript || '' }))
@@ -2014,6 +2047,47 @@ export default function App() {
     const timer = setInterval(() => refreshSystemPrompt().catch(() => {}), 60_000)
     return () => clearInterval(timer)
   }, [refreshSystemPrompt])
+
+  // ── 监听语境库「展开转录的那张」→ 绑定为当前对话语境卡 ──
+  useEffect(() => {
+    const onActive = (e: Event) => {
+      const d = (e as CustomEvent).detail as { cardId: string; text?: string; title?: string; clear?: boolean }
+      if (d.clear) {
+        if (activeContextRef.current?.cardId === d.cardId) activeContextRef.current = null
+      } else if (d.text) {
+        activeContextRef.current = { cardId: d.cardId, text: d.text, title: d.title ?? '语境卡' }
+      }
+    }
+    window.addEventListener('solevup:active-context', onActive)
+    return () => window.removeEventListener('solevup:active-context', onActive)
+  }, [])
+
+  // ── 监听洪流域「鼠标锁定的卡片」→ 注入聊天上下文 ──
+  useEffect(() => {
+    const onFocus = (e: Event) => {
+      const d = (e as CustomEvent).detail as {
+        cardId?: string
+        kind?: 'thought' | 'bili_transcript'
+        title?: string | null
+        text?: string
+        sourceLabel?: string | null
+        clear?: boolean
+      }
+      if (d.clear) {
+        focusedCardRef.current = null
+      } else if (d.cardId && d.kind && typeof d.text === 'string') {
+        focusedCardRef.current = {
+          cardId: d.cardId,
+          kind: d.kind,
+          title: d.title ?? null,
+          text: d.text,
+          sourceLabel: d.sourceLabel ?? null,
+        }
+      }
+    }
+    window.addEventListener('solevup:card-focus', onFocus)
+    return () => window.removeEventListener('solevup:card-focus', onFocus)
+  }, [])
 
   // ── Send Message ──
   const handleSend = useCallback(async (text: string, fromVoice = false, modeOverride?: ChatMode) => {
@@ -2031,8 +2105,8 @@ export default function App() {
     // 文字输入也要立即显示思考动画
     if (!fromVoice) emitFairy('thinking')
 
-    // D2 + D4 — 构建 system prompt（两套协议共用，结果缓存在 systemPromptRef）
-    const systemPrompt = await refreshSystemPrompt()
+    // D2 + D4 — 构建 system prompt（按本条消息意图裁剪上下文段，缓存在 systemPromptRef）
+    const systemPrompt = await refreshSystemPrompt(text)
 
     const aiMode = modeOverride ?? configRef.current.aiMode
 
@@ -2085,6 +2159,7 @@ export default function App() {
     const userMsg = createUserMessage(text)
     const capturedSnapshots: ApiRequestSnapshot[] = []
     let capturedUsage: ModelCallLog | null = null
+    let capturedReasoning = ''   // 思考模型的推演流（随消息一起持久化，回看用）
 
     // ── TTS 流式管线（与 LLM 并行启动）──
     type TtsState = {
@@ -2185,8 +2260,25 @@ export default function App() {
         },
         maxIterations: 8,
         onEvent: (event) => {
-          if (event.type !== 'textDelta') console.log('[QueryLoop]', event.type, event)
-          if (event.type === 'textDelta') {
+          if (event.type !== 'textDelta' && event.type !== 'reasoningDelta') console.log('[QueryLoop]', event.type, event)
+          if (event.type === 'reasoningDelta') {
+            // 思考流：累积到气泡的 reasoning 字段（不进 TTS、不进对话历史，但随消息持久化）
+            capturedReasoning += event.delta
+            setChatMessages((prev) => {
+              const idx = prev.findIndex((m) => m.id === agentMsgId)
+              if (idx >= 0) {
+                return prev.map((m) =>
+                  m.id === agentMsgId
+                    ? { ...m, reasoning: (m.reasoning ?? '') + event.delta }
+                    : m
+                )
+              }
+              return [...prev, {
+                id: agentMsgId, role: 'agent' as const,
+                content: '', reasoning: event.delta, timestamp: new Date().toISOString(),
+              }]
+            })
+          } else if (event.type === 'textDelta') {
             setChatMessages((prev) => {
               const idx = prev.findIndex((m) => m.id === agentMsgId)
               if (idx >= 0) {
@@ -2265,12 +2357,87 @@ export default function App() {
         return ''
       })()
 
+      // ── 想法沉淀（后台，不阻塞回复）──
+      //   绑定了语境卡（展开转录的那张）→ 锚定到语境卡 + 生成绑定语境的想法卡
+      //   没绑定（日常聊天）→ 生成独立想法卡
+      if (text.trim()) {
+        const speech = text.trim()
+        const active = activeContextRef.current
+        void (async () => {
+          try {
+            if (active) {
+              const r = await anchorToContext(active.text, speech)
+              if (!r) return
+              // 想法卡（绑定语境来源）
+              const thoughtId = await addContextCard(r.thought, `语境·${active.title.slice(0, 16)}`)
+              // 语境卡上定位 AI 复制的原文片段 → 建锚点（高亮在转录上）
+              let highlighted = false
+              if (r.segment) {
+                const idx = active.text.indexOf(r.segment)
+                if (idx >= 0) {
+                  await addBinding({
+                    card_id: active.cardId,
+                    start_pos: idx,
+                    end_pos: idx + r.segment.length,
+                    selected_text: r.segment,
+                    user_speech: r.thought,
+                    anchors: r.anchors,
+                  })
+                  highlighted = true
+                }
+              }
+              // 想法卡本身也挂锚点（标签）
+              await addBinding({
+                card_id: thoughtId,
+                start_pos: 0,
+                end_pos: r.thought.length,
+                selected_text: r.thought,
+                user_speech: r.thought,
+                anchors: r.anchors,
+              })
+              window.dispatchEvent(new CustomEvent('solevup:context-updated'))
+              const kw = r.anchors.map((a) => a.keyword).join('、')
+              setChatMessages((prev) => [...prev, {
+                id: crypto.randomUUID(), role: 'system' as const,
+                content: `📍 已锚定到语境${highlighted ? '并高亮原文' : ''}：${r.thought.slice(0, 22)}${r.thought.length > 22 ? '…' : ''}${kw ? `（锚点：${kw}）` : ''}`,
+                timestamp: new Date().toISOString(),
+              }])
+            } else {
+              const distilled = await distillThought(speech)
+              if (!distilled) return
+              const cardId = await addContextCard(distilled.cardText)
+              await addBinding({
+                card_id: cardId,
+                start_pos: 0,
+                end_pos: distilled.cardText.length,
+                selected_text: distilled.cardText,
+                user_speech: speech,
+                anchors: distilled.anchors,
+              })
+              window.dispatchEvent(new CustomEvent('solevup:context-updated'))
+              const kw = distilled.anchors.map((a) => a.keyword).join('、')
+              const preview = distilled.cardText.length > 24 ? distilled.cardText.slice(0, 24) + '…' : distilled.cardText
+              setChatMessages((prev) => [...prev, {
+                id: crypto.randomUUID(), role: 'system' as const,
+                content: `📝 已记成想法卡：${preview}${kw ? `（锚点：${kw}）` : ''}`,
+                timestamp: new Date().toISOString(),
+              }])
+            }
+          } catch (e) {
+            console.error('[Distill] 沉淀失败', e)
+          }
+        })()
+      }
+
       // ── 只持久化本轮 user + 最终 assistant，不能用全量历史长度去裁剪最近上下文窗口 ──
       const newPairs: SessionMessage[] = []
       const userText = text.trim()
       if (!fromVoice && userText) newPairs.push(makeSessionMessage('user', userText))
       if (replyText.trim()) {
-        newPairs.push(makeSessionMessage('assistant', replyText.trim()))
+        newPairs.push({
+          ...makeSessionMessage('assistant', replyText.trim()),
+          reasoning: capturedReasoning || null,
+        })
       }
       if (capturedUsage) {
         for (let i = newPairs.length - 1; i >= 0; i--) {
@@ -3228,6 +3395,8 @@ export default function App() {
                     messages={chatMessages}
                     isProcessing={isProcessing}
                     onSend={handleSend}
+                    agentName={config.agentName}
+                    userCallsign={config.agentCallUser}
                     aiMode={config.aiMode}
                     onToggleAiMode={() => handleConfigUpdate({ aiMode: config.aiMode === 'omni' ? 'regular' : 'omni' })}
                     cameraReady={presence.ready}
@@ -3300,7 +3469,7 @@ export default function App() {
         <SessionPicker
           sessions={sessions}
           currentSessionId={sessionIdRef.current}
-          dockRight={340}
+          dockRight={rightPanelWidth}
           onSelect={(id, ts) => { switchSession(id, ts) }}
           onNewSession={() => { newSession() }}
           onDelete={async (id) => {
@@ -3318,6 +3487,14 @@ export default function App() {
             }
           }}
           onClose={() => setPickerOpen(false)}
+          onRefresh={() => {
+            void getRecentChatSessions(50).then((s) => {
+              setSessions(s)
+              // 手动重命名/重新生成的标题要同步进 ref，避免自动起名逻辑再覆盖
+              const cur = s.find((x) => x.id === sessionIdRef.current)
+              if (cur) sessionTitleRef.current = cur.title || '新会话'
+            }).catch(() => {})
+          }}
         />
       )}
 

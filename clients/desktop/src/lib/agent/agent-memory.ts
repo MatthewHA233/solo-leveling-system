@@ -26,6 +26,7 @@ export interface SessionMessage {
   readonly audioPath?: string | null   // 相对路径 "{sessionId}/{filename}.wav"
   readonly durationMs?: number | null  // 录音时长（毫秒）
   readonly usage?: ModelCallLog | null // assistant 消息对应的模型调用审计快照
+  readonly reasoning?: string | null   // 思考模型的推演过程（assistant 专用，回看用）
 }
 
 export interface LLMMessage {
@@ -239,6 +240,7 @@ interface ApiChatMessage {
   audio_path?: string | null
   duration_ms?: number | null
   usage_json?: string | null
+  reasoning?: string | null
 }
 
 function fromApiMessage(m: ApiChatMessage): SessionMessage {
@@ -256,6 +258,7 @@ function fromApiMessage(m: ApiChatMessage): SessionMessage {
     audioPath: m.audio_path ?? null,
     durationMs: m.duration_ms ?? null,
     usage,
+    reasoning: m.reasoning ?? null,
   }
 }
 
@@ -317,6 +320,7 @@ export async function persistMessages(
       audio_path: m.audioPath ?? null,
       duration_ms: m.durationMs ?? null,
       usage_json: m.usage ? JSON.stringify(m.usage) : null,
+      reasoning: m.reasoning ?? null,
     })),
   }
   await fetch(`${API_BASE}/api/sessions/${sessionId}/messages`, {
