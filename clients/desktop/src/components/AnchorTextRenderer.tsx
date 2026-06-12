@@ -3,7 +3,6 @@
 //   · 中文分词 → 单词锚点 = 实心渐变填充 + 白字 + 模糊光晕
 //   · 短语/整句锚点 = 文字保持原样，外面画 2px 渐变描边框（borderImage，按行分组每行一框）
 //   · hover 锚点弹悬浮窗（Portal 到 body、自动避让视口边界）
-//   · 可框选（onSelectText），无框选则纯展示
 // ══════════════════════════════════════════════
 
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -118,24 +117,10 @@ function bindingColor(b: AnchorBinding): string {
   return b.anchors.length ? CAT_COLOR[b.anchors[0].category] : theme.textMuted
 }
 
-// 把 selection 的 (node, offset) 映射成相对整段文本的全局 offset
-function globalOffset(root: Node, node: Node, offset: number): number {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-  let acc = 0
-  let n = walker.nextNode()
-  while (n) {
-    if (n === node) return acc + offset
-    acc += n.textContent?.length ?? 0
-    n = walker.nextNode()
-  }
-  return acc + offset
-}
-
 interface Props {
   readonly text: string
   readonly bindings: readonly AnchorBinding[]
   readonly onRemoveBinding?: (id: string) => void
-  readonly onSelectText?: (start: number, end: number, selectedText: string, rect: DOMRect) => void
 }
 
 interface PhraseBox {
@@ -147,7 +132,7 @@ interface PhraseBox {
   gradient: string
 }
 
-export default function AnchorTextRenderer({ text, bindings, onRemoveBinding, onSelectText }: Props) {
+export default function AnchorTextRenderer({ text, bindings, onRemoveBinding }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const segmentRefs = useRef<(HTMLSpanElement | null)[]>([])
   const [tip, setTip] = useState<{ ranges: AnchorRange[]; anchorRect: DOMRect } | null>(null)
@@ -248,32 +233,13 @@ export default function AnchorTextRenderer({ text, bindings, onRemoveBinding, on
   }
   const cancelHide = () => { if (hideTimer.current) clearTimeout(hideTimer.current) }
 
-  const handleMouseUp = () => {
-    if (!onSelectText || !containerRef.current) return
-    const sel = window.getSelection()
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
-    const range = sel.getRangeAt(0)
-    if (!containerRef.current.contains(range.commonAncestorContainer)) return
-    const a = globalOffset(containerRef.current, range.startContainer, range.startOffset)
-    const b = globalOffset(containerRef.current, range.endContainer, range.endOffset)
-    const start = Math.min(a, b)
-    const end = Math.max(a, b)
-    const selected = text.slice(start, end)
-    if (!selected.trim()) return
-    const rect = range.getBoundingClientRect()
-    onSelectText(start, end, selected, rect)
-    sel.removeAllRanges()
-  }
-
   return (
     <div
       ref={containerRef}
-      onMouseUp={handleMouseUp}
       style={{
         position: 'relative',
         whiteSpace: 'pre-wrap',
         lineHeight: 1.95,
-        cursor: onSelectText ? 'text' : 'default',
       }}
     >
       {/* 短语锚点的渐变描边框（LingFlow: absolute border-2 rounded-md + borderImage 渐变） */}

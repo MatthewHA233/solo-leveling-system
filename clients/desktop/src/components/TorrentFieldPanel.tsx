@@ -1,17 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Hash, Image as ImageIcon, Type, List, ListOrdered, AtSign, Send, Check, ChevronDown, ChevronUp, Pencil } from 'lucide-react'
-import { createPortal } from 'react-dom'
-import { invoke } from '@tauri-apps/api/core'
 import { hud, theme } from '../theme'
 import { HudFrameSkeleton, HudTabButton, CornerArt, ChartHeaderFrame } from './hud'
 import type { ContextFeedItem, AnchorBinding, AnchorRef } from '../lib/local-api'
-import { fetchContextFeed, addContextCard, deleteContextCard, updateContextCard, fetchCardBindings, addBinding, deleteBinding } from '../lib/local-api'
-import { extractAnchors } from '../lib/anchor-extract'
+import { fetchContextFeed, addContextCard, deleteContextCard, updateContextCard, fetchCardBindings, deleteBinding } from '../lib/local-api'
 import AnchorTextRenderer, { AnchorChip } from './AnchorTextRenderer'
 import AnchorFieldMap from './AnchorFieldMap'
 import CardHoverEffect from './CardHoverEffect'
-import { fetchBiliTranscriptPlain } from '../lib/bili-transcript'
+import TranscriptPlayerWindow from './TranscriptPlayerWindow'
+import { fetchBiliTranscriptSentences, type TranscriptSentence } from '../lib/bili-transcript'
 import ConfirmDialog from './ConfirmDialog'
 import Tooltip from './Tooltip'
 
@@ -309,6 +307,9 @@ export default function TorrentFieldPanel() {
         </main>
       </div>
 
+      {/* 转录回放悬浮窗：全局单实例，逐句点击通过事件唤起 */}
+      <TranscriptPlayerWindow />
+
       <ConfirmDialog
         open={pendingDelete !== null}
         title="DELETE CARD"
@@ -464,6 +465,17 @@ function FlomoMain({
           height: 0;
           display: none;
         }
+        .torrent-sentence-row {
+          border-left: 2px solid transparent;
+          transition: background 0.15s, border-color 0.15s;
+        }
+        .torrent-sentence-row:hover {
+          background: ${theme.electricBlue}0D;
+        }
+        .torrent-sentence-row.is-active {
+          border-left-color: ${theme.electricBlue};
+          background: ${theme.electricBlue}10;
+        }
       `}</style>
       {showCompose && (
         <div
@@ -548,14 +560,9 @@ function FlomoMain({
   )
 }
 
-// ── 锚点 hook：框选 → 说话 → AI 提关键词 → 落库 → 渲染 ──────────
-interface PendingSel { start: number; end: number; text: string; rect: DOMRect }
-
+// ── 锚点 hook：加载卡上的绑定 + 删除（框选创建已下线，新建走聊天锚定/Fairy 工具）──
 function useCardAnchors(cardId: string, enabled: boolean) {
   const [bindings, setBindings] = useState<AnchorBinding[]>([])
-  const [pending, setPending] = useState<PendingSel | null>(null)
-  const [speech, setSpeech] = useState('')
-  const [busy, setBusy] = useState(false)
 
   const reload = useCallback(async () => {
     if (!enabled) return
@@ -572,93 +579,12 @@ function useCardAnchors(cardId: string, enabled: boolean) {
     return () => window.removeEventListener('solevup:context-updated', onUpdate)
   }, [reload])
 
-  // 框选语境一段 + 写想法 → ① 生成独立想法卡片 ② 在语境卡上留锚点标记
-  const submit = useCallback(async () => {
-    if (!pending || !speech.trim() || busy) return
-    setBusy(true)
-    try {
-      let anchors: Array<{ keyword: string; category: 'motive' | 'view' | 'practice' }> = []
-      try { anchors = await extractAnchors(speech, pending.text) }
-      catch (e) { console.error('[Anchor] AI 提取失败，仍保留原话', e) }
-      // ① 框选区域写下的想法 → 独立想法卡片（进想法卡片 tab，不进语境库）
-      const thoughtId = await addContextCard(speech.trim())
-      // ② 语境卡上这段留锚点标记（语境文段 ↔ 你的想法 ↔ 关键词）
-      //    source_card_id 指向想法卡：删想法卡时本绑定级联清掉
-      await addBinding({
-        card_id: cardId,
-        start_pos: pending.start,
-        end_pos: pending.end,
-        selected_text: pending.text,
-        user_speech: speech.trim(),
-        anchors,
-        source_card_id: thoughtId,
-      })
-      setPending(null)
-      setSpeech('')
-      window.dispatchEvent(new CustomEvent('solevup:context-updated')) // 想法卡片 tab 实时刷新
-      await reload()
-    } catch (e) {
-      console.error('[Anchor] 保存失败', e)
-    } finally {
-      setBusy(false)
-    }
-  }, [pending, speech, busy, cardId, reload])
-
   const remove = useCallback(async (id: string) => {
     try { await deleteBinding(id); await reload() }
     catch (e) { console.error('[Anchor] 删除失败', e) }
   }, [reload])
 
-  const beginSelect = useCallback((start: number, end: number, text: string, rect: DOMRect) => {
-    setSpeech('')
-    setPending({ start, end, text, rect })
-  }, [])
-
-  return { bindings, pending, setPending, speech, setSpeech, submit, busy, remove, beginSelect }
-}
-
-// ── 框选后的悬浮输入（浮在选区旁，不挤占文本）──────────────────
-function FloatingSpeak({ selectedText, rect, speech, busy, onChange, onSubmit, onCancel }: {
-  readonly selectedText: string
-  readonly rect: DOMRect
-  readonly speech: string
-  readonly busy: boolean
-  readonly onChange: (v: string) => void
-  readonly onSubmit: () => void
-  readonly onCancel: () => void
-}) {
-  const W = 310
-  const top = Math.min(rect.bottom + 8, window.innerHeight - 190)
-  const left = Math.max(8, Math.min(rect.left, window.innerWidth - W - 12))
-  return (
-    <div style={{ ...styles.floatSpeak, top, left, width: W }}>
-      <div style={styles.speakQuote}>“{selectedText.length > 48 ? selectedText.slice(0, 47) + '…' : selectedText}”</div>
-      <textarea
-        value={speech}
-        autoFocus
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') onSubmit()
-          if (e.key === 'Escape') onCancel()
-        }}
-        placeholder="对这段，你想说什么？（记成想法卡片，AI 从中提锚点）"
-        style={styles.speakInput}
-      />
-      <div style={styles.speakActions}>
-        <button type="button" onClick={onCancel} style={styles.speakCancel}>取消</button>
-        <Tooltip content="Ctrl+Enter">
-          <button
-            type="button"
-            onClick={onSubmit}
-            disabled={!speech.trim() || busy}
-            style={{ ...styles.speakSubmit, opacity: !speech.trim() || busy ? 0.4 : 1 }}
-          >
-            {busy ? '记录中…' : '记成想法'}
-          </button>
-        </Tooltip>
-      </div>
-    </div>
-  )
+  return { bindings, remove }
 }
 
 // ── 想法卡片（你的话；纯文本 + 锚点标签，不可框选、不进语境库）────
@@ -802,12 +728,39 @@ function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
   )
 }
 
-// ── B 站转录语境卡（封面 + 标题 + 摘要 + 展开全文）────────────
+// ── B 站转录语境卡（封面 + 标题 + 摘要 + 展开逐句转录）────────────
+
+/** 把整文坐标系的绑定切片平移到某一句的局部坐标系（句内无交集则过滤掉） */
+function sliceBindingsForSentence(
+  bindings: readonly AnchorBinding[], offset: number, len: number,
+): AnchorBinding[] {
+  return bindings
+    .filter((b) => b.start_pos < offset + len && b.end_pos > offset)
+    .map((b) => ({
+      ...b,
+      start_pos: Math.max(0, b.start_pos - offset),
+      end_pos: Math.min(len, b.end_pos - offset),
+    }))
+}
+
+function fmtStamp(sec: number): string {
+  const s = Math.max(0, Math.floor(sec))
+  const m = Math.floor(s / 60)
+  const h = Math.floor(m / 60)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m % 60)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`
+}
 
 function BiliContextCard({ item }: { readonly item: ContextFeedItem }) {
   const [expanded, setExpanded] = useState(false)
-  const [fullText, setFullText] = useState<string | null>(null)
+  const [sentences, setSentences] = useState<TranscriptSentence[] | null>(null)
   const [loading, setLoading] = useState(false)
+  // 悬浮窗播放进度 → 点亮当前句
+  const [activeIdx, setActiveIdx] = useState<number | null>(null)
+  const fullText = useMemo(
+    () => (sentences ? sentences.map((s) => s.text).join('') : null),
+    [sentences],
+  )
   // 始终加载锚点：折叠态也要知道这张卡有没有标记（突出显示 + 关键词 chips）
   const a = useCardAnchors(item.id, true)
   const marked = a.bindings.length > 0
@@ -836,13 +789,41 @@ function BiliContextCard({ item }: { readonly item: ContextFeedItem }) {
 
   const toggle = async () => {
     if (loading) return
-    if (!expanded && fullText === null && item.ref_path) {
+    if (!expanded && sentences === null && item.ref_path) {
       setLoading(true)
-      const plain = await fetchBiliTranscriptPlain(item.ref_path)
-      setFullText(plain ?? '（无转录文本）')
+      const list = await fetchBiliTranscriptSentences(item.ref_path)
+      setSentences(list ?? [{ text: '（无转录文本）', start: null, offset: 0 }])
       setLoading(false)
     }
     setExpanded((v) => !v)
+  }
+
+  // 悬浮窗播放进度 → 找到最后一句 start <= 当前秒的句子点亮
+  useEffect(() => {
+    if (!expanded || !sentences) return
+    const onTime = (e: Event) => {
+      const d = (e as CustomEvent).detail as { refPath?: string | null; sec?: number } | undefined
+      if (!d || d.refPath !== item.ref_path || typeof d.sec !== 'number') {
+        setActiveIdx(null)
+        return
+      }
+      let idx: number | null = null
+      for (let i = 0; i < sentences.length; i++) {
+        const st = sentences[i].start
+        if (st !== null && st <= d.sec) idx = i
+      }
+      setActiveIdx(idx)
+    }
+    window.addEventListener('solevup:transcript-time', onTime)
+    return () => window.removeEventListener('solevup:transcript-time', onTime)
+  }, [expanded, sentences, item.ref_path])
+
+  // 整句点击 → 唤起/复用转录回放悬浮窗并 seek 到句首
+  const playSentence = (s: TranscriptSentence) => {
+    if (!item.ref_path) return
+    window.dispatchEvent(new CustomEvent('solevup:transcript-play', {
+      detail: { refPath: item.ref_path, title: item.title, sec: s.start },
+    }))
   }
 
   const coverSrc = item.cover_url
@@ -897,32 +878,40 @@ function BiliContextCard({ item }: { readonly item: ContextFeedItem }) {
       </div>
       </Tooltip>
 
-      {expanded && fullText !== null && (
+      {expanded && sentences !== null && (
         <>
-          <div style={styles.biliSummary}>
-            <AnchorTextRenderer
-              text={fullText}
-              bindings={a.bindings}
-              onSelectText={a.beginSelect}
-              onRemoveBinding={a.remove}
-            />
+          {/* 逐句转录：时间戳 + 句子（锚点高亮按句切片）；整句点击 → 悬浮窗跳播 */}
+          <div style={styles.transcriptList}>
+            {sentences.map((s, i) => (
+              <div
+                key={`${s.offset}-${i}`}
+                className={`torrent-sentence-row${activeIdx === i ? ' is-active' : ''}`}
+                onClick={item.ref_path ? () => playSentence(s) : undefined}
+                style={{
+                  ...styles.sentenceRow,
+                  cursor: item.ref_path ? 'pointer' : 'default',
+                }}
+              >
+                <span style={{
+                  ...styles.sentenceStamp,
+                  ...(activeIdx === i ? styles.sentenceStampActive : null),
+                }}>
+                  {s.start !== null ? fmtStamp(s.start) : '--:--'}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <AnchorTextRenderer
+                    text={s.text}
+                    bindings={sliceBindingsForSentence(a.bindings, s.offset, s.text.length)}
+                    onRemoveBinding={a.remove}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
           <button type="button" style={styles.biliCollapseBar} onClick={toggle}>
             收起 <ChevronUp size={12} />
           </button>
         </>
-      )}
-
-      {a.pending && (
-        <FloatingSpeak
-          selectedText={a.pending.text}
-          rect={a.pending.rect}
-          speech={a.speech}
-          busy={a.busy}
-          onChange={a.setSpeech}
-          onSubmit={a.submit}
-          onCancel={() => a.setPending(null)}
-        />
       )}
     </article>
   )
@@ -1439,70 +1428,39 @@ const styles: Record<string, CSSProperties> = {
     cursor: 'pointer',
     letterSpacing: '0.08em',
   },
-  // ── 框选后的"说话"面板 ──
-  floatSpeak: {
-    position: 'fixed',
-    zIndex: 300,
-    padding: '8px 10px',
-    border: `1px solid ${theme.flameTeal}77`,
-    background: theme.hudFillDeep,
-    borderRadius: 5,
-    boxShadow: '0 8px 28px rgba(0,0,0,0.6)',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 7,
-  },
   anchorChips: {
     display: 'flex',
     flexWrap: 'wrap',
     gap: 5,
     marginTop: 8,
   },
-  speakQuote: {
-    fontSize: 11.5,
-    color: theme.flameTeal,
-    fontStyle: 'italic',
-    lineHeight: 1.5,
-    borderLeft: `2px solid ${theme.flameTeal}66`,
-    paddingLeft: 7,
-  },
-  speakInput: {
-    minHeight: 52,
-    resize: 'vertical',
-    border: `1px solid ${theme.hudFrameSoft}`,
-    background: 'rgba(0,0,0,0.3)',
-    borderRadius: 3,
-    padding: '6px 8px',
-    color: theme.textPrimary,
-    fontFamily: theme.fontBody,
-    fontSize: 12.5,
-    lineHeight: 1.6,
-    outline: 'none',
-  },
-  speakActions: {
+  // ── 逐句转录（可调旋钮：行距 / 时间戳列宽 / 字号）──
+  transcriptList: {
     display: 'flex',
-    justifyContent: 'flex-end',
-    gap: 8,
+    flexDirection: 'column',
+    gap: 2,
+    color: theme.textSecondary,
+    fontSize: 12.5,
   },
-  speakCancel: {
-    border: `1px solid ${theme.hudFrameSoft}`,
-    background: 'transparent',
-    color: theme.textMuted,
-    fontFamily: theme.fontBody,
-    fontSize: 11.5,
-    padding: '4px 12px',
-    cursor: 'pointer',
+  sentenceRow: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: 9,
+    padding: '2px 6px 2px 4px',
     borderRadius: 3,
   },
-  speakSubmit: {
-    border: 'none',
-    background: theme.flameTeal,
-    color: theme.background,
-    fontFamily: theme.fontBody,
-    fontSize: 11.5,
-    fontWeight: 700,
-    padding: '4px 14px',
-    cursor: 'pointer',
-    borderRadius: 3,
+  sentenceStamp: {
+    flexShrink: 0,
+    width: 38,
+    textAlign: 'right',
+    fontFamily: theme.fontMono,
+    fontSize: 10,
+    letterSpacing: '0.05em',
+    color: `${theme.electricBlue}88`,
+    userSelect: 'none',
+  },
+  sentenceStampActive: {
+    color: theme.electricBlue,
+    textShadow: `0 0 8px ${theme.electricBlue}99`,
   },
 }
