@@ -150,9 +150,10 @@ export async function renameCategory(
   return fetchPalette()
 }
 
-/** newFullPath 含首段分类名，如 "学习,英语,新概念3"；首段必须等于已有分类。 */
-export async function renameTagPath(tagId: number, newFullPath: string): Promise<ActivityPalette> {
-  await solevupRenameTagPath(tagId, newFullPath)
+/** newFullPath 含首段分类名，如 "学习,英语,新概念3"；首段必须等于已有分类。
+ *  cascade=true：后代标签路径前缀跟随替换。 */
+export async function renameTagPath(tagId: number, newFullPath: string, cascade = false): Promise<ActivityPalette> {
+  await solevupRenameTagPath(tagId, newFullPath, cascade)
   return fetchPalette()
 }
 

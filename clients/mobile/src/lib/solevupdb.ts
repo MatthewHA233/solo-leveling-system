@@ -159,7 +159,7 @@ interface SolevupDbNative {
   deleteTag(tagId: number): Promise<number>
   deleteCategory(categoryId: number): Promise<number>
   renameCategory(categoryId: number, newName: string, newColor: string): Promise<number>
-  renameTagPath(tagId: number, newFullPath: string): Promise<number>
+  renameTagPath(tagId: number, newFullPath: string, cascade: boolean): Promise<number>
   getPref(key: string, fallback: string): Promise<string>
   setPref(key: string, value: string): Promise<boolean>
   exportSync(since: string | null): Promise<SyncExport>
@@ -293,9 +293,9 @@ export async function solevupRenameCategory(
   return Native.renameCategory(categoryId, newName ?? '', newColor ?? '')
 }
 
-export async function solevupRenameTagPath(tagId: number, newFullPath: string): Promise<number> {
+export async function solevupRenameTagPath(tagId: number, newFullPath: string, cascade = false): Promise<number> {
   if (!Native) return 0
-  return Native.renameTagPath(tagId, newFullPath)
+  return Native.renameTagPath(tagId, newFullPath, cascade)
 }
 
 export async function solevupGetPref(key: string, fallback: string): Promise<string> {

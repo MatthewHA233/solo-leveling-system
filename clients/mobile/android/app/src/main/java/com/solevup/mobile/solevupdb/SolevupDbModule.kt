@@ -185,9 +185,9 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun renameTagPath(tagId: Double, newFullPath: String, promise: Promise) {
+  fun renameTagPath(tagId: Double, newFullPath: String, cascade: Boolean, promise: Promise) {
     try {
-      val n = db.renameTagPath(tagId.toLong(), newFullPath)
+      val n = db.renameTagPath(tagId.toLong(), newFullPath, cascade)
       promise.resolve(n.toDouble())
     } catch (e: Throwable) { promise.reject("SOLEVUPDB_RENAME_TAG_FAILED", e.message, e) }
   }

@@ -598,8 +598,10 @@ class SolevupDb(context: Context) :
   }
 
   /** 改标签完整路径 newFullPath（含首段分类名，如 "学习,英语,新概念3"）。
-   *  首段必须等于已有分类（不存在则抛错，避免误改）；不级联到共享前缀的兄弟 tag。 */
-  fun renameTagPath(tagId: Long, newFullPath: String): Int {
+   *  首段必须等于已有分类（不存在则抛错，避免误改）。
+   *  cascade=true 时所有以旧路径为前缀的后代 tag 一并前缀替换（跟随改名）；
+   *  false 时仅改自身，后代保持原路径（独立出来）。 */
+  fun renameTagPath(tagId: Long, newFullPath: String, cascade: Boolean = false): Int {
     val segs = newFullPath.split(",").map { it.trim() }.filter { it.isNotEmpty() }
     if (segs.isEmpty()) return 0
     val newCategoryName = segs[0]
@@ -615,12 +617,38 @@ class SolevupDb(context: Context) :
     if (newCategoryId < 0) {
       throw IllegalStateException("分类「$newCategoryName」不存在，请先创建该分类再改路径")
     }
+    val oldPath = db.rawQuery(
+      "SELECT full_path FROM activity_tags WHERE id = ? AND deleted_at IS NULL",
+      arrayOf(tagId.toString()),
+    ).use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: return 0
     val now = nowIso()
-    db.execSQL(
-      "UPDATE activity_tags SET category_id = ?, full_path = ?, leaf_name = ?, depth = ?, updated_at = ? WHERE id = ?",
-      arrayOf(newCategoryId, newPathStored, newLeafName, newDepth, now, tagId),
-    )
-    return db.rawQuery("SELECT changes()", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+    db.beginTransaction()
+    try {
+      db.execSQL(
+        "UPDATE activity_tags SET category_id = ?, full_path = ?, leaf_name = ?, depth = ?, updated_at = ? WHERE id = ?",
+        arrayOf(newCategoryId, newPathStored, newLeafName, newDepth, now, tagId),
+      )
+      val selfChanged = db.rawQuery("SELECT changes()", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+      if (cascade && oldPath != newPathStored) {
+        // 后代 = full_path 以「旧路径,」开头；前缀替换 + 跟随新分类，depth 平移
+        val depthDelta = newDepth - oldPath.split(",").size
+        db.execSQL(
+          """
+          UPDATE activity_tags
+          SET full_path = ? || SUBSTR(full_path, LENGTH(?) + 1),
+              category_id = ?,
+              depth = depth + ?,
+              updated_at = ?
+          WHERE deleted_at IS NULL AND id != ? AND full_path LIKE ? || ',%'
+          """.trimIndent(),
+          arrayOf(newPathStored, oldPath, newCategoryId, depthDelta, now, tagId, oldPath),
+        )
+      }
+      db.setTransactionSuccessful()
+      return selfChanged
+    } finally {
+      db.endTransaction()
+    }
   }
 
   /** Erase：soft delete + bump updated_at（LWW 同步时另一端能看到删除）。 */

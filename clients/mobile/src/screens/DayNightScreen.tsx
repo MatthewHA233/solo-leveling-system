@@ -440,10 +440,17 @@ function TagTreeView({
       </Pressable>
     )
   }
-  // 分支：嵌套 box；先 leaf 子节点行内 chip，再 branch 子节点垂直堆叠
-  const leafKids = node.children.filter((c) => c.children.length === 0 && c.tag)
-  const branchKids = node.children.filter((c) => c.children.length > 0)
+  // 分支：嵌套 box；children 按使用新旧统一排序混合渲染 —— leaf 是流式
+  // chip，branch box 占整行（width 100% 在 wrap 容器里自动断行），
+  // 有无子节点不再分组分开排
   const onHeader = node.tag != null && node.tag.id === selectedId
+  // 深层折叠：三级 box（depth>=2）内的子标签超过 ~4 行时默认裁断，
+  // 点省略提示展开。整高由内层 wrap 的 onLayout 报告（外层裁不影响内层布局）
+  const [kidsExpanded, setKidsExpanded] = useState(false)
+  const [kidsFullH, setKidsFullH] = useState(0)
+  const KIDS_COLLAPSE_H = 4 * 32 + 3 * 5 + 1 // 恰好 4 行 chip（含底边框）
+  const collapsible = depth >= 2 && kidsFullH > KIDS_COLLAPSE_H + 36 // 至少多出一行才折
+  const kidsClipped = collapsible && !kidsExpanded
   return (
     <View
       style={[
@@ -495,42 +502,43 @@ function TagTreeView({
           </Pressable>
         )}
       </View>
-      {leafKids.length > 0 && (
-        <View style={treeStyles.leafRow}>
-          {leafKids.map((c) => (
-            <TagTreeView
-              key={c.fullPath}
-              node={c}
-              depth={depth + 1}
-              selectedId={selectedId}
-              onPick={onPick}
-              onPickPath={onPickPath}
-              onOpenCategoryColor={onOpenCategoryColor}
-              onLongPressTag={onLongPressTag}
-              onLongPressCategory={onLongPressCategory}
-            />
-          ))}
+      {node.children.length > 0 && (
+        <View style={kidsClipped ? { maxHeight: KIDS_COLLAPSE_H, overflow: 'hidden' } : null}>
+          <View
+            style={treeStyles.kidsWrap}
+            onLayout={(e) => {
+              const h = Math.ceil(e.nativeEvent.layout.height)
+              if (Math.abs(h - kidsFullH) > 2) setKidsFullH(h)
+            }}
+          >
+            {node.children.map((c) => (
+              <TagTreeView
+                key={c.fullPath}
+                node={c}
+                depth={depth + 1}
+                selectedId={selectedId}
+                onPick={onPick}
+                onPickPath={onPickPath}
+                onOpenCategoryColor={onOpenCategoryColor}
+                onLongPressTag={onLongPressTag}
+                onLongPressCategory={onLongPressCategory}
+              />
+            ))}
+          </View>
         </View>
       )}
-      {branchKids.map((c) => (
-        <TagTreeView
-          key={c.fullPath}
-          node={c}
-          depth={depth + 1}
-          selectedId={selectedId}
-          onPick={onPick}
-          onPickPath={onPickPath}
-          onOpenCategoryColor={onOpenCategoryColor}
-          onLongPressTag={onLongPressTag}
-          onLongPressCategory={onLongPressCategory}
-        />
-      ))}
+      {kidsClipped && (
+        <Pressable onPress={() => setKidsExpanded(true)} hitSlop={6} style={treeStyles.expandHint}>
+          <Text style={[treeStyles.expandHintText, { color: node.catColor }]}>⋯ 展开全部</Text>
+        </Pressable>
+      )}
     </View>
   )
 }
 
 const treeStyles = StyleSheet.create({
   box: {
+    width: '100%',
     borderWidth: 1,
     borderRadius: 12,
     padding: 9,
@@ -573,10 +581,20 @@ const treeStyles = StyleSheet.create({
     fontWeight: '600',
     color: theme.ink,
   },
-  leafRow: {
+  kidsWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 5,
+    alignItems: 'flex-start',
+  },
+  expandHint: {
+    alignSelf: 'center',
+    paddingHorizontal: 14,
+    marginTop: -2,
+  },
+  expandHintText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   leafChip: {
     paddingHorizontal: 11,
@@ -589,6 +607,7 @@ const treeStyles = StyleSheet.create({
   },
   leafText: {
     fontSize: 13,
+    lineHeight: 18, // 显式行高 → chip 总高固定 32，深层折叠的裁断线才能对齐行底
     fontWeight: '600',
     color: theme.ink,
   },
@@ -1044,8 +1063,8 @@ export default function DayNightScreen() {
   >(null)
   // 修改保存前再确认一次（避免误改重要标签 / 分类）
   const [pendingRename, setPendingRename] = useState<
-    | { kind: 'tag'; id: number; original: string; newFullPath: string }
-    | { kind: 'category'; id: number; original: string; newName: string; newColor: string }
+    | { kind: 'tag'; id: number; original: string; newFullPath: string; descendants: number }
+    | { kind: 'category'; id: number; original: string; newName: string; newColor: string; childTags: number }
     | null
   >(null)
   // 拖拽涂色碰到"原本已填满的一整行"时，先二次确认再真正写库。
@@ -2886,9 +2905,16 @@ export default function DayNightScreen() {
                       return
                     }
                     if (tagEdit.kind === 'tag') {
-                      setPendingRename({ kind: 'tag', id: tagEdit.id, original: tagEdit.original, newFullPath: trimmed })
+                      // 后代 = 路径以「原路径,」开头的其它标签（父节点改名要问是否级联）
+                      const descendants = palette
+                        ? palette.tags.filter((t) => t.id !== tagEdit.id && t.fullPath.startsWith(tagEdit.original + ',')).length
+                        : 0
+                      setPendingRename({ kind: 'tag', id: tagEdit.id, original: tagEdit.original, newFullPath: trimmed, descendants })
                     } else {
-                      setPendingRename({ kind: 'category', id: tagEdit.id, original: tagEdit.original, newName: trimmed, newColor: tagEdit.color })
+                      const childTags = palette
+                        ? palette.tags.filter((t) => t.fullPath === tagEdit.original || t.fullPath.startsWith(tagEdit.original + ',')).length
+                        : 0
+                      setPendingRename({ kind: 'category', id: tagEdit.id, original: tagEdit.original, newName: trimmed, newColor: tagEdit.color, childTags })
                     }
                     setTagEdit(null)
                   }}
@@ -2901,19 +2927,48 @@ export default function DayNightScreen() {
         </View>
       </Modal>
 
-      {/* 修改确认（rename 保存前再问一次，避免误改 LWW 同步会传到其他端） */}
+      {/* 修改确认（rename 保存前再问一次，避免误改 LWW 同步会传到其他端）
+          父节点标签（有后代）三键：取消放弃 / 仅此节点（后代独立留原路径）/ 全部跟随（级联前缀替换） */}
 	      <ConfirmDialog
 	        open={pendingRename != null}
-	        title={pendingRename?.kind === 'category' ? '修改分类' : '修改标签'}
+	        title={
+	          pendingRename?.kind === 'category'
+	            ? '修改分类'
+	            : pendingRename && pendingRename.descendants > 0
+	              ? '修改父节点标签'
+	              : '修改标签'
+	        }
         body={
           pendingRename?.kind === 'category'
-            ? `分类「${pendingRename.original}」→「${pendingRename.newName}」\n颜色 ${pendingRename.newColor}`
+            ? `分类「${pendingRename.original}」→「${pendingRename.newName}」\n颜色 ${pendingRename.newColor}${
+                pendingRename.childTags > 0 && pendingRename.newName !== pendingRename.original
+                  ? `\n\n分类下 ${pendingRename.childTags} 个标签路径将跟随更新`
+                  : ''
+              }`
             : pendingRename
-              ? `标签「${pendingRename.original}」→「${pendingRename.newFullPath}」`
+              ? `标签「${pendingRename.original}」→「${pendingRename.newFullPath}」${
+                  pendingRename.descendants > 0
+                    ? `\n\n该节点下有 ${pendingRename.descendants} 个子标签：\n「全部跟随」= 子标签路径一并改名\n「仅此节点」= 只改本节点（含其时间段），子标签保持原路径独立`
+                    : ''
+                }`
               : ''
         }
-        confirmText="保存"
+        confirmText={pendingRename?.kind === 'tag' && pendingRename.descendants > 0 ? '全部跟随' : '保存'}
         cancelText="取消"
+        secondaryText={pendingRename?.kind === 'tag' && pendingRename.descendants > 0 ? '仅此节点' : undefined}
+        onSecondary={
+          pendingRename?.kind === 'tag' && pendingRename.descendants > 0
+            ? async () => {
+                const item = pendingRename
+                setPendingRename(null)
+                try {
+                  setPalette(await renameTagPath(item.id, item.newFullPath, false))
+                } catch (e) {
+                  console.warn('[rename] failed', e)
+                }
+              }
+            : undefined
+        }
         onCancel={() => setPendingRename(null)}
         onConfirm={async () => {
           if (!pendingRename) return
@@ -2921,7 +2976,7 @@ export default function DayNightScreen() {
           setPendingRename(null)
           try {
             const next = item.kind === 'tag'
-              ? await renameTagPath(item.id, item.newFullPath)
+              ? await renameTagPath(item.id, item.newFullPath, item.descendants > 0)
               : await renameCategory(item.id, item.newName, item.newColor)
             setPalette(next)
           } catch (e) {

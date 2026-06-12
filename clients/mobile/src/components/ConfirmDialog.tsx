@@ -13,6 +13,9 @@ export interface ConfirmDialogProps {
   body?: string
   confirmText?: string
   cancelText?: string
+  /** 可选第三按钮（渲染在取消与确认之间，ghost 风格）：如「仅此节点」 */
+  secondaryText?: string
+  onSecondary?: () => void
   danger?: boolean
   /** AUDIT-021：强制场景下隐藏"取消"按钮（不渲染） */
   hideCancel?: boolean
@@ -28,6 +31,8 @@ export default function ConfirmDialog({
   body,
   confirmText = '确认',
   cancelText = '取消',
+  secondaryText,
+  onSecondary,
   danger,
   hideCancel,
   dismissible = true,
@@ -47,6 +52,11 @@ export default function ConfirmDialog({
             {!hideCancel && (
               <Pressable style={styles.cancelBtn} onPress={onCancel}>
                 <Text style={styles.cancelText}>{cancelText}</Text>
+              </Pressable>
+            )}
+            {!!secondaryText && onSecondary && (
+              <Pressable style={styles.cancelBtn} onPress={onSecondary}>
+                <Text style={[styles.cancelText, { color: theme.accent }]}>{secondaryText}</Text>
               </Pressable>
             )}
             <Pressable
