@@ -22,6 +22,7 @@ use crate::db::{
     AppendChatMessagesRequest, ChatMessage, ChatSession, Database, UpdateChatSessionRequest,
     BiliHistoryRow, UpsertBiliItem, BiliSpan, BiliDayCount, Goal, PresenceSpan,
     ActivityCategory, ActivityTag, ActivityBlock, ActivityPalette, PlanNode, PlannedBlock,
+    ContextFeedItem, BindingRow, AnchorEmbeddingRow,
     AddCategoryRequest, AddTagRequest, PaintBlocksRequest, EraseBlocksRequest,
     AddPlanNodeRequest, UpdatePlanNodeRequest, PaintPlannedBlocksRequest,
     UpdateCategoryRequest, RenamePathRequest, PerceptionSpan, SyncExport, SyncImportResult,
@@ -1276,6 +1277,209 @@ async fn delete_goal(
     }
 }
 
+// ── Context Cards（语境卡流）──
+
+async fn get_context_feed(
+    State(s): State<ApiState>,
+) -> Json<ApiResponse<Vec<ContextFeedItem>>> {
+    match s.db.context_feed().await {
+        Ok(items) => Json(ApiResponse::ok(items)),
+        Err(e)    => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct AddContextCardBody {
+    text: String,
+    source_label: Option<String>,
+    created_at: Option<String>,  // 迁移老想法卡时传入以保留原始时间
+}
+
+async fn add_context_card(
+    State(s): State<ApiState>,
+    Json(body): Json<AddContextCardBody>,
+) -> Json<ApiResponse<String>> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let created_at = body.created_at.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    match s.db.add_context_card(&id, &body.text, body.source_label.as_deref(), &created_at).await {
+        Ok(_)  => Json(ApiResponse::ok(id)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn delete_context_card(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+) -> Json<ApiResponse<()>> {
+    match s.db.delete_context_card(&id).await {
+        Ok(_)  => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+// ── 锚点绑定（语境片段 ↔ 原话 ↔ 关键词）──
+
+#[derive(Deserialize)]
+struct AnchorInput {
+    keyword: String,
+    category: String,   // 'motive' | 'view' | 'practice'
+}
+
+#[derive(Deserialize)]
+struct AddBindingBody {
+    card_id: String,
+    start_pos: i64,
+    end_pos: i64,
+    selected_text: String,
+    user_speech: String,
+    anchors: Vec<AnchorInput>,
+}
+
+async fn add_binding(
+    State(s): State<ApiState>,
+    Json(body): Json<AddBindingBody>,
+) -> Json<ApiResponse<BindingRow>> {
+    let anchors: Vec<(String, String)> = body.anchors.into_iter()
+        .map(|a| (a.keyword, a.category))
+        .collect();
+    match s.db.add_anchor_binding(
+        &body.card_id, body.start_pos, body.end_pos,
+        &body.selected_text, &body.user_speech, &anchors,
+    ).await {
+        Ok(row) => Json(ApiResponse::ok(row)),
+        Err(e)  => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn get_card_bindings(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+) -> Json<ApiResponse<Vec<BindingRow>>> {
+    match s.db.list_bindings_for_card(&id).await {
+        Ok(rows) => Json(ApiResponse::ok(rows)),
+        Err(e)   => Json(ApiResponse::error(&e)),
+    }
+}
+
+async fn delete_binding(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+) -> Json<ApiResponse<()>> {
+    match s.db.delete_anchor_binding(&id).await {
+        Ok(_)  => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateContextCardBody {
+    text: String,
+}
+
+async fn update_context_card(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateContextCardBody>,
+) -> Json<ApiResponse<()>> {
+    let text = body.text.trim().to_string();
+    if text.is_empty() {
+        return Json(ApiResponse::error("正文不能为空"));
+    }
+    match s.db.update_context_card_text(&id, &text).await {
+        Ok(_)  => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateAnchorBody {
+    keyword: String,
+}
+
+async fn update_anchor(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateAnchorBody>,
+) -> Json<ApiResponse<()>> {
+    let keyword = body.keyword.trim().to_string();
+    if keyword.is_empty() {
+        return Json(ApiResponse::error("锚点句不能为空"));
+    }
+    match s.db.update_anchor_keyword(&id, &keyword).await {
+        Ok(_)  => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+// ── Anchor Embeddings（锚点域地图：语义向量 + 簇名缓存）──
+
+async fn get_anchor_embeddings(
+    State(s): State<ApiState>,
+) -> Json<ApiResponse<Vec<AnchorEmbeddingRow>>> {
+    match s.db.list_anchor_embeddings().await {
+        Ok(rows) => Json(ApiResponse::ok(rows)),
+        Err(e)   => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpsertEmbeddingItem {
+    anchor_id: String,
+    model: String,
+    dims: i64,
+    vector: String,  // JSON 数组文本
+}
+
+#[derive(Deserialize)]
+struct UpsertEmbeddingsBody {
+    items: Vec<UpsertEmbeddingItem>,
+}
+
+async fn upsert_anchor_embeddings(
+    State(s): State<ApiState>,
+    Json(body): Json<UpsertEmbeddingsBody>,
+) -> Json<ApiResponse<()>> {
+    for it in &body.items {
+        if let Err(e) = s.db.upsert_anchor_embedding(&it.anchor_id, &it.model, it.dims, &it.vector).await {
+            return Json(ApiResponse::error(&e));
+        }
+    }
+    Json(ApiResponse::ok(()))
+}
+
+#[derive(serde::Serialize)]
+struct ClusterNameRow {
+    member_hash: String,
+    name: String,
+}
+
+async fn get_cluster_names(
+    State(s): State<ApiState>,
+) -> Json<ApiResponse<Vec<ClusterNameRow>>> {
+    match s.db.list_cluster_names().await {
+        Ok(rows) => Json(ApiResponse::ok(
+            rows.into_iter().map(|(member_hash, name)| ClusterNameRow { member_hash, name }).collect(),
+        )),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpsertClusterNameBody {
+    member_hash: String,
+    name: String,
+}
+
+async fn upsert_cluster_name(
+    State(s): State<ApiState>,
+    Json(body): Json<UpsertClusterNameBody>,
+) -> Json<ApiResponse<()>> {
+    match s.db.upsert_cluster_name(&body.member_hash, &body.name).await {
+        Ok(_)  => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
 // ── Presence Spans ──
 
 #[derive(Deserialize)]
@@ -1396,6 +1600,15 @@ pub fn create_router(
         .route("/api/presence/spans/{id}/close", axum::routing::put(close_presence_span))
         .route("/api/focus/rules", get(get_focus_rules))
         .route("/api/focus/heartbeat", post(recv_focus_heartbeat))
+        .route("/api/context/feed", get(get_context_feed))
+        .route("/api/context/cards", post(add_context_card))
+        .route("/api/context/cards/{id}", delete(delete_context_card).patch(update_context_card))
+        .route("/api/context/cards/{id}/bindings", get(get_card_bindings))
+        .route("/api/context/bindings", post(add_binding))
+        .route("/api/context/bindings/{id}", delete(delete_binding))
+        .route("/api/anchors/embeddings", get(get_anchor_embeddings).post(upsert_anchor_embeddings))
+        .route("/api/anchors/cluster-names", get(get_cluster_names).post(upsert_cluster_name))
+        .route("/api/anchors/{id}", patch(update_anchor))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

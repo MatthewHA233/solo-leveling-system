@@ -376,6 +376,7 @@ pub struct ChatMessage {
     pub audio_path: Option<String>,   // 语音气泡的 WAV 文件路径（相对于音频根目录）
     pub duration_ms: Option<i64>,     // 录音时长（毫秒）
     pub usage_json: Option<String>,   // 该 AI 回复绑定的 ModelCallLog 快照（JSON 序列化）
+    pub reasoning: Option<String>,    // 思考模型的推演过程（assistant 专用，回看用）
 }
 
 #[derive(Debug, Deserialize)]
@@ -389,6 +390,7 @@ pub struct CreateChatMessageRequest {
     pub audio_path: Option<String>,
     pub duration_ms: Option<i64>,
     pub usage_json: Option<String>,
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -848,6 +850,7 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN audio_path TEXT");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN usage_json TEXT");
+        let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN reasoning TEXT");
 
         // 渐进式迁移：bili_video_assets 转录字段（旧数据库无此列时自动追加）
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN visual_transcript TEXT");
@@ -882,6 +885,63 @@ impl Database {
                 completed_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+
+            -- 语境卡：用户主动产生的语境（v1 仅想法卡，kind 预留微信/知乎等来源）
+            CREATE TABLE IF NOT EXISTS context_cards (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL DEFAULT 'thought',
+                text TEXT NOT NULL DEFAULT '',
+                source_label TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_context_cards_created ON context_cards(created_at DESC);
+
+            -- 锚点关键词：跨卡共享实体（同名同类复用一个），归三类 motive/view/practice
+            CREATE TABLE IF NOT EXISTS anchors (
+                id TEXT PRIMARY KEY,
+                keyword TEXT NOT NULL,
+                category TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(keyword, category)
+            );
+
+            -- 语境绑定（桥梁）：卡内某文段位置 + 你贴上去的原话（不 AI 总结、不共享）
+            CREATE TABLE IF NOT EXISTS context_anchor_bindings (
+                id TEXT PRIMARY KEY,
+                card_id TEXT NOT NULL,
+                start_pos INTEGER NOT NULL,
+                end_pos INTEGER NOT NULL,
+                selected_text TEXT NOT NULL,
+                user_speech TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_bindings_card ON context_anchor_bindings(card_id);
+
+            -- binding ↔ anchor 多对多：一段原话提多个关键词；一个关键词跨多卡
+            CREATE TABLE IF NOT EXISTS binding_anchors (
+                binding_id TEXT NOT NULL,
+                anchor_id TEXT NOT NULL,
+                PRIMARY KEY (binding_id, anchor_id)
+            );
+
+            -- 锚点句的语义向量（锚点域地图用：球的位置由 embedding 决定）
+            -- vector 存 JSON 数组文本（锚点量级小，无需二进制压缩）
+            CREATE TABLE IF NOT EXISTS anchor_embeddings (
+                anchor_id TEXT PRIMARY KEY,
+                model TEXT NOT NULL,
+                dims INTEGER NOT NULL,
+                vector TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- 聚簇主题名缓存（key = 簇内锚点 id 排序拼接的 hash；成员不变不重复起名）
+            CREATE TABLE IF NOT EXISTS anchor_cluster_names (
+                member_hash TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
 
             CREATE TABLE IF NOT EXISTS presence_spans (
                 id TEXT PRIMARY KEY,
@@ -2662,7 +2722,7 @@ impl Database {
     pub async fn get_chat_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms, usage_json FROM chat_messages WHERE session_id = ? ORDER BY timestamp"
+            "SELECT id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms, usage_json, reasoning FROM chat_messages WHERE session_id = ? ORDER BY timestamp"
         ).map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([session_id], |row| {
@@ -2678,6 +2738,7 @@ impl Database {
                 audio_path: row.get(8)?,
                 duration_ms: row.get(9)?,
                 usage_json: row.get(10)?,
+                reasoning: row.get(11)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -2692,8 +2753,8 @@ impl Database {
         for msg in req.messages {
             let id = Uuid::new_v4().to_string();
             conn.execute(
-                "INSERT INTO chat_messages (id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms, usage_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![&id, session_id, &msg.role, &msg.content, &msg.tool_calls, &msg.tool_call_id, &msg.name, &msg.timestamp, &msg.audio_path, &msg.duration_ms, &msg.usage_json],
+                "INSERT INTO chat_messages (id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms, usage_json, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![&id, session_id, &msg.role, &msg.content, &msg.tool_calls, &msg.tool_call_id, &msg.name, &msg.timestamp, &msg.audio_path, &msg.duration_ms, &msg.usage_json, &msg.reasoning],
             ).map_err(|e| e.to_string())?;
         }
 
@@ -2705,21 +2766,22 @@ impl Database {
         Ok(())
     }
 
-    /// 更新会话标题或摘要
+    /// 更新会话标题或摘要。
+    /// 不 bump updated_at：它的语义是"最后聊天活动"（persist_messages 负责），
+    /// 改名/重新起标题不应把旧会话顶到列表最前。
     pub async fn update_chat_session(&self, session_id: &str, req: UpdateChatSessionRequest) -> Result<(), String> {
-        let now = Utc::now().to_rfc3339();
         let conn = self.conn.lock().await;
 
         if let Some(ref title) = req.title {
             conn.execute(
-                "UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?",
-                params![title, &now, session_id],
+                "UPDATE chat_sessions SET title = ? WHERE id = ?",
+                params![title, session_id],
             ).map_err(|e| e.to_string())?;
         }
         if let Some(ref summary) = req.summary {
             conn.execute(
-                "UPDATE chat_sessions SET summary = ?, updated_at = ? WHERE id = ?",
-                params![summary, &now, session_id],
+                "UPDATE chat_sessions SET summary = ? WHERE id = ?",
+                params![summary, session_id],
             ).map_err(|e| e.to_string())?;
         }
 
@@ -3104,6 +3166,315 @@ impl Database {
     pub async fn delete_goal(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
         conn.execute("DELETE FROM goals WHERE id = ?", [id]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ── Context Cards（语境卡）──
+
+    pub async fn add_context_card(&self, id: &str, text: &str, source_label: Option<&str>, created_at: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO context_cards (id, kind, text, source_label, created_at, updated_at) VALUES (?, 'thought', ?, ?, ?, ?)",
+            params![id, text, source_label, created_at, created_at],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 删卡级联：该卡的绑定、绑定-锚点关联一并删；随之成为孤儿的锚点（无任何绑定引用）
+    /// 连同其向量清掉，并清簇名缓存（成员集变了，下次重新起名）
+    pub async fn delete_context_card(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "DELETE FROM binding_anchors WHERE binding_id IN
+             (SELECT id FROM context_anchor_bindings WHERE card_id = ?)",
+            [id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM context_anchor_bindings WHERE card_id = ?", [id]).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM context_cards WHERE id = ?", [id]).map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM anchor_embeddings WHERE anchor_id IN
+             (SELECT id FROM anchors WHERE id NOT IN (SELECT anchor_id FROM binding_anchors))",
+            [],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM anchors WHERE id NOT IN (SELECT anchor_id FROM binding_anchors)",
+            [],
+        ).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM anchor_cluster_names", []).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 语境卡流：想法卡 + 已转录 B 站视频卡，合并按时间倒序。
+    /// 转录卡不物化进表，查询时从 bili 表动态聚合，每 bvid 取最新转录。
+    pub async fn context_feed(&self) -> Result<Vec<ContextFeedItem>, String> {
+        let conn = self.conn.lock().await;
+        let mut out: Vec<ContextFeedItem> = Vec::new();
+
+        // 想法卡
+        {
+            let mut stmt = conn.prepare(
+                "SELECT id, text, source_label, created_at FROM context_cards WHERE kind = 'thought'"
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([], |row| {
+                Ok(ContextFeedItem {
+                    id: row.get::<_, String>(0)?,
+                    kind: "thought".to_string(),
+                    text: row.get::<_, String>(1)?,
+                    title: None,
+                    cover_url: None,
+                    bvid: None,
+                    ref_path: None,
+                    source_label: row.get::<_, Option<String>>(2)?,
+                    created_at: row.get::<_, String>(3)?,
+                })
+            }).map_err(|e| e.to_string())?;
+            for r in rows.flatten() { out.push(r); }
+        }
+
+        // 已转录 B 站视频卡（combined > audio > visual 优先，每 bvid 取最新）
+        {
+            let mut stmt = conn.prepare(
+                "SELECT a.bvid, h.title, h.cover, a.download_path, \
+                        COALESCE(a.combined_transcript, a.audio_transcript, a.visual_transcript) AS transcript, \
+                        MAX(COALESCE(a.combined_transcribed_at, a.audio_transcribed_at, a.visual_transcribed_at, a.updated_at, a.created_at)) AS transcribed_at \
+                 FROM bili_video_assets a \
+                 JOIN bili_history h ON h.bvid = a.bvid \
+                 WHERE trim(COALESCE(a.combined_transcript, a.audio_transcript, a.visual_transcript, '')) <> '' \
+                 GROUP BY a.bvid"
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([], |row| {
+                let bvid: String = row.get(0)?;
+                let title: String = row.get(1)?;
+                let cover: String = row.get(2)?;
+                let path: Option<String> = row.get(3)?;
+                let transcript: String = row.get::<_, Option<String>>(4)?.unwrap_or_default();
+                let at: String = row.get::<_, Option<String>>(5)?.unwrap_or_default();
+                let summary: String = transcript_plain_text(&transcript).chars().take(150).collect();
+                Ok(ContextFeedItem {
+                    id: bvid.clone(),
+                    kind: "bili_transcript".to_string(),
+                    text: summary,
+                    title: Some(title),
+                    cover_url: if cover.is_empty() { None } else { Some(cover) },
+                    bvid: Some(bvid),
+                    ref_path: path,
+                    source_label: None,
+                    created_at: at,
+                })
+            }).map_err(|e| e.to_string())?;
+            for r in rows.flatten() { out.push(r); }
+        }
+
+        // 统一倒序：把 ISO 的 'T' 规整成空格，使两种时间格式可字符串比较
+        out.sort_by(|a, b| {
+            let ka = a.created_at.replacen('T', " ", 1);
+            let kb = b.created_at.replacen('T', " ", 1);
+            kb.cmp(&ka)
+        });
+
+        Ok(out)
+    }
+
+    // ── 锚点（语境片段 ↔ 原话 ↔ 关键词）──
+
+    /// 新建一个语境绑定：卡内文段 + 原话 + 从原话提取的锚点关键词。
+    /// 锚点关键词同名同类复用（跨卡共享），原话不共享。
+    pub async fn add_anchor_binding(
+        &self,
+        card_id: &str,
+        start_pos: i64,
+        end_pos: i64,
+        selected_text: &str,
+        user_speech: &str,
+        anchors: &[(String, String)], // (keyword, category)
+    ) -> Result<BindingRow, String> {
+        let conn = self.conn.lock().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        let binding_id = uuid::Uuid::new_v4().to_string();
+
+        conn.execute(
+            "INSERT INTO context_anchor_bindings (id, card_id, start_pos, end_pos, selected_text, user_speech, created_at) VALUES (?,?,?,?,?,?,?)",
+            params![binding_id, card_id, start_pos, end_pos, selected_text, user_speech, now],
+        ).map_err(|e| e.to_string())?;
+
+        let mut anchor_refs: Vec<AnchorRef> = Vec::new();
+        for (keyword, category) in anchors {
+            let kw = keyword.trim();
+            if kw.is_empty() { continue; }
+            // upsert：同名同类复用
+            let anchor_id: String = match conn.query_row(
+                "SELECT id FROM anchors WHERE keyword = ? AND category = ?",
+                params![kw, category],
+                |r| r.get::<_, String>(0),
+            ) {
+                Ok(id) => id,
+                Err(_) => {
+                    let id = uuid::Uuid::new_v4().to_string();
+                    conn.execute(
+                        "INSERT INTO anchors (id, keyword, category, created_at, updated_at) VALUES (?,?,?,?,?)",
+                        params![id, kw, category, now, now],
+                    ).map_err(|e| e.to_string())?;
+                    id
+                }
+            };
+            conn.execute(
+                "INSERT OR IGNORE INTO binding_anchors (binding_id, anchor_id) VALUES (?, ?)",
+                params![binding_id, anchor_id],
+            ).map_err(|e| e.to_string())?;
+            anchor_refs.push(AnchorRef { id: anchor_id, keyword: kw.to_string(), category: category.clone() });
+        }
+
+        Ok(BindingRow {
+            id: binding_id,
+            card_id: card_id.to_string(),
+            start_pos,
+            end_pos,
+            selected_text: selected_text.to_string(),
+            user_speech: user_speech.to_string(),
+            created_at: now,
+            anchors: anchor_refs,
+        })
+    }
+
+    pub async fn list_bindings_for_card(&self, card_id: &str) -> Result<Vec<BindingRow>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT id, card_id, start_pos, end_pos, selected_text, user_speech, created_at \
+             FROM context_anchor_bindings WHERE card_id = ? ORDER BY start_pos"
+        ).map_err(|e| e.to_string())?;
+        let base: Vec<(String, String, i64, i64, String, String, String)> = stmt
+            .query_map([card_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|x| x.ok())
+            .collect();
+        drop(stmt);
+
+        let mut astmt = conn.prepare(
+            "SELECT a.id, a.keyword, a.category FROM binding_anchors ba \
+             JOIN anchors a ON a.id = ba.anchor_id WHERE ba.binding_id = ?"
+        ).map_err(|e| e.to_string())?;
+
+        let mut out = Vec::new();
+        for (id, card_id, start_pos, end_pos, selected_text, user_speech, created_at) in base {
+            let anchors: Vec<AnchorRef> = astmt
+                .query_map([&id], |r| {
+                    Ok(AnchorRef { id: r.get(0)?, keyword: r.get(1)?, category: r.get(2)? })
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|x| x.ok())
+                .collect();
+            out.push(BindingRow { id, card_id, start_pos, end_pos, selected_text, user_speech, created_at, anchors });
+        }
+        Ok(out)
+    }
+
+    pub async fn delete_anchor_binding(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute("DELETE FROM binding_anchors WHERE binding_id = ?", [id]).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM context_anchor_bindings WHERE id = ?", [id]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 编辑想法卡正文；整卡绑定（start_pos=0）的 selected_text/user_speech/end_pos 同步更新
+    pub async fn update_context_card_text(&self, id: &str, text: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        let changed = conn.execute(
+            "UPDATE context_cards SET text = ? WHERE id = ?",
+            params![text, id],
+        ).map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err("卡片不存在".to_string());
+        }
+        // end_pos 与前端 JS 的 string.length 同语义（UTF-16 码元数）
+        let utf16_len = text.encode_utf16().count() as i64;
+        conn.execute(
+            "UPDATE context_anchor_bindings
+             SET selected_text = ?, user_speech = ?, end_pos = ?
+             WHERE card_id = ? AND start_pos = 0",
+            params![text, text, utf16_len, id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 编辑锚点句；语义变了 → 删该锚点向量（下次打开地图重嵌入）+ 清簇名缓存（重新起名）
+    pub async fn update_anchor_keyword(&self, id: &str, keyword: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        let changed = conn.execute(
+            "UPDATE anchors SET keyword = ?, updated_at = datetime('now') WHERE id = ?",
+            params![keyword, id],
+        ).map_err(|e| {
+            if e.to_string().contains("UNIQUE") {
+                "同类下已存在相同锚点句".to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
+        if changed == 0 {
+            return Err("锚点不存在".to_string());
+        }
+        conn.execute("DELETE FROM anchor_embeddings WHERE anchor_id = ?", [id]).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM anchor_cluster_names", []).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ── Anchor Embeddings（锚点域地图：语义向量 + 簇名缓存）──
+
+    /// 全量读取已存的锚点向量（锚点量级小，前端一次拉全）
+    pub async fn list_anchor_embeddings(&self) -> Result<Vec<AnchorEmbeddingRow>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT anchor_id, model, dims, vector FROM anchor_embeddings"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(AnchorEmbeddingRow {
+                    anchor_id: r.get(0)?,
+                    model: r.get(1)?,
+                    dims: r.get(2)?,
+                    vector: r.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|x| x.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    pub async fn upsert_anchor_embedding(&self, anchor_id: &str, model: &str, dims: i64, vector_json: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO anchor_embeddings (anchor_id, model, dims, vector, updated_at)
+             VALUES (?, ?, ?, ?, datetime('now'))
+             ON CONFLICT(anchor_id) DO UPDATE SET
+               model=excluded.model, dims=excluded.dims, vector=excluded.vector, updated_at=excluded.updated_at",
+            params![anchor_id, model, dims, vector_json],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn list_cluster_names(&self) -> Result<Vec<(String, String)>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT member_hash, name FROM anchor_cluster_names"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|x| x.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    pub async fn upsert_cluster_name(&self, member_hash: &str, name: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO anchor_cluster_names (member_hash, name, created_at)
+             VALUES (?, ?, datetime('now'))
+             ON CONFLICT(member_hash) DO UPDATE SET name=excluded.name",
+            params![member_hash, name],
+        ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -4147,6 +4518,68 @@ impl Goal {
     }
 }
 
+// ── Context Feed Item（语境卡流条目）──
+// 想法卡与已转录 B 站视频卡的统一展示模型。
+
+#[derive(serde::Serialize, Clone)]
+pub struct ContextFeedItem {
+    pub id: String,
+    pub kind: String,                  // 'thought' | 'bili_transcript'
+    pub text: String,                  // thought=想法全文；bili=转录摘要（截断）
+    pub title: Option<String>,         // bili=视频标题
+    pub cover_url: Option<String>,     // bili=封面
+    pub bvid: Option<String>,
+    pub ref_path: Option<String>,      // bili download_path，前端展开转录全文用
+    pub source_label: Option<String>,  // thought 的语境标签
+    pub created_at: String,
+}
+
+// ── 锚点（语境片段 ↔ 原话 ↔ 关键词）──
+
+#[derive(serde::Serialize, Clone)]
+pub struct AnchorRef {
+    pub id: String,
+    pub keyword: String,
+    pub category: String,   // 'motive' | 'view' | 'practice'
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct BindingRow {
+    pub id: String,
+    pub card_id: String,
+    pub start_pos: i64,
+    pub end_pos: i64,
+    pub selected_text: String,
+    pub user_speech: String,   // 你的原话，不 AI 总结
+    pub created_at: String,
+    pub anchors: Vec<AnchorRef>,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct AnchorEmbeddingRow {
+    pub anchor_id: String,
+    pub model: String,
+    pub dims: i64,
+    pub vector: String,  // JSON 数组文本，前端 parse
+}
+
+/// 把 ASR 的 JSONL 转录（每行 {"start","end","text"}）抽成纯文本；非 JSON 行原样保留。
+fn transcript_plain_text(raw: &str) -> String {
+    let mut out = String::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(t) = v.get("text").and_then(|x| x.as_str()) {
+                out.push_str(t);
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    out
+}
+
 // ══════════════════════════════════════════════
 // 模型审计：registry / pricing / bindings / call_log
 // ══════════════════════════════════════════════
@@ -4465,17 +4898,23 @@ fn seed_feature_bindings(conn: &rusqlite::Connection) -> Result<(), String> {
         .or_else(|| existing("bili_combined_transcribe"))
         .unwrap_or_else(|| "qwen3.5-omni-plus".to_string());
     let bili_visual_default = existing("bili_visual_transcribe")
-        .unwrap_or_else(|| "qwen3.5-flash".to_string());
+        .unwrap_or_else(|| "qwen3.6-flash".to_string());
     let bili_audio_default = existing("bili_audio_transcribe")
         .unwrap_or_else(|| "qwen3.5-omni-flash".to_string());
 
     let seeds: Vec<(&str, String)> = vec![
         ("fairy_chat", "qwen3.6-flash".to_string()),
         ("fairy_omni_chat", "qwen3.5-omni-flash-realtime".to_string()),
-        ("session_title", "qwen3.5-flash".to_string()),
+        ("session_title", "qwen3.6-flash".to_string()),
         ("bili_omni_transcribe", bili_omni_default),
         ("bili_visual_transcribe", bili_visual_default),
         ("bili_audio_transcribe", bili_audio_default),
+        // 洪流域：锚点提取/沉淀/锚点域地图
+        ("context_anchor", "qwen3.6-flash".to_string()),
+        ("anchor_extract", "qwen3.6-flash".to_string()),
+        ("thought_distill", "qwen3.6-flash".to_string()),
+        ("anchor_cluster_name", "qwen3.6-flash".to_string()),
+        ("anchor_embedding", "text-embedding-v4".to_string()),
     ];
 
     for (feature, model_id) in &seeds {
