@@ -164,6 +164,48 @@ interface SolevupDbNative {
   setPref(key: string, value: string): Promise<boolean>
   exportSync(since: string | null): Promise<SyncExport>
   importSync(payload: SyncExport): Promise<SyncImportResult>
+  getActiveModelApiKey(): Promise<ModelApiKeyInfo | null>
+  listModelApiKeys(): Promise<ModelApiKeyListItem[]>
+  getFeatureBinding(feature: string): Promise<string | null>
+  listFeatureBindings(): Promise<{ feature: string; modelId: string }[]>
+  setFeatureBinding(feature: string, modelId: string): Promise<boolean>
+  queryModelCallLog(since: string | null, limit: number): Promise<ModelCallLogRow[]>
+  listModelFreeQuota(): Promise<ModelFreeQuotaRow[]>
+  createChatSession(): Promise<ChatSessionRow>
+  listChatSessions(limit: number): Promise<ChatSessionRow[]>
+  getChatMessages(sessionId: string): Promise<ChatMessageDbRow[]>
+  appendChatMessages(sessionId: string, rows: ChatMessageDbRow[]): Promise<boolean>
+  patchChatSession(sessionId: string, title: string | null, summary: string | null): Promise<boolean>
+  deleteChatSession(sessionId: string): Promise<boolean>
+  cleanupEmptyChatSessions(exceptId: string | null): Promise<boolean>
+  insertModelCallLog(row: ModelCallLogInsert): Promise<string>
+}
+
+export type ModelApiKeyInfo = {
+  id: string
+  label: string
+  apiKey: string
+  isActive: boolean
+}
+
+export type ModelApiKeyListItem = {
+  id: string
+  label: string
+  isActive: boolean
+  hasKey: boolean
+}
+
+export type ModelCallLogInsert = {
+  apiKeyId?: string | null
+  feature: string
+  modelId: string
+  startedAt: string
+  durationMs?: number | null
+  promptTextTokens?: number
+  completionTextTokens?: number
+  success?: boolean
+  errorMessage?: string | null
+  metadata?: string | null
 }
 
 export type SyncImportResult = {
@@ -295,4 +337,135 @@ export async function solevupExportSync(since: string | null = null): Promise<Sy
     }
   }
   return Native.exportSync(since)
+}
+
+// ── 模型配置（LAN 同步过来的 model_api_keys / feature_bindings；用量落库回推） ──
+
+export async function solevupGetActiveModelApiKey(): Promise<ModelApiKeyInfo | null> {
+  if (!Native) return null
+  return Native.getActiveModelApiKey()
+}
+
+export async function solevupListModelApiKeys(): Promise<ModelApiKeyListItem[]> {
+  if (!Native) return []
+  return Native.listModelApiKeys()
+}
+
+export async function solevupGetFeatureBinding(feature: string): Promise<string | null> {
+  if (!Native) return null
+  return Native.getFeatureBinding(feature)
+}
+
+export async function solevupInsertModelCallLog(row: ModelCallLogInsert): Promise<string | null> {
+  if (!Native) return null
+  return Native.insertModelCallLog(row)
+}
+
+export async function solevupListFeatureBindings(): Promise<{ feature: string; modelId: string }[]> {
+  if (!Native) return []
+  return Native.listFeatureBindings()
+}
+
+export async function solevupSetFeatureBinding(feature: string, modelId: string): Promise<boolean> {
+  if (!Native) return false
+  return Native.setFeatureBinding(feature, modelId)
+}
+
+export type ModelCallLogRow = {
+  id: string
+  apiKeyId: string | null
+  feature: string
+  modelId: string
+  startedAt: string
+  durationMs: number | null
+  promptTextTokens: number
+  promptImageTokens: number
+  promptVideoTokens: number
+  promptAudioTokens: number
+  completionTextTokens: number
+  completionAudioTokens: number
+  costCny: number | null
+  freeQuotaTokens: number
+  freeQuotaSavedCny: number
+  success: boolean
+}
+
+export type ModelFreeQuotaRow = {
+  modelId: string
+  hasFreeQuota: boolean
+  notSupported: boolean
+  usedTokens: number
+  totalTokens: number
+  remainingTokens: number
+  usedPercent: string | null
+  expireDate: string | null
+  scannedAt: string
+  errorMessage: string | null
+}
+
+export async function solevupQueryModelCallLog(since: string | null, limit = 2000): Promise<ModelCallLogRow[]> {
+  if (!Native) return []
+  return Native.queryModelCallLog(since, limit)
+}
+
+export async function solevupListModelFreeQuota(): Promise<ModelFreeQuotaRow[]> {
+  if (!Native) return []
+  return Native.listModelFreeQuota()
+}
+
+// ── 聊天会话（schema 对齐 desktop chat_sessions/chat_messages） ──
+
+export type ChatSessionRow = {
+  id: string
+  title: string
+  summary: string | null
+  createdAt: string
+  updatedAt: string
+  messageCount: number
+}
+
+export type ChatMessageDbRow = {
+  id: string
+  role: string
+  content: string | null
+  timestamp: string
+  audioPath?: string | null
+  durationMs?: number | null
+  usageJson?: string | null
+  reasoning?: string | null
+}
+
+export async function solevupCreateChatSession(): Promise<ChatSessionRow | null> {
+  if (!Native) return null
+  return Native.createChatSession()
+}
+
+export async function solevupListChatSessions(limit = 100): Promise<ChatSessionRow[]> {
+  if (!Native) return []
+  return Native.listChatSessions(limit)
+}
+
+export async function solevupGetChatMessages(sessionId: string): Promise<ChatMessageDbRow[]> {
+  if (!Native) return []
+  return Native.getChatMessages(sessionId)
+}
+
+export async function solevupAppendChatMessages(sessionId: string, rows: ChatMessageDbRow[]): Promise<boolean> {
+  if (!Native) return false
+  return Native.appendChatMessages(sessionId, rows)
+}
+
+export async function solevupPatchChatSession(sessionId: string, title: string | null, summary: string | null): Promise<boolean> {
+  if (!Native) return false
+  return Native.patchChatSession(sessionId, title, summary)
+}
+
+export async function solevupDeleteChatSession(sessionId: string): Promise<boolean> {
+  if (!Native) return false
+  return Native.deleteChatSession(sessionId)
+}
+
+export async function solevupCleanupEmptyChatSessions(exceptId: string | null): Promise<boolean> {
+  if (!Native) return false
+  return Native.cleanupEmptyChatSessions(exceptId)
 }

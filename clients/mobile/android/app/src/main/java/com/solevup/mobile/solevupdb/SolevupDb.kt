@@ -37,6 +37,118 @@ class SolevupDb(context: Context) :
     db.setForeignKeyConstraintsEnabled(true)
   }
 
+  override fun onOpen(db: SQLiteDatabase) {
+    super.onOpen(db)
+    // 渐进式建新表：onUpgrade 是破坏式（DROP 全表），bump DB_VERSION 会清掉
+    // 已装设备的昼夜表数据。新表一律幂等 IF NOT EXISTS 在每次打开时补建。
+    ensureModelTables(db)
+    ensureChatTables(db)
+  }
+
+  private fun ensureChatTables(db: SQLiteDatabase) {
+    // 与 desktop db.rs 的 chat_sessions / chat_messages 同 schema（含思考链 reasoning）
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS chat_sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '新会话',
+        summary TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      """.trimIndent()
+    )
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS chat_messages (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        content TEXT,
+        tool_calls TEXT,
+        tool_call_id TEXT,
+        name TEXT,
+        timestamp TEXT NOT NULL,
+        audio_path TEXT,
+        duration_ms INTEGER,
+        usage_json TEXT,
+        reasoning TEXT
+      );
+      """.trimIndent()
+    )
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);")
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated ON chat_sessions(updated_at);")
+  }
+
+  private fun ensureModelTables(db: SQLiteDatabase) {
+    // 与 desktop db.rs 的 model_api_keys / model_call_log / model_free_quota /
+    // feature_bindings 同 schema（id 直接作主键，LWW by updated_at）
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS model_api_keys (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        api_key TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      );
+      """.trimIndent()
+    )
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS model_call_log (
+        id TEXT PRIMARY KEY,
+        api_key_id TEXT,
+        feature TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        duration_ms INTEGER,
+        prompt_text_tokens INTEGER NOT NULL DEFAULT 0,
+        prompt_image_tokens INTEGER NOT NULL DEFAULT 0,
+        prompt_video_tokens INTEGER NOT NULL DEFAULT 0,
+        prompt_audio_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_text_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_audio_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_cny REAL,
+        free_quota_tokens INTEGER NOT NULL DEFAULT 0,
+        free_quota_saved_cny REAL NOT NULL DEFAULT 0,
+        success INTEGER NOT NULL DEFAULT 1,
+        error_message TEXT,
+        metadata TEXT
+      );
+      """.trimIndent()
+    )
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_model_call_log_started ON model_call_log(started_at DESC);")
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS model_free_quota (
+        model_id TEXT PRIMARY KEY,
+        has_free_quota INTEGER NOT NULL DEFAULT 0,
+        not_supported INTEGER NOT NULL DEFAULT 0,
+        used_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        remaining_tokens INTEGER NOT NULL DEFAULT 0,
+        used_percent TEXT,
+        expire_date TEXT,
+        raw_quota TEXT,
+        scanned_at TEXT NOT NULL,
+        error_message TEXT
+      );
+      """.trimIndent()
+    )
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS feature_bindings (
+        feature TEXT PRIMARY KEY,
+        model_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      """.trimIndent()
+    )
+  }
+
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL(
       """
@@ -566,6 +678,34 @@ class SolevupDb(context: Context) :
     val createdAt: String, val updatedAt: String, val deletedAt: String?,
   )
 
+  // ── 模型同步行（字段与 desktop db.rs 的 SyncModelApiKey 等完全对齐） ──
+
+  data class SyncModelApiKeyRow(
+    val id: String, val label: String, val apiKey: String, val isActive: Int,
+    val createdAt: String, val updatedAt: String, val deletedAt: String?,
+  )
+
+  data class SyncModelCallLogRow(
+    val id: String, val apiKeyId: String?, val feature: String, val modelId: String,
+    val startedAt: String, val durationMs: Long?,
+    val promptTextTokens: Long, val promptImageTokens: Long,
+    val promptVideoTokens: Long, val promptAudioTokens: Long,
+    val completionTextTokens: Long, val completionAudioTokens: Long,
+    val costCny: Double?, val freeQuotaTokens: Long, val freeQuotaSavedCny: Double,
+    val success: Int, val errorMessage: String?, val metadata: String?,
+  )
+
+  data class SyncModelFreeQuotaRow(
+    val modelId: String, val hasFreeQuota: Int, val notSupported: Int,
+    val usedTokens: Long, val totalTokens: Long, val remainingTokens: Long,
+    val usedPercent: String?, val expireDate: String?, val rawQuota: String?,
+    val scannedAt: String, val errorMessage: String?,
+  )
+
+  data class SyncFeatureBindingRow(
+    val feature: String, val modelId: String, val updatedAt: String,
+  )
+
   data class SyncExport(
     val deviceId: String,
     val exportedAt: String,
@@ -575,6 +715,10 @@ class SolevupDb(context: Context) :
     val activityBlocks: List<SyncBlockRow>,
     val planNodes: List<SyncPlanNodeRow>,
     val plannedBlocks: List<SyncPlannedBlockRow>,
+    val modelApiKeys: List<SyncModelApiKeyRow> = emptyList(),
+    val modelCallLog: List<SyncModelCallLogRow> = emptyList(),
+    val modelFreeQuota: List<SyncModelFreeQuotaRow> = emptyList(),
+    val featureBindings: List<SyncFeatureBindingRow> = emptyList(),
   )
 
   /**
@@ -679,6 +823,81 @@ class SolevupDb(context: Context) :
       }
     }
 
+    // ── 模型同步四表（对齐 desktop export_sync：tombstone 行 api_key 清空不外泄明文） ──
+    val apiKeys = ArrayList<SyncModelApiKeyRow>()
+    db.rawQuery(
+      "SELECT id, label, api_key, is_active, created_at, updated_at, deleted_at FROM model_api_keys",
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        val u = c.getString(5); val d = c.getString(6)
+        if (!changed(u, d)) continue
+        apiKeys.add(SyncModelApiKeyRow(
+          c.getString(0), c.getString(1),
+          if (d != null) "" else c.getString(2),
+          c.getInt(3), c.getString(4), u, d,
+        ))
+      }
+    }
+
+    val callLog = ArrayList<SyncModelCallLogRow>()
+    db.rawQuery(
+      """SELECT id, api_key_id, feature, model_id, started_at, duration_ms,
+                prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
+                completion_text_tokens, completion_audio_tokens, cost_cny,
+                free_quota_tokens, free_quota_saved_cny, success, error_message, metadata
+         FROM model_call_log""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        // call_log 是 append-only（无 updated_at），增量语义按 started_at 过滤
+        val startedAt = c.getString(4)
+        if (since != null && startedAt <= since) continue
+        callLog.add(SyncModelCallLogRow(
+          c.getString(0), if (c.isNull(1)) null else c.getString(1),
+          c.getString(2), c.getString(3), startedAt,
+          if (c.isNull(5)) null else c.getLong(5),
+          c.getLong(6), c.getLong(7), c.getLong(8), c.getLong(9),
+          c.getLong(10), c.getLong(11),
+          if (c.isNull(12)) null else c.getDouble(12),
+          c.getLong(13), c.getDouble(14), c.getInt(15),
+          if (c.isNull(16)) null else c.getString(16),
+          if (c.isNull(17)) null else c.getString(17),
+        ))
+      }
+    }
+
+    val freeQuota = ArrayList<SyncModelFreeQuotaRow>()
+    db.rawQuery(
+      """SELECT model_id, has_free_quota, not_supported, used_tokens, total_tokens,
+                remaining_tokens, used_percent, expire_date, raw_quota, scanned_at, error_message
+         FROM model_free_quota""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        val scannedAt = c.getString(9)
+        if (since != null && scannedAt <= since) continue
+        freeQuota.add(SyncModelFreeQuotaRow(
+          c.getString(0), c.getInt(1), c.getInt(2),
+          c.getLong(3), c.getLong(4), c.getLong(5),
+          if (c.isNull(6)) null else c.getString(6),
+          if (c.isNull(7)) null else c.getString(7),
+          if (c.isNull(8)) null else c.getString(8),
+          scannedAt,
+          if (c.isNull(10)) null else c.getString(10),
+        ))
+      }
+    }
+
+    val bindings = ArrayList<SyncFeatureBindingRow>()
+    db.rawQuery("SELECT feature, model_id, updated_at FROM feature_bindings", null).use { c ->
+      while (c.moveToNext()) {
+        val u = c.getString(2)
+        if (since != null && u <= since) continue
+        bindings.add(SyncFeatureBindingRow(c.getString(0), c.getString(1), u))
+      }
+    }
+
     return SyncExport(
       deviceId = devId,
       exportedAt = exportedAt,
@@ -688,6 +907,10 @@ class SolevupDb(context: Context) :
       activityBlocks = blocks,
       planNodes = planNodes,
       plannedBlocks = plannedBlocks,
+      modelApiKeys = apiKeys,
+      modelCallLog = callLog,
+      modelFreeQuota = freeQuota,
+      featureBindings = bindings,
     )
   }
 
@@ -706,6 +929,10 @@ class SolevupDb(context: Context) :
     val activityBlocks: Int = 0,
     val planNodes: Int = 0,
     val plannedBlocks: Int = 0,
+    val modelApiKeys: Int = 0,
+    val modelCallLog: Int = 0,
+    val modelFreeQuota: Int = 0,
+    val featureBindings: Int = 0,
     val skipped: Int = 0,
   )
 
@@ -887,12 +1114,337 @@ class SolevupDb(context: Context) :
         pBlocks++
       }
 
+      // ── model_api_keys ──（LWW by updated_at；对齐 desktop import_sync 的
+      //   tombstone 规则：deleted_at 非空 → api_key 清空 + is_active=0 + 删关联 call_log；
+      //   import 活 active 行后其他 active 全降级）
+      var mKeys = 0
+      for (row in payload.modelApiKeys) {
+        val existingUpdated = queryString(
+          db, "SELECT updated_at FROM model_api_keys WHERE id = ?", arrayOf(row.id),
+        )
+        if (existingUpdated != null && existingUpdated >= row.updatedAt) { skipped++; continue }
+        val isTombstone = row.deletedAt != null
+        val apiKeyToStore = if (isTombstone) "" else row.apiKey
+        val isActiveToStore = if (isTombstone) 0 else row.isActive
+        db.execSQL(
+          """INSERT INTO model_api_keys (id, label, api_key, is_active, created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               label=excluded.label, api_key=excluded.api_key, is_active=excluded.is_active,
+               created_at=excluded.created_at, updated_at=excluded.updated_at,
+               deleted_at=excluded.deleted_at""".trimIndent(),
+          arrayOf(row.id, row.label, apiKeyToStore, isActiveToStore,
+                  row.createdAt, row.updatedAt, row.deletedAt),
+        )
+        if (!isTombstone && row.isActive == 1) {
+          db.execSQL(
+            """UPDATE model_api_keys SET is_active = 0, updated_at = ?
+               WHERE id != ? AND is_active = 1 AND deleted_at IS NULL""".trimIndent(),
+            arrayOf(row.updatedAt, row.id),
+          )
+        }
+        if (isTombstone) {
+          db.execSQL("DELETE FROM model_call_log WHERE api_key_id = ?", arrayOf(row.id))
+        }
+        mKeys++
+      }
+
+      // ── model_call_log ──（append-only，按 id 幂等）
+      var mLog = 0
+      for (row in payload.modelCallLog) {
+        db.execSQL(
+          """INSERT OR IGNORE INTO model_call_log
+               (id, api_key_id, feature, model_id, started_at, duration_ms,
+                prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
+                completion_text_tokens, completion_audio_tokens, cost_cny,
+                free_quota_tokens, free_quota_saved_cny, success, error_message, metadata)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".trimIndent(),
+          arrayOf(row.id, row.apiKeyId, row.feature, row.modelId, row.startedAt, row.durationMs,
+                  row.promptTextTokens, row.promptImageTokens, row.promptVideoTokens, row.promptAudioTokens,
+                  row.completionTextTokens, row.completionAudioTokens, row.costCny,
+                  row.freeQuotaTokens, row.freeQuotaSavedCny, row.success, row.errorMessage, row.metadata),
+        )
+        mLog++
+      }
+
+      // ── model_free_quota ──（scanned_at 新者胜）
+      var mQuota = 0
+      for (row in payload.modelFreeQuota) {
+        val existingScanned = queryString(
+          db, "SELECT scanned_at FROM model_free_quota WHERE model_id = ?", arrayOf(row.modelId),
+        )
+        if (existingScanned != null && existingScanned >= row.scannedAt) { skipped++; continue }
+        db.execSQL(
+          """INSERT OR REPLACE INTO model_free_quota
+               (model_id, has_free_quota, not_supported, used_tokens, total_tokens,
+                remaining_tokens, used_percent, expire_date, raw_quota, scanned_at, error_message)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".trimIndent(),
+          arrayOf(row.modelId, row.hasFreeQuota, row.notSupported, row.usedTokens, row.totalTokens,
+                  row.remainingTokens, row.usedPercent, row.expireDate, row.rawQuota,
+                  row.scannedAt, row.errorMessage),
+        )
+        mQuota++
+      }
+
+      // ── feature_bindings ──（LWW by updated_at）
+      var mBindings = 0
+      for (row in payload.featureBindings) {
+        val existingUpdated = queryString(
+          db, "SELECT updated_at FROM feature_bindings WHERE feature = ?", arrayOf(row.feature),
+        )
+        if (existingUpdated != null && existingUpdated >= row.updatedAt) { skipped++; continue }
+        db.execSQL(
+          """INSERT OR REPLACE INTO feature_bindings (feature, model_id, updated_at)
+             VALUES (?, ?, ?)""".trimIndent(),
+          arrayOf(row.feature, row.modelId, row.updatedAt),
+        )
+        mBindings++
+      }
+
+      db.setTransactionSuccessful()
+      return ImportResult(cats, tags, blocks, pNodes, pBlocks, mKeys, mLog, mQuota, mBindings, skipped)
+    } finally {
+      db.endTransaction()
+    }
+  }
+
+  // ── 模型配置读写（聊天链路用：active key / 绑定模型 / 本机用量落库） ──
+
+  data class ModelApiKeyInfo(val id: String, val label: String, val apiKey: String, val isActive: Boolean)
+
+  fun getActiveModelApiKey(): ModelApiKeyInfo? {
+    readableDatabase.rawQuery(
+      """SELECT id, label, api_key FROM model_api_keys
+         WHERE is_active = 1 AND deleted_at IS NULL AND length(api_key) > 0
+         ORDER BY updated_at DESC LIMIT 1""".trimIndent(),
+      null,
+    ).use { c ->
+      if (c.moveToFirst()) return ModelApiKeyInfo(c.getString(0), c.getString(1), c.getString(2), true)
+    }
+    return null
+  }
+
+  fun listModelApiKeys(): List<ModelApiKeyInfo> {
+    val out = ArrayList<ModelApiKeyInfo>()
+    readableDatabase.rawQuery(
+      """SELECT id, label, api_key, is_active FROM model_api_keys
+         WHERE deleted_at IS NULL ORDER BY created_at""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        out.add(ModelApiKeyInfo(c.getString(0), c.getString(1), c.getString(2), c.getInt(3) == 1))
+      }
+    }
+    return out
+  }
+
+  fun getFeatureBinding(feature: String): String? =
+    queryString(readableDatabase, "SELECT model_id FROM feature_bindings WHERE feature = ?", arrayOf(feature))
+
+  fun listFeatureBindings(): List<Pair<String, String>> {
+    val out = ArrayList<Pair<String, String>>()
+    readableDatabase.rawQuery("SELECT feature, model_id FROM feature_bindings", null).use { c ->
+      while (c.moveToNext()) out.add(c.getString(0) to c.getString(1))
+    }
+    return out
+  }
+
+  /** 手机端改绑定：updated_at=now → 下轮 LWW 同步推给 desktop */
+  fun setFeatureBinding(feature: String, modelId: String) {
+    writableDatabase.execSQL(
+      "INSERT OR REPLACE INTO feature_bindings (feature, model_id, updated_at) VALUES (?, ?, ?)",
+      arrayOf(feature, modelId, nowIso()),
+    )
+  }
+
+  /** 用量明细（含同步来的 desktop 记录），since 为 ISO 起始时间，聚合在 JS 层做 */
+  fun queryModelCallLog(since: String?, limit: Int): List<SyncModelCallLogRow> {
+    val out = ArrayList<SyncModelCallLogRow>()
+    val sql = StringBuilder(
+      """SELECT id, api_key_id, feature, model_id, started_at, duration_ms,
+                prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
+                completion_text_tokens, completion_audio_tokens, cost_cny,
+                free_quota_tokens, free_quota_saved_cny, success, error_message, metadata
+         FROM model_call_log""".trimIndent()
+    )
+    val args = ArrayList<String>()
+    if (since != null) { sql.append(" WHERE started_at >= ?"); args.add(since) }
+    sql.append(" ORDER BY started_at DESC LIMIT ").append(limit.coerceIn(1, 5000))
+    readableDatabase.rawQuery(sql.toString(), args.toTypedArray()).use { c ->
+      while (c.moveToNext()) {
+        out.add(SyncModelCallLogRow(
+          c.getString(0), if (c.isNull(1)) null else c.getString(1),
+          c.getString(2), c.getString(3), c.getString(4),
+          if (c.isNull(5)) null else c.getLong(5),
+          c.getLong(6), c.getLong(7), c.getLong(8), c.getLong(9),
+          c.getLong(10), c.getLong(11),
+          if (c.isNull(12)) null else c.getDouble(12),
+          c.getLong(13), c.getDouble(14), c.getInt(15),
+          if (c.isNull(16)) null else c.getString(16),
+          if (c.isNull(17)) null else c.getString(17),
+        ))
+      }
+    }
+    return out
+  }
+
+  fun listModelFreeQuota(): List<SyncModelFreeQuotaRow> {
+    val out = ArrayList<SyncModelFreeQuotaRow>()
+    readableDatabase.rawQuery(
+      """SELECT model_id, has_free_quota, not_supported, used_tokens, total_tokens,
+                remaining_tokens, used_percent, expire_date, raw_quota, scanned_at, error_message
+         FROM model_free_quota""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        out.add(SyncModelFreeQuotaRow(
+          c.getString(0), c.getInt(1), c.getInt(2),
+          c.getLong(3), c.getLong(4), c.getLong(5),
+          if (c.isNull(6)) null else c.getString(6),
+          if (c.isNull(7)) null else c.getString(7),
+          if (c.isNull(8)) null else c.getString(8),
+          c.getString(9),
+          if (c.isNull(10)) null else c.getString(10),
+        ))
+      }
+    }
+    return out
+  }
+
+  /** 本机聊天用量落库（id 自动生成，随下轮同步推给 desktop） */
+  fun insertModelCallLog(
+    apiKeyId: String?, feature: String, modelId: String, startedAt: String, durationMs: Long?,
+    promptTextTokens: Long, completionTextTokens: Long, success: Boolean, errorMessage: String?,
+    metadata: String?,
+  ): String {
+    val id = UUID.randomUUID().toString()
+    writableDatabase.execSQL(
+      """INSERT INTO model_call_log
+           (id, api_key_id, feature, model_id, started_at, duration_ms,
+            prompt_text_tokens, completion_text_tokens, success, error_message, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".trimIndent(),
+      arrayOf(id, apiKeyId, feature, modelId, startedAt, durationMs,
+              promptTextTokens, completionTextTokens, if (success) 1 else 0, errorMessage, metadata),
+    )
+    return id
+  }
+
+  // ── 聊天会话 CRUD（语义对齐 desktop api.rs /api/sessions/*） ──
+
+  data class ChatSessionRow(
+    val id: String, val title: String, val summary: String?,
+    val createdAt: String, val updatedAt: String, val messageCount: Int,
+  )
+
+  data class ChatMessageRow(
+    val id: String, val role: String, val content: String?,
+    val timestamp: String, val audioPath: String?, val durationMs: Long?,
+    val usageJson: String?, val reasoning: String?,
+  )
+
+  fun createChatSession(): ChatSessionRow {
+    val id = UUID.randomUUID().toString()
+    val now = nowIso()
+    writableDatabase.execSQL(
+      "INSERT INTO chat_sessions (id, title, summary, created_at, updated_at) VALUES (?, '新会话', NULL, ?, ?)",
+      arrayOf(id, now, now),
+    )
+    return ChatSessionRow(id, "新会话", null, now, now, 0)
+  }
+
+  fun listChatSessions(limit: Int): List<ChatSessionRow> {
+    val out = ArrayList<ChatSessionRow>()
+    readableDatabase.rawQuery(
+      """SELECT s.id, s.title, s.summary, s.created_at, s.updated_at,
+                (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id) AS cnt
+         FROM chat_sessions s
+         ORDER BY s.updated_at DESC LIMIT ${limit.coerceIn(1, 500)}""".trimIndent(),
+      null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        out.add(ChatSessionRow(
+          c.getString(0), c.getString(1),
+          if (c.isNull(2)) null else c.getString(2),
+          c.getString(3), c.getString(4), c.getInt(5),
+        ))
+      }
+    }
+    return out
+  }
+
+  fun getChatMessages(sessionId: String): List<ChatMessageRow> {
+    val out = ArrayList<ChatMessageRow>()
+    readableDatabase.rawQuery(
+      """SELECT id, role, content, timestamp, audio_path, duration_ms, usage_json, reasoning
+         FROM chat_messages WHERE session_id = ? ORDER BY timestamp, id""".trimIndent(),
+      arrayOf(sessionId),
+    ).use { c ->
+      while (c.moveToNext()) {
+        out.add(ChatMessageRow(
+          c.getString(0), c.getString(1),
+          if (c.isNull(2)) null else c.getString(2),
+          c.getString(3),
+          if (c.isNull(4)) null else c.getString(4),
+          if (c.isNull(5)) null else c.getLong(5),
+          if (c.isNull(6)) null else c.getString(6),
+          if (c.isNull(7)) null else c.getString(7),
+        ))
+      }
+    }
+    return out
+  }
+
+  /** 批量追加消息并 touch 会话 updated_at（对齐 desktop append_chat_messages） */
+  fun appendChatMessages(sessionId: String, rows: List<ChatMessageRow>) {
+    val db = writableDatabase
+    db.beginTransaction()
+    try {
+      for (r in rows) {
+        db.execSQL(
+          """INSERT OR REPLACE INTO chat_messages
+               (id, session_id, role, content, timestamp, audio_path, duration_ms, usage_json, reasoning)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""".trimIndent(),
+          arrayOf(r.id, sessionId, r.role, r.content, r.timestamp,
+                  r.audioPath, r.durationMs, r.usageJson, r.reasoning),
+        )
+      }
+      db.execSQL("UPDATE chat_sessions SET updated_at = ? WHERE id = ?", arrayOf(nowIso(), sessionId))
       db.setTransactionSuccessful()
     } finally {
       db.endTransaction()
     }
+  }
 
-    return ImportResult(cats, tags, blocks, pNodes, pBlocks, skipped)
+  fun patchChatSession(sessionId: String, title: String?, summary: String?) {
+    if (title != null) {
+      writableDatabase.execSQL(
+        "UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?",
+        arrayOf(title, nowIso(), sessionId),
+      )
+    }
+    if (summary != null) {
+      writableDatabase.execSQL(
+        "UPDATE chat_sessions SET summary = ?, updated_at = ? WHERE id = ?",
+        arrayOf(summary, nowIso(), sessionId),
+      )
+    }
+  }
+
+  fun deleteChatSession(sessionId: String) {
+    writableDatabase.execSQL("DELETE FROM chat_sessions WHERE id = ?", arrayOf(sessionId))
+  }
+
+  /** 清理空会话（对齐 desktop cleanup_empty，except 保留当前会话） */
+  fun cleanupEmptyChatSessions(exceptId: String?): Int {
+    val db = writableDatabase
+    val args = if (exceptId != null) arrayOf(exceptId) else emptyArray()
+    val where = if (exceptId != null) "AND id != ?" else ""
+    db.execSQL(
+      """DELETE FROM chat_sessions
+         WHERE id NOT IN (SELECT DISTINCT session_id FROM chat_messages) $where""",
+      args,
+    )
+    return 0
   }
 
   // ── LWW helpers ──

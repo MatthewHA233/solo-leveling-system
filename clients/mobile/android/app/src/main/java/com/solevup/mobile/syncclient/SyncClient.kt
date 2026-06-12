@@ -205,6 +205,7 @@ object SyncClient {
         if (r.deletedAt != null) put("deleted_at", r.deletedAt)
       })
     })
+    com.solevup.mobile.solevupdb.SyncJson.putModelTables(o, ex)
     return o
   }
 
@@ -265,6 +266,10 @@ object SyncClient {
           deletedAt = nullable(it, "deleted_at"),
         )
       },
+      modelApiKeys = com.solevup.mobile.solevupdb.SyncJson.parseModelApiKeys(o),
+      modelCallLog = com.solevup.mobile.solevupdb.SyncJson.parseModelCallLog(o),
+      modelFreeQuota = com.solevup.mobile.solevupdb.SyncJson.parseModelFreeQuota(o),
+      featureBindings = com.solevup.mobile.solevupdb.SyncJson.parseFeatureBindings(o),
     )
   }
 

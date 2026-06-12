@@ -456,6 +456,211 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
     return next
   }
 
+  // ── 模型配置（聊天链路：active key / 模型绑定 / 用量落库） ──
+
+  @ReactMethod
+  fun getActiveModelApiKey(promise: Promise) {
+    try {
+      val k = db.getActiveModelApiKey()
+      if (k == null) { promise.resolve(null); return }
+      promise.resolve(Arguments.createMap().apply {
+        putString("id", k.id); putString("label", k.label)
+        putString("apiKey", k.apiKey); putBoolean("isActive", k.isActive)
+      })
+    } catch (e: Throwable) { promise.reject("MODEL_KEY_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun listModelApiKeys(promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (k in db.listModelApiKeys()) {
+        arr.pushMap(Arguments.createMap().apply {
+          putString("id", k.id); putString("label", k.label)
+          putBoolean("isActive", k.isActive)
+          putBoolean("hasKey", k.apiKey.isNotEmpty())
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("MODEL_KEYS_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun getFeatureBinding(feature: String, promise: Promise) {
+    try { promise.resolve(db.getFeatureBinding(feature)) }
+    catch (e: Throwable) { promise.reject("BINDING_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun insertModelCallLog(row: ReadableMap, promise: Promise) {
+    try {
+      val id = db.insertModelCallLog(
+        apiKeyId = if (row.hasKey("apiKeyId") && !row.isNull("apiKeyId")) row.getString("apiKeyId") else null,
+        feature = row.getString("feature") ?: "fairy_chat",
+        modelId = row.getString("modelId") ?: "",
+        startedAt = row.getString("startedAt") ?: "",
+        durationMs = if (row.hasKey("durationMs") && !row.isNull("durationMs")) row.getDouble("durationMs").toLong() else null,
+        promptTextTokens = if (row.hasKey("promptTextTokens")) row.getDouble("promptTextTokens").toLong() else 0L,
+        completionTextTokens = if (row.hasKey("completionTextTokens")) row.getDouble("completionTextTokens").toLong() else 0L,
+        success = if (row.hasKey("success")) row.getBoolean("success") else true,
+        errorMessage = if (row.hasKey("errorMessage") && !row.isNull("errorMessage")) row.getString("errorMessage") else null,
+        metadata = if (row.hasKey("metadata") && !row.isNull("metadata")) row.getString("metadata") else null,
+      )
+      promise.resolve(id)
+    } catch (e: Throwable) { promise.reject("CALL_LOG_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun listFeatureBindings(promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for ((feature, modelId) in db.listFeatureBindings()) {
+        arr.pushMap(Arguments.createMap().apply {
+          putString("feature", feature); putString("modelId", modelId)
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("BINDINGS_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun setFeatureBinding(feature: String, modelId: String, promise: Promise) {
+    try { db.setFeatureBinding(feature, modelId); promise.resolve(true) }
+    catch (e: Throwable) { promise.reject("BINDING_SET_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun queryModelCallLog(since: String?, limit: Double, promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (r in db.queryModelCallLog(since, limit.toInt())) {
+        arr.pushMap(Arguments.createMap().apply {
+          putString("id", r.id)
+          if (r.apiKeyId != null) putString("apiKeyId", r.apiKeyId) else putNull("apiKeyId")
+          putString("feature", r.feature); putString("modelId", r.modelId)
+          putString("startedAt", r.startedAt)
+          if (r.durationMs != null) putDouble("durationMs", r.durationMs.toDouble()) else putNull("durationMs")
+          putDouble("promptTextTokens", r.promptTextTokens.toDouble())
+          putDouble("promptImageTokens", r.promptImageTokens.toDouble())
+          putDouble("promptVideoTokens", r.promptVideoTokens.toDouble())
+          putDouble("promptAudioTokens", r.promptAudioTokens.toDouble())
+          putDouble("completionTextTokens", r.completionTextTokens.toDouble())
+          putDouble("completionAudioTokens", r.completionAudioTokens.toDouble())
+          if (r.costCny != null) putDouble("costCny", r.costCny) else putNull("costCny")
+          putDouble("freeQuotaTokens", r.freeQuotaTokens.toDouble())
+          putDouble("freeQuotaSavedCny", r.freeQuotaSavedCny)
+          putBoolean("success", r.success == 1)
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("CALL_LOG_QUERY_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun listModelFreeQuota(promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (r in db.listModelFreeQuota()) {
+        arr.pushMap(Arguments.createMap().apply {
+          putString("modelId", r.modelId)
+          putBoolean("hasFreeQuota", r.hasFreeQuota == 1)
+          putBoolean("notSupported", r.notSupported == 1)
+          putDouble("usedTokens", r.usedTokens.toDouble())
+          putDouble("totalTokens", r.totalTokens.toDouble())
+          putDouble("remainingTokens", r.remainingTokens.toDouble())
+          if (r.usedPercent != null) putString("usedPercent", r.usedPercent) else putNull("usedPercent")
+          if (r.expireDate != null) putString("expireDate", r.expireDate) else putNull("expireDate")
+          putString("scannedAt", r.scannedAt)
+          if (r.errorMessage != null) putString("errorMessage", r.errorMessage) else putNull("errorMessage")
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("FREE_QUOTA_FAILED", e.message, e) }
+  }
+
+  // ── 聊天会话 ──
+
+  private fun sessionToMap(r: SolevupDb.ChatSessionRow) = Arguments.createMap().apply {
+    putString("id", r.id); putString("title", r.title)
+    if (r.summary != null) putString("summary", r.summary) else putNull("summary")
+    putString("createdAt", r.createdAt); putString("updatedAt", r.updatedAt)
+    putInt("messageCount", r.messageCount)
+  }
+
+  @ReactMethod
+  fun createChatSession(promise: Promise) {
+    try { promise.resolve(sessionToMap(db.createChatSession())) }
+    catch (e: Throwable) { promise.reject("SESSION_CREATE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun listChatSessions(limit: Double, promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (r in db.listChatSessions(limit.toInt())) arr.pushMap(sessionToMap(r))
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("SESSION_LIST_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun getChatMessages(sessionId: String, promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (r in db.getChatMessages(sessionId)) {
+        arr.pushMap(Arguments.createMap().apply {
+          putString("id", r.id); putString("role", r.role)
+          if (r.content != null) putString("content", r.content) else putNull("content")
+          putString("timestamp", r.timestamp)
+          if (r.audioPath != null) putString("audioPath", r.audioPath) else putNull("audioPath")
+          if (r.durationMs != null) putDouble("durationMs", r.durationMs.toDouble()) else putNull("durationMs")
+          if (r.usageJson != null) putString("usageJson", r.usageJson) else putNull("usageJson")
+          if (r.reasoning != null) putString("reasoning", r.reasoning) else putNull("reasoning")
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("MESSAGES_GET_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun appendChatMessages(sessionId: String, rows: ReadableArray, promise: Promise) {
+    try {
+      val list = ArrayList<SolevupDb.ChatMessageRow>()
+      for (i in 0 until rows.size()) {
+        val m = rows.getMap(i) ?: continue
+        list.add(SolevupDb.ChatMessageRow(
+          id = m.getString("id") ?: continue,
+          role = m.getString("role") ?: "user",
+          content = if (m.hasKey("content") && !m.isNull("content")) m.getString("content") else null,
+          timestamp = m.getString("timestamp") ?: "",
+          audioPath = if (m.hasKey("audioPath") && !m.isNull("audioPath")) m.getString("audioPath") else null,
+          durationMs = if (m.hasKey("durationMs") && !m.isNull("durationMs")) m.getDouble("durationMs").toLong() else null,
+          usageJson = if (m.hasKey("usageJson") && !m.isNull("usageJson")) m.getString("usageJson") else null,
+          reasoning = if (m.hasKey("reasoning") && !m.isNull("reasoning")) m.getString("reasoning") else null,
+        ))
+      }
+      db.appendChatMessages(sessionId, list)
+      promise.resolve(true)
+    } catch (e: Throwable) { promise.reject("MESSAGES_APPEND_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun patchChatSession(sessionId: String, title: String?, summary: String?, promise: Promise) {
+    try { db.patchChatSession(sessionId, title, summary); promise.resolve(true) }
+    catch (e: Throwable) { promise.reject("SESSION_PATCH_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun deleteChatSession(sessionId: String, promise: Promise) {
+    try { db.deleteChatSession(sessionId); promise.resolve(true) }
+    catch (e: Throwable) { promise.reject("SESSION_DELETE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun cleanupEmptyChatSessions(exceptId: String?, promise: Promise) {
+    try { db.cleanupEmptyChatSessions(exceptId); promise.resolve(true) }
+    catch (e: Throwable) { promise.reject("SESSION_CLEANUP_FAILED", e.message, e) }
+  }
+
   companion object {
     const val NAME = "SolevupDb"
     private const val PREFS_NAME = "solevup_prefs"
