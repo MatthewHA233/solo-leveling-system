@@ -17,6 +17,10 @@ import Tooltip from './Tooltip'
 const THOUGHT_STORAGE_KEY = 'slu.torrent.thoughtCards.v1'
 const MIGRATED_KEY = 'slu.torrent.migrated.v1'
 
+// feed 滚动容器底部内边距。sticky 的 bottom 偏移以内容盒为基准（padding 区不算），
+// 收起胶囊要贴住可视底边必须把这个值补回去（同 dayHeader 吸顶要求 paddingTop: 0 的原因）
+const FEED_BOTTOM_PAD = 14
+
 interface FeedDayGroup {
   readonly key: string
   readonly date: Date
@@ -834,49 +838,57 @@ function BiliContextCard({ item }: { readonly item: ContextFeedItem }) {
 
   return (
     <article id={`torrent-card-${item.id}`} style={{ ...styles.biliCard, ...(marked ? styles.biliCardMarked : null) }}>
-      {/* 折叠态：整片（封面 + 标题 + 预览）都可点击展开 */}
-      <Tooltip
-        content="点击展开转录"
-        disabled={expanded || !canExpand}
-        display="flex"
-        wrapStyle={{ flexDirection: 'column' }}
-      >
-      <div
-        onClick={!expanded && canExpand ? toggle : undefined}
-        style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, cursor: !expanded && canExpand ? 'pointer' : 'default' }}
-      >
-        <div style={styles.biliHead}>
-          {coverSrc && <img src={coverSrc} alt="" style={styles.biliCover} referrerPolicy="no-referrer" />}
-          <div style={styles.biliHeadText}>
-            <div style={styles.biliKind}>
-              B站转录 · {formatTimeOnly(item.created_at)}
-              {marked && <span style={styles.anchorBadge}>◆ {a.bindings.length} 处锚点</span>}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {/* 封面 + 标题：点击直达 B 站历史的详情+转录面板 */}
+        <Tooltip content="打开 B 站历史详情与转录面板" disabled={!item.bvid} display="flex">
+          <div
+            onClick={item.bvid ? () => {
+              window.dispatchEvent(new CustomEvent('solevup:open-bili-detail', { detail: { bvid: item.bvid } }))
+            } : undefined}
+            style={{ ...styles.biliHead, flex: 1, cursor: item.bvid ? 'pointer' : 'default' }}
+          >
+            {coverSrc && <img src={coverSrc} alt="" style={styles.biliCover} referrerPolicy="no-referrer" />}
+            <div style={styles.biliHeadText}>
+              <div style={styles.biliKind}>
+                B站转录 · {formatTimeOnly(item.created_at)}
+                {marked && <span style={styles.anchorBadge}>◆ {a.bindings.length} 处锚点</span>}
+              </div>
+              <div style={styles.biliTitle}>{item.title ?? item.bvid ?? '未知视频'}</div>
             </div>
-            <div style={styles.biliTitle}>{item.title ?? item.bvid ?? '未知视频'}</div>
           </div>
-        </div>
+        </Tooltip>
 
+        {/* 折叠态：摘要区点击展开转录 */}
         {!expanded && (
-          <>
-            <p style={{ ...styles.biliSummary, ...(canExpand ? styles.biliPreviewFade : null) }}>
-              {item.text + (item.text.length >= 150 ? '…' : '')}
-            </p>
-            {markedAnchors.length > 0 && (
-              <div style={styles.anchorChips}>
-                {markedAnchors.map((an) => (
-                  <AnchorChip key={an.id} anchor={an} />
-                ))}
-              </div>
-            )}
-            {canExpand && (
-              <div style={styles.biliPreviewHint}>
-                {loading ? '加载中…' : <>展开转录 <ChevronDown size={12} /></>}
-              </div>
-            )}
-          </>
+          <Tooltip
+            content="点击展开转录"
+            disabled={!canExpand}
+            display="flex"
+            wrapStyle={{ flexDirection: 'column' }}
+          >
+            <div
+              onClick={canExpand ? toggle : undefined}
+              style={{ display: 'flex', flexDirection: 'column', gap: 8, cursor: canExpand ? 'pointer' : 'default' }}
+            >
+              <p style={{ ...styles.biliSummary, ...(canExpand ? styles.biliPreviewFade : null) }}>
+                {item.text + (item.text.length >= 150 ? '…' : '')}
+              </p>
+              {markedAnchors.length > 0 && (
+                <div style={styles.anchorChips}>
+                  {markedAnchors.map((an) => (
+                    <AnchorChip key={an.id} anchor={an} />
+                  ))}
+                </div>
+              )}
+              {canExpand && (
+                <div style={styles.biliPreviewHint}>
+                  {loading ? '加载中…' : <>展开转录 <ChevronDown size={12} /></>}
+                </div>
+              )}
+            </div>
+          </Tooltip>
         )}
       </div>
-      </Tooltip>
 
       {expanded && sentences !== null && (
         <>
@@ -1150,7 +1162,7 @@ const styles: Record<string, CSSProperties> = {
     overflowX: 'hidden',
     paddingRight: 10,
     paddingTop: 0, // 不留缝：sticky 日期头要贴住滚动口顶边，padding 会露出滚动内容
-    paddingBottom: 14,
+    paddingBottom: FEED_BOTTOM_PAD,
     scrollSnapType: 'y proximity',
     scrollPaddingTop: 8,
     scrollbarWidth: 'none',
@@ -1412,21 +1424,28 @@ const styles: Record<string, CSSProperties> = {
     letterSpacing: '0.08em',
     opacity: 0.85,
   },
+  // 收起胶囊：sticky 吸底（同 dayHeader 吸顶语义）——展开很长时不用滚到卡尾也能收起。
+  // bottom 把 FEED_BOTTOM_PAD 补回去再抬 8px，悬浮在可视底边上方；
+  // 居中小胶囊形态：浮在转录上像 HUD 控件，落回卡尾也自然
   biliCollapseBar: {
-    alignSelf: 'stretch',
-    display: 'flex',
+    position: 'sticky',
+    bottom: 8 - FEED_BOTTOM_PAD,
+    zIndex: 2,
+    alignSelf: 'center',
+    display: 'inline-flex',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 4,
-    border: 'none',
-    borderTop: `1px solid ${theme.hudFrameSoft}`,
-    background: 'transparent',
+    marginTop: 8,
+    border: `1px solid ${theme.electricBlue}55`,
+    borderRadius: 999,
+    background: 'rgba(7,15,27,0.93)',
+    boxShadow: `0 4px 14px rgba(0,0,0,0.55), 0 0 10px ${theme.electricBlue}26`,
     color: theme.electricBlue,
-    fontFamily: theme.fontBody,
-    fontSize: 11,
-    padding: '7px 0 2px',
+    fontFamily: theme.fontMono,
+    fontSize: 10.5,
+    letterSpacing: '0.12em',
+    padding: '4px 16px',
     cursor: 'pointer',
-    letterSpacing: '0.08em',
   },
   anchorChips: {
     display: 'flex',

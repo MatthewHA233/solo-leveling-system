@@ -7,7 +7,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Boxes, ChevronLeft, ChevronRight, Globe, Laptop, Link2, Monitor, Server, Settings, Smartphone, X } from 'lucide-react'
 import BiliIcon from './components/icons/BiliIcon'
 import {
-  fetchPerceptionSpans, fetchBiliSpans, fetchGoals, parseGoalTags,
+  fetchPerceptionSpans, fetchBiliSpans, searchBiliHistory, fetchGoals, parseGoalTags,
   fetchActivityPalette, fetchActivityBlocks, paintActivityBlocks, eraseActivityBlocks,
   fetchPlanNodes, fetchPlannedBlocks, paintPlannedBlocks, erasePlannedBlocks,
   fetchSyncLinks, fetchSyncPeers, runSyncLink,
@@ -436,6 +436,37 @@ export default function App() {
     setShowBili(false)
     setPendingBiliDetail(null)
   }, [])
+
+  // 语境库 B 站卡点击封面/标题 → 直达 B 站历史详情+转录面板。
+  // 卡上只有 bvid：先搜历史拿 view_at 定位观看日，再取当日 spans 找完整 BiliSpan
+  useEffect(() => {
+    const onOpenDetail = (e: Event) => {
+      const d = (e as CustomEvent).detail as { bvid?: string } | undefined
+      const bvid = d?.bvid
+      if (!bvid) return
+      void (async () => {
+        try {
+          const hits = await searchBiliHistory(bvid, 5)
+          const hit = hits.find((h) => h.bvid === bvid)
+          if (!hit) {
+            console.warn('[BiliDetail] B 站历史里找不到该视频：', bvid)
+            return
+          }
+          const spans = await fetchBiliSpans(new Date(hit.view_at * 1000))
+          const span = spans.find((s) => s.bvid === bvid)
+          if (!span) {
+            console.warn('[BiliDetail] 观看日 spans 里找不到该视频：', bvid)
+            return
+          }
+          requestBiliHistoryDetail(span, 'transcribe')
+        } catch (err) {
+          console.error('[BiliDetail] 打开详情失败', err)
+        }
+      })()
+    }
+    window.addEventListener('solevup:open-bili-detail', onOpenDetail)
+    return () => window.removeEventListener('solevup:open-bili-detail', onOpenDetail)
+  }, [requestBiliHistoryDetail])
 
 
   // ── Activity Editor ──
