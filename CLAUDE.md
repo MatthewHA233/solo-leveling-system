@@ -6,6 +6,11 @@
 - `clients/mobile/` — React Native 0.85（Android 主，iOS 后续），开发分支 `feat/mobile`，预留 LAN/HTTP 接入 desktop 共享 DB
 - `clients/mac_old/` — 早期纯 Swift / MenuBarExtra 原型，已归档不再维护
 
+## Git 习惯
+
+- **提交前先 `git pull --rebase`**（养成好习惯）。远端有 Windows 侧 Codex 智能体并行推送，本地直接 commit/push 容易和远端交错或冲突。工作区有未提交改动时先 `git stash` → `git pull --rebase` → `git stash pop`。
+- commit/push 前先和用户打招呼（用户说提交时才提交）。
+
 ## 自动化审查修复交接
 
 项目里有 Codex 自动化会定期审查提交，并把中文报告写到 `docs/自动化监控报告/提交风险监控/`。修复这些报告里的问题时，Claude Code 按下面规则处理。
