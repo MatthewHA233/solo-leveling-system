@@ -1397,21 +1397,15 @@ function RenderList({
 function StorySnapView({ item: s, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'story' }>; highlighted: boolean; appIconCache: Record<string, string> }) {
   const it = s.story
   return (
-    <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
-      <View style={[styles.snapCardHead, styles.snapCardHeadDetail]}>
-        <View style={[styles.snapCardAccentBar, { backgroundColor: '#00AEEC' }]} />
-        <View style={styles.snapCardHeadText}>
-          <View style={styles.headerTitleTimeRow}>
-            <View style={styles.headerTitleLeft}>
-              <BiliCardIcon appIconCache={appIconCache} color="#00AEEC" />
-              <Text style={[styles.snapCardTitle, styles.headerTitleText]}>视频播放界面（竖屏）</Text>
-            </View>
-            <TimeRangeBand startMs={s.tsStart} endMs={s.tsEnd} compact header />
-          </View>
-          <Text style={styles.snapCardSubtitle}>{it.seenCount > 1 ? `看 ${it.seenCount} 次` : '在看'}</Text>
-        </View>
-      </View>
-      <View style={styles.snapCardBody}>
+    <TorrentCardShell
+      accent="#00AEEC"
+      icon={<BiliCardIcon appIconCache={appIconCache} color="#00AEEC" />}
+      label="视频播放界面（竖屏）"
+      subtitle={it.seenCount > 1 ? `看 ${it.seenCount} 次` : '在看'}
+      startTs={s.tsStart}
+      endTs={s.tsEnd}
+      highlighted={highlighted}
+    >
         <View style={styles.detailMainBlock}>
           <View style={styles.storyTitleRow}>
             {it.isAd && <Text style={styles.storyAdTag}>广告</Text>}
@@ -1433,8 +1427,7 @@ function StorySnapView({ item: s, highlighted, appIconCache }: { item: Extract<L
             </View>
           )}
         </View>
-      </View>
-    </View>
+    </TorrentCardShell>
   )
 }
 
@@ -1500,27 +1493,17 @@ function HomeSnapView({ item: s, sortOrder, onCrossJump, highlighted, appIconCac
   }
   flushPair()
   return (
-    <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
-      <Pressable onPress={onHeadPress}>
-      <View style={styles.snapCardHead}>
-        <View style={styles.snapCardAccentBar} />
-        <View style={styles.snapCardHeadText}>
-          <View style={styles.headerTitleTimeRow}>
-            <View style={styles.headerTitleLeft}>
-              <BiliCardIcon appIconCache={appIconCache} color={HOME_ACCENT} />
-              <Text style={[styles.snapCardTitle, styles.headerTitleText]}>B 站主页</Text>
-              <Text style={styles.jumpHint}>→ 动作</Text>
-            </View>
-            <TimeRangeBand startMs={s.tsStart} endMs={s.tsEnd} compact header />
-          </View>
-          <Text style={styles.snapCardSubtitle}>
-            看到 {s.feedItems.length} 条视频
-            {s.sweepCount > 1 ? ` · 刷 ${s.sweepCount} 次` : ''}
-          </Text>
-        </View>
-      </View>
-      </Pressable>
-      <View style={styles.snapCardBody}>
+    <TorrentCardShell
+      accent={HOME_ACCENT}
+      icon={<BiliCardIcon appIconCache={appIconCache} color={HOME_ACCENT} />}
+      label="B 站主页"
+      subtitle={`看到 ${s.feedItems.length} 条视频${s.sweepCount > 1 ? ` · 刷 ${s.sweepCount} 次` : ''}`}
+      jumpHint="→ 动作"
+      startTs={s.tsStart}
+      endTs={s.tsEnd}
+      onHeadPress={onHeadPress}
+      highlighted={highlighted}
+    >
         {rows.map((r, ri) => {
           if (r.kind === 'banner') {
             const f = r.item
@@ -1563,8 +1546,7 @@ function HomeSnapView({ item: s, sortOrder, onCrossJump, highlighted, appIconCac
             </View>
           )
         })}
-      </View>
-    </View>
+    </TorrentCardShell>
   )
 }
 
@@ -1574,27 +1556,17 @@ function DetailSnapView({ item: s, onCrossJump, highlighted, appIconCache }: { i
   // 评论数用 d.related 自身；主视频信息没有时间维度
   const d = s.detail
   return (
-    <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
-      <Pressable onPress={onHeadPress}>
-      <View style={[styles.snapCardHead, styles.snapCardHeadDetail]}>
-        <View style={[styles.snapCardAccentBar, { backgroundColor: '#00AEEC' }]} />
-        <View style={styles.snapCardHeadText}>
-          <View style={styles.headerTitleTimeRow}>
-            <View style={styles.headerTitleLeft}>
-              <BiliCardIcon appIconCache={appIconCache} color="#00AEEC" />
-              <Text style={[styles.snapCardTitle, styles.headerTitleText]}>视频播放界面</Text>
-              <Text style={styles.jumpHint}>→ 动作</Text>
-            </View>
-            <TimeRangeBand startMs={s.tsStart} endMs={s.tsEnd} compact header />
-          </View>
-          <Text style={styles.snapCardSubtitle}>
-            在看
-            {d.related.length > 0 ? ` · 相关推荐 ${d.related.length} 条` : ''}
-          </Text>
-        </View>
-      </View>
-      </Pressable>
-      <View style={styles.snapCardBody}>
+    <TorrentCardShell
+      accent="#00AEEC"
+      icon={<BiliCardIcon appIconCache={appIconCache} color="#00AEEC" />}
+      label="视频播放界面"
+      subtitle={`在看${d.related.length > 0 ? ` · 相关推荐 ${d.related.length} 条` : ''}`}
+      jumpHint="→ 动作"
+      startTs={s.tsStart}
+      endTs={s.tsEnd}
+      onHeadPress={onHeadPress}
+      highlighted={highlighted}
+    >
         {/* 主视频 */}
         <View style={styles.detailMainBlock}>
           {d.kindLabel && <Text style={styles.detailKindTag}>{d.kindLabel}</Text>}
@@ -1668,8 +1640,7 @@ function DetailSnapView({ item: s, onCrossJump, highlighted, appIconCache }: { i
             ))}
           </View>
         )}
-      </View>
-    </View>
+    </TorrentCardShell>
   )
 }
 
@@ -1748,18 +1719,17 @@ function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted, appIco
   const hasCommentDetail = commentDetails.length > 0 || s.commentDetailSegs.length > 0
   const CD_COLOR = SUB_TAB_LABEL.comment_detail.color
   return (
-    <View style={[styles.subCard, highlighted && styles.snapCardHighlight, { borderColor: alpha(COMMENTS_ACCENT, 0.3) }]}>
-      <Pressable onPress={onHeadPress} style={[styles.subCardHead, { backgroundColor: alpha(COMMENTS_ACCENT, 0.06) }]}>
-        <View style={styles.subCardHeadLeft}>
-          <View style={[styles.subCardDot, { backgroundColor: COMMENTS_ACCENT }]} />
-          <BiliCardIcon appIconCache={appIconCache} color={COMMENTS_ACCENT} small />
-          <Text style={[styles.subCardLabel, { color: COMMENTS_ACCENT }]}>评论区</Text>
-          <Text style={styles.subCardMeta}>{comments.length} 条</Text>
-          <Text style={styles.jumpHint}>→ 动作</Text>
-        </View>
-        <TimeRangeBand startMs={s.tsStart} endMs={s.tsEnd} compact header />
-      </Pressable>
-      <View style={styles.subCardBody}>
+    <TorrentSubCardShell
+      accent={COMMENTS_ACCENT}
+      icon={<BiliCardIcon appIconCache={appIconCache} color={COMMENTS_ACCENT} small />}
+      label="评论区"
+      meta={`${comments.length} 条`}
+      jumpHint="→ 动作"
+      startTs={s.tsStart}
+      endTs={s.tsEnd}
+      onHeadPress={onHeadPress}
+      highlighted={highlighted}
+    >
         {comments.map((c, i) => (
           <View key={`${c.rowId}-${i}`} style={[styles.commentItem, i === comments.length - 1 && !hasCommentDetail && { borderBottomWidth: 0, marginBottom: 0, paddingBottom: 0 }]}>
             <View style={styles.commentHead}>
@@ -1854,8 +1824,7 @@ function CommentsSnapView({ item: s, sortOrder, onCrossJump, highlighted, appIco
               </View>
           </View>
         )}
-      </View>
-    </View>
+    </TorrentSubCardShell>
   )
 }
 
@@ -1915,18 +1884,17 @@ function FullscreenSnapView({ item: s, onCrossJump, highlighted, appIconCache }:
   const onHeadPress = () => onCrossJump('action', s.tsStart)
   const FS_COLOR = SUB_TAB_LABEL.fullscreen.color
   return (
-    <View style={[styles.subCard, highlighted && styles.snapCardHighlight, { borderColor: alpha(FS_COLOR, 0.3) }]}>
-      <Pressable onPress={onHeadPress} style={[styles.subCardHead, { backgroundColor: alpha(FS_COLOR, 0.06) }]}>
-        <View style={styles.subCardHeadLeft}>
-          <View style={[styles.subCardDot, { backgroundColor: FS_COLOR }]} />
-          <BiliCardIcon appIconCache={appIconCache} color={FS_COLOR} small />
-          <Text style={[styles.subCardLabel, { color: FS_COLOR }]}>全屏播放</Text>
-          <Text style={styles.subCardMeta}>{s.samples.length > 0 ? `${s.samples.length} 次采样` : '无进度采样'}</Text>
-          <Text style={styles.jumpHint}>→ 动作</Text>
-        </View>
-        <TimeRangeBand startMs={s.tsStart} endMs={s.tsEnd} compact header />
-      </Pressable>
-      <View style={styles.subCardBody}>
+    <TorrentSubCardShell
+      accent={FS_COLOR}
+      icon={<BiliCardIcon appIconCache={appIconCache} color={FS_COLOR} small />}
+      label="全屏播放"
+      meta={s.samples.length > 0 ? `${s.samples.length} 次采样` : '无进度采样'}
+      jumpHint="→ 动作"
+      startTs={s.tsStart}
+      endTs={s.tsEnd}
+      onHeadPress={onHeadPress}
+      highlighted={highlighted}
+    >
         {s.samples.length > 0
           ? <PlayProgressStrip samples={s.samples} />
           : (
@@ -1934,8 +1902,7 @@ function FullscreenSnapView({ item: s, onCrossJump, highlighted, appIconCache }:
               该全屏段无播放进度采样（可能用户未触发 SeekBar 显示）
             </Text>
           )}
-      </View>
-    </View>
+    </TorrentSubCardShell>
   )
 }
 
@@ -2071,39 +2038,76 @@ function WxCardIcon({ appIconCache, color, small }: { appIconCache: Record<strin
   )
 }
 
-// 与 B 站还原卡同构的卡片壳：accent 竖条 + 应用图标 + 标题 + →动作 + 时间条 + 副标题 + body
-function WxCardShell({
-  accent, label, subtitle, startTs, endTs, onHeadPress, appIconCache, highlighted, children,
+// ── 通用还原卡片壳（B 站 / 微信 / 后续 app 共用，单一来源） ──
+// 顶层卡：accent 竖条 + 应用图标 + 标题 + →跳转 + 时间条 + 副标题 + body。
+// head 背景/边框由 accent 派生（subsumes 旧 snapCardHeadDetail）；onHeadPress 时 head 可点。
+function TorrentCardShell({
+  accent, icon, label, subtitle, jumpHint, startTs, endTs, onHeadPress, highlighted, children,
 }: {
   accent: string
+  icon: React.ReactNode
   label: string
   subtitle?: string
+  jumpHint?: string
   startTs: number
   endTs: number
   onHeadPress?: () => void
-  appIconCache: Record<string, string>
   highlighted: boolean
   children: React.ReactNode
 }) {
+  const head = (
+    <View style={[styles.snapCardHead, { backgroundColor: alpha(accent, 0.06), borderBottomColor: alpha(accent, 0.15) }]}>
+      <View style={[styles.snapCardAccentBar, { backgroundColor: accent }]} />
+      <View style={styles.snapCardHeadText}>
+        <View style={styles.headerTitleTimeRow}>
+          <View style={styles.headerTitleLeft}>
+            {icon}
+            <Text style={[styles.snapCardTitle, styles.headerTitleText]} numberOfLines={1}>{label}</Text>
+            {jumpHint ? <Text style={styles.jumpHint}>{jumpHint}</Text> : null}
+          </View>
+          <TimeRangeBand startMs={startTs} endMs={endTs} compact header />
+        </View>
+        {subtitle ? <Text style={styles.snapCardSubtitle} numberOfLines={1}>{subtitle}</Text> : null}
+      </View>
+    </View>
+  )
   return (
     <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
-      <Pressable onPress={onHeadPress} disabled={!onHeadPress}>
-        <View style={[styles.snapCardHead, { backgroundColor: alpha(accent, 0.06), borderBottomColor: alpha(accent, 0.15) }]}>
-          <View style={[styles.snapCardAccentBar, { backgroundColor: accent }]} />
-          <View style={styles.snapCardHeadText}>
-            <View style={styles.headerTitleTimeRow}>
-              <View style={styles.headerTitleLeft}>
-                <WxCardIcon appIconCache={appIconCache} color={accent} />
-                <Text style={[styles.snapCardTitle, styles.headerTitleText]} numberOfLines={1}>{label}</Text>
-                {onHeadPress && <Text style={styles.jumpHint}>→ 动作</Text>}
-              </View>
-              <TimeRangeBand startMs={startTs} endMs={endTs} compact header />
-            </View>
-            {subtitle ? <Text style={styles.snapCardSubtitle} numberOfLines={1}>{subtitle}</Text> : null}
-          </View>
-        </View>
-      </Pressable>
+      {onHeadPress ? <Pressable onPress={onHeadPress}>{head}</Pressable> : head}
       <View style={styles.snapCardBody}>{children}</View>
+    </View>
+  )
+}
+
+// 子卡壳（嵌套：评论区 / 全屏播放）：dot + 小图标 + label + meta + →跳转 + 时间条 + body。
+function TorrentSubCardShell({
+  accent, icon, label, meta, jumpHint, startTs, endTs, onHeadPress, highlighted, children,
+}: {
+  accent: string
+  icon: React.ReactNode
+  label: string
+  meta?: string
+  jumpHint?: string
+  startTs: number
+  endTs: number
+  onHeadPress?: () => void
+  highlighted: boolean
+  children: React.ReactNode
+}) {
+  const HeadEl: typeof Pressable | typeof View = onHeadPress ? Pressable : View
+  return (
+    <View style={[styles.subCard, highlighted && styles.snapCardHighlight, { borderColor: alpha(accent, 0.3) }]}>
+      <HeadEl onPress={onHeadPress} style={[styles.subCardHead, { backgroundColor: alpha(accent, 0.06) }]}>
+        <View style={styles.subCardHeadLeft}>
+          <View style={[styles.subCardDot, { backgroundColor: accent }]} />
+          {icon}
+          <Text style={[styles.subCardLabel, { color: accent }]}>{label}</Text>
+          {meta ? <Text style={styles.subCardMeta}>{meta}</Text> : null}
+          {jumpHint ? <Text style={styles.jumpHint}>{jumpHint}</Text> : null}
+        </View>
+        <TimeRangeBand startMs={startTs} endMs={endTs} compact header />
+      </HeadEl>
+      <View style={styles.subCardBody}>{children}</View>
     </View>
   )
 }
@@ -2121,14 +2125,15 @@ function WxArticleView({ item: a, onCrossJump, highlighted, appIconCache }: { it
   const hasMore = body.length > 0 || comments.length > 0
   const firstPara = body.find((b) => b.t === 'para') as Extract<WxBlock, { t: 'para' }> | undefined
   return (
-    <WxCardShell
+    <TorrentCardShell
       accent={WX_GREEN}
+      icon={<WxCardIcon appIconCache={appIconCache} color={WX_GREEN} />}
+      jumpHint="→ 动作"
       label="公众号文章"
       subtitle={a.account || '公众号'}
       startTs={a.ts}
       endTs={a.endTs}
       onHeadPress={() => onCrossJump('action', a.ts)}
-      appIconCache={appIconCache}
       highlighted={highlighted}
     >
       <Text style={styles.wxArticleTitle}>{a.title}</Text>
@@ -2193,20 +2198,21 @@ function WxArticleView({ item: a, onCrossJump, highlighted, appIconCache }: { it
           </Text>
         </Pressable>
       )}
-    </WxCardShell>
+    </TorrentCardShell>
   )
 }
 
 function WxOaFeedView({ item: f, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'wx_oa_feed' }>; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
   return (
-    <WxCardShell
+    <TorrentCardShell
       accent={WX_GREEN}
+      icon={<WxCardIcon appIconCache={appIconCache} color={WX_GREEN} />}
+      jumpHint="→ 动作"
       label="订阅号消息"
       subtitle={`${f.entries.length} 条文章${f.sweepCount > 1 ? ` · 刷 ${f.sweepCount} 次` : ''}`}
       startTs={f.tsStart}
       endTs={f.tsEnd}
       onHeadPress={() => onCrossJump('action', f.tsStart)}
-      appIconCache={appIconCache}
       highlighted={highlighted}
     >
       {f.entries.map((e, i) => (
@@ -2215,21 +2221,22 @@ function WxOaFeedView({ item: f, onCrossJump, highlighted, appIconCache }: { ite
           <Text style={styles.wxFeedTitle} numberOfLines={2}>{e.title}</Text>
         </View>
       ))}
-    </WxCardShell>
+    </TorrentCardShell>
   )
 }
 
 function WxChatView({ item: c, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'wx_chat' }>; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
   const tail = [c.textCount ? `${c.textCount} 条消息` : '', c.imageCount ? `${c.imageCount} 张图` : ''].filter(Boolean).join(' · ')
   return (
-    <WxCardShell
+    <TorrentCardShell
       accent={WX_GREEN}
+      icon={<WxCardIcon appIconCache={appIconCache} color={WX_GREEN} />}
+      jumpHint="→ 动作"
       label="聊天"
       subtitle={[c.partner, `${c.shares.length} 条分享`].filter(Boolean).join(' · ')}
       startTs={c.tsStart}
       endTs={c.tsEnd}
       onHeadPress={() => onCrossJump('action', c.tsStart)}
-      appIconCache={appIconCache}
       highlighted={highlighted}
     >
       {c.shares.map((s, i) => (
@@ -2239,7 +2246,7 @@ function WxChatView({ item: c, onCrossJump, highlighted, appIconCache }: { item:
         </View>
       ))}
       {tail !== '' && <Text style={styles.wxChatTail}>{tail}</Text>}
-    </WxCardShell>
+    </TorrentCardShell>
   )
 }
 
@@ -2651,11 +2658,6 @@ const styles = StyleSheet.create({
     paddingBottom: 0,
     marginBottom: 0,
     borderBottomWidth: 0,
-  },
-  // 视频详情大卡
-  snapCardHeadDetail: {
-    backgroundColor: alpha('#00AEEC', 0.06),
-    borderBottomColor: alpha('#00AEEC', 0.15),
   },
   detailMainBlock: {},
   detailKindTag: {
@@ -3212,34 +3214,6 @@ const styles = StyleSheet.create({
   },
 
   // ── 微信卡片 / 动作 ──
-  wxCard: {
-    backgroundColor: theme.surface,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: theme.line,
-    padding: 12,
-    marginBottom: 10,
-    gap: 8,
-  },
-  wxCardHi: { borderColor: WX_GREEN, borderWidth: 1.5 },
-  wxCardHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
-  wxAccountRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1, minWidth: 0 },
-  wxDot: { width: 7, height: 7, borderRadius: 4 },
-  wxAccount: { fontSize: 13, fontWeight: '700', color: theme.ink, flexShrink: 1 },
-  wxBadge: {
-    paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4,
-    backgroundColor: alpha(WX_GREEN, 0.12),
-  },
-  wxBadgeText: { fontSize: 9, color: WX_GREEN, fontWeight: '700' },
-  wxArticleCard: {
-    backgroundColor: theme.surface,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: theme.line,
-    padding: 14,
-    marginBottom: 10,
-    gap: 8,
-  },
   wxArticleTitle: { fontSize: 18, fontWeight: '800', color: theme.ink, lineHeight: 26, letterSpacing: 0.2 },
   wxArticleMeta: { fontSize: 11, color: theme.inkFaint },
   wxArticleBody: { fontSize: 13, color: theme.inkSoft, lineHeight: 20 },
@@ -3295,15 +3269,4 @@ const styles = StyleSheet.create({
   wxShareTitle: { fontSize: 13, color: theme.ink, lineHeight: 18 },
   wxShareSource: { fontSize: 11, color: theme.inkFaint },
   wxChatTail: { fontSize: 11, color: theme.inkFaint },
-  wxSessionRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.line, paddingTop: 6,
-  },
-  wxSessionName: { fontSize: 13, color: theme.ink, fontWeight: '600', flexShrink: 0, maxWidth: '40%' },
-  wxSessionPreview: { fontSize: 12, color: theme.inkFaint, flex: 1 },
-  wxSessionTime: { fontSize: 10, color: theme.inkFaint },
-  wxActionIcon: {
-    width: 38, height: 38, borderRadius: 10, borderWidth: 1,
-    alignItems: 'center', justifyContent: 'center',
-  },
 })
