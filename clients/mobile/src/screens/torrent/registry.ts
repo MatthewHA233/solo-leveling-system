@@ -11,9 +11,12 @@ import {
   type PlayProgressSample,
   type VideoSubTab,
 } from './parsers/bilibili'
+import { wechatTorrentParser, type WeChatListItem, type WxBlock, type WxComment } from './parsers/wechat'
 import type { TorrentFormalActionDraft, TorrentFormalCardDraft, TorrentParserModule } from './types'
 
-export type TorrentListItem = ListItem
+// 所有 parser 的 ListItem 变体在此汇合（B 站 + 微信 + 后续软件）
+export type TorrentListItem = ListItem | WeChatListItem
+export type { WeChatListItem, WxBlock, WxComment }
 export type {
   BiliActionKind,
   CommentItem,
@@ -24,6 +27,7 @@ export type {
 
 export const torrentParserModules: readonly TorrentParserModule<TorrentListItem>[] = [
   bilibiliTorrentParser,
+  wechatTorrentParser,
 ]
 
 export function getTorrentParserForPackage(packageName: string | null | undefined): TorrentParserModule<TorrentListItem> | null {

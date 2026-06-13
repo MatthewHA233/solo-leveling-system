@@ -10,6 +10,7 @@ import {
   FlatList,
   Image,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -59,6 +60,7 @@ import {
   type PlayProgressSample,
   type TorrentListItem as ListItem,
   type VideoSubTab,
+  type WxBlock,
 } from './torrent/registry'
 import { persistTorrentFormalDayFromRaw } from './torrent/formalStore'
 import { getTorrentReadMode, type TorrentReadMode } from './torrent/readMode'
@@ -1456,6 +1458,14 @@ function ListItemView({ item, sortOrder, onCrossJump, highlighted, appIconCache 
     inner = <ActionLineView item={item} onCrossJump={onCrossJump} highlighted={highlighted} appIconCache={appIconCache} />
   } else if (item.kind === 'rawSnapshot') {
     inner = <RawSnapshotView item={item} sortOrder={sortOrder} />
+  } else if (item.kind === 'wx_article') {
+    inner = <WxArticleView item={item} onCrossJump={onCrossJump} highlighted={highlighted} appIconCache={appIconCache} />
+  } else if (item.kind === 'wx_oa_feed') {
+    inner = <WxOaFeedView item={item} onCrossJump={onCrossJump} highlighted={highlighted} appIconCache={appIconCache} />
+  } else if (item.kind === 'wx_chat') {
+    inner = <WxChatView item={item} onCrossJump={onCrossJump} highlighted={highlighted} appIconCache={appIconCache} />
+  } else if (item.kind === 'wx_action') {
+    inner = <WxActionView item={item} onCrossJump={onCrossJump} highlighted={highlighted} appIconCache={appIconCache} />
   } else {
     return null
   }
@@ -2039,6 +2049,225 @@ function RawSnapshotView({ item: g, sortOrder }: { item: Extract<ListItem, { kin
         ))}
       </View>
     </View>
+  )
+}
+
+// ── 微信卡片 / 动作渲染（洪流域 wechat parser 产出） ──
+
+const WX_GREEN = '#07C160'
+const WECHAT_PACKAGE = 'com.tencent.mm'
+
+const WX_ACTION_CFG: Record<string, { label: string; color: string }> = {
+  session_list:  { label: '浏览会话列表',   color: '#5B6478' },
+  chatting:      { label: '查看聊天',       color: WX_GREEN },
+  oa_article:    { label: '看公众号文章',   color: '#3A7AFE' },
+  oa_feed:       { label: '浏览订阅号消息', color: '#FF9F0A' },
+}
+
+// 微信应用图标占位（与 B 站 BiliCardIcon 同构：方形图标 + 角标色点）
+function WxCardIcon({ appIconCache, color, small }: { appIconCache: Record<string, string>; color: string; small?: boolean }) {
+  return (
+    <ActionAppIcon color={color} label="微信" iconB64={appIconCache[WECHAT_PACKAGE]} size={small ? 18 : 22} inline />
+  )
+}
+
+// 与 B 站还原卡同构的卡片壳：accent 竖条 + 应用图标 + 标题 + →动作 + 时间条 + 副标题 + body
+function WxCardShell({
+  accent, label, subtitle, startTs, endTs, onHeadPress, appIconCache, highlighted, children,
+}: {
+  accent: string
+  label: string
+  subtitle?: string
+  startTs: number
+  endTs: number
+  onHeadPress?: () => void
+  appIconCache: Record<string, string>
+  highlighted: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <View style={[styles.snapCard, highlighted && styles.snapCardHighlight]}>
+      <Pressable onPress={onHeadPress} disabled={!onHeadPress}>
+        <View style={[styles.snapCardHead, { backgroundColor: alpha(accent, 0.06), borderBottomColor: alpha(accent, 0.15) }]}>
+          <View style={[styles.snapCardAccentBar, { backgroundColor: accent }]} />
+          <View style={styles.snapCardHeadText}>
+            <View style={styles.headerTitleTimeRow}>
+              <View style={styles.headerTitleLeft}>
+                <WxCardIcon appIconCache={appIconCache} color={accent} />
+                <Text style={[styles.snapCardTitle, styles.headerTitleText]} numberOfLines={1}>{label}</Text>
+                {onHeadPress && <Text style={styles.jumpHint}>→ 动作</Text>}
+              </View>
+              <TimeRangeBand startMs={startTs} endMs={endTs} compact header />
+            </View>
+            {subtitle ? <Text style={styles.snapCardSubtitle} numberOfLines={1}>{subtitle}</Text> : null}
+          </View>
+        </View>
+      </Pressable>
+      <View style={styles.snapCardBody}>{children}</View>
+    </View>
+  )
+}
+
+function WxArticleView({ item: a, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'wx_article' }>; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
+  const [expanded, setExpanded] = useState(false)
+  const metrics = [
+    a.readCount ? `阅读 ${a.readCount}` : '',
+    a.likeCount ? `赞 ${a.likeCount}` : '',
+    a.shareCount ? `分享 ${a.shareCount}` : '',
+    a.wowCount ? `在看 ${a.wowCount}` : '',
+  ].filter(Boolean)
+  const body = a.body ?? []
+  const comments = a.comments ?? []
+  const hasMore = body.length > 0 || comments.length > 0
+  const firstPara = body.find((b) => b.t === 'para') as Extract<WxBlock, { t: 'para' }> | undefined
+  return (
+    <WxCardShell
+      accent={WX_GREEN}
+      label="公众号文章"
+      subtitle={a.account || '公众号'}
+      startTs={a.ts}
+      endTs={a.endTs}
+      onHeadPress={() => onCrossJump('action', a.ts)}
+      appIconCache={appIconCache}
+      highlighted={highlighted}
+    >
+      <Text style={styles.wxArticleTitle}>{a.title}</Text>
+      {(a.publishLabel || a.location || a.album) && (
+        <Text style={styles.wxArticleMeta} numberOfLines={1}>
+          {[a.publishLabel, a.location, a.album ? `收录于${a.album}` : ''].filter(Boolean).join(' · ')}
+        </Text>
+      )}
+
+      {!expanded && firstPara && (
+        <Text style={styles.wxArticleBody} numberOfLines={3}>{firstPara.text}</Text>
+      )}
+
+      {expanded && (
+        <View style={styles.wxArticleFull}>
+          {body.map((b, i) => {
+            if (b.t === 'heading') return (
+              <View key={i} style={styles.wxBodyHeadingRow}>
+                <View style={styles.wxBodyHeadingBar} />
+                <Text style={styles.wxBodyHeadingText}>{b.text}</Text>
+              </View>
+            )
+            if (b.t === 'image') return (
+              <View key={i} style={styles.wxBodyImage}>
+                <Text style={styles.wxBodyImageIcon}>🖼</Text>
+                {b.caption ? <Text style={styles.wxBodyImageCaption}>{b.caption}</Text> : null}
+              </View>
+            )
+            if (b.t === 'code') return <Text key={i} style={styles.wxBodyCode}>{b.text.trim()}</Text>
+            return <Text key={i} style={styles.wxBodyPara}>{b.text}</Text>
+          })}
+
+          {comments.length > 0 && (
+            <View style={styles.wxComments}>
+              <Text style={styles.wxCommentsTitle}>留言 {a.commentCount || comments.length}</Text>
+              {comments.map((c, i) => (
+                <View key={i} style={styles.wxComment}>
+                  <View style={styles.wxCommentHead}>
+                    <Text style={styles.wxCommentAuthor}>{c.author}</Text>
+                    {c.isAuthor && <Text style={[styles.wxCommentTag, { color: WX_GREEN }]}>作者</Text>}
+                    {c.isOA && <Text style={[styles.wxCommentTag, { color: '#3A7AFE' }]}>公众号</Text>}
+                    {c.meta && <Text style={styles.wxCommentMeta}>{c.meta}</Text>}
+                  </View>
+                  <Text style={styles.wxCommentText}>{c.text}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+      )}
+
+      {metrics.length > 0 && (
+        <View style={styles.wxMetricRow}>
+          {metrics.map((m) => <Text key={m} style={styles.wxMetric}>{m}</Text>)}
+        </View>
+      )}
+
+      {hasMore && (
+        <Pressable onPress={() => setExpanded((v) => !v)} style={styles.wxExpandBtn} hitSlop={6}>
+          <Text style={styles.wxExpandText}>
+            {expanded ? '收起 ▴' : `展开全文${comments.length ? ` + ${a.commentCount || comments.length} 条留言` : ''} ▾`}
+          </Text>
+        </Pressable>
+      )}
+    </WxCardShell>
+  )
+}
+
+function WxOaFeedView({ item: f, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'wx_oa_feed' }>; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
+  return (
+    <WxCardShell
+      accent={WX_GREEN}
+      label="订阅号消息"
+      subtitle={`${f.entries.length} 条文章${f.sweepCount > 1 ? ` · 刷 ${f.sweepCount} 次` : ''}`}
+      startTs={f.tsStart}
+      endTs={f.tsEnd}
+      onHeadPress={() => onCrossJump('action', f.tsStart)}
+      appIconCache={appIconCache}
+      highlighted={highlighted}
+    >
+      {f.entries.map((e, i) => (
+        <View key={`${e.account}-${i}`} style={styles.wxFeedEntry}>
+          <Text style={styles.wxFeedAccount} numberOfLines={1}>{e.account}{e.timeLabel ? ` · ${e.timeLabel}` : ''}</Text>
+          <Text style={styles.wxFeedTitle} numberOfLines={2}>{e.title}</Text>
+        </View>
+      ))}
+    </WxCardShell>
+  )
+}
+
+function WxChatView({ item: c, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'wx_chat' }>; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
+  const tail = [c.textCount ? `${c.textCount} 条消息` : '', c.imageCount ? `${c.imageCount} 张图` : ''].filter(Boolean).join(' · ')
+  return (
+    <WxCardShell
+      accent={WX_GREEN}
+      label="聊天"
+      subtitle={[c.partner, `${c.shares.length} 条分享`].filter(Boolean).join(' · ')}
+      startTs={c.tsStart}
+      endTs={c.tsEnd}
+      onHeadPress={() => onCrossJump('action', c.tsStart)}
+      appIconCache={appIconCache}
+      highlighted={highlighted}
+    >
+      {c.shares.map((s, i) => (
+        <View key={i} style={styles.wxShare}>
+          <Text style={styles.wxShareTitle} numberOfLines={2}>{s.title}</Text>
+          {s.source && <Text style={styles.wxShareSource} numberOfLines={1}>{s.source}</Text>}
+        </View>
+      ))}
+      {tail !== '' && <Text style={styles.wxChatTail}>{tail}</Text>}
+    </WxCardShell>
+  )
+}
+
+function WxActionView({ item: a, onCrossJump, highlighted, appIconCache }: { item: Extract<ListItem, { kind: 'wx_action' }>; onCrossJump: CrossJump; highlighted: boolean; appIconCache: Record<string, string> }) {
+  const cfg = WX_ACTION_CFG[a.act] ?? { label: a.act, color: WX_GREEN }
+  return (
+    <Pressable
+      onPress={() => onCrossJump('feed', a.startTs)}
+      style={[styles.actionRow, highlighted && styles.actionRowHighlight]}
+    >
+      <ActionAppIcon color={cfg.color} label="微信" iconB64={appIconCache[WECHAT_PACKAGE]} />
+      <View style={styles.actionBody}>
+        <View style={styles.actionHead}>
+          <View style={styles.actionHeadLeft}>
+            <Text style={[styles.actionKind, { color: cfg.color }]}>{cfg.label}</Text>
+            <Text style={styles.jumpHint}>→ 卡片</Text>
+          </View>
+          <TimeRangeBand startMs={a.startTs} endMs={a.endTs} header />
+        </View>
+        {(a.targetName || a.meta) && (
+          <Text style={styles.actionDetail} numberOfLines={2}>
+            {a.targetName ? `@${a.targetName}` : ''}
+            {a.targetName && a.meta ? '  ' : ''}
+            {a.meta ? a.act === 'oa_article' ? `《${a.meta}》` : a.meta : ''}
+          </Text>
+        )}
+      </View>
+    </Pressable>
   )
 }
 
@@ -2980,5 +3209,101 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: theme.ink,
     lineHeight: 19,
+  },
+
+  // ── 微信卡片 / 动作 ──
+  wxCard: {
+    backgroundColor: theme.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: theme.line,
+    padding: 12,
+    marginBottom: 10,
+    gap: 8,
+  },
+  wxCardHi: { borderColor: WX_GREEN, borderWidth: 1.5 },
+  wxCardHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
+  wxAccountRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1, minWidth: 0 },
+  wxDot: { width: 7, height: 7, borderRadius: 4 },
+  wxAccount: { fontSize: 13, fontWeight: '700', color: theme.ink, flexShrink: 1 },
+  wxBadge: {
+    paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4,
+    backgroundColor: alpha(WX_GREEN, 0.12),
+  },
+  wxBadgeText: { fontSize: 9, color: WX_GREEN, fontWeight: '700' },
+  wxArticleCard: {
+    backgroundColor: theme.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: theme.line,
+    padding: 14,
+    marginBottom: 10,
+    gap: 8,
+  },
+  wxArticleTitle: { fontSize: 18, fontWeight: '800', color: theme.ink, lineHeight: 26, letterSpacing: 0.2 },
+  wxArticleMeta: { fontSize: 11, color: theme.inkFaint },
+  wxArticleBody: { fontSize: 13, color: theme.inkSoft, lineHeight: 20 },
+  // 展开后的完整正文（微信阅读排版：段落舒朗、小标题左竖条、全宽配图框）
+  wxArticleFull: { gap: 14, marginTop: 4 },
+  wxBodyHeadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
+  wxBodyHeadingBar: { width: 3.5, alignSelf: 'stretch', minHeight: 18, borderRadius: 2, backgroundColor: WX_GREEN },
+  wxBodyHeadingText: { flex: 1, fontSize: 16.5, fontWeight: '800', color: theme.ink, lineHeight: 24 },
+  wxBodyPara: { fontSize: 15, color: theme.ink, lineHeight: 27 },
+  wxBodyImage: {
+    backgroundColor: theme.sunk, borderRadius: 10, paddingVertical: 26, paddingHorizontal: 14,
+    alignItems: 'center', justifyContent: 'center', gap: 6,
+    borderWidth: StyleSheet.hairlineWidth, borderColor: theme.line,
+  },
+  wxBodyImageIcon: { fontSize: 22, opacity: 0.5 },
+  wxBodyImageCaption: { fontSize: 12, color: theme.inkFaint, textAlign: 'center' },
+  wxBodyCode: {
+    fontSize: 12.5, color: theme.ink, lineHeight: 19,
+    backgroundColor: theme.sunk, borderRadius: 8, padding: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  wxComments: {
+    marginTop: 6, paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.line, gap: 12,
+  },
+  wxCommentsTitle: { fontSize: 13, fontWeight: '700', color: theme.inkSoft },
+  wxComment: { gap: 3 },
+  wxCommentHead: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  wxCommentAuthor: { fontSize: 12.5, fontWeight: '600', color: theme.inkSoft },
+  wxCommentTag: {
+    fontSize: 9, fontWeight: '700', paddingHorizontal: 4, paddingVertical: 1,
+    borderRadius: 3, backgroundColor: alpha(WX_GREEN, 0.1),
+  },
+  wxCommentMeta: { fontSize: 10, color: theme.inkFaint },
+  wxCommentText: { fontSize: 14, color: theme.ink, lineHeight: 20 },
+  wxExpandBtn: {
+    alignSelf: 'flex-start', marginTop: 2,
+    paddingVertical: 4, paddingHorizontal: 10, borderRadius: 8,
+    backgroundColor: alpha(WX_GREEN, 0.08),
+  },
+  wxExpandText: { fontSize: 12, color: WX_GREEN, fontWeight: '600' },
+  wxMetricRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 2 },
+  wxMetric: { fontSize: 11, color: theme.inkSoft },
+  wxFeedEntry: {
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.line,
+    paddingTop: 7, gap: 2,
+  },
+  wxFeedAccount: { fontSize: 11, color: WX_GREEN, fontWeight: '600' },
+  wxFeedTitle: { fontSize: 13, color: theme.ink, lineHeight: 19 },
+  wxShare: {
+    backgroundColor: theme.sunk, borderRadius: 8, padding: 8, gap: 3,
+  },
+  wxShareTitle: { fontSize: 13, color: theme.ink, lineHeight: 18 },
+  wxShareSource: { fontSize: 11, color: theme.inkFaint },
+  wxChatTail: { fontSize: 11, color: theme.inkFaint },
+  wxSessionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.line, paddingTop: 6,
+  },
+  wxSessionName: { fontSize: 13, color: theme.ink, fontWeight: '600', flexShrink: 0, maxWidth: '40%' },
+  wxSessionPreview: { fontSize: 12, color: theme.inkFaint, flex: 1 },
+  wxSessionTime: { fontSize: 10, color: theme.inkFaint },
+  wxActionIcon: {
+    width: 38, height: 38, borderRadius: 10, borderWidth: 1,
+    alignItems: 'center', justifyContent: 'center',
   },
 })
