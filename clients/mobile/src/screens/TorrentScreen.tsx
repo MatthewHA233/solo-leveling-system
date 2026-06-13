@@ -25,6 +25,7 @@ import {
   getTorrentFormalActionsInRange,
   getTorrentFormalCardsInRange,
   getTorrentFormalMaxSourceEndMs,
+  getTorrentFormalParserVersions,
   getTorrentCapturesInRange,
   getTorrentRawFingerprintInRange,
   isAccessibilityEnabled,
@@ -52,6 +53,7 @@ import {
   buildTorrentFeedListItems as buildFeedListItems,
   buildTorrentFeedListItemsFromFormal,
   getTorrentPackageLabel as getPackageLabel,
+  registeredParserVersions,
   getTorrentFeedKindLabel as feedKindLabel,
   splitTorrentPlayProgressSegments as splitPlayProgressSegments,
   type BiliActionKind,
@@ -671,21 +673,29 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
         const hasFormal = formalA.length > 0 || formalC.length > 0
         // 正式数据优先；无正式数据时读 raw 回填。今天/手动刷新时也探测 raw 增量，避免正式快照停在第一次物化。
         let needsRaw = !hasFormal
+        // parser 失效：已物化的 parser@版本 集合若没覆盖当前全部注册 parser（新增微信 / bump 版本），
+        // 强制用当前 parser 重新物化 —— 这是"正式优先一堆 bug"的根因（旧快照缺微信/逻辑过时）
+        let parsersStale = false
         if (hasFormal && shouldProbeRaw) {
-          const [fp, formalSourceEndMs] = await Promise.all([
+          const [fp, formalSourceEndMs, matVers] = await Promise.all([
             getTorrentRawFingerprintInRange(selectedDayBounds.startMs, selectedDayBounds.endMs),
             getTorrentFormalMaxSourceEndMs(dayKey),
+            getTorrentFormalParserVersions(dayKey),
           ])
           const fpKey = torrentRawFingerprintKey(dayKey, fp)
-          needsRaw = !!fpKey && fp.maxEventTimeMs > formalSourceEndMs && formalPersistKeyRef.current !== fpKey
+          const newCaptures = !!fpKey && fp.maxEventTimeMs > formalSourceEndMs && formalPersistKeyRef.current !== fpKey
+          const matSet = new Set(matVers.map((v) => `${v.parserId}@${v.parserVersion}`))
+          parsersStale = registeredParserVersions().some((p) => !matSet.has(`${p.id}@${p.version}`))
+          needsRaw = newCaptures || parsersStale
           if (!needsRaw && fpKey) formalPersistKeyRef.current = fpKey
         }
         if (needsRaw) {
           const rawList = await getTorrentCapturesInRange(selectedDayBounds.startMs, selectedDayBounds.endMs, TORRENT_DAY_RAW_LIMIT)
           if (!hasFormal) list = rawList
           const persistKey = torrentRawPersistKey(dayKey, rawList)
-          if (persistKey && formalPersistKeyRef.current !== persistKey) {
-            formalPersistKeyRef.current = persistKey
+          // parsersStale 时即便 raw 内容没变(persistKey 相同)也要强制重物化
+          if (parsersStale || (persistKey && formalPersistKeyRef.current !== persistKey)) {
+            if (persistKey) formalPersistKeyRef.current = persistKey
             const result = await persistTorrentFormalDayFromRaw(dayKey, rawList)
             console.log('[torrent-formal]', { dayKey, parserCount: result.parserCount, actionCount: result.actionCount, cardCount: result.cardCount })
             const [freshA, freshC] = await Promise.all([

@@ -81,8 +81,10 @@ export async function persistTorrentFormalDayFromRaw(
   const actions = buildTorrentFormalActionDrafts(captures)
   const cards = buildTorrentFormalCardDrafts(captures)
   const groups = new Map<string, DraftGroup>()
+  // 对每个已注册 parser 都建组（即便当天 0 产出也写一条物化 run），
+  // 这样"已物化 parser@版本集合" = 全部注册 parser，正式数据可按 parser 版本失效重建
   for (const parser of torrentParserModules) {
-    if (captures.some(parser.canParse)) getOrCreateGroup(groups, parser.id, parser.version)
+    getOrCreateGroup(groups, parser.id, parser.version)
   }
   for (const action of actions) {
     getOrCreateGroup(groups, action.parserId, action.parserVersion).actions.push(action)

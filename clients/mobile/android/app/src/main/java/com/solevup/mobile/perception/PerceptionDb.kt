@@ -1291,6 +1291,18 @@ class PerceptionDb(context: Context) :
     }
   }
 
+  /** 某天已物化的 (parser_id, parser_version) 集合 —— 供"parser 变了就失效"判断。 */
+  fun torrentFormalParserVersions(dateKey: String): List<Pair<String, Int>> {
+    val out = ArrayList<Pair<String, Int>>()
+    readableDatabase.rawQuery(
+      "SELECT DISTINCT parser_id, parser_version FROM torrent_translate_runs_android WHERE date_key = ?",
+      arrayOf(dateKey.trim()),
+    ).use { c ->
+      while (c.moveToNext()) out.add(Pair(c.getString(0), c.getInt(1)))
+    }
+    return out
+  }
+
   fun saveTorrentFormalDay(
     dateKey: String,
     parserId: String,

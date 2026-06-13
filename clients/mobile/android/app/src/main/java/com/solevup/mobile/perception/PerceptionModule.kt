@@ -451,6 +451,20 @@ class PerceptionModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun getTorrentFormalParserVersions(dateKey: String, promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for ((pid, ver) in db.torrentFormalParserVersions(dateKey)) {
+        arr.pushMap(Arguments.createMap().apply {
+          putString("parserId", pid)
+          putInt("parserVersion", ver)
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("TORRENT_FORMAL_PARSER_VERSIONS_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
   fun saveTorrentFormalDay(
     dateKey: String,
     parserId: String,

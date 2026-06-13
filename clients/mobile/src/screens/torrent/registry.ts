@@ -30,6 +30,11 @@ export const torrentParserModules: readonly TorrentParserModule<TorrentListItem>
   wechatTorrentParser,
 ]
 
+/** 已注册 parser 的 id@版本 集合，供正式数据"parser 变了就失效"比对 */
+export function registeredParserVersions(): Array<{ id: string; version: number }> {
+  return torrentParserModules.map((p) => ({ id: p.id, version: p.version }))
+}
+
 export function getTorrentParserForPackage(packageName: string | null | undefined): TorrentParserModule<TorrentListItem> | null {
   if (!packageName) return null
   return torrentParserModules.find((module) => module.packages.includes(packageName)) ?? null

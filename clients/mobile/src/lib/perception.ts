@@ -231,6 +231,7 @@ interface PerceptionNative {
   setTorrentRawLimitMb?(rawLimitMb: number): Promise<TorrentRawLimitResult>
   clearTorrentCaptures(): Promise<number>
   getTorrentFormalMaxSourceEndMs?(dateKey: string): Promise<number>
+  getTorrentFormalParserVersions?(dateKey: string): Promise<Array<{ parserId: string; parserVersion: number }>>
   saveTorrentFormalDay?(
     dayKey: string,
     parserId: string,
@@ -600,6 +601,12 @@ export async function getTorrentRawFingerprintInRange(
 export async function getTorrentFormalMaxSourceEndMs(dayKey: string): Promise<number> {
   if (!Native || typeof Native.getTorrentFormalMaxSourceEndMs !== 'function') return 0
   return Native.getTorrentFormalMaxSourceEndMs(dayKey)
+}
+
+/** 某天已物化的 parser@版本 集合，用于"parser 变了就让正式数据失效重建" */
+export async function getTorrentFormalParserVersions(dayKey: string): Promise<Array<{ parserId: string; parserVersion: number }>> {
+  if (!Native || typeof Native.getTorrentFormalParserVersions !== 'function') return []
+  return Native.getTorrentFormalParserVersions(dayKey)
 }
 
 export async function saveTorrentFormalDay(params: {
