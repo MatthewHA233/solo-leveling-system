@@ -7,9 +7,13 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { Square, Copy, Check, AlertTriangle, Loader2, RotateCcw, X, Play, Cpu } from 'lucide-react'
+import {
+  Square, Copy, Check, AlertTriangle, Loader2, RotateCcw, X, Play, Cpu,
+  ScanText, Sparkles,
+} from 'lucide-react'
 import { theme, hud } from '../theme'
-import { getDashScopeApiKey, loadConfig } from '../lib/agent/agent-config'
+import { getDashScopeApiKey, loadConfig, updateConfig } from '../lib/agent/agent-config'
+import { stitchOcrToSegments } from '../lib/ocr-stitch'
 import { logModelUsage } from '../lib/model-audit'
 import type { ModelCallLog } from '../lib/local-api'
 import {
@@ -110,6 +114,23 @@ const INIT_KIND_STATE: KindState = {
 const TRANSCRIBE_FEATURE = 'bili_audio_transcribe'
 const TRANSCRIBE_KIND: TranscribeKind = 'audio'
 
+// 转录模式：音频 ASR / 滚动文章 OCR（OCR 本质=视觉转录，复用 kind='visual' + 同一套 JSONL/字幕/存储）
+export type TranscribeMode = 'audio' | 'ocr_article'
+const TRANSCRIBE_MODE_OPTIONS = [
+  { value: 'audio', label: '音频' },
+  { value: 'ocr_article', label: '滚动文章' },
+]
+const OCR_MODEL = 'qwen-vl-ocr'
+const OCR_FEATURE = 'bili_ocr_transcribe'
+const OCR_CONCURRENCY = 5       // OCR 并发路数
+const FRAME_API = 'http://localhost:49733/api/ocr/frame?path='
+
+interface OcrFrame { index: number; path: string; ts_sec: number }
+type OcrPhase = 'idle' | 'config' | 'extracting' | 'ocr' | 'stitching'
+const OCR_PHASE_LABEL: Record<OcrPhase, string> = {
+  idle: '待命', config: '预览', extracting: '抽帧', ocr: 'OCR', stitching: '缝合',
+}
+
 interface TranscriptCache {
   visual: string | null
   audio: string | null
@@ -133,15 +154,11 @@ interface TranscriptRun {
   created_at: string
 }
 
-function isAudioRun(run: TranscriptRun): boolean {
-  return run.kind === TRANSCRIBE_KIND
-}
-
-function doneStateFromTranscript(text: string, cachedAt: string | null): KindState {
+function doneStateFromTranscript(text: string, cachedAt: string | null, kind: TranscribeKind): KindState {
   return {
     stage: 'done',
     text,
-    segments: parseTranscript(text, TRANSCRIBE_KIND),
+    segments: parseTranscript(text, kind),
     errMsg: null,
     cachedAt,
   }
@@ -161,12 +178,32 @@ function formatTranscriptRunTime(value: string): string {
 export default function BiliTranscribePanel({
   filePath, bvid, title, onClose, currentSec = null, onSeek, rightAnchor = 380,
 }: Props) {
+  const [mode, setMode] = useState<TranscribeMode>('audio')
+  // OCR 即"视觉转录"，复用 kind='visual' 这一现有通道（同样的 JSONL 文本 + 字幕 + 存储）
+  const kind: TranscribeKind = mode === 'ocr_article' ? 'visual' : 'audio'
+  const feature = mode === 'ocr_article' ? OCR_FEATURE : TRANSCRIBE_FEATURE
   const [lastUsage, setLastUsage] = useState<ModelCallLog | null>(null)
   const [result, setResult] = useState<KindState>(INIT_KIND_STATE)
   const [transcriptHistory, setTranscriptHistory] = useState<TranscriptRun[]>([])
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null)
   const [localMediaPath, setLocalMediaPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  // 滚动文章 OCR 的中间态（仅 ocr 模式、出结果前用）
+  const [ocrPhase, setOcrPhase] = useState<OcrPhase>('idle')
+  const [ocrInterval, setOcrInterval] = useState<number>(() => {
+    const v = loadConfig().ocrFrameIntervalSec
+    return Number.isFinite(v) && v > 0 ? Math.min(30, Math.max(5, v)) : 5
+  })
+  const [ocrDone, setOcrDone] = useState(0)
+  const [ocrTotal, setOcrTotal] = useState(0)
+  // 预览：仅两帧（第 0 秒 + 第 interval 秒），快速抓取、左右对比、拖动间隔实时重抓第二帧
+  const [previewA, setPreviewA] = useState<string | null>(null)
+  const [previewB, setPreviewB] = useState<string | null>(null)
+  const [previewBusy, setPreviewBusy] = useState(false)
+  const ocrCancelRef = useRef(false)
+  const ocrAbortRef = useRef<AbortController | null>(null)
+  const grabSeqRef = useRef(0)
+  const grabTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const abortRef = useRef<(() => void) | null>(null)
   const transcriptRef = useRef<HTMLDivElement | null>(null)
   // 用于切换视频时 flush 当前进行中的转录内容到 DB
@@ -178,66 +215,72 @@ export default function BiliTranscribePanel({
   useEffect(() => {
     const onUsage = (event: Event) => {
       const call = (event as CustomEvent<ModelCallLog>).detail
-      if (call?.feature === TRANSCRIBE_FEATURE) {
+      if (call?.feature === feature) {
         setLastUsage(call)
       }
     }
     window.addEventListener('model-usage-logged', onUsage)
     return () => window.removeEventListener('model-usage-logged', onUsage)
-  }, [])
+  }, [feature])
 
   const showTranscriptRun = useCallback((run: TranscriptRun) => {
-    setResult(doneStateFromTranscript(run.text, run.created_at))
+    setResult(doneStateFromTranscript(run.text, run.created_at, kind))
     setCopied(false)
     setActiveHistoryId(run.id)
-  }, [])
+  }, [kind])
 
   const selectHistoryRun = useCallback((run: TranscriptRun) => {
     setActiveHistoryId(run.id)
     showTranscriptRun(run)
   }, [showTranscriptRun])
 
-  // 切换 filePath 时重置；cleanup 会用旧 filePath flush 进行中的部分内容
+  // 切换 filePath / 模式时重置；cleanup 会用旧 filePath flush 进行中的部分内容
   useEffect(() => {
     abortRef.current?.(); abortRef.current = null
+    ocrCancelRef.current = true; ocrAbortRef.current?.abort()
+    if (grabTimerRef.current) { clearTimeout(grabTimerRef.current); grabTimerRef.current = null }
     setResult(INIT_KIND_STATE)
     setTranscriptHistory([])
     setActiveHistoryId(null)
     setLocalMediaPath(null)
     setCopied(false)
+    setOcrPhase('idle'); setOcrDone(0); setOcrTotal(0)
+    setPreviewA(null); setPreviewB(null); setPreviewBusy(false)
 
     return () => {
       const prev = resultRef.current
       if ((prev.stage === 'extracting' || prev.stage === 'uploading' || prev.stage === 'streaming') && prev.text.trim()) {
         invoke('update_bili_transcript', {
           filePath,
-          kind: TRANSCRIBE_KIND,
+          kind,
           text: prev.text,
           saveHistory: false,
           source: 'partial_flush',
         }).catch(() => {})
       }
     }
-  }, [filePath])
+  }, [filePath, mode])
 
   useEffect(() => () => { abortRef.current?.() }, [])
 
-  // 进入视频时只读取 ASR 缓存与 ASR 历史；旧的 Omni 转录不再作为当前面板入口。
+  // 进入视频 / 切模式时，读取对应 kind 的缓存与历史（音频=audio，滚动文章=visual）
   useEffect(() => {
     let cancelled = false
     invoke<TranscriptCache>('get_bili_transcripts', { filePath })
       .then((cache) => {
         if (cancelled) return
-        const audioRuns = (cache.history ?? []).filter(isAudioRun)
-        setTranscriptHistory(audioRuns)
-        if (cache.audio?.trim()) {
-          setResult(doneStateFromTranscript(cache.audio, cache.audio_at))
-          setActiveHistoryId(audioRuns[0]?.id ?? null)
+        const runs = (cache.history ?? []).filter((r) => r.kind === kind)
+        setTranscriptHistory(runs)
+        const cached = kind === 'visual' ? cache.visual : cache.audio
+        const cachedAt = kind === 'visual' ? cache.visual_at : cache.audio_at
+        if (cached?.trim()) {
+          setResult(doneStateFromTranscript(cached, cachedAt, kind))
+          setActiveHistoryId(runs[0]?.id ?? null)
         }
       })
       .catch((e) => console.warn('[Transcribe] 读取缓存失败', e))
     return () => { cancelled = true }
-  }, [filePath])
+  }, [filePath, mode])
 
   const start = useCallback(async () => {
     const cfg = loadConfig()
@@ -344,6 +387,129 @@ export default function BiliTranscribePanel({
     setResult((s) => ({ ...s, stage: 'idle' }))
   }, [])
 
+  // ── 滚动文章 OCR 流程 ──
+  // 快速抓单帧（预览用，后端 -ss 快进定位，不解码整片）
+  const grabFrameAt = useCallback(async (ts: number): Promise<string | null> => {
+    try { return await invoke<string>('grab_video_frame', { filePath, tsSec: ts }) }
+    catch { return null }
+  }, [filePath])
+
+  const persistOcrInterval = useCallback((v: number) => {
+    const c = Math.min(30, Math.max(5, v))
+    setOcrInterval(c)
+    updateConfig(loadConfig(), { ocrFrameIntervalSec: c })
+    // 实时重抓第二帧（防抖 + 防乱序覆盖）
+    if (grabTimerRef.current) clearTimeout(grabTimerRef.current)
+    setPreviewBusy(true)
+    const seq = ++grabSeqRef.current
+    grabTimerRef.current = setTimeout(async () => {
+      const b = await grabFrameAt(c)
+      if (seq === grabSeqRef.current) { setPreviewB(b); setPreviewBusy(false) }
+    }, 220)
+  }, [grabFrameAt])
+
+  // 点「转录/重新转录」进入预览：抓第 0 秒 + 第 interval 秒两帧
+  const enterOcrConfig = useCallback(async () => {
+    setResult(INIT_KIND_STATE)
+    setOcrDone(0); setOcrTotal(0)
+    setOcrPhase('config')
+    setPreviewBusy(true)
+    const seq = ++grabSeqRef.current
+    const [a, b] = await Promise.all([grabFrameAt(0), grabFrameAt(ocrInterval)])
+    if (seq === grabSeqRef.current) { setPreviewA(a); setPreviewB(b); setPreviewBusy(false) }
+  }, [grabFrameAt, ocrInterval])
+
+  // 开始转录全片：抽全片 → 并发 OCR → 大模型缝合成 JSONL 字幕 → 落库（kind=visual，同音频）
+  const runOcrFull = useCallback(async () => {
+    const apiKey = getDashScopeApiKey(loadConfig())
+    if (!apiKey) { setResult((s) => ({ ...s, stage: 'error', errMsg: '未配置 API Key（设置 → AI 模型）' })); return }
+
+    ocrCancelRef.current = false
+    const startedAt = new Date().toISOString()
+    const startedMs = Date.now()
+    setResult({ stage: 'idle', text: '', segments: [], errMsg: null, cachedAt: null })
+
+    try {
+      // 1) 抽全片
+      setOcrPhase('extracting')
+      const ex = await invoke<{ frames: OcrFrame[] }>('extract_video_frames', {
+        filePath, intervalSec: ocrInterval,
+      })
+      if (ocrCancelRef.current) return
+      const frames = ex.frames
+      setOcrTotal(frames.length); setOcrDone(0)
+
+      // 2) 并发 OCR（保序回填，单帧失败重试 1 次）
+      setOcrPhase('ocr')
+      const texts = new Array<string>(frames.length).fill('')
+      let next = 0, completed = 0
+      const worker = async () => {
+        while (!ocrCancelRef.current) {
+          const i = next++
+          if (i >= frames.length) return
+          try {
+            texts[i] = (await invoke<string>('qwen_vl_ocr', { imagePath: frames[i].path, apiKey, model: OCR_MODEL })) ?? ''
+          } catch {
+            try { texts[i] = (await invoke<string>('qwen_vl_ocr', { imagePath: frames[i].path, apiKey, model: OCR_MODEL })) ?? '' }
+            catch { texts[i] = '' }
+          }
+          completed += 1; setOcrDone(completed)
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(OCR_CONCURRENCY, frames.length) }, () => worker()))
+      if (ocrCancelRef.current) return
+
+      // 3) 大模型缝合（去重 + 切时间戳）
+      setOcrPhase('stitching')
+      const ac = new AbortController(); ocrAbortRef.current = ac
+      const ocrInput = frames.map((f, i) => ({ ts: f.ts_sec, text: texts[i] }))
+      const res = await stitchOcrToSegments(ocrInput, { signal: ac.signal })
+      if (ocrCancelRef.current) return
+      if (res.segments.length === 0) {
+        setOcrPhase('config')
+        setResult((s) => ({ ...s, stage: 'error', errMsg: '缝合结果为空，可调小间隔后重试' }))
+        return
+      }
+
+      // 4) 转成和音频一致的 JSONL（end=下一段起点），交给现有管线渲染/存储
+      const jsonl = res.segments
+        .map((s, i) => JSON.stringify({ start: s.start, end: res.segments[i + 1]?.start ?? s.start + 5, text: s.text }))
+        .join('\n')
+      setOcrPhase('idle')
+      setResult(doneStateFromTranscript(jsonl, null, 'visual'))
+
+      void logModelUsage({
+        feature: OCR_FEATURE, modelId: res.model, startedAt, durationMs: Date.now() - startedMs, success: true,
+        metadata: { bvid, title, filePath, frameCount: frames.length, intervalSec: ocrInterval, segmentCount: res.segments.length, pipeline: 'frame_ocr_stitch' },
+      }).then((row) => { if (row) setLastUsage(row) })
+
+      // 落库：kind='visual'，和音频走同一个命令、同一张表
+      invoke<TranscriptRun | null>('update_bili_transcript', {
+        filePath, kind: 'visual', text: jsonl,
+        modelId: res.model, promptType: 'ocr_stitch', source: 'frame_ocr_stitch', saveHistory: true,
+      }).then((run) => {
+        if (!run) return
+        setTranscriptHistory((items) => [run, ...items.filter((it) => it.id !== run.id)])
+        setActiveHistoryId(run.id)
+        setResult((s) => ({ ...s, cachedAt: run.created_at }))
+        window.dispatchEvent(new CustomEvent('solevup:context-updated'))
+        window.dispatchEvent(new CustomEvent('solevup:bili-assets-changed', { detail: { bvid, reason: 'transcribed' } }))
+      }).catch((e) => console.warn('[OCR] 写入转录失败', e))
+    } catch (e) {
+      if (ocrCancelRef.current) return
+      setOcrPhase('config')
+      setResult((s) => ({ ...s, stage: 'error', errMsg: String(e) }))
+    }
+  }, [filePath, ocrInterval, bvid, title])
+
+  const ocrStop = useCallback(() => {
+    ocrCancelRef.current = true
+    ocrAbortRef.current?.abort()
+    setOcrPhase('config')
+  }, [])
+
+  const ocrMode = mode === 'ocr_article'
+  const ocrBusy = ocrMode && (ocrPhase === 'extracting' || ocrPhase === 'ocr' || ocrPhase === 'stitching')
   const isRunning = result.stage === 'extracting' || result.stage === 'uploading' || result.stage === 'streaming'
 
   const handleCopy = useCallback(async () => {
@@ -460,31 +626,38 @@ export default function BiliTranscribePanel({
         flexShrink: 0,
         background: `linear-gradient(90deg, rgba(0,215,232,0.13) 0%, rgba(255,180,84,0.04) 42%, transparent 100%)`,
       }}>
-        <Cpu size={11} style={{ color: TRACE_BRIGHT, flexShrink: 0 }} />
+        {ocrMode ? <ScanText size={11} style={{ color: TRACE_BRIGHT, flexShrink: 0 }} /> : <Cpu size={11} style={{ color: TRACE_BRIGHT, flexShrink: 0 }} />}
         <span style={{
           fontFamily: theme.fontDisplay, fontSize: 11, fontWeight: 700,
           letterSpacing: 2.4, color: PAPER,
           textShadow: `0 0 8px rgba(125,249,255,0.5)`,
         }}>
-          音频转录
+          转录
         </span>
-        <span style={{
-          display: 'inline-flex', alignItems: 'center', gap: 4,
-          padding: '1px 6px',
-          border: `1px solid ${STAGE_COLOR[result.stage]}66`,
-          background: `linear-gradient(180deg, ${STAGE_COLOR[result.stage]}16, rgba(0,0,0,0.12))`,
-          fontSize: 9, fontFamily: theme.fontMono,
-          letterSpacing: 1,
-          color: STAGE_COLOR[result.stage],
-        }}>
-          {isRunning && <Loader2 size={9} style={{ animation: 'spin 1.4s linear infinite' }} />}
-          <span style={{
-            display: 'inline-block', width: 5, height: 5, borderRadius: '50%',
-            background: STAGE_COLOR[result.stage],
-            animation: isRunning ? 'btx-pulse-ring 1.4s ease-out infinite' : undefined,
-          }} />
-          {STAGE_LABEL[result.stage]}
-        </span>
+        {(() => {
+          const busyChip = ocrMode ? ocrBusy : isRunning
+          const chipKey = ocrMode && ocrBusy ? 'streaming' : result.stage
+          const chipText = ocrMode && ocrBusy ? OCR_PHASE_LABEL[ocrPhase] : STAGE_LABEL[result.stage]
+          return (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              padding: '1px 6px',
+              border: `1px solid ${STAGE_COLOR[chipKey]}66`,
+              background: `linear-gradient(180deg, ${STAGE_COLOR[chipKey]}16, rgba(0,0,0,0.12))`,
+              fontSize: 9, fontFamily: theme.fontMono,
+              letterSpacing: 1,
+              color: STAGE_COLOR[chipKey],
+            }}>
+              {busyChip && <Loader2 size={9} style={{ animation: 'spin 1.4s linear infinite' }} />}
+              <span style={{
+                display: 'inline-block', width: 5, height: 5, borderRadius: '50%',
+                background: STAGE_COLOR[chipKey],
+                animation: busyChip ? 'btx-pulse-ring 1.4s ease-out infinite' : undefined,
+              }} />
+              {chipText}
+            </span>
+          )
+        })()}
 
         <span className="btx-flex-spacer" />
 
@@ -503,32 +676,90 @@ export default function BiliTranscribePanel({
         background: 'rgba(2, 12, 17, 0.58)',
         flexShrink: 0,
       }}>
-        {!isRunning && result.stage !== 'done' && (
-          <button onClick={start} style={techBtn(AMBER, true)}>
-            {result.stage === 'error' ? <RotateCcw size={11} /> : <Play size={11} />}
-            {result.stage === 'error' ? '重试' : '启动'}
-          </button>
-        )}
-        {isRunning && (
-          <button onClick={stop} style={techBtn(theme.dangerRed, false)}>
-            <Square size={10} /> 中止
-          </button>
-        )}
-        {result.stage === 'done' && (
+        {ocrMode ? (
           <>
-            <Tooltip content={copied ? '已复制' : '复制全部'}>
-              <button
-                onClick={handleCopy}
-                style={techBtn(copied ? theme.expGreen : theme.electricBlue, false)}
-              >
-                {copied ? <Check size={11} /> : <Copy size={11} />}
-                {copied ? '已复制' : '复制'}
+            {ocrBusy && (
+              <button onClick={ocrStop} style={techBtn(theme.dangerRed, false)}>
+                <Square size={10} /> 中止
               </button>
-            </Tooltip>
-            <button onClick={start} style={techBtn(AMBER, true)}>
-              <RotateCcw size={11} /> 重新转录
-            </button>
+            )}
+            {!ocrBusy && ocrPhase === 'idle' && result.stage !== 'done' && (
+              <button onClick={enterOcrConfig} style={techBtn(AMBER, true)}>
+                <Play size={11} /> 转录
+              </button>
+            )}
+            {!ocrBusy && result.stage === 'done' && (
+              <>
+                <Tooltip content={copied ? '已复制' : '复制全部'}>
+                  <button onClick={handleCopy} style={techBtn(copied ? theme.expGreen : theme.electricBlue, false)}>
+                    {copied ? <Check size={11} /> : <Copy size={11} />}
+                    {copied ? '已复制' : '复制'}
+                  </button>
+                </Tooltip>
+                <button onClick={enterOcrConfig} style={techBtn(AMBER, true)}>
+                  <RotateCcw size={11} /> 重新转录
+                </button>
+              </>
+            )}
           </>
+        ) : (
+          <>
+            {!isRunning && result.stage !== 'done' && (
+              <button onClick={start} style={techBtn(AMBER, true)}>
+                {result.stage === 'error' ? <RotateCcw size={11} /> : <Play size={11} />}
+                {result.stage === 'error' ? '重试' : '启动'}
+              </button>
+            )}
+            {isRunning && (
+              <button onClick={stop} style={techBtn(theme.dangerRed, false)}>
+                <Square size={10} /> 中止
+              </button>
+            )}
+            {result.stage === 'done' && (
+              <>
+                <Tooltip content={copied ? '已复制' : '复制全部'}>
+                  <button
+                    onClick={handleCopy}
+                    style={techBtn(copied ? theme.expGreen : theme.electricBlue, false)}
+                  >
+                    {copied ? <Check size={11} /> : <Copy size={11} />}
+                    {copied ? '已复制' : '复制'}
+                  </button>
+                </Tooltip>
+                <button onClick={start} style={techBtn(AMBER, true)}>
+                  <RotateCcw size={11} /> 重新转录
+                </button>
+              </>
+            )}
+          </>
+        )}
+
+        {/* 模式下拉：默认音频，可切滚动文章 OCR */}
+        <div style={{ minWidth: 96 }}>
+          <HudSelect
+            value={mode}
+            options={TRANSCRIBE_MODE_OPTIONS as unknown as { value: string; label: string }[]}
+            onChange={(v) => setMode(v as TranscribeMode)}
+            disabled={ocrBusy || isRunning}
+          />
+        </div>
+
+        {/* 滚动文章 OCR 参数配置子栏：点转录后出现（拖间隔→实时重抓第二帧预览 → 开始转录全片） */}
+        {ocrMode && ocrPhase === 'config' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 100%', marginTop: 2 }}>
+            <span style={{ fontSize: 11, color: theme.textSecondary, whiteSpace: 'nowrap' }}>抽帧间隔</span>
+            <input
+              type="range" min={5} max={30} step={1} value={ocrInterval}
+              onChange={(e) => persistOcrInterval(parseFloat(e.target.value))}
+              style={{ flex: 1, accentColor: TRACE }}
+            />
+            <span style={{ fontFamily: theme.fontMono, fontSize: 12, color: TRACE_BRIGHT, minWidth: 42, textAlign: 'right' }}>
+              {ocrInterval.toFixed(0)}s
+            </span>
+            <button onClick={runOcrFull} style={techBtn(AMBER, true)}>
+              <Sparkles size={12} /> 开始转录全片
+            </button>
+          </div>
         )}
 
         <span className="btx-flex-spacer" />
@@ -655,23 +886,35 @@ export default function BiliTranscribePanel({
           animation: isRunning ? 'btx-grid-shift 0.6s linear infinite' : undefined,
         }}
       >
-        {result.segments.length === 0 && result.stage !== 'done' && result.stage !== 'error' && (
-          <>
-            <TranscribeIdleAnimation
-              stage={
-                result.stage === 'uploading' ? 'uploading'
-                : result.stage === 'extracting' ? 'uploading'
-                : result.stage === 'streaming' ? 'streaming'
-                : 'idle'
-              }
+        {result.segments.length === 0 && result.stage !== 'done' && (
+          ocrMode ? (
+            <OcrFlowBody
+              phase={ocrPhase}
+              ocrDone={ocrDone}
+              ocrTotal={ocrTotal}
+              previewA={previewA}
+              previewB={previewB}
+              previewBusy={previewBusy}
+              interval={ocrInterval}
             />
-            {result.stage === 'idle' && (
-              <EmptyState onStart={start} />
-            )}
-            {(result.stage === 'extracting' || result.stage === 'uploading' || result.stage === 'streaming') && (
-              <TranscribePrepOverlay stage={result.stage} />
-            )}
-          </>
+          ) : result.stage !== 'error' && (
+            <>
+              <TranscribeIdleAnimation
+                stage={
+                  result.stage === 'uploading' ? 'uploading'
+                  : result.stage === 'extracting' ? 'uploading'
+                  : result.stage === 'streaming' ? 'streaming'
+                  : 'idle'
+                }
+              />
+              {result.stage === 'idle' && (
+                <EmptyState onStart={start} />
+              )}
+              {(result.stage === 'extracting' || result.stage === 'uploading' || result.stage === 'streaming') && (
+                <TranscribePrepOverlay stage={result.stage} />
+              )}
+            </>
+          )
         )}
         {result.segments.length > 0 && (
           <SegmentList
@@ -697,6 +940,84 @@ export default function BiliTranscribePanel({
         )}
       </div>
 
+    </div>
+  )
+}
+
+// ── 滚动文章 OCR 内容区（两帧左右对比预览 / 进度 / 缝合提示） ──
+function OcrFlowBody({
+  phase, ocrDone, ocrTotal, previewA, previewB, previewBusy, interval,
+}: {
+  phase: OcrPhase
+  ocrDone: number
+  ocrTotal: number
+  previewA: string | null
+  previewB: string | null
+  previewBusy: boolean
+  interval: number
+}) {
+  if (phase === 'idle') {
+    return (
+      <div style={{ color: theme.textMuted, fontSize: 12, lineHeight: 1.9 }}>
+        适用于"其实是一篇文章被自上而下滚动"的视频（语音转录无效）。<br />
+        点上方 <b style={{ color: AMBER }}>转录</b> → 拖<b style={{ color: TRACE_BRIGHT }}>抽帧间隔</b>看前两帧滚动差 → 开始转录全片，
+        最后由大模型去重缝合成<b style={{ color: TRACE_BRIGHT }}>带时间戳的字幕</b>。
+      </div>
+    )
+  }
+  if (phase === 'extracting') {
+    return <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontFamily: theme.fontMono, color: TRACE_BRIGHT }}>
+      <Loader2 size={14} style={{ animation: 'spin 1.4s linear infinite' }} /> 抽全片帧中…
+    </div>
+  }
+  if (phase === 'ocr' || phase === 'stitching') {
+    return (
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontFamily: theme.fontMono, color: TRACE_BRIGHT, marginBottom: 8 }}>
+          <Loader2 size={14} style={{ animation: 'spin 1.4s linear infinite' }} />
+          {phase === 'ocr' ? `逐帧 OCR ${ocrDone}/${ocrTotal}（并发）` : '大模型缝合中（去重 + 切时间戳）…'}
+        </div>
+        {phase === 'ocr' && ocrTotal > 0 && (
+          <div style={{ height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+            <div style={{ width: `${Math.round((ocrDone / ocrTotal) * 100)}%`, height: '100%', background: TRACE, transition: 'width 0.2s' }} />
+          </div>
+        )}
+      </div>
+    )
+  }
+  // config：前两帧左右对比（0s vs interval），拖间隔实时重抓右帧
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 8, lineHeight: 1.7 }}>
+        左=第 0 秒 / 右=第 {interval} 秒。看这两帧滚了多少：
+        <b style={{ color: theme.textSecondary }}>重叠太多</b>→调大间隔（省钱）；
+        <b style={{ color: theme.textSecondary }}>跳变太大可能漏字</b>→调小间隔。合适了点上方 <b style={{ color: AMBER }}>「开始转录全片」</b>。
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <FramePreviewPane label="0s" src={previewA} />
+        <FramePreviewPane label={`${interval}s`} src={previewB} busy={previewBusy} />
+      </div>
+    </div>
+  )
+}
+
+function FramePreviewPane({ label, src, busy }: { label: string; src: string | null; busy?: boolean }) {
+  return (
+    <div style={{
+      flex: 1, minWidth: 0, height: 360, position: 'relative',
+      border: `1px solid ${PANEL_LINE_SOFT}`, borderRadius: 4, overflow: 'hidden',
+      background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      {src
+        ? <img src={`${FRAME_API}${encodeURIComponent(src)}`} alt={label}
+            style={{ width: '100%', height: '100%', objectFit: 'contain', transition: 'opacity 0.18s' }} />
+        : <span style={{ color: theme.textMuted, fontSize: 11 }}>抓取中…</span>}
+      <span style={{ position: 'absolute', left: 4, top: 4, padding: '0 5px', borderRadius: 2, background: 'rgba(0,0,0,0.62)', color: PAPER, fontSize: 9, fontFamily: theme.fontMono }}>{label}</span>
+      {busy && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.32)' }}>
+          <Loader2 size={16} style={{ animation: 'spin 1.4s linear infinite', color: TRACE_BRIGHT }} />
+        </div>
+      )}
     </div>
   )
 }

@@ -73,6 +73,8 @@ export interface AgentConfig {
   readonly biliDownloadPath: string
   /** 下载画质偏好；'auto' = 取账号能拿到的最高清晰度 */
   readonly biliDownloadQuality: 'auto' | '4k' | '1080p_plus' | '1080p' | '720p' | '480p'
+  /** 滚动文章 OCR 转录：抽帧间隔（秒），持久化复用 */
+  readonly ocrFrameIntervalSec: number
 
   // ── 图形性能 ──
   /**
@@ -150,6 +152,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   biliAutoCreate: true,
   biliDownloadPath: 'E:\\BiliDownloads',
   biliDownloadQuality: 'auto',
+  ocrFrameIntervalSec: 5,
 
   useDiscreteGpu: true,
 }

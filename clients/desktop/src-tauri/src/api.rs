@@ -247,6 +247,33 @@ async fn get_perception_screenshot(
     }
 }
 
+/// GET /api/ocr/frame?path=<abs> —— 供前端浏览抽取的视频帧（仅服务 *_ocrframes 目录下的图片）
+async fn get_ocr_frame(Query(query): Query<OcrFrameQuery>) -> Response {
+    let p = std::path::PathBuf::from(&query.path);
+    let in_frames_dir = p
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy().ends_with("_ocrframes"));
+    let is_image = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp"))
+        .unwrap_or(false);
+    if !in_frames_dir || !is_image {
+        return (StatusCode::FORBIDDEN, "forbidden path").into_response();
+    }
+    match tokio::fs::read(&p).await {
+        Err(_) => (StatusCode::NOT_FOUND, "frame not found").into_response(),
+        Ok(bytes) => {
+            ([(axum::http::header::CONTENT_TYPE, image_mime_for_path(&p))], bytes).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct OcrFrameQuery {
+    path: String,
+}
+
 fn image_mime_for_path(path: &std::path::Path) -> &'static str {
     match path
         .extension()
@@ -1634,6 +1661,7 @@ pub fn create_router(
         .route("/api/bilibili/spans/day", get(get_bili_spans_day))
         .route("/api/perception/spans", get(get_perception_spans))
         .route("/api/perception/screenshot", get(get_perception_screenshot))
+        .route("/api/ocr/frame", get(get_ocr_frame))
         .route("/api/perception/app-icon", get(get_perception_app_icon))
         .route("/api/goals", get(get_goals).post(create_goal))
         .route("/api/goals/{id}", axum::routing::put(update_goal).delete(delete_goal))

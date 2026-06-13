@@ -15,6 +15,7 @@ mod qwen_omni;
 mod qwen_video;
 mod bili_download;
 mod ffmpeg;
+mod ocr;
 mod focus_lock;
 #[cfg(windows)]
 mod gpu_pref;
@@ -1847,6 +1848,9 @@ pub fn run() {
             get_bili_assets_by_bvid,
             get_recent_bili_assets,
             delete_bili_download,
+            ocr::extract_video_frames,
+            ocr::grab_video_frame,
+            ocr::qwen_vl_ocr,
             get_bili_transcripts,
             update_bili_transcript,
             qwen_asr::qwen_asr_transcribe,

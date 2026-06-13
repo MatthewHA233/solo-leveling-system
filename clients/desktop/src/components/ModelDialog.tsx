@@ -100,6 +100,7 @@ const FEATURE_SPECS: readonly FeatureSpec[] = [
   { feature: 'bili_omni_transcribe', label: 'B 站音视频全模态转录', category: 'omni', hint: '带音轨的视频文件转录；必须同时支持 video + audio_in', requiredModalities: ['video', 'audio_in'], allowedCategories: ['omni'] },
   { feature: 'bili_visual_transcribe', label: 'B 站仅画面转录', category: 'text', hint: '只读视频画面/屏幕正文；qwen3.6-plus 这类视频模型只能放这里', requiredModalities: ['video'] },
   { feature: 'bili_audio_transcribe', label: 'B 站仅音频转录', category: 'omni', hint: '提取音轨后走 input_audio；只显示支持音频输入的模型', requiredModalities: ['audio_in'], allowedCategories: ['omni'] },
+  { feature: 'ocr_article_stitch', label: 'B 站滚动文章·缝合', category: 'text', hint: '滚动文章逐帧 OCR（qwen-vl-ocr）后，把碎片去重缝合成带时间戳字幕的文本模型（建议中高质量）' },
   { feature: 'context_anchor', label: '语境锚定', category: 'text', hint: '对着语境卡聊天时定位原文片段 + 提取锚点句' },
   { feature: 'thought_distill', label: '想法沉淀', category: 'text', hint: '日常聊天判断值不值得记成想法卡（建议低价模型）' },
   { feature: 'anchor_extract', label: '框选锚点提取', category: 'text', hint: '手动框选语境后从原话提取锚点句' },

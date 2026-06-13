@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { Download, Check, AlertTriangle, Loader2, FolderOpen, BrainCircuit, Trash2 } from 'lucide-react'
+import { Download, Check, AlertTriangle, Loader2, FolderOpen, ScanText, Trash2 } from 'lucide-react'
 import type { BiliSpan } from '../lib/local-api'
 import { theme } from '../theme'
 import { loadConfig } from '../lib/agent/agent-config'
@@ -539,12 +539,12 @@ function DownloadProgress({ dl, biliColor }: { dl: DlProgress; biliColor: string
   )
 }
 
-// ── 多模态转录按钮（去掉扫光/脉冲，安静的紫色幽灵态） ──
+// ── 转录按钮（颜色/图标对齐转录面板本身：青色 + ScanText） ──
 
 function TranscribeButton({ active, onClick }: { active: boolean; onClick: () => void }) {
-  const C = theme.shadowPurple
+  const C = '#00d7e8' // 与转录面板同源（TRACE）
   return (
-    <Tooltip content={active ? '关闭转录面板' : '打开多模态转录'}>
+    <Tooltip content={active ? '关闭转录面板' : '打开转录面板'}>
       <button
         onClick={onClick}
         style={{
@@ -560,7 +560,7 @@ function TranscribeButton({ active, onClick }: { active: boolean; onClick: () =>
           transition: 'background 0.14s, border-color 0.14s',
         }}
       >
-        <BrainCircuit size={12} />
+        <ScanText size={12} />
         转录
       </button>
     </Tooltip>
