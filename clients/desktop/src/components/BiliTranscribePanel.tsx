@@ -315,6 +315,10 @@ export default function BiliTranscribePanel({
           setResult((s) => ({ ...s, cachedAt: run.created_at }))
           // 转录完成 → 该视频成为语境卡，通知洪流域实时刷新
           window.dispatchEvent(new CustomEvent('solevup:context-updated'))
+          // 同时通知 B站历史列表：该视频现已转录，刷新绿标 + 计数
+          window.dispatchEvent(new CustomEvent('solevup:bili-assets-changed', {
+            detail: { bvid, reason: 'transcribed' },
+          }))
         })
         .catch((e) => console.warn('[Transcribe] 写入 ASR 转录失败', e))
     } catch (e) {

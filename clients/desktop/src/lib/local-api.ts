@@ -719,11 +719,11 @@ export async function fetchBiliHistoryDb(
 }
 
 /** 模糊搜索本地 B站历史（title / author / bvid） */
-export async function searchBiliHistory(q: string, limit = 30): Promise<DbBiliItem[]> {
+export async function searchBiliHistory(q: string, limit = 40, offset = 0): Promise<DbBiliItem[]> {
   const trimmed = q.trim()
   if (!trimmed) return []
   const res = await fetch(
-    `${API_BASE}/api/bilibili/history/search?q=${encodeURIComponent(trimmed)}&limit=${limit}`,
+    `${API_BASE}/api/bilibili/history/search?q=${encodeURIComponent(trimmed)}&limit=${limit}&offset=${offset}`,
   )
   const json: ApiResponse<DbBiliItem[]> = await res.json()
   if (!json.success || !json.data) throw new Error(json.error || '搜索失败')

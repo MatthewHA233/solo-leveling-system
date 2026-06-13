@@ -2920,7 +2920,7 @@ impl Database {
     /// 模糊搜索 B站历史：title / author_name 前缀任意位置匹配，bvid 整段精确匹配（大小写不敏感）
     /// 按 view_at 倒序，limit 兜底。q 为空 → 返回空。
     pub async fn search_bili_history(
-        &self, q: &str, limit: i64,
+        &self, q: &str, limit: i64, offset: i64,
     ) -> Result<Vec<BiliHistoryRow>, String> {
         let q_trim = q.trim();
         if q_trim.is_empty() {
@@ -2935,11 +2935,11 @@ impl Database {
                OR author_name LIKE ?1 ESCAPE '\'
                OR bvid = ?2
             ORDER BY view_at DESC
-            LIMIT ?3
+            LIMIT ?3 OFFSET ?4
         "#;
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(
-            params![like, q_trim, limit],
+            params![like, q_trim, limit, offset],
             |row| Ok(BiliHistoryRow {
                 bvid:        row.get(0)?,
                 oid:         row.get(1)?,
@@ -4011,6 +4011,19 @@ impl Database {
         let rows = stmt.query_map([bvid], BiliVideoAsset::from_row)
             .map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 删除某 bvid 的全部资产记录 + 关联转录历史。
+    /// `bili_transcript_runs.asset_id` 有 `ON DELETE CASCADE`（连接已开 foreign_keys），
+    /// 这里仍显式按 bvid 先清一遍 runs 作为兜底（防遗留 / FK 未生效）。
+    pub async fn delete_bili_assets_by_bvid(&self, bvid: &str) -> Result<usize, String> {
+        let conn = self.conn.lock().await;
+        conn.execute("DELETE FROM bili_transcript_runs WHERE bvid = ?", [bvid])
+            .map_err(|e| e.to_string())?;
+        let n = conn
+            .execute("DELETE FROM bili_video_assets WHERE bvid = ?", [bvid])
+            .map_err(|e| e.to_string())?;
+        Ok(n)
     }
 
     /// 查询最近的资产记录（用于下载列表面板，未来用）

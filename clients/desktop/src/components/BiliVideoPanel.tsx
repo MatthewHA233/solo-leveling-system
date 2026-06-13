@@ -6,12 +6,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { Download, Check, AlertTriangle, Loader2, FolderOpen, BrainCircuit } from 'lucide-react'
+import { Download, Check, AlertTriangle, Loader2, FolderOpen, BrainCircuit, Trash2 } from 'lucide-react'
 import type { BiliSpan } from '../lib/local-api'
 import { theme } from '../theme'
 import { loadConfig } from '../lib/agent/agent-config'
 import Tooltip from './Tooltip'
 import HudSelect from './HudSelect'
+import ConfirmDialog from './ConfirmDialog'
 
 type QualityKey = 'auto' | '4k' | '1080p_plus' | '1080p' | '720p' | '480p'
 
@@ -205,6 +206,18 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
     return () => { unlisten.then(fn => fn()).catch(() => {}) }
   }, [span.bvid])
 
+  // 同一 bvid 在别处（如详情浮层）被删除 → 本面板也复位为"未下载"
+  useEffect(() => {
+    const onChanged = (e: Event) => {
+      const detail = (e as CustomEvent<{ bvid?: string; reason?: string }>).detail
+      if (detail?.reason !== 'deleted' || detail.bvid !== span.bvid) return
+      setDl({ bvid: span.bvid, stage: 'idle', percent: 0, message: null, output_path: null, queue_position: null })
+      setDoneFileSize(null)
+    }
+    window.addEventListener('solevup:bili-assets-changed', onChanged)
+    return () => window.removeEventListener('solevup:bili-assets-changed', onChanged)
+  }, [span.bvid])
+
   const handleDownload = async () => {
     const cfg = loadConfig()
     const saveDir = cfg.biliDownloadPath || 'E:\\BiliDownloads'
@@ -220,6 +233,29 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
   }
 
   const isWorking = dl.stage !== 'idle' && dl.stage !== 'done' && dl.stage !== 'error'
+
+  // ── 删除已下载内容（文件 + 衍生 + 转录记录） ──
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  const handleDelete = async () => {
+    setDeleting(true)
+    try {
+      await invoke('delete_bili_download', { bvid: span.bvid })
+      // 复位本地态：回到"未下载"
+      setDl({ bvid: span.bvid, stage: 'idle', percent: 0, message: null, output_path: null, queue_position: null })
+      setDoneFileSize(null)
+      // 广播「B站资产已变更」：历史列表绿标/计数、详情浮层、日历计数等即时刷新
+      window.dispatchEvent(new CustomEvent('solevup:bili-assets-changed', {
+        detail: { bvid: span.bvid, reason: 'deleted' },
+      }))
+    } catch (err) {
+      setDl((prev) => ({ ...prev, stage: 'error', message: `删除失败: ${String(err)}` }))
+    } finally {
+      setDeleting(false)
+      setConfirmDelete(false)
+    }
+  }
 
   return (
     <div style={{
@@ -370,98 +406,88 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
         </div>
       )}
 
-      {/* BV号 + 已保存指示 */}
+      {/* BV号 + 主操作（清晰度 + 下载）—— 下载进行中让位给进度行 */}
       <div style={{
-        marginTop: 6,
+        marginTop: 8,
         display: 'flex', alignItems: 'center', gap: 8,
-        fontFamily: theme.fontMono,
+        minHeight: 24,
       }}>
         <span style={{
+          fontFamily: theme.fontMono,
           fontSize: 11, fontWeight: 600,
           color: theme.textSecondary, letterSpacing: 0.5,
         }}>
           {span.bvid}
         </span>
-        {dl.stage === 'done' && (
-          <span style={{
-            marginLeft: 'auto', fontSize: 10,
-            color: theme.expGreen, display: 'flex',
-            alignItems: 'center', gap: 3,
-          }}>
-            <Check size={11} /> 已保存{doneFileSize ? ` · ${fmtFileSize(doneFileSize)}` : ''}
-          </span>
+        <span style={{ flex: 1 }} />
+        {!isWorking && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <HudSelect inline value={quality} options={visibleOptions} onChange={setQuality} />
+            <button onClick={handleDownload} style={primaryBtnStyle(BILI_COLOR)}>
+              <Download size={12} />
+              {dl.stage === 'done' ? '重新下载' : dl.stage === 'error' ? '重试' : '下载'}
+            </button>
+          </div>
         )}
       </div>
 
-      {/* ── 下载控制（done 时把"多模态转录"按钮并入同一行） ── */}
-      <div style={{ marginTop: 10 }}>
-        <DownloadControl
-          dl={dl}
-          isWorking={isWorking}
-          biliColor={BILI_COLOR}
-          quality={quality}
-          qualityOptions={visibleOptions}
-          onQualityChange={setQuality}
-          onDownload={handleDownload}
-          onOpenFile={() => dl.output_path && openInExplorer(dl.output_path)}
-          transcribeOpen={!!transcribeOpen}
-          onToggleTranscribe={onToggleTranscribe}
-        />
-      </div>
+      {/* 状态行：下载中 → 进度条；完成 → [删除/打开/转录]；失败 → 错误 */}
+      {isWorking && <DownloadProgress dl={dl} biliColor={BILI_COLOR} />}
+
+      {dl.stage === 'done' && (
+        <div style={{
+          marginTop: 8,
+          display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+        }}>
+          <DeleteChip size={doneFileSize} disabled={deleting} onClick={() => setConfirmDelete(true)} />
+          <span style={{ flex: 1 }} />
+          <Tooltip content={dl.output_path || '打开文件位置'}>
+            <button onClick={() => dl.output_path && openInExplorer(dl.output_path)} style={ghostBtnStyle()}>
+              <FolderOpen size={12} /> 打开
+            </button>
+          </Tooltip>
+          {dl.output_path && onToggleTranscribe && (
+            <TranscribeButton
+              active={!!transcribeOpen}
+              onClick={() => onToggleTranscribe(dl.output_path!)}
+            />
+          )}
+        </div>
+      )}
+
+      {dl.stage === 'error' && (
+        <div style={{
+          marginTop: 6, fontSize: 10,
+          color: theme.dangerRed, display: 'flex',
+          alignItems: 'flex-start', gap: 4,
+          fontFamily: theme.fontMono, wordBreak: 'break-all',
+        }}>
+          <AlertTriangle size={11} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>{dl.message || '未知错误'}</span>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={confirmDelete}
+        title="DELETE DOWNLOAD"
+        titleColor={theme.dangerRed}
+        question="删除该视频的全部本地内容？"
+        details={[
+          <>下载文件、转码副本（_h264）与抽取的音轨（_audio）将从磁盘移除。</>,
+          <>已转录的文本（视觉 / 音频 / 合并）记录也会一并清除。</>,
+          <span style={{ color: theme.textMuted }}>B 站观看历史不受影响，可随时重新下载。</span>,
+        ]}
+        danger
+        confirmLabel={deleting ? '删除中…' : '删除'}
+        cancelLabel="取消"
+        onConfirm={handleDelete}
+        onCancel={() => { if (!deleting) setConfirmDelete(false) }}
+      />
     </div>
   )
 }
 
-// ── 科技感转录按钮 ──
-
-function TranscribeButton({ active, onClick }: { active: boolean; onClick: () => void }) {
-  const C = '#b378ff'
-  return (
-    <>
-      <style>{`
-        @keyframes btx-btn-sweep {
-          0%   { transform: translateX(-110%); }
-          60%  { transform: translateX(110%); }
-          100% { transform: translateX(110%); }
-        }
-        @keyframes btx-btn-pulse {
-          0%, 100% { box-shadow: inset 0 0 12px ${C}22, 0 0 0 ${C}00; }
-          50%      { box-shadow: inset 0 0 16px ${C}55, 0 0 12px ${C}66; }
-        }
-        .btx-btn { position: relative; overflow: hidden; }
-        .btx-btn::before {
-          content: ''; position: absolute; inset: 0;
-          background: linear-gradient(110deg, transparent 30%, ${C}55 50%, transparent 70%);
-          transform: translateX(-110%);
-          pointer-events: none;
-        }
-        .btx-btn:hover::before { animation: btx-btn-sweep 0.9s ease-out; }
-        .btx-btn.active { animation: btx-btn-pulse 2s ease-in-out infinite; }
-      `}</style>
-      <Tooltip content={active ? '关闭转录面板' : '打开多模态转录'}>
-      <button
-        className={`btx-btn ${active ? 'active' : ''}`}
-        onClick={onClick}
-        style={{
-          display: 'inline-flex', alignItems: 'center', gap: 4,
-          padding: '4px 10px',
-          fontFamily: theme.fontBody, fontSize: 11, fontWeight: 600,
-          letterSpacing: 0.5,
-          color: C,
-          background: active ? `${C}28` : `${C}14`,
-          border: `1px solid ${C}`, borderRadius: 3,
-          cursor: 'pointer',
-        }}
-      >
-        <BrainCircuit size={12} />
-        多模态转录
-      </button>
-      </Tooltip>
-    </>
-  )
-}
-
-// ── 下载控件 ──
+// ── 文件大小格式化 ──
 
 function fmtFileSize(bytes: number | null): string {
   if (!bytes || bytes <= 0) return ''
@@ -472,139 +498,140 @@ function fmtFileSize(bytes: number | null): string {
   return `${bytes}B`
 }
 
-function DownloadControl({
-  dl, isWorking, biliColor, quality, qualityOptions, onQualityChange, onDownload, onOpenFile,
-  transcribeOpen, onToggleTranscribe,
-}: {
-  dl: DlProgress
-  isWorking: boolean
-  biliColor: string
-  quality: QualityKey
-  qualityOptions: ReadonlyArray<QualityOption>
-  onQualityChange: (q: QualityKey) => void
-  onDownload: () => void
-  onOpenFile: () => void
-  transcribeOpen: boolean
-  onToggleTranscribe?: (filePath: string) => void
-}) {
-  // 进度态
-  if (isWorking) {
-    return (
-      <div>
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          fontSize: 11, color: theme.textPrimary,
-          fontFamily: theme.fontMono, marginBottom: 4,
-        }}>
-          <Loader2 size={11} style={{ animation: 'spin 1.4s linear infinite', color: biliColor }} />
-          <span>{STAGE_LABEL[dl.stage]}</span>
-          <span style={{ color: theme.textSecondary, marginLeft: 'auto' }}>
-            {dl.percent > 0 ? `${dl.percent.toFixed(0)}%` : ''}
-          </span>
-        </div>
-        <div style={{
-          height: 4, borderRadius: 2,
-          background: 'rgba(255,255,255,0.08)',
-          overflow: 'hidden',
-        }}>
-          <div style={{
-            width: `${Math.max(2, dl.percent)}%`,
-            height: '100%',
-            background: biliColor,
-            transition: 'width 0.2s',
-          }} />
-        </div>
-        {dl.message && (
-          <div style={{
-            marginTop: 4, fontSize: 10,
-            color: theme.textMuted, fontFamily: theme.fontMono,
-            wordBreak: 'break-all',
-          }}>
-            {dl.message}
-          </div>
-        )}
-      </div>
-    )
-  }
+// ── 下载进度行（仅下载进行中显示） ──
 
-  // 完成态
-  if (dl.stage === 'done') {
-    return (
-      <div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button
-            onClick={onDownload}
-            style={btnStyle(biliColor, 'rgba(251,114,153,0.10)')}
-          >
-            <Download size={12} /> 重新下载
-          </button>
-          <HudSelect inline value={quality} options={qualityOptions} onChange={onQualityChange} />
-          <Tooltip content={dl.output_path || '打开'}>
-            <button
-              onClick={onOpenFile}
-              style={btnStyle(theme.expGreen, 'rgba(110,255,140,0.10)')}
-            >
-              <FolderOpen size={12} /> 打开
-            </button>
-          </Tooltip>
-          {dl.output_path && onToggleTranscribe && (
-            <TranscribeButton
-              active={transcribeOpen}
-              onClick={() => onToggleTranscribe(dl.output_path!)}
-            />
-          )}
-        </div>
+function DownloadProgress({ dl, biliColor }: { dl: DlProgress; biliColor: string }) {
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        fontSize: 11, color: theme.textPrimary,
+        fontFamily: theme.fontMono, marginBottom: 4,
+      }}>
+        <Loader2 size={11} style={{ animation: 'spin 1.4s linear infinite', color: biliColor }} />
+        <span>{STAGE_LABEL[dl.stage]}</span>
+        <span style={{ color: theme.textSecondary, marginLeft: 'auto' }}>
+          {dl.percent > 0 ? `${dl.percent.toFixed(0)}%` : ''}
+        </span>
       </div>
-    )
-  }
-
-  // 错误态
-  if (dl.stage === 'error') {
-    return (
-      <div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <button
-            onClick={onDownload}
-            style={btnStyle(biliColor, 'rgba(251,114,153,0.10)')}
-          >
-            <Download size={12} /> 重试下载
-          </button>
-          <HudSelect inline value={quality} options={qualityOptions} onChange={onQualityChange} />
-        </div>
+      <div style={{
+        height: 3, borderRadius: 2,
+        background: 'rgba(255,255,255,0.07)',
+        overflow: 'hidden',
+      }}>
+        <div style={{
+          width: `${Math.max(2, dl.percent)}%`,
+          height: '100%',
+          background: biliColor,
+          transition: 'width 0.2s',
+        }} />
+      </div>
+      {dl.message && (
         <div style={{
           marginTop: 4, fontSize: 10,
-          color: theme.dangerRed, display: 'flex',
-          alignItems: 'flex-start', gap: 4,
+          color: theme.textMuted, fontFamily: theme.fontMono,
           wordBreak: 'break-all',
         }}>
-          <AlertTriangle size={11} style={{ flexShrink: 0, marginTop: 1 }} />
-          <span>{dl.message || '未知错误'}</span>
+          {dl.message}
         </div>
-      </div>
-    )
-  }
-
-  // idle
-  return (
-    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-      <button
-        onClick={onDownload}
-        style={btnStyle(biliColor, 'rgba(251,114,153,0.10)')}
-      >
-        <Download size={12} /> 下载视频
-      </button>
-      <HudSelect inline value={quality} options={qualityOptions} onChange={onQualityChange} />
+      )}
     </div>
   )
 }
 
-function btnStyle(color: string, bg: string): React.CSSProperties {
+// ── 多模态转录按钮（去掉扫光/脉冲，安静的紫色幽灵态） ──
+
+function TranscribeButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  const C = theme.shadowPurple
+  return (
+    <Tooltip content={active ? '关闭转录面板' : '打开多模态转录'}>
+      <button
+        onClick={onClick}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          padding: '4px 9px',
+          fontFamily: theme.fontBody, fontSize: 11,
+          fontWeight: active ? 600 : 500,
+          color: C,
+          background: active ? `${C}1f` : 'transparent',
+          border: `1px solid ${active ? C : `${C}55`}`,
+          borderRadius: 4,
+          cursor: 'pointer',
+          transition: 'background 0.14s, border-color 0.14s',
+        }}
+      >
+        <BrainCircuit size={12} />
+        转录
+      </button>
+    </Tooltip>
+  )
+}
+
+// ── 已保存徽标（hover 翻转为"删除下载"红色态） ──
+
+function DeleteChip({ size, disabled, onClick }: {
+  size: number | null
+  disabled?: boolean
+  onClick: () => void
+}) {
+  const green = theme.expGreen
+  const red = theme.dangerRed
+  return (
+    <>
+      <style>{`
+        .bvp-del {
+          display: inline-flex; align-items: center; gap: 4px;
+          padding: 4px 9px;
+          font-family: ${theme.fontMono}; font-size: 10.5px; font-weight: 600;
+          letter-spacing: 0.3px;
+          color: ${green};
+          background: transparent;
+          border: 1px solid ${green}40;
+          border-radius: 4px;
+          cursor: pointer;
+          transition: color .14s, border-color .14s, background .14s;
+        }
+        .bvp-del[disabled] { opacity: .5; cursor: default; }
+        .bvp-del .bvp-del-x  { display: none; }
+        .bvp-del .bvp-del-ok { display: inline-flex; align-items: center; gap: 4px; }
+        .bvp-del:not([disabled]):hover {
+          color: ${red};
+          border-color: ${red}66;
+          background: ${red}12;
+        }
+        .bvp-del:not([disabled]):hover .bvp-del-x  { display: inline-flex; align-items: center; gap: 4px; }
+        .bvp-del:not([disabled]):hover .bvp-del-ok { display: none; }
+      `}</style>
+      <Tooltip content="删除下载（含转录文件与记录）">
+        <button className="bvp-del" disabled={disabled} onClick={onClick}>
+          <span className="bvp-del-ok"><Check size={11} /> 已保存{size ? ` · ${fmtFileSize(size)}` : ''}</span>
+          <span className="bvp-del-x"><Trash2 size={11} /> 删除下载</span>
+        </button>
+      </Tooltip>
+    </>
+  )
+}
+
+// ── 按钮样式：主操作（品牌强调）/ 次操作（中性幽灵） ──
+
+function primaryBtnStyle(color: string): React.CSSProperties {
   return {
     display: 'inline-flex', alignItems: 'center', gap: 4,
-    padding: '4px 10px', fontSize: 11, fontWeight: 600,
+    padding: '4px 11px', fontSize: 11, fontWeight: 600,
     fontFamily: theme.fontBody,
-    color, background: bg,
-    border: `1px solid ${color}`, borderRadius: 3,
-    cursor: 'pointer', letterSpacing: 0.5,
+    color, background: `${color}1a`,
+    border: `1px solid ${color}`, borderRadius: 4,
+    cursor: 'pointer', letterSpacing: 0.3,
+  }
+}
+
+function ghostBtnStyle(): React.CSSProperties {
+  return {
+    display: 'inline-flex', alignItems: 'center', gap: 4,
+    padding: '4px 9px', fontSize: 11, fontWeight: 500,
+    fontFamily: theme.fontBody,
+    color: theme.textSecondary, background: 'transparent',
+    border: `1px solid ${theme.divider}`, borderRadius: 4,
+    cursor: 'pointer', letterSpacing: 0.3,
   }
 }

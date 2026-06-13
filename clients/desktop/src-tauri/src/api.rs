@@ -165,6 +165,7 @@ struct BiliHistoryQuery {
 struct BiliSearchQuery {
     q: String,
     limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -1124,8 +1125,9 @@ async fn search_bili_history(
     State(state): State<ApiState>,
     Query(query): Query<BiliSearchQuery>,
 ) -> Json<ApiResponse<Vec<BiliHistoryRow>>> {
-    let limit = query.limit.unwrap_or(30).clamp(1, 200);
-    match state.db.search_bili_history(&query.q, limit).await {
+    let limit = query.limit.unwrap_or(40).clamp(1, 200);
+    let offset = query.offset.unwrap_or(0).max(0);
+    match state.db.search_bili_history(&query.q, limit, offset).await {
         Ok(items) => Json(ApiResponse::ok(items)),
         Err(e)    => Json(ApiResponse::error(&e)),
     }

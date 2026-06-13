@@ -896,6 +896,66 @@ async fn get_bili_assets_by_bvid(
     db.get_bili_assets_by_bvid(&bvid).await
 }
 
+#[derive(serde::Serialize)]
+struct DeleteBiliResult {
+    deleted_files: usize,
+    deleted_assets: usize,
+}
+
+/// 给定主下载文件路径，返回它 + 全部衍生文件（h264 转码、抽取音轨）的候选路径。
+/// download_path 形如 `<dir>/<safe>_<bvid>.mp4`；衍生物：
+///   `<stem>_h264.mp4`（ffmpeg::ensure_h264_playable）、`<stem>_audio.m4a`（qwen_video 抽音轨）
+fn bili_derivative_paths(download_path: &str) -> Vec<std::path::PathBuf> {
+    use std::path::Path;
+    let p = Path::new(download_path);
+    let mut out = vec![p.to_path_buf()];
+    if let (Some(parent), Some(stem)) = (p.parent(), p.file_stem().and_then(|s| s.to_str())) {
+        out.push(parent.join(format!("{stem}_h264.mp4")));
+        out.push(parent.join(format!("{stem}_audio.m4a")));
+    }
+    out
+}
+
+/// 删除某 bvid 的全部本地痕迹：下载文件 + 衍生（h264/音轨）+ DB 资产 & 转录历史。
+#[tauri::command]
+async fn delete_bili_download(
+    bvid: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<DeleteBiliResult, String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    let assets = db.get_bili_assets_by_bvid(&bvid).await?;
+
+    let mut deleted_files = 0usize;
+    let mut seen: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+    for a in &assets {
+        if let Some(p) = a.download_path.as_ref() {
+            for path in bili_derivative_paths(p) {
+                if !seen.insert(path.clone()) {
+                    continue;
+                }
+                match tokio::fs::remove_file(&path).await {
+                    Ok(_) => deleted_files += 1,
+                    Err(e) => {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            log::warn!("[BiliDelete] 删除文件失败 {}: {}", path.display(), e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let deleted_assets = db.delete_bili_assets_by_bvid(&bvid).await?;
+    log::info!(
+        "[BiliDelete] bvid={} 删除文件 {} 个 / 资产 {} 条",
+        bvid, deleted_files, deleted_assets
+    );
+    Ok(DeleteBiliResult { deleted_files, deleted_assets })
+}
+
 #[tauri::command]
 async fn get_bili_transcripts(
     file_path: String,
@@ -1786,6 +1846,7 @@ pub fn run() {
             bili_download::probe_bili_qualities,
             get_bili_assets_by_bvid,
             get_recent_bili_assets,
+            delete_bili_download,
             get_bili_transcripts,
             update_bili_transcript,
             qwen_asr::qwen_asr_transcribe,
