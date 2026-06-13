@@ -119,6 +119,8 @@ export default function TorrentFieldPanel() {
   const [thoughtDraft, setThoughtDraft] = useState('')
   const [feed, setFeed] = useState<ContextFeedItem[]>([])
   const [jumpCardId, setJumpCardId] = useState<string | null>(null)
+  // 从锚点域点视频标题：跳到语境库后要「注视」该卡（带 tick 以便重复点击同一卡也能重新触发）
+  const [gazeReq, setGazeReq] = useState<{ cardId: string; tick: number } | null>(null)
 
   // 从锚点域「跳到语境」：切到语境库后滚动到对应卡
   useEffect(() => {
@@ -298,6 +300,7 @@ export default function TorrentFieldPanel() {
               onDraftChange={setThoughtDraft}
               onSubmit={submitThought}
               onRemove={requestRemove}
+              gazeReq={gazeReq}
             />
           ) : (
             <AnchorFieldMap
@@ -305,6 +308,8 @@ export default function TorrentFieldPanel() {
               onJumpToCard={(cardId) => {
                 setSubview('context')
                 setJumpCardId(cardId)
+                // 跳到语境库后注视该视频卡（锁定框 + 广播给暗影系统）
+                setGazeReq((prev) => ({ cardId, tick: (prev?.tick ?? 0) + 1 }))
               }}
             />
           )}
@@ -341,6 +346,7 @@ function ThoughtDock({
   onSubmit,
   onRemove,
   onJumpToContext,
+  gazeReq,
 }: {
   readonly draft: string
   readonly cards: readonly ContextFeedItem[]
@@ -349,6 +355,7 @@ function ThoughtDock({
   readonly onSubmit: () => void
   readonly onRemove: (id: string) => void
   readonly onJumpToContext?: (cardId: string) => void
+  readonly gazeReq?: { cardId: string; tick: number } | null
 }) {
   return (
     <section style={styles.flomoBoard}>
@@ -361,6 +368,7 @@ function ThoughtDock({
         onSubmit={onSubmit}
         onRemove={onRemove}
         onJumpToContext={onJumpToContext}
+        gazeReq={gazeReq}
       />
     </section>
   )
@@ -408,6 +416,7 @@ function FlomoMain({
   onSubmit,
   onRemove,
   onJumpToContext,
+  gazeReq,
 }: {
   readonly draft: string
   readonly cards: readonly ContextFeedItem[]
@@ -416,6 +425,7 @@ function FlomoMain({
   readonly onSubmit: () => void
   readonly onRemove: (id: string) => void
   readonly onJumpToContext?: (cardId: string) => void
+  readonly gazeReq?: { cardId: string; tick: number } | null
 }) {
   const [focused, setFocused] = useState(false)
   // 锁定卡（粘性悬浮）：移开鼠标不熄灭，直到悬浮别的卡或离开本界面；
@@ -423,6 +433,12 @@ function FlomoMain({
   const [hoveredCard, setHoveredCard] = useState<string | null>(null)
   const expanded = focused || draft.trim().length > 0
   const dayGroups = useMemo(() => groupFeedItems(cards), [cards])
+
+  // 锚点域点视频标题跳来 → 注视锁定该卡（tick 变即重锁，等卡进入 feed 后生效）
+  useEffect(() => {
+    if (!gazeReq) return
+    if (cards.some((c) => c.id === gazeReq.cardId)) setHoveredCard(gazeReq.cardId)
+  }, [gazeReq, cards])
 
   // 锁定的卡广播给右侧暗影系统（注入聊天上下文，主人说"这张卡片"AI 立刻知道）
   useEffect(() => {

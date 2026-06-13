@@ -7,14 +7,19 @@
 //   · 无 API key / 向量未就绪时回退共现 force 布局，地图始终可用
 // ══════════════════════════════════════════════
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
-import { Check, HelpCircle, Minus, Pencil, Plus, RotateCcw, X } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, Ref } from 'react'
+import { Check, ChevronLeft, ChevronRight, HelpCircle, Minus, Pencil, Plus, RotateCcw } from 'lucide-react'
 import { theme } from '../theme'
 import type { AnchorBinding, AnchorCategory, AnchorRef, ContextFeedItem } from '../lib/local-api'
 import { fetchCardBindings, updateAnchorKeyword } from '../lib/local-api'
 import { ensureAnchorEmbeddings } from '../lib/anchor-embedding'
 import { clusterByCosine, clusterByDistance, clusterMemberHash, projectAnchors, relaxOverlap, resolveClusterNames } from '../lib/anchor-map-layout'
+import {
+  measureMountain, measureBall, layoutBallFlow, clearWrapCache,
+  type WrappedLabel, type Obstacle, type PlacedLine,
+  MOUNT_ANCHOR_DY, MOUNT_LH, BALL_GAP, BALL_LH, BALL_LABEL_ZOOM,
+} from '../lib/anchor-label-layout'
 import { ANCHOR_CAT_COLOR } from './AnchorTextRenderer'
 import Tooltip from './Tooltip'
 
@@ -88,6 +93,26 @@ const WORLD_W = 1000
 const WORLD_H = 620
 const WORLD_PAD = 90
 const CLUSTER_LINK_DIST = 135
+
+// 山体填充透明度：半透明让身后的节点与标签透出来（hover/聚焦时更实，强调当前山）
+const MOUNTAIN_FILL_OPACITY = 0.4
+const MOUNTAIN_FILL_OPACITY_HOT = 0.7
+
+// ── 详情 callout 悬浮层可调旋钮 ──────────────────
+//   面板锚定在被选中球的右侧（放不下翻左），随平移/缩放实时跟随；半透明 HUD 玻璃靶心
+const PANEL_W = 268            // 面板宽
+const PANEL_MAX_H = 'min(72%, 520px)' // CSS maxHeight（字符串）
+const PANEL_MAX_H_PX = 520     // panelH 未实测时的垂直钳制估值
+const PANEL_GAP = 44           // 球缘 → 面板缘水平间隙（也是连接折线伸展空间）
+const PANEL_MARGIN = 12        // 面板离容器边的最小留白
+const CARD_BG_ALPHA = 0.6      // 玻璃底透明度（旧 0.92 → 0.6，更透）
+const CARD_BLUR = 13           // backdrop blur 半径(px)
+const CARD_SAT = 130           // backdrop saturate(%)，让背后地图透出活色
+const BRACKET_LEN = 13         // 四角括号臂长
+const CONNECTOR_Z = 39         // 连接线 z（地图之上、面板之下）
+const PANEL_Z = 40             // 面板 z
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 
 // ── 类区带：三类各占一片纵向区带（橙动机 / 蓝观点 / 绿实践）────
 //    投影与聚簇都只在类内进行，山不会跨类生长
@@ -355,6 +380,38 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
   const animRef = useRef<number | null>(null)
   const dragRef = useRef<{ sx: number; sy: number; vx: number; vy: number } | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
+  // 详情 callout 跟随用：容器像素尺寸（观测 root 自身——无 padding/border，客户区 == SVG 渲染框）
+  // 用 callback ref 在节点真正挂载时装 ResizeObserver：组件首帧 data=null 走 empty 分支、
+  // 真正的 root 后挂载，空依赖 useEffect 会错过它，callback ref 不受条件渲染影响。
+  const [hostSize, setHostSize] = useState({ w: 0, h: 0 })
+  const roRef = useRef<ResizeObserver | null>(null)
+  const setRootRef = useCallback((el: HTMLDivElement | null) => {
+    roRef.current?.disconnect()
+    roRef.current = null
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      const cr = entries[0].contentRect
+      setHostSize({ w: cr.width, h: cr.height })
+    })
+    ro.observe(el)
+    setHostSize({ w: el.clientWidth, h: el.clientHeight })
+    roRef.current = ro
+  }, [])
+  const cardRef = useRef<HTMLDivElement>(null)
+  const [panelH, setPanelH] = useState(0)
+  // 标签测量用：'Exo 2' 400/600 是两张独立 face + display:swap，Pretext 按 font 串缓存度量，
+  // 字体没就绪就测会把 fallback 宽永久缓存 → 必须等就绪（600 单独 load）再测，并清掉占位缓存
+  const [fontReady, setFontReady] = useState(false)
+  useEffect(() => {
+    let alive = true
+    Promise.all([
+      document.fonts.load(`600 11.5px 'Exo 2'`), // 山名 face（600 必须单独 load）
+      document.fonts.load(`8px 'Exo 2'`),         // 球标签 face（400）
+    ]).then(() => document.fonts.ready).then(() => {
+      if (alive) { clearWrapCache(); setFontReady(true) }
+    }).catch(() => { if (alive) setFontReady(true) }) // 加载失败也放行，退化用系统字测量
+    return () => { alive = false }
+  }, [])
 
   const animateViewTo = useCallback((target: { x: number; y: number; w: number }) => {
     if (animRef.current) cancelAnimationFrame(animRef.current)
@@ -398,6 +455,12 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
     window.addEventListener('solevup:context-updated', onUpdate)
     return () => window.removeEventListener('solevup:context-updated', onUpdate)
   }, [reload])
+
+  // 选中面板实测高度：selected 变（内容变）才量一次缓存，不每帧读 offsetHeight（避免强制 reflow）；
+  // 内容超高由 calloutList 的 overflowY:auto 兜底
+  useLayoutEffect(() => {
+    if (cardRef.current) setPanelH(cardRef.current.offsetHeight)
+  }, [selected])
 
   // 语义嵌入：缺失的增量嵌入并回存（每条锚点只嵌一次）
   useEffect(() => {
@@ -595,13 +658,20 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
   }, [data])
 
   // ── 缩放（围绕鼠标）+ 平移 + 飞行 ──
+  // letterbox-aware：与 worldToScreen 同源（meet 缩放 + 居中偏移），是它的精确逆。
+  // 旧版直接 r.width/r.height 线性映射，仅当容器宽高比 == 1.613 时正确；实际容器多为其它比例
+  // → 会有 letterbox 偏移，造成「围绕鼠标缩放」焦点漂移、平移轴向不一致。
   const clientToWorld = (cx: number, cy: number) => {
     const svg = svgRef.current
     if (!svg) return { x: 0, y: 0 }
     const r = svg.getBoundingClientRect()
+    const vh = view.w * (WORLD_H / WORLD_W)
+    const meet = Math.min(r.width / view.w, r.height / vh)
+    const offX = (r.width - view.w * meet) / 2
+    const offY = (r.height - vh * meet) / 2
     return {
-      x: view.x + ((cx - r.left) / r.width) * view.w,
-      y: view.y + ((cy - r.top) / r.height) * view.w * (WORLD_H / WORLD_W),
+      x: view.x + ((cx - r.left) - offX) / meet,
+      y: view.y + ((cy - r.top) - offY) / meet,
     }
   }
 
@@ -624,8 +694,10 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
     const svg = svgRef.current
     if (!d || !svg) return
     const r = svg.getBoundingClientRect()
-    const scale = view.w / r.width
-    setView((v) => ({ ...v, x: d.vx - (e.clientX - d.sx) * scale, y: d.vy - (e.clientY - d.sy) * scale }))
+    // 与 letterbox 缩放一致：每屏幕像素 = 1/meet 个世界单位（x/y 同尺度），消除轴向漂移
+    const vh = view.w * (WORLD_H / WORLD_W)
+    const k = 1 / Math.min(r.width / view.w, r.height / vh)
+    setView((v) => ({ ...v, x: d.vx - (e.clientX - d.sx) * k, y: d.vy - (e.clientY - d.sy) * k }))
   }
   const onPointerUp = () => { dragRef.current = null }
 
@@ -647,7 +719,124 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
   }
 
   const viewH = view.w * (WORLD_H / WORLD_W)
-  const showBallLabels = view.w < 680 // 放大后才显示锚点句（地图式按缩放出细节）
+  const showBallLabels = view.w < BALL_LABEL_ZOOM // 放大后才显示锚点句（地图式按缩放出细节）
+
+  // 世界→容器像素（letterbox-aware，复刻 SVG 默认 xMidYMid meet）。
+  // 纯函数：与 SVG viewBox 同源、同帧渲染期计算 → 详情面板跟随节点零滞后、无需读 getScreenCTM。
+  // 注意：不放进 positions/clusters/contourPaths 的 useMemo（那会让平移每帧重算 marchingSquares）。
+  const worldToScreen = (wx: number, wy: number) => {
+    const { w: cw, h: ch } = hostSize
+    if (cw === 0 || ch === 0) return null
+    const scale = Math.min(cw / view.w, ch / viewH) // meet = min
+    const offX = (cw - view.w * scale) / 2
+    const offY = (ch - viewH * scale) / 2
+    return { sx: offX + (wx - view.x) * scale, sy: offY + (wy - view.y) * scale, scale }
+  }
+
+  // 选中球的屏幕几何（render 期算，view 每帧变 → 面板自动跟随）
+  const calloutGeom = (() => {
+    if (!selected) return null
+    const p = positions.get(selected.anchor.id)
+    const s = p && worldToScreen(p.x, p.y)
+    if (!s) return null
+    // 球屏幕半径补 1.4 余量 + 2px：盖住 hover 1.35 放大与 glow 外扩，贴边时面板不压光晕
+    const ballScreenR = ballRadius(selected.bindings.length) * s.scale * 1.4 + 2
+    return { sx: s.sx, sy: s.sy, ballScreenR }
+  })()
+
+  // 放置：右优先 → 翻左 → 取空间大侧并钳制；垂直居中对齐球心后钳制；节点完全出界则隐藏
+  const calloutPlace = (() => {
+    if (!calloutGeom) return null
+    const { sx, sy, ballScreenR } = calloutGeom
+    const cw = hostSize.w
+    const ch = hostSize.h
+    const effH = panelH || PANEL_MAX_H_PX
+    const ballOut =
+      sx + ballScreenR < 0 || sx - ballScreenR > cw ||
+      sy + ballScreenR < 0 || sy - ballScreenR > ch
+    const roomRight = cw - (sx + ballScreenR)
+    const roomLeft = sx - ballScreenR
+    const needW = PANEL_W + PANEL_GAP + PANEL_MARGIN
+    let arrowSide: 'left' | 'right'
+    let left: number
+    if (roomRight >= needW) {
+      arrowSide = 'left'
+      left = sx + ballScreenR + PANEL_GAP
+    } else if (roomLeft >= needW) {
+      arrowSide = 'right'
+      left = sx - ballScreenR - PANEL_GAP - PANEL_W
+    } else if (roomRight >= roomLeft) {
+      arrowSide = 'left'
+      left = sx + ballScreenR + PANEL_GAP
+    } else {
+      arrowSide = 'right'
+      left = sx - ballScreenR - PANEL_GAP - PANEL_W
+    }
+    left = clamp(left, PANEL_MARGIN, Math.max(PANEL_MARGIN, cw - PANEL_W - PANEL_MARGIN))
+    const top = effH > ch - 2 * PANEL_MARGIN
+      ? PANEL_MARGIN
+      : clamp(sy - effH / 2, PANEL_MARGIN, ch - effH - PANEL_MARGIN)
+    return { sx, sy, ballScreenR, left, top, arrowSide, ballOut }
+  })()
+
+  // 悬浮卡片的世界坐标矩形（屏幕矩形逆变换回世界）：选中节点的标签要避让它。
+  // arrowSide='left' → 卡片在球右侧（标签往左让）；'right' → 卡片在左侧（往右让）
+  const cardWorldRect = (() => {
+    if (!calloutPlace || calloutPlace.ballOut) return null
+    const { w: cw, h: ch } = hostSize
+    if (cw === 0 || ch === 0) return null
+    const scale = Math.min(cw / view.w, ch / viewH)
+    const offX = (cw - view.w * scale) / 2
+    const offY = (ch - viewH * scale) / 2
+    const toWX = (px: number) => view.x + (px - offX) / scale
+    const toWY = (py: number) => view.y + (py - offY) / scale
+    const effH = panelH || PANEL_MAX_H_PX
+    return {
+      x0: toWX(calloutPlace.left), x1: toWX(calloutPlace.left + PANEL_W),
+      y0: toWY(calloutPlace.top), y1: toWY(calloutPlace.top + effH),
+    }
+  })()
+
+  // 标签整块避让排版：只对「文本」避障——山体半透明、峰形不算障碍；障碍集 =
+  // 山名文本盒（地标固定）+ 弹出的悬浮卡片（选中时）+ 已放置的球标签块（球-球互避）。
+  // 字号在世界单位、重叠缩放不变 → 只依赖世界量 + fontReady + showBallLabels + 卡片矩形，
+  // 不依赖 view 平移（平移不重算；卡片开时其世界矩形随之变，按基本量入依赖）、不依赖 hoverBall。
+  const cardX0 = cardWorldRect?.x0, cardX1 = cardWorldRect?.x1, cardY0 = cardWorldRect?.y0, cardY1 = cardWorldRect?.y1
+  const labelLayout = useMemo<{ mountainWraps: Map<string, WrappedLabel>; ballLines: Map<string, PlacedLine[]> }>(() => {
+    const mountainWraps = new Map<string, WrappedLabel>()
+    const ballLines = new Map<string, PlacedLine[]>()
+    if (!data || !fontReady) return { mountainWraps, ballLines }
+    const obstacles: Obstacle[] = []
+    for (const c of clusters) {
+      const name = clusterNames.get(c.hash) ?? '起名中…'
+      const m = measureMountain(name)
+      mountainWraps.set(c.hash, m)
+      // 山名盒收紧到文字实际范围（首行基线 cy+DY，向上一个 ascent、向下到末行 + descent）
+      const nameLines = Math.max(1, Math.round(m.h / MOUNT_LH))
+      obstacles.push({
+        x0: c.cx - m.w / 2, x1: c.cx + m.w / 2,
+        y0: c.cy + MOUNT_ANCHOR_DY - 9, y1: c.cy + MOUNT_ANCHOR_DY + (nameLines - 1) * MOUNT_LH + 3,
+      })
+    }
+    // 悬浮卡片也是障碍（选中时弹出）：所有球标签都避开它
+    if (cardX0 != null && cardX1 != null && cardY0 != null && cardY1 != null) {
+      obstacles.push({ x0: cardX0, x1: cardX1, y0: cardY0, y1: cardY1 })
+    }
+    // 球标签：按绑定数降序放置（重要的先占位）；整块避让，放完把本块各行加入障碍 → 球-球互避
+    if (showBallLabels) {
+      const ordered = [...data.nodes].sort((a, b) => b.bindings.length - a.bindings.length)
+      for (const n of ordered) {
+        const p = positions.get(n.anchor.id)
+        if (!p) continue
+        const r = ballRadius(n.bindings.length)
+        const topY = p.y + r + BALL_GAP
+        const placed = layoutBallFlow(p.x, topY, n.anchor.keyword, obstacles, WORLD_W)
+        ballLines.set(n.anchor.id, placed)
+        placed.forEach((ln) => obstacles.push({ x0: ln.cx - ln.w / 2, x1: ln.cx + ln.w / 2, y0: ln.y, y1: ln.y + BALL_LH }))
+      }
+    }
+    return { mountainWraps, ballLines }
+  }, [data, clusters, clusterNames, positions, showBallLabels, fontReady, cardX0, cardX1, cardY0, cardY1])
 
   // 悬浮焦点（山或球）：用于等高线的局部逐层点亮
   const hoverFocus = (() => {
@@ -672,7 +861,19 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
   }
 
   return (
-    <div style={styles.root}>
+    <div ref={setRootRef} style={styles.root}>
+      <style>{`
+        /* 详情 callout 从节点侧延展打开（clip 揭示，不挤压内容）*/
+        @keyframes afCalloutRevealL {
+          from { clip-path: inset(0 100% 0 0); opacity: 0.15; }
+          to   { clip-path: inset(0 0 0 0); opacity: 1; }
+        }
+        @keyframes afCalloutRevealR {
+          from { clip-path: inset(0 0 0 100%); opacity: 0.15; }
+          to   { clip-path: inset(0 0 0 0); opacity: 1; }
+        }
+        .af-callout-srclink:hover { text-decoration: underline; }
+      `}</style>
       <svg
         ref={svgRef}
         viewBox={`${view.x} ${view.y} ${view.w} ${viewH}`}
@@ -790,7 +991,81 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
           </g>
         )}
 
-        {/* 山（簇）：实心双面地标 + AI 起的主题名（计数只在左侧导航，地图保持干净）*/}
+        {/* 球（锚点句）：三类低饱和染色，越亮越近期；悬浮放大提亮，点击看绑定详情。
+            先画球 + 球标签，山（地标）随后画压在最上层 */}
+        {data.nodes.map((n) => {
+          const p = positions.get(n.anchor.id)
+          if (!p) return null
+          const c = ANCHOR_CAT_COLOR[n.anchor.category]
+          const hovered = hoverBall === n.anchor.id
+          const active = selected?.anchor.id === n.anchor.id || hovered
+          const fresh = freshnessOf(n)
+          const r = ballRadius(n.bindings.length) * (hovered ? 1.35 : 1)
+          const fillA = active ? 0.8 : 0.22 + 0.4 * fresh
+          const strokeA = active ? 1 : 0.42 + 0.4 * fresh
+          return (
+            <g key={n.anchor.id} transform={`translate(${p.x}, ${p.y})`}>
+              {hovered && (
+                <circle r={r * 4.5} fill="url(#af-halo)" pointerEvents="none" style={{ mixBlendMode: 'screen' }} />
+              )}
+              <circle
+                r={r}
+                fill={`${c}${alphaHex(fillA)}`}
+                stroke={`${c}${alphaHex(strokeA)}`}
+                strokeWidth={active ? 1.4 : 0.8}
+                style={{ cursor: 'pointer', transition: 'fill 0.15s, r 0.15s' }}
+                filter={active ? 'url(#af-glow)' : undefined}
+                // 再次点击同一球 → 收起面板（toggle）
+                onClick={(e) => { e.stopPropagation(); setSelected((prev) => (prev?.anchor.id === n.anchor.id ? null : n)) }}
+                onMouseEnter={() => setHoverBall(n.anchor.id)}
+                onMouseLeave={() => setHoverBall((prev) => (prev === n.anchor.id ? null : prev))}
+              />
+              {/* 球标签：放大态用逐行流式排版的避让位置（hover 只改金色高亮、位置不跳）；
+                  缩小态没算避让时，hover 才退化为球正下方即时居中 */}
+              {/* active = 悬浮或选中（卡片展开）。两者标签都显示且金色高亮 */}
+              {(active || showBallLabels) && (() => {
+                const highlight = active // 悬浮或卡片展开 → 文字金色高亮
+                const placed = labelLayout.ballLines.get(n.anchor.id)
+                if (placed) {
+                  return placed.map((ln, li) => (
+                    <text
+                      key={li}
+                      x={ln.cx - p.x}
+                      y={(ln.y - p.y) + BALL_LH * 0.8}
+                      textAnchor="middle"
+                      fill={highlight ? '#f4d896' : theme.textMuted}
+                      fontSize={8}
+                      fontFamily={theme.fontBody}
+                      pointerEvents="none"
+                      style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.85)', strokeWidth: 2.5 }}
+                    >
+                      {ln.text}
+                    </text>
+                  ))
+                }
+                if (!hovered) return null
+                // 缩小态悬浮：无避让结果，球正下方即时居中
+                const lines = fontReady ? measureBall(n.anchor.keyword).lines : splitTwoLines(n.anchor.keyword, 13)
+                return lines.map((line, li) => (
+                  <text
+                    key={li}
+                    y={r + 10 + li * BALL_LH}
+                    textAnchor="middle"
+                    fill="#f4d896"
+                    fontSize={8}
+                    fontFamily={theme.fontBody}
+                    pointerEvents="none"
+                    style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.85)', strokeWidth: 2.5 }}
+                  >
+                    {line}
+                  </text>
+                ))
+              })()}
+            </g>
+          )
+        })}
+
+        {/* 山（簇）：实心双面地标 + AI 起的主题名。最后画 → 压在球与球标签之上（地标层级最高）*/}
         {clusters.map((c) => {
           const s = mountainSize(c.members.length)
           const h = s * 0.95
@@ -818,71 +1093,32 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
               <path
                 d={mountainPath(s)}
                 fill={hot ? 'url(#af-peak-hot)' : 'url(#af-peak)'}
+                fillOpacity={hot ? MOUNTAIN_FILL_OPACITY_HOT : MOUNTAIN_FILL_OPACITY}
                 stroke="rgba(6,14,26,0.9)"
                 strokeWidth={0.8}
                 strokeLinejoin="round"
               />
               {/* 右侧暗面，给山体一点体积感 */}
               <path d={`M ${s * 0.32},${-h} L ${s},0 L 0,0 Z`} fill="rgba(10,24,40,0.30)" />
-              {splitTwoLines(name ?? '起名中…', 10).map((line, li) => (
-                <text
-                  key={li}
-                  y={16 + li * 13}
-                  textAnchor="middle"
-                  fill={hot ? '#f4d896' : '#e6f2fc'}
-                  fontSize={11.5}
-                  fontWeight={600}
-                  fontFamily={theme.fontBody}
-                  style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.88)', strokeWidth: 3 }}
-                >
-                  {line}
-                </text>
-              ))}
-            </g>
-          )
-        })}
-
-        {/* 球（锚点句）：三类低饱和染色，越亮越近期；悬浮放大提亮，点击看绑定详情 */}
-        {data.nodes.map((n) => {
-          const p = positions.get(n.anchor.id)
-          if (!p) return null
-          const c = ANCHOR_CAT_COLOR[n.anchor.category]
-          const hovered = hoverBall === n.anchor.id
-          const active = selected?.anchor.id === n.anchor.id || hovered
-          const fresh = freshnessOf(n)
-          const r = ballRadius(n.bindings.length) * (hovered ? 1.35 : 1)
-          const fillA = active ? 0.8 : 0.22 + 0.4 * fresh
-          const strokeA = active ? 1 : 0.42 + 0.4 * fresh
-          return (
-            <g key={n.anchor.id} transform={`translate(${p.x}, ${p.y})`}>
-              {hovered && (
-                <circle r={r * 4.5} fill="url(#af-halo)" pointerEvents="none" style={{ mixBlendMode: 'screen' }} />
-              )}
-              <circle
-                r={r}
-                fill={`${c}${alphaHex(fillA)}`}
-                stroke={`${c}${alphaHex(strokeA)}`}
-                strokeWidth={active ? 1.4 : 0.8}
-                style={{ cursor: 'pointer', transition: 'fill 0.15s, r 0.15s' }}
-                filter={active ? 'url(#af-glow)' : undefined}
-                onClick={(e) => { e.stopPropagation(); setSelected(n) }}
-                onMouseEnter={() => setHoverBall(n.anchor.id)}
-                onMouseLeave={() => setHoverBall((prev) => (prev === n.anchor.id ? null : prev))}
-              />
-              {(showBallLabels || hovered) && splitTwoLines(n.anchor.keyword, 13).map((line, li) => (
-                <text
-                  key={li}
-                  y={r + 10 + li * 10}
-                  textAnchor="middle"
-                  fill={hovered ? '#f4d896' : theme.textMuted}
-                  fontSize={8}
-                  fontFamily={theme.fontBody}
-                  pointerEvents="none"
-                  style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.85)', strokeWidth: 2.5 }}
-                >
-                  {line}
-                </text>
-              ))}
+              {(() => {
+                // 山名：地标，居中渲染（不动）。fontReady 后用 Pretext 真实折行，否则 splitTwoLines 占位
+                const m = labelLayout.mountainWraps.get(c.hash)
+                const lines = m ? m.lines : splitTwoLines(name ?? '起名中…', 10)
+                return lines.map((line, li) => (
+                  <text
+                    key={li}
+                    y={16 + li * MOUNT_LH}
+                    textAnchor="middle"
+                    fill={hot ? '#f4d896' : '#e6f2fc'}
+                    fontSize={11.5}
+                    fontWeight={600}
+                    fontFamily={theme.fontBody}
+                    style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.88)', strokeWidth: 3 }}
+                  >
+                    {line}
+                  </text>
+                ))
+              })()}
             </g>
           )
         })}
@@ -975,16 +1211,88 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
         </div>
       )}
 
-      {/* 右侧详情面板（点球弹出）*/}
-      {selected && (
-        <AnchorDetail
-          node={selected}
-          cardById={cardById}
-          onClose={() => setSelected(null)}
-          onJumpToCard={onJumpToCard}
-        />
+      {/* 详情 callout：悬浮在被选中球右侧、随平移缩放跟随（放不下翻左）。
+          容器未测量/位置缺失 → 退化固定右上角；节点完全移出可视区 → 隐藏（保留 selected，回到视野自动重现）*/}
+      {selected && !calloutPlace && (
+        <AnchorDetail key={selected.anchor.id} node={selected} cardById={cardById} cardRef={cardRef}
+          onClose={() => setSelected(null)} onJumpToCard={onJumpToCard} placement={null} arrowSide="left" />
+      )}
+      {selected && calloutPlace && !calloutPlace.ballOut && (
+        <>
+          <ConnectorOverlay
+            sx={calloutPlace.sx}
+            sy={calloutPlace.sy}
+            ballScreenR={calloutPlace.ballScreenR}
+            left={calloutPlace.left}
+            top={calloutPlace.top}
+            panelH={panelH || PANEL_MAX_H_PX}
+            arrowSide={calloutPlace.arrowSide}
+            color={ANCHOR_CAT_COLOR[selected.anchor.category]}
+          />
+          <AnchorDetail key={selected.anchor.id} node={selected} cardById={cardById} cardRef={cardRef}
+            onClose={() => setSelected(null)} onJumpToCard={onJumpToCard}
+            placement={{ left: calloutPlace.left, top: calloutPlace.top }} arrowSide={calloutPlace.arrowSide} />
+        </>
       )}
     </div>
+  )
+}
+
+// ── 连接线：屏幕空间 overlay SVG（独立于地图 viewBox，线宽恒定不随缩放变形）──
+//   球侧双环呼吸靶心 → 斜折线 → 面板侧锐角三角，左右镜像。终点对准球的纵坐标（与收起 chevron 同高）
+function ConnectorOverlay({ sx, sy, ballScreenR, left, top, panelH, arrowSide, color }: {
+  readonly sx: number
+  readonly sy: number
+  readonly ballScreenR: number
+  readonly left: number
+  readonly top: number
+  readonly panelH: number
+  readonly arrowSide: 'left' | 'right'
+  readonly color: string
+}) {
+  const x0 = sx + (arrowSide === 'left' ? ballScreenR : -ballScreenR) // 起点 = 球缘（朝面板一侧）
+  const y0 = sy
+  const edge = arrowSide === 'left' ? left : left + PANEL_W           // 面板对应缘（收起条外缘，三角底边）
+  const apexX = arrowSide === 'left' ? edge - 7 : edge + 7            // 三角朝向节点的顶点
+  const y1 = top + panelH / 2                                         // 终点固定在收起条竖向中点（= 居中 chevron 处）
+  // 短横线引出 + 斜线接三角 apex：节点旁先平出一小段（8px），再斜拉到三角尖。
+  // 节点在中点时整体为水平线；偏离时为短横 + 斜线（无竖直段）
+  const stub = arrowSide === 'left' ? x0 + 8 : x0 - 8
+  const d = `M ${x0} ${y0} L ${stub} ${y0} L ${apexX} ${y1}`
+  const tri = arrowSide === 'left'
+    ? `M ${edge} ${y1 - 5} L ${apexX} ${y1} L ${edge} ${y1 + 5} Z`
+    : `M ${edge} ${y1 - 5} L ${apexX} ${y1} L ${edge} ${y1 + 5} Z`
+  return (
+    <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: CONNECTOR_Z }}>
+      <defs>
+        <filter id="af-callout-glow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="1.6" />
+        </filter>
+      </defs>
+      <path d={d} fill="none" stroke={color} strokeWidth={2.4} strokeOpacity={0.4} filter="url(#af-callout-glow)" />
+      <path d={d} fill="none" stroke={color} strokeWidth={1.1} strokeOpacity={0.85} strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx={x0} cy={y0} r={3.5} fill="none" stroke={color} strokeWidth={1.2} strokeOpacity={0.9}>
+        <animate attributeName="r" values="3.2;5.4;3.2" dur="2.4s" repeatCount="indefinite" />
+        <animate attributeName="stroke-opacity" values="0.9;0.3;0.9" dur="2.4s" repeatCount="indefinite" />
+      </circle>
+      <circle cx={x0} cy={y0} r={1.6} fill={color} />
+      <path d={tri} fill={color} fillOpacity={0.85} />
+    </svg>
+  )
+}
+
+// ── 四角括号帧（类别色版，沿用 TranscriptPlayerWindow 范式）──
+function CornerBrackets({ color }: { readonly color: string }) {
+  const L = BRACKET_LEN
+  const base: CSSProperties = { position: 'absolute', width: L, height: L, pointerEvents: 'none', zIndex: 2 }
+  const glow = `drop-shadow(0 0 3px ${color}aa)`
+  return (
+    <>
+      <span style={{ ...base, left: -1, top: -1, borderLeft: `1.5px solid ${color}`, borderTop: `1.5px solid ${color}`, filter: glow }} />
+      <span style={{ ...base, right: -1, top: -1, borderRight: `1.5px solid ${color}`, borderTop: `1.5px solid ${color}`, filter: glow }} />
+      <span style={{ ...base, left: -1, bottom: -1, borderLeft: `1.5px solid ${color}`, borderBottom: `1.5px solid ${color}`, filter: glow }} />
+      <span style={{ ...base, right: -1, bottom: -1, borderRight: `1.5px solid ${color}`, borderBottom: `1.5px solid ${color}`, filter: glow }} />
+    </>
   )
 }
 
@@ -994,17 +1302,31 @@ function catShort(cat: AnchorCategory): string {
   return cat === 'motive' ? '动机' : cat === 'view' ? '观点' : '实践'
 }
 
-function AnchorDetail({ node, cardById, onClose, onJumpToCard }: {
+function AnchorDetail({ node, cardById, cardRef, onClose, onJumpToCard, placement, arrowSide }: {
   readonly node: AnchorNode
   readonly cardById: Map<string, ContextFeedItem>
+  readonly cardRef: Ref<HTMLDivElement>
   readonly onClose: () => void
   readonly onJumpToCard: (cardId: string) => void
+  readonly placement: { left: number; top: number } | null
+  // 收起条所在侧 = 朝向节点的那一侧：'left' = 面板在球右侧（条在左缘）/ 'right' = 面板在球左侧（条在右缘）
+  readonly arrowSide: 'left' | 'right'
 }) {
   const c = ANCHOR_CAT_COLOR[node.anchor.category]
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(node.anchor.keyword)
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
+
+  // 最近锚定日期（与 freshnessOf 同源）
+  const latestDate = useMemo(() => {
+    let latest = 0
+    for (const b of node.bindings) {
+      const t = parseTs(b.created_at).getTime()
+      if (t > latest) latest = t
+    }
+    return latest ? fmtDate(new Date(latest)) : '—'
+  }, [node])
 
   const saveKeyword = async () => {
     const keyword = draft.trim()
@@ -1026,77 +1348,143 @@ function AnchorDetail({ node, cardById, onClose, onJumpToCard }: {
     }
   }
 
+  // 跟随定位（placement）或退化固定右上角（容器未测量/位置缺失）
+  const shellPos: CSSProperties = placement
+    ? { left: placement.left, top: placement.top }
+    : { right: PANEL_MARGIN, top: PANEL_MARGIN }
+
+  // 收起条：跨整条竖边，位于朝向节点的一侧。点击收起；chevron 指向节点（折回去）
+  const collapseBar = (
+    <Tooltip content="收起（或再次点击该节点）" display="flex">
+      <button
+        type="button"
+        onClick={onClose}
+        style={{
+          ...styles.calloutCollapse,
+          color: `${c}cc`,
+          background: `${c}12`,
+          ...(arrowSide === 'left'
+            ? { borderRight: `1px solid ${c}33` }
+            : { borderLeft: `1px solid ${c}33` }),
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = `${c}26`; e.currentTarget.style.color = c }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = `${c}12`; e.currentTarget.style.color = `${c}cc` }}
+      >
+        {arrowSide === 'left' ? <ChevronLeft size={15} /> : <ChevronRight size={15} />}
+      </button>
+    </Tooltip>
+  )
+
   return (
-    <aside style={styles.detail}>
-      <div style={styles.detailHead}>
-        <span style={{ ...styles.detailCat, color: c, borderColor: `${c}66`, background: `${c}14` }}>
-          {catShort(node.anchor.category)}
-        </span>
-        {editing ? (
-          <input
-            value={draft}
-            autoFocus
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void saveKeyword()
-              if (e.key === 'Escape') { setEditing(false); setEditError(null) }
-            }}
-            style={styles.detailEditInput}
-          />
-        ) : (
-          <strong style={styles.detailKeyword}>{node.anchor.keyword}</strong>
-        )}
-        {editing ? (
-          <Tooltip content="保存（Enter）">
-            <button
-              type="button"
-              onClick={() => void saveKeyword()}
-              disabled={saving || !draft.trim()}
-              style={{ ...styles.detailClose, color: theme.expGreen, opacity: saving ? 0.4 : 1 }}
-            >
-              <Check size={13} />
-            </button>
-          </Tooltip>
-        ) : (
-          <Tooltip content="编辑锚点句">
-            <button
-              type="button"
-              onClick={() => { setDraft(node.anchor.keyword); setEditing(true) }}
-              style={styles.detailClose}
-            >
-              <Pencil size={12} />
-            </button>
-          </Tooltip>
-        )}
-        <button type="button" onClick={onClose} style={styles.detailClose}><X size={13} /></button>
-      </div>
-      {editError && <div style={styles.detailError}>{editError}</div>}
-      <div style={styles.detailList}>
-        {node.bindings.map((b) => {
-          const card = cardById.get(b.card_id)
-          const sourceTitle = card ? (card.kind === 'bili_transcript' ? (card.title ?? card.bvid ?? 'B站转录') : '想法卡') : '已删除的卡'
-          return (
-            <div key={b.id} style={styles.detailItem}>
-              <div style={styles.detailMeta}>
-                <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{sourceTitle}</span>
-                <span style={{ flexShrink: 0 }}>{fmtDate(parseTs(b.created_at))}</span>
-              </div>
-              <div style={styles.detailSpeech}>{b.user_speech}</div>
-              {b.selected_text && b.selected_text !== b.user_speech && (
-                <div style={{ ...styles.detailQuote, borderLeftColor: `${c}66` }}>
-                  {b.selected_text}
-                </div>
-              )}
-              {card && (
-                <button type="button" style={styles.detailJump} onClick={() => onJumpToCard(b.card_id)}>
-                  → 跳到语境
+    <div style={{ ...styles.calloutShell, ...shellPos }}>
+      <div
+        ref={cardRef}
+        onWheel={(e) => e.stopPropagation()}        // 防穿透：在面板上滚动不触发地图缩放
+        onPointerDown={(e) => e.stopPropagation()}  // 防穿透：在面板上按下不触发地图平移
+        style={{
+          ...styles.calloutCard,
+          borderColor: `${c}59`,
+          boxShadow: `0 16px 46px rgba(0,0,0,0.5), 0 0 22px ${c}33, inset 0 1px 0 rgba(255,255,255,0.05)`,
+          // 从节点侧延展打开（arrowSide='left' 面板在球右侧→从左缘展开；'right' 反之）
+          animation: `${arrowSide === 'left' ? 'afCalloutRevealL' : 'afCalloutRevealR'} 0.3s cubic-bezier(0.22,1,0.36,1)`,
+        }}
+      >
+        <CornerBrackets color={c} />
+
+        {/* 收起条在朝向节点一侧（左缘 / 右缘） */}
+        {arrowSide === 'left' && collapseBar}
+
+        <div style={styles.calloutBody}>
+          <div style={styles.calloutHead}>
+            <span style={{ ...styles.calloutChip, color: c, borderColor: `${c}66`, background: `${c}1A` }}>
+              {catShort(node.anchor.category)}
+            </span>
+            {editing ? (
+              <input
+                value={draft}
+                autoFocus
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void saveKeyword()
+                  if (e.key === 'Escape') { setEditing(false); setEditError(null) }
+                }}
+                style={styles.calloutEditInput}
+              />
+            ) : (
+              <strong style={styles.calloutKeyword}>{node.anchor.keyword}</strong>
+            )}
+            {editing ? (
+              <Tooltip content="保存（Enter）">
+                <button
+                  type="button"
+                  onClick={() => void saveKeyword()}
+                  disabled={saving || !draft.trim()}
+                  style={{ ...styles.calloutIconBtn, color: theme.expGreen, opacity: saving ? 0.4 : 1 }}
+                >
+                  <Check size={13} />
                 </button>
-              )}
-            </div>
-          )
-        })}
+              </Tooltip>
+            ) : (
+              <Tooltip content="编辑锚点句">
+                <button
+                  type="button"
+                  onClick={() => { setDraft(node.anchor.keyword); setEditing(true) }}
+                  style={styles.calloutIconBtn}
+                >
+                  <Pencil size={12} />
+                </button>
+              </Tooltip>
+            )}
+          </div>
+
+          <div style={styles.calloutMetaStrip}>
+            <span style={{ width: 6, height: 6, transform: 'rotate(45deg)', background: c, flexShrink: 0 }} />
+            <span>{node.bindings.length} 次锚定 · 最近 {latestDate}</span>
+          </div>
+
+          {editError && <div style={styles.calloutError}>{editError}</div>}
+
+          <div style={styles.calloutList}>
+            {node.bindings.map((b) => {
+              const card = cardById.get(b.card_id)
+              // 视频语境卡：标题可点 → 跳到语境库并注视该视频；想法卡/已删除卡：纯文本
+              const isVideo = card?.kind === 'bili_transcript'
+              const sourceTitle = card ? (isVideo ? (card.title ?? card.bvid ?? 'B站转录') : '想法卡') : '已删除的卡'
+              return (
+                <div key={b.id} style={styles.calloutItem}>
+                  <div style={styles.calloutMetaRow}>
+                    {isVideo ? (
+                      <Tooltip content="跳到语境并注视该视频" display="flex" wrapStyle={{ flex: 1, minWidth: 0 }}>
+                        <button
+                          type="button"
+                          className="af-callout-srclink"
+                          onClick={() => onJumpToCard(b.card_id)}
+                          style={{ ...styles.calloutSourceLink, color: theme.electricBlue }}
+                        >
+                          {sourceTitle}
+                        </button>
+                      </Tooltip>
+                    ) : (
+                      <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{sourceTitle}</span>
+                    )}
+                    <span style={{ flexShrink: 0 }}>{fmtDate(parseTs(b.created_at))}</span>
+                  </div>
+                  <div style={styles.calloutSpeech}>{b.user_speech}</div>
+                  {b.selected_text && b.selected_text !== b.user_speech && (
+                    <div style={{ ...styles.calloutQuote, borderLeftColor: `${c}66` }}>
+                      {b.selected_text}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* 翻转时收起条在右缘 */}
+        {arrowSide === 'right' && collapseBar}
       </div>
-    </aside>
+    </div>
   )
 }
 
@@ -1263,59 +1651,90 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: theme.fontBody,
     whiteSpace: 'nowrap',
   },
-  detail: {
+  // ── 详情 callout 悬浮层 ──
+  // 外壳：屏幕定位容器（left/top 动态注入），只有卡片本体收指针事件
+  calloutShell: {
     position: 'absolute',
-    right: 10,
-    top: 10,
-    bottom: 10,
-    width: 264,
+    width: PANEL_W,
+    maxHeight: PANEL_MAX_H,
     display: 'flex',
     flexDirection: 'column',
-    background: 'rgba(5, 13, 27, 0.92)',
-    border: `1px solid ${theme.hudFrameSoft}`,
-    borderRadius: 6,
-    backdropFilter: 'blur(6px)',
-    WebkitBackdropFilter: 'blur(6px)',
-    boxShadow: '0 10px 30px rgba(0,0,0,0.55)',
+    pointerEvents: 'none',
+    zIndex: PANEL_Z,
   },
-  detailHead: {
+  // 卡片本体：半透明玻璃（0.6 + blur + saturate），borderColor/boxShadow 由类别色内联。
+  // 横向布局：收起条（朝节点侧） + 内容列
+  calloutCard: {
+    position: 'relative',
+    pointerEvents: 'auto',
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    minHeight: 0,
+    maxHeight: '100%',
+    background: `rgba(5, 12, 27, ${CARD_BG_ALPHA})`,
+    backdropFilter: `blur(${CARD_BLUR}px) saturate(${CARD_SAT}%)`,
+    WebkitBackdropFilter: `blur(${CARD_BLUR}px) saturate(${CARD_SAT}%)`,
+    border: '1px solid',
+    borderRadius: 7,
+    overflow: 'hidden',
+  },
+  // 跨整条竖边的收起条（点击收起，chevron 指向节点）
+  calloutCollapse: {
+    flexShrink: 0,
+    width: 22,
+    alignSelf: 'stretch',
     display: 'flex',
     alignItems: 'center',
+    justifyContent: 'center',
+    border: 'none',
+    padding: 0,
+    cursor: 'pointer',
+    transition: 'background 0.15s, color 0.15s',
+  },
+  // 内容列（头/计数条/列表纵向堆叠）
+  calloutBody: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  calloutHead: {
+    position: 'relative',
+    zIndex: 2,
+    display: 'flex',
+    alignItems: 'flex-start',
     gap: 8,
-    padding: '10px 10px 8px 12px',
+    padding: '11px 10px 9px 12px',
     borderBottom: `1px solid ${theme.hudFrameSoft}`,
   },
-  detailCat: {
+  calloutChip: {
+    flexShrink: 0,
+    marginTop: 1,
     fontSize: 10,
     fontFamily: theme.fontMono,
+    letterSpacing: '0.08em',
     border: '1px solid',
     borderRadius: 3,
-    padding: '1px 6px',
-    flexShrink: 0,
+    padding: '2px 7px',
   },
-  // 锚点句完整展示不截断（超长自然折行）
-  detailKeyword: {
+  // 锚点句完整展示不截断（超长自然折行）；玻璃透明后给字压底阴影保可读
+  calloutKeyword: {
     flex: 1,
     minWidth: 0,
     fontSize: 13,
+    lineHeight: 1.5,
     color: theme.textPrimary,
     fontFamily: theme.fontBody,
-    lineHeight: 1.5,
     overflowWrap: 'anywhere',
+    textShadow: '0 0 8px rgba(0,0,0,0.6)',
   },
-  detailClose: {
-    display: 'flex',
-    border: 'none',
-    background: 'transparent',
-    color: theme.textMuted,
-    cursor: 'pointer',
-    padding: 2,
-  },
-  detailEditInput: {
+  calloutEditInput: {
     flex: 1,
     minWidth: 0,
     border: `1px solid ${theme.hudFrameSoft}`,
-    background: 'rgba(0,0,0,0.35)',
+    background: 'rgba(0,0,0,0.4)',
     borderRadius: 3,
     padding: '3px 7px',
     color: theme.textPrimary,
@@ -1323,12 +1742,38 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 12.5,
     outline: 'none',
   },
-  detailError: {
+  calloutIconBtn: {
+    display: 'flex',
+    flexShrink: 0,
+    border: 'none',
+    background: 'transparent',
+    color: theme.textMuted,
+    cursor: 'pointer',
+    padding: 2,
+    transition: 'color 0.15s',
+  },
+  // 头/体之间一条 mono 计数微条（呼号风）
+  calloutMetaStrip: {
+    position: 'relative',
+    zIndex: 2,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '5px 12px',
+    fontFamily: theme.fontMono,
+    fontSize: 9.5,
+    letterSpacing: '0.1em',
+    color: theme.textMuted,
+    borderBottom: `1px dashed ${theme.hudFrameSoft}`,
+  },
+  calloutError: {
     padding: '6px 12px 0',
     fontSize: 11,
     color: theme.dangerRed,
   },
-  detailList: {
+  calloutList: {
+    position: 'relative',
+    zIndex: 2,
     flex: 1,
     minHeight: 0,
     overflowY: 'auto',
@@ -1336,15 +1781,16 @@ const styles: Record<string, CSSProperties> = {
     flexDirection: 'column',
     gap: 10,
     padding: '10px 12px',
+    scrollbarWidth: 'none',
   },
-  detailItem: {
+  calloutItem: {
     display: 'flex',
     flexDirection: 'column',
     gap: 5,
     paddingBottom: 10,
     borderBottom: `1px dashed ${theme.hudFrameSoft}`,
   },
-  detailMeta: {
+  calloutMetaRow: {
     display: 'flex',
     gap: 8,
     fontFamily: theme.fontMono,
@@ -1352,28 +1798,37 @@ const styles: Record<string, CSSProperties> = {
     color: theme.textMuted,
     letterSpacing: '0.06em',
   },
-  detailSpeech: {
+  calloutSpeech: {
     fontSize: 12.5,
-    color: theme.textPrimary,
     lineHeight: 1.65,
+    color: theme.textPrimary,
     whiteSpace: 'pre-wrap',
+    textShadow: '0 0 6px rgba(0,0,0,0.55)',
   },
-  detailQuote: {
+  calloutQuote: {
     fontSize: 11,
+    lineHeight: 1.55,
     color: theme.textSecondary,
     fontStyle: 'italic',
-    lineHeight: 1.55,
     borderLeft: '2px solid',
-    paddingLeft: 7,
+    padding: '3px 7px',
+    background: 'rgba(0,0,0,0.18)',
+    borderRadius: '0 3px 3px 0',
   },
-  detailJump: {
-    alignSelf: 'flex-start',
+  // 视频语境卡标题（可点跳转+注视）：链接态，hover 下划线（CSS 在 root 的 <style> 里）
+  calloutSourceLink: {
+    flex: 1,
+    minWidth: 0,
+    textAlign: 'left',
     border: 'none',
     background: 'transparent',
-    color: theme.electricBlue,
-    fontSize: 11,
-    fontFamily: theme.fontBody,
-    cursor: 'pointer',
     padding: 0,
+    margin: 0,
+    cursor: 'pointer',
+    fontFamily: theme.fontMono,
+    fontSize: 9.5,
+    letterSpacing: '0.06em',
+    lineHeight: 1.5,
+    overflowWrap: 'anywhere',
   },
 }
