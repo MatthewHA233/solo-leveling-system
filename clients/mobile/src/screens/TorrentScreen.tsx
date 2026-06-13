@@ -6,7 +6,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
+  Animated,
   AppState,
+  Easing,
   FlatList,
   Image,
   Modal,
@@ -17,6 +19,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native'
 import Svg, { Path, Rect } from 'react-native-svg'
 import {
@@ -990,9 +993,7 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
             sortOrder={sortOrder}
           />
         ) : loading ? (
-          <View style={styles.empty}>
-            <ActivityIndicator color={theme.accent} />
-          </View>
+          <TorrentSkeleton viewMode={viewMode} />
         ) : !hasRestorableData ? (
           <View style={styles.empty}>
             <Text style={styles.emptyHint}>
@@ -1311,34 +1312,44 @@ function RenderList({
     const [from, to] = DEV_TIME_RANGE.map((t) => hhmmssToMs(t, items))
     return items.filter((c) => c.eventTimeMs >= from && c.eventTimeMs <= to)
   }, [items])
-  const listItems = useMemo(() => {
-    let base: ListItem[]
-    if (viewMode === 'feed') {
-      base = useFormalItems
-        ? buildTorrentFeedListItemsFromFormal(formalCards)
-        : buildFeedListItems(filteredItems)
-    }
-    else if (viewMode === 'action') {
-      base = useFormalItems
-        ? buildTorrentActionListItemsFromFormal(formalActions)
-        : buildActionListItems(filteredItems)
-    }
-    else base = buildRawListItems(filteredItems)
-    // build 函数们默认 desc（新→旧）；切 asc 时整体 reverse
-    // feed 视图按 [_groupTs(sortOrder), _groupIdx ASC] 排：组级别翻转，组内顺序保持
-    // 其他视图整体 reverse 即可
-    if (viewMode === 'feed') {
-      const sorted = [...base].sort((a, b) => {
-        const aGTs = (a as any)._groupTs ?? ('tsEnd' in a ? a.tsEnd : 0)
-        const bGTs = (b as any)._groupTs ?? ('tsEnd' in b ? b.tsEnd : 0)
-        if (aGTs !== bGTs) return sortOrder === 'asc' ? aGTs - bGTs : bGTs - aGTs
-        const aIdx = (a as any)._groupIdx ?? 0
-        const bIdx = (b as any)._groupIdx ?? 0
-        return aIdx - bIdx
-      })
-      return sorted
-    }
-    return sortOrder === 'asc' ? [...base].reverse() : base
+  // 重的 parser 构建（几千条 raw 可阻塞 JS ~数十秒）：不在 render 同步跑，
+  // 改为 setBuilding(true) 让骨架屏先 paint，再 setTimeout 里构建。骨架屏 shimmer
+  // 走 native driver，即便构建把 JS 线程卡住也照常动，体验上是"在加载"而非冻结/空。
+  const [listItems, setListItems] = useState<ListItem[]>([])
+  const [building, setBuilding] = useState(true)
+  useEffect(() => {
+    setBuilding(true)
+    const t = setTimeout(() => {
+      let base: ListItem[]
+      if (viewMode === 'feed') {
+        base = useFormalItems ? buildTorrentFeedListItemsFromFormal(formalCards) : buildFeedListItems(filteredItems)
+      } else if (viewMode === 'action') {
+        base = useFormalItems ? buildTorrentActionListItemsFromFormal(formalActions) : buildActionListItems(filteredItems)
+      } else {
+        base = buildRawListItems(filteredItems)
+      }
+      let result: ListItem[]
+      if (viewMode === 'feed') {
+        result = [...base].sort((a, b) => {
+          const aGTs = (a as any)._groupTs ?? ('tsEnd' in a ? a.tsEnd : 0)
+          const bGTs = (b as any)._groupTs ?? ('tsEnd' in b ? b.tsEnd : 0)
+          if (aGTs !== bGTs) return sortOrder === 'asc' ? aGTs - bGTs : bGTs - aGTs
+          const aIdx = (a as any)._groupIdx ?? 0
+          const bIdx = (b as any)._groupIdx ?? 0
+          return aIdx - bIdx
+        })
+      } else if (viewMode === 'action') {
+        // 多 parser(B站+微信)时 base 是按 parser 分块拼接的，必须按时间戳全局排，
+        // 否则会出现"B站块在前、微信块在后"，desc 下顶部不是真正最新的那条
+        const getTs = (it: ListItem) => (it as any).ts ?? (it as any).startTs ?? 0
+        result = [...base].sort((a, b) => sortOrder === 'asc' ? getTs(a) - getTs(b) : getTs(b) - getTs(a))
+      } else {
+        result = sortOrder === 'asc' ? [...base].reverse() : base
+      }
+      setListItems(result)
+      setBuilding(false)
+    }, 0)
+    return () => clearTimeout(t)
   }, [filteredItems, viewMode, sortOrder, useFormalItems, formalActions, formalCards])
 
   // AUDIT-038：useRef / useEffect 必须无条件调用（React Hooks rules）。
@@ -1399,6 +1410,8 @@ function RenderList({
       onJumpDone(listItems[idx].key)
     }
   }, [searchText, listItems, onJumpDone])
+
+  if (building) return <TorrentSkeleton viewMode={viewMode} />
 
   if (listItems.length === 0) {
     return (
@@ -2328,8 +2341,79 @@ function WxActionView({ item: a, onCrossJump, highlighted, appIconCache }: { ite
   )
 }
 
+// 现代骨架屏：卡片形态占位 + native-driver shimmer 斜光扫过
+// （即便重的 parser 构建把 JS 线程卡住，shimmer 仍在 UI 线程动 → 体感"在加载"）
+function SkelBar({ w, h = 12, mt }: { w: number | `${number}%`; h?: number; mt?: number }) {
+  return <View style={{ width: w, height: h, borderRadius: h / 2, marginTop: mt, backgroundColor: alpha(theme.ink, 0.07) }} />
+}
+
+function TorrentSkeleton({ viewMode }: { viewMode: ViewMode }) {
+  const { width } = useWindowDimensions()
+  const x = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(x, { toValue: 1, duration: 1200, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [x])
+  const tx = x.interpolate({ inputRange: [0, 1], outputRange: [-width, width] })
+  const isAction = viewMode === 'action'
+  return (
+    <View style={styles.skelRoot} pointerEvents="none">
+      {[0, 1, 2, 3, 4].map((i) =>
+        isAction ? (
+          <View key={i} style={styles.skelActionRow}>
+            <View style={styles.skelIcon} />
+            <View style={styles.skelGrow}>
+              <SkelBar w={'52%'} h={13} />
+              <SkelBar w={'82%'} h={10} mt={8} />
+            </View>
+            <SkelBar w={44} h={10} />
+          </View>
+        ) : (
+          <View key={i} style={styles.skelCard}>
+            <View style={styles.skelCardHead}>
+              <View style={styles.skelIcon} />
+              <SkelBar w={88} h={13} />
+              <View style={styles.skelGrow} />
+              <SkelBar w={46} h={11} />
+            </View>
+            <View style={styles.skelCardBody}>
+              <SkelBar w={'72%'} h={16} />
+              <SkelBar w={'94%'} h={11} mt={10} />
+              <SkelBar w={'86%'} h={11} mt={7} />
+              <SkelBar w={'38%'} h={10} mt={10} />
+            </View>
+          </View>
+        ),
+      )}
+      <Animated.View style={[styles.skelSweep, { transform: [{ translateX: tx }, { skewX: '-16deg' }] }]} />
+    </View>
+  )
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.bg },
+  skelRoot: { flex: 1, paddingHorizontal: 14, paddingTop: 12, gap: 12, overflow: 'hidden' },
+  skelGrow: { flex: 1 },
+  skelIcon: { width: 24, height: 24, borderRadius: 7, backgroundColor: alpha(theme.ink, 0.08) },
+  skelActionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12,
+    backgroundColor: theme.surface, borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth, borderColor: theme.line,
+  },
+  skelCard: {
+    backgroundColor: theme.surface, borderRadius: 14, overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth, borderColor: theme.line,
+  },
+  skelCardHead: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12,
+    backgroundColor: alpha(theme.ink, 0.03),
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.line,
+  },
+  skelCardBody: { padding: 12 },
+  skelSweep: { position: 'absolute', top: -40, bottom: -40, width: 80, backgroundColor: 'rgba(255,255,255,0.55)' },
   header: {
     paddingBottom: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
