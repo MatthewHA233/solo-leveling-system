@@ -204,6 +204,9 @@ export default function HudSelect<T extends string>({
         <div
           ref={popRef}
           className="hud-select-popup"
+          // 弹层 portal 到 body，在宿主容器（如 B站设置面板）之外。阻止 mousedown 冒泡到 window/document，
+          // 否则外层的 click-outside 监听会把"点选项"误判为点外部、抢先关闭宿主 → 选项 onClick 还没触发就被卸载。
+          onMouseDown={(e) => e.stopPropagation()}
           style={{
             position: 'fixed',
             left: pos.left,
