@@ -12,7 +12,6 @@
 // ══════════════════════════════════════════════
 
 import { useEffect, useRef, useState } from 'react'
-import { theme } from '../../theme'
 
 interface Props {
   /** tab 区高度（svg 容器顶 → chart pane 顶的距离） */
@@ -449,7 +448,7 @@ export function ChartHeaderFrame({
                   {/* H 点上方一列椭圆装饰：统一高度，短轴从下到上由 1×→0.5× 渐变压扁
                       跟随装饰 3 一起消失 */}
                   {decoSegH >= 10 && (() => {
-                    const dotCount = 5
+                    const dotCount: number = 5
                     const dotGap = 6
                     const dotRy = 2.0          // 椭圆长轴（统一）
                     const rxRatioMax = 1.0     // i=0 最下：正圆

@@ -1,11 +1,10 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import type { CSSProperties } from 'react'
-import { Pencil, Undo2, Redo2, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from '../types'
 import type { PerceptionSpan, BiliSpan } from '../lib/local-api'
 import { theme, hud } from '../theme'
 import { HudFrameSkeleton, HudTabButton, CornerArt, ChartHeaderFrame, ChartHeaderButtons } from './hud'
-import type { CornerPos } from './hud'
 import Tooltip from './Tooltip'
 
 interface Props {
@@ -1373,92 +1372,6 @@ function drawCrosshair(
 // ── 编辑模式：拖刷预览（在 tag 填充层之上 / 准星之下） ──
 // 取反语义：起点快照里 has(min) 的格子按"擦"渲染；其余在有画笔时按"涂"渲染
 
-function historyBtnStyle(enabled: boolean): React.CSSProperties {
-  return {
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    width: 24, height: 22, padding: 0,
-    background: enabled ? 'rgba(0,229,255,0.06)' : 'transparent',
-    border: `1px solid ${enabled ? 'rgba(0,229,255,0.45)' : 'rgba(0,229,255,0.18)'}`,
-    color: enabled ? theme.electricBlue : 'rgba(0,229,255,0.35)',
-    cursor: enabled ? 'pointer' : 'not-allowed',
-    clipPath: 'polygon(3px 0, calc(100% - 3px) 0, 100% 3px, 100% calc(100% - 3px), calc(100% - 3px) 100%, 3px 100%, 0 calc(100% - 3px), 0 3px)',
-    WebkitClipPath: 'polygon(3px 0, calc(100% - 3px) 0, 100% 3px, 100% calc(100% - 3px), calc(100% - 3px) 100%, 3px 100%, 0 calc(100% - 3px), 0 3px)',
-    transition: 'color 0.12s, border-color 0.12s, background 0.12s',
-  }
-}
-
-// 编辑模式开关：与 ChatPanel 的 HistoryToggle 同款断裂 HUD 边框（4 角 L + 上下刻度段 +
-// 右侧信号插头），绿色调对应"编辑"语义。
-function EditModeToggle({ on, onClick, layer }: { on: boolean; onClick: () => void; layer: RecordLayer }) {
-  const c = layer === 'plan' ? theme.warningOrange : theme.expGreen
-  const dim = on ? 1 : 0.5
-  const targetLabel = layer === 'plan' ? '计划安排' : '实际记录'
-  const shortLabel = layer === 'plan' ? '规划' : '记录'
-  return (
-    <Tooltip
-      content={on ? `退出${targetLabel}编辑 (Ctrl+E)` : `编辑${targetLabel} (Ctrl+E)`}
-      wrapStyle={{ alignSelf: 'center' }}
-    >
-    <button
-      className="hud-edit-toggle"
-      data-on={on ? '1' : '0'}
-      onClick={onClick}
-      style={{
-        position: 'relative',
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '5px 14px 5px 10px',
-        background: on
-          ? `linear-gradient(90deg, ${hexToRgba(c, 0.22)} 0%, ${hexToRgba(c, 0.04)} 100%)`
-          : 'transparent',
-        border: 'none',
-        color: on ? c : hexToRgba(c, 0.55),
-        fontSize: 10.5, fontFamily: theme.fontMono,
-        fontWeight: 700, letterSpacing: 1.6,
-        cursor: 'pointer',
-        textShadow: on ? `0 0 5px ${c}` : undefined,
-        transition: 'color 0.15s, background 0.15s',
-        lineHeight: 1,
-      }}
-    >
-      <svg
-        width="100%" height="100%"
-        preserveAspectRatio="none"
-        style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none',
-          overflow: 'visible',
-          filter: on ? `drop-shadow(0 0 4px ${hexToRgba(c, 0.75)})` : undefined,
-        }}
-        viewBox="0 0 100 100"
-      >
-        <polyline points="0,14 0,0 14,0"   stroke={c} strokeWidth="2" fill="none" opacity={dim} />
-        <polyline points="86,0 100,0 100,14" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
-        <polyline points="100,86 100,100 86,100" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
-        <polyline points="14,100 0,100 0,86" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
-        <line x1="35" y1="0" x2="65" y2="0"     stroke={c} strokeWidth="1" opacity={dim * 0.6} />
-        <line x1="35" y1="100" x2="65" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.6} />
-        <line x1="25" y1="0" x2="25" y2="4"   stroke={c} strokeWidth="1" opacity={dim * 0.8} />
-        <line x1="75" y1="0" x2="75" y2="4"   stroke={c} strokeWidth="1" opacity={dim * 0.8} />
-        <line x1="25" y1="96" x2="25" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.8} />
-        <line x1="75" y1="96" x2="75" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.8} />
-      </svg>
-
-      <Pencil size={11} style={{ position: 'relative' }} />
-      <span style={{ position: 'relative' }}>{on ? `${shortLabel}中` : shortLabel}</span>
-
-      {on && (
-        <span style={{
-          position: 'absolute',
-          right: -7, top: 'calc(50% - 0.5px)',
-          width: 7, height: 1,
-          background: c,
-          boxShadow: `0 0 4px ${c}, 0 0 8px ${hexToRgba(c, 0.55)}`,
-          pointerEvents: 'none',
-        }} />
-      )}
-    </button>
-    </Tooltip>
-  )
-}
 
 
 function drawDragPreview(

@@ -11,7 +11,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Undo2, Redo2, Pencil, ListChecks, CalendarClock } from 'lucide-react'
+import { Undo2, Redo2, ListChecks, CalendarClock } from 'lucide-react'
 import { theme } from '../../theme'
 import Tooltip from '../Tooltip'
 
@@ -50,8 +50,6 @@ export function ChartHeaderButtons({
   rightOffset = 24,
   topOffsetRight = 24,
   slopeLen = 14,
-  rightSegLen = 90,
-  notchWidth = 150,
   paddingRightFull = 24.5,
   editMode,
   recordLayerColor,
@@ -83,7 +81,6 @@ export function ChartHeaderButtons({
   }, [])
 
   const mainColor = editMode ? recordLayerColor : theme.electricBlue
-  const subColor = theme.electricBlue
 
   // 容器内坐标系：y=0 是容器顶（面板 -mainHeight），chart pane 顶 y=mainHeight
   const xChartRight = size.w - paddingRightFull
@@ -93,7 +90,6 @@ export function ChartHeaderButtons({
   const yMainRight = yChartTop - topOffsetRight
   const yInnerCornerEnd = yChartTop + CHART_CORNER_CUT
   const ySlopeEnd = yMainRight + slopeLen
-  const xPortRightShoulder = xSlopeStart - rightSegLen
 
   // ── ① 六边形理论顶点（紧贴 svg 边线）──
   const hexRaw: ReadonlyArray<[number, number]> = [
@@ -502,18 +498,6 @@ function RoundedRectStroke({
       />
     </g>
   )
-}
-
-function insetPolygon(pts: ReadonlyArray<[number, number]>, d: number): Array<[number, number]> {
-  const n = pts.length
-  const cx = pts.reduce((s, [x]) => s + x, 0) / n
-  const cy = pts.reduce((s, [, y]) => s + y, 0) / n
-  return pts.map(([x, y]) => {
-    const dx = cx - x
-    const dy = cy - y
-    const len = Math.sqrt(dx * dx + dy * dy) || 1
-    return [x + (dx / len) * d, y + (dy / len) * d]
-  })
 }
 
 // 按边法线方向平行内移 d 像素（顺时针多边形假设；svg 坐标系 y 向下）

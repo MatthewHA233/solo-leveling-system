@@ -334,7 +334,7 @@ export default function App() {
   const [trackMode, setTrackMode] = useState<'apps' | 'bili'>('apps')
   // 固定横线位置
   const [pinnedPos, setPinnedPos] = useState<{ col: number; y: number; minute: number } | null>(null)
-  const [dbStatus, setDbStatus] = useState<'loading' | 'live' | 'error'>('loading')
+  const [, setDbStatus] = useState<'loading' | 'live' | 'error'>('loading')
 
   // ── Layout ──
   const [showSettings, setShowSettings] = useState(false)
