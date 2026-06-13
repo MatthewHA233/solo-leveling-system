@@ -35,6 +35,11 @@ export function registeredParserVersions(): Array<{ id: string; version: number 
   return torrentParserModules.map((p) => ({ id: p.id, version: p.version }))
 }
 
+/** parserId → 主题色（日历着色：B站粉 / 微信绿 …）；未知回退默认色 */
+export function torrentAccentForParserId(parserId: string | null | undefined): string {
+  return torrentParserModules.find((p) => p.id === parserId)?.accent ?? DEFAULT_TORRENT_ACCENT
+}
+
 export function getTorrentParserForPackage(packageName: string | null | undefined): TorrentParserModule<TorrentListItem> | null {
   if (!packageName) return null
   return torrentParserModules.find((module) => module.packages.includes(packageName)) ?? null

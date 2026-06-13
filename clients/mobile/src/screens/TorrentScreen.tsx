@@ -53,7 +53,9 @@ import {
   buildTorrentFeedListItems as buildFeedListItems,
   buildTorrentFeedListItemsFromFormal,
   getTorrentPackageLabel as getPackageLabel,
+  getTorrentParserForPackage,
   registeredParserVersions,
+  torrentAccentForParserId,
   getTorrentFeedKindLabel as feedKindLabel,
   splitTorrentPlayProgressSegments as splitPlayProgressSegments,
   type BiliActionKind,
@@ -141,27 +143,36 @@ function sameCalendarRanges(a: readonly DayRangeColored[] | undefined, b: readon
     && r.color === b[i].color)
 }
 
+// 时段 → 分钟区间（跨天裁到 1440）
+function tsRangeToMinutes(startTs: number, endTs: number | undefined): { startMin: number; endMin: number } {
+  const startMin = clampMinute(minuteOfTs(startTs))
+  const rawEnd = endTs
+    ? (isSameDay(new Date(startTs), new Date(endTs)) ? minuteOfTs(endTs) + 1 : 1440)
+    : startMin + 5
+  return { startMin, endMin: clampMinute(Math.max(startMin + 5, rawEnd)) }
+}
+
 function buildTorrentCalendarRanges(items: TorrentCapture[]): DayRangeColored[] {
   if (items.length === 0) return []
-  const actions = buildActionListItems(items).filter((x): x is Extract<ListItem, { kind: 'actionLine' }> => x.kind === 'actionLine')
-  const ranges = actions.map((a) => {
-    const startMin = clampMinute(minuteOfTs(a.ts))
-    const rawEnd = a.endTs
-      ? (isSameDay(new Date(a.ts), new Date(a.endTs)) ? minuteOfTs(a.endTs) + 1 : 1440)
-      : startMin + 5
-    const endMin = clampMinute(Math.max(startMin + 5, rawEnd))
-    return { startMin, endMin, color: HOME_ACCENT }
-  })
+  // 含 B 站 actionLine + 微信 wx_action，按各自 parser 主题色着色（粉 / 绿）
+  const ranges: DayRangeColored[] = []
+  for (const a of buildActionListItems(items)) {
+    if (a.kind === 'actionLine') {
+      const { startMin, endMin } = tsRangeToMinutes(a.ts, a.endTs)
+      ranges.push({ startMin, endMin, color: getTorrentParserForPackage(a.packageName)?.accent ?? HOME_ACCENT })
+    } else if (a.kind === 'wx_action') {
+      const { startMin, endMin } = tsRangeToMinutes(a.startTs, a.endTs)
+      ranges.push({ startMin, endMin, color: torrentAccentForParserId('wechat') })
+    }
+  }
   return mergeTorrentCalendarRanges(ranges)
 }
 
 function buildTorrentCalendarRangesFromFormal(actions: TorrentFormalAction[]): DayRangeColored[] {
   if (actions.length === 0) return []
   return mergeTorrentCalendarRanges(actions.map((a) => {
-    const startMin = clampMinute(minuteOfTs(a.startTs))
-    const rawEnd = isSameDay(new Date(a.startTs), new Date(a.endTs)) ? minuteOfTs(a.endTs) + 1 : 1440
-    const endMin = clampMinute(Math.max(startMin + 5, rawEnd))
-    return { startMin, endMin, color: HOME_ACCENT }
+    const { startMin, endMin } = tsRangeToMinutes(a.startTs, a.endTs)
+    return { startMin, endMin, color: torrentAccentForParserId(a.parserId) }
   }))
 }
 
@@ -832,8 +843,37 @@ export default function TorrentScreen({ devSource, searchText }: { devSource?: T
     return () => { cancelled = true }
   }, [])
 
+  // 物化数据一次性全量着色：拉所有天的 formal actions → 按天上色 → 填满日历（像昼夜表那样秒开）。
+  // formalActions 变化（当天重物化后）时复跑，把新出现的颜色（如微信绿）同步到全历史。
+  useEffect(() => {
+    if (devSource) return
+    let cancelled = false
+    void (async () => {
+      const all = await getTorrentFormalActionsInRange(0, Date.now() + 24 * 60 * 60 * 1000, 100000).catch(() => [])
+      if (cancelled || all.length === 0) return
+      const byDay = new Map<string, TorrentFormalAction[]>()
+      for (const a of all) {
+        if (!a.dateKey) continue
+        const arr = byDay.get(a.dateKey)
+        if (arr) arr.push(a); else byDay.set(a.dateKey, [a])
+      }
+      const formalDays: Record<string, DayRangeColored[]> = {}
+      for (const [day, acts] of byDay) formalDays[day] = buildTorrentCalendarRangesFromFormal(acts)
+      if (cancelled) return
+      setCalendarRangesByDay((prev) => {
+        const next = { ...prev, ...formalDays }
+        solevupSetPref(TORRENT_CALENDAR_CACHE_KEY, JSON.stringify(next)).catch(() => {})
+        return next
+      })
+    })()
+    return () => { cancelled = true }
+  }, [devSource, formalActions])
+
   useEffect(() => {
     if (loading) return
+    // monitor 视图 / 尚未加载到数据时（raw+formal 都空），别用空覆盖全量加载的基线，
+    // 否则当天(尤其今天)的环色会被清掉
+    if (visibleItems.length === 0 && formalActions.length === 0) return
     const dayKey = toLocalDateStr(selectedDate)
     const ranges = visibleItems.length > 0
       ? buildTorrentCalendarRanges(visibleItems)
