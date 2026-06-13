@@ -147,9 +147,9 @@ class SolevupAccessibilityService : AccessibilityService() {
 
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     val e = event ?: return
-    // 诊断：B 站 a11y event 全打，看点视频时具体触发什么类型
+    // 诊断：洪流域白名单 app（B 站 / 微信 …）a11y event 全打，看切窗时具体触发什么类型
     val pkg = e.packageName?.toString() ?: ""
-    if (pkg == "tv.danmaku.bili") {
+    if (pkg in TORRENT_PACKAGES) {
       val typeStr = AccessibilityEvent.eventTypeToString(e.eventType)
       val cdSrc = try { e.source?.contentDescription?.toString().orEmpty() } catch (_: Throwable) { "" }
       Log.i(TAG, "evt=$typeStr cls=${e.className} cd='${cdSrc.take(60)}'")
@@ -393,8 +393,8 @@ class SolevupAccessibilityService : AccessibilityService() {
 
     private const val DEDUP_WINDOW_MS = 1000L
 
-    // "洪流域"抓取白名单 + 节流。Phase 1 先 B 站
-    private val TORRENT_PACKAGES = setOf("tv.danmaku.bili")
+    // "洪流域"抓取白名单 + 节流。B 站已跑通，微信开始采集（先收 raw 数据再写 parser）
+    private val TORRENT_PACKAGES = setOf("tv.danmaku.bili", "com.tencent.mm")
     private const val TORRENT_THROTTLE_MS = 500L
     private const val POLLING_INTERVAL_MS = 1000L  // 1Hz 强制轮询，浮层静态期兜底
 
