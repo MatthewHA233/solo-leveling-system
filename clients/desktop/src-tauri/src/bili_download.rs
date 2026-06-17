@@ -157,12 +157,26 @@ fn quality_to_qn(q: &str) -> (i64, i64) {
     }
 }
 
+/// 同时并发下载的视频数。下载是大流 + 占带宽，2 路已能明显改善"批量时一个个排队"，
+/// 又不至于把带宽切太碎触发 download_with_progress 的慢速放弃误判（200KB/s 阈值）。
+const MAX_DOWNLOAD_WORKERS: usize = 2;
+
+/// 队列 + 活跃 worker 数同锁管理：避免"worker 取空退出 active-- 的瞬间，
+/// enqueue 看到 active==MAX 不拉新 worker → 任务搁浅"的竞态（与 transcribe_queue 同模型）。
+struct QueueInner {
+    jobs: VecDeque<DownloadJob>,
+    active: usize,
+}
+
 pub struct BiliDownloadState {
-    queue: Mutex<VecDeque<DownloadJob>>,
+    inner: Mutex<QueueInner>,
+    /// playurl 注入串行闸门：N 个下载 worker 共用一个 bili-login WebView + 单个
+    /// pending_meta 回调通道，拿 meta 必须串行（否则后注入的 JS 会覆盖前一个 sender）。
+    /// meta 获取是秒级；下载 / 合并阶段不持此锁 → 下载真并发。
+    meta_gate: Mutex<()>,
     pending_meta: Mutex<Option<oneshot::Sender<Result<PlayUrlMeta, String>>>>,
     /// 探测可用清晰度的回调通道（与 pending_meta 独立，避免互相打架）
     pending_probe: Mutex<Option<oneshot::Sender<Result<QualityProbe, String>>>>,
-    worker_running: Mutex<bool>,
     /// 可选的 DB 句柄（用于写资产表）；启动时未初始化也不致命
     db: Mutex<Option<Arc<Database>>>,
 }
@@ -170,10 +184,10 @@ pub struct BiliDownloadState {
 impl BiliDownloadState {
     pub fn new() -> Self {
         Self {
-            queue: Mutex::new(VecDeque::new()),
+            inner: Mutex::new(QueueInner { jobs: VecDeque::new(), active: 0 }),
+            meta_gate: Mutex::new(()),
             pending_meta: Mutex::new(None),
             pending_probe: Mutex::new(None),
-            worker_running: Mutex::new(false),
             db: Mutex::new(None),
         }
     }
@@ -230,10 +244,16 @@ pub async fn enqueue_bili_download(
         asset_id,
     };
 
-    let position = {
-        let mut q = state.queue.lock().await;
-        q.push_back(job);
-        q.len()
+    // 单锁内：入队 + 决定是否拉新 worker（与 worker 的"取空即退出"互斥，避免任务搁浅）
+    let (position, spawn) = {
+        let mut g = state.inner.lock().await;
+        g.jobs.push_back(job);
+        let position = g.jobs.len();
+        let spawn = g.active < MAX_DOWNLOAD_WORKERS;
+        if spawn {
+            g.active += 1;
+        }
+        (position, spawn)
     };
 
     let _ = app.emit(
@@ -248,11 +268,7 @@ pub async fn enqueue_bili_download(
         },
     );
 
-    // 确保 worker 在跑
-    let mut running = state.worker_running.lock().await;
-    if !*running {
-        *running = true;
-        drop(running);
+    if spawn {
         let st = state.inner().clone();
         let app_clone = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -313,7 +329,7 @@ pub async fn probe_bili_qualities(
     let js = format!(
         r#"(async()=>{{
   const BV='{bvid}';
-  const post=(body)=>fetch('http://localhost:49733/api/bilibili/qualities_result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
+  const post=(body)=>fetch('http://localhost:39733/api/bilibili/qualities_result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
   try {{
     const r1=await fetch('https://api.bilibili.com/x/player/pagelist?bvid='+BV,{{credentials:'include'}});
     const d1=await r1.json();
@@ -350,16 +366,14 @@ pub async fn probe_bili_qualities(
 async fn worker_loop(state: Arc<BiliDownloadState>, app: AppHandle) {
     loop {
         let job = {
-            let mut q = state.queue.lock().await;
-            q.pop_front()
-        };
-        let job = match job {
-            Some(j) => j,
-            None => {
-                let mut running = state.worker_running.lock().await;
-                *running = false;
-                log::info!("[BiliDL] 队列空，worker 退出");
-                return;
+            let mut g = state.inner.lock().await;
+            match g.jobs.pop_front() {
+                Some(j) => j,
+                None => {
+                    g.active -= 1;
+                    log::info!("[BiliDL] 队列空，worker 退出（剩余活跃 {}）", g.active);
+                    return;
+                }
             }
         };
 
@@ -480,6 +494,19 @@ async fn process_job(
 
     merge_with_ffmpeg(&video_path, &audio_path, &out_path).await?;
 
+    // 5.1 保留音轨为 sidecar <stem>_audio.m4a（-c copy 秒出，不重编码），
+    //     让后续 ASR 转录命中 qwen_audio_extract 同名缓存、免去慢速重提取（批量转录尤其受益）。
+    //     非 AAC 源（如 Opus）copy 会失败 → 跳过，转录时再走提取回退。
+    let audio_sidecar = out_path.with_file_name(format!(
+        "{}_audio.m4a",
+        out_path.file_stem().and_then(|s| s.to_str()).unwrap_or("audio"),
+    ));
+    if let Err(e) = remux_audio_sidecar(&audio_path, &audio_sidecar).await {
+        log::warn!("[BiliDL] 保留音轨失败（转录时将重新提取）: {}", e);
+    } else {
+        log::info!("[BiliDL] 已保留音轨 → {}", audio_sidecar.display());
+    }
+
     // 6. 清理
     let _ = tokio::fs::remove_dir_all(&temp_dir).await;
 
@@ -523,6 +550,11 @@ async fn fetch_playurl_via_webview(
     qn_request: i64,
     max_id: i64,
 ) -> Result<PlayUrlMeta, String> {
+    // 串行闸门：多个下载 worker 共用单个 pending_meta 通道 + 一个 bili-login WebView，
+    // 拿 meta 必须串行（秒级），否则后注入 JS 的 sender 会覆盖前一个 → 串台 / 丢结果。
+    // 持锁到本函数返回（含等待回调期间）；真正慢的下载在 process_job 里、不在此函数内 → 真并发。
+    let _gate = state.meta_gate.lock().await;
+
     let win = app
         .get_webview_window("bili-login")
         .ok_or_else(|| "bili-login WebView 未打开".to_string())?;
@@ -533,7 +565,7 @@ async fn fetch_playurl_via_webview(
         *guard = Some(tx);
     }
 
-    // JS：拿 cid → 拿 playurl(DASH) → POST 回 localhost:49733
+    // JS：拿 cid → 拿 playurl(DASH) → POST 回 localhost:39733
     // 把 base_url + backup_url[] 一起带回（让 Rust 端选 host）
     // qn_request 决定向 B 站请求的清晰度上限；max_id 在客户端再过滤一次（防止返回更高）
     let js = format!(
@@ -541,7 +573,7 @@ async fn fetch_playurl_via_webview(
   const BV='{bvid}';
   const QN={qn_request};
   const MAX_ID={max_id};
-  const post=(body)=>fetch('http://localhost:49733/api/bilibili/playurl_result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
+  const post=(body)=>fetch('http://localhost:39733/api/bilibili/playurl_result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
   const collectUrls=(m)=>{{
     const arr=[m.baseUrl||m.base_url];
     const bk=m.backupUrl||m.backup_url||[];
@@ -739,6 +771,33 @@ async fn download_with_progress(
 }
 
 // ── ffmpeg 合并 ──
+
+/// 把下载到的音频流（audio.m4s）快速 remux 成 <stem>_audio.m4a（-c copy，不重编码，秒出）。
+/// 供后续 ASR 转录复用，免去从合并 mp4 里慢速重提取音轨。
+async fn remux_audio_sidecar(audio_src: &Path, out_m4a: &Path) -> Result<(), String> {
+    let ffmpeg = locate_ffmpeg();
+    let mut cmd = tokio::process::Command::new(&ffmpeg);
+    cmd.args([
+        "-y",
+        "-loglevel", "error",
+        "-i", &audio_src.to_string_lossy(),
+        "-c", "copy",
+        &out_m4a.to_string_lossy(),
+    ]);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let res = cmd
+        .output()
+        .await
+        .map_err(|e| format!("ffmpeg 启动失败: {}", e))?;
+    if !res.status.success() {
+        let _ = tokio::fs::remove_file(out_m4a).await;
+        return Err(String::from_utf8_lossy(&res.stderr).trim().to_string());
+    }
+    Ok(())
+}
 
 async fn merge_with_ffmpeg(
     video: &Path,

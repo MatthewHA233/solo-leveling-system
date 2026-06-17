@@ -14,6 +14,7 @@ mod qwen_asr;
 mod qwen_omni;
 mod qwen_video;
 mod bili_download;
+mod transcribe_queue;
 mod ffmpeg;
 mod ocr;
 mod focus_lock;
@@ -214,9 +215,9 @@ async fn bili_get_nav(
 try{
   const r=await fetch('https://api.bilibili.com/x/web-interface/nav',{credentials:'include'});
   const d=await r.json();
-  await fetch('http://localhost:49733/api/bilibili/nav_result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ok:d})});
+  await fetch('http://localhost:39733/api/bilibili/nav_result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ok:d})});
 }catch(e){
-  await fetch('http://localhost:49733/api/bilibili/nav_result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({error:e.message||String(e)})});
+  await fetch('http://localhost:39733/api/bilibili/nav_result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({error:e.message||String(e)})});
 }
 })();"#;
 
@@ -276,9 +277,9 @@ async fn fetch_bili_history(
 try{{
   const r=await fetch('https://api.bilibili.com/x/web-interface/history/cursor?max={max}&view_at={vat}&ps={ps}&business=archive',{{credentials:'include'}});
   const d=await r.json();
-  await fetch('http://localhost:49733/api/bilibili/result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{ok:d}})}});
+  await fetch('http://localhost:39733/api/bilibili/result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{ok:d}})}});
 }}catch(e){{
-  await fetch('http://localhost:49733/api/bilibili/result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{error:e.message||String(e)}})}});
+  await fetch('http://localhost:39733/api/bilibili/result',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{error:e.message||String(e)}})}});
 }}
 }})();"#
     );
@@ -407,7 +408,7 @@ async fn bailian_get_account(
     let js = r#"(async()=>{
 const TOKEN = __TOKEN__;
 const post = async (payload) => {
-  await fetch('http://localhost:49733/api/bailian/account_result', {
+  await fetch('http://localhost:39733/api/bailian/account_result', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...payload, token: TOKEN }),
@@ -559,7 +560,7 @@ const MODEL_TYPES = ['Text', 'Multimodal', 'Audio', 'Embedding', 'Vision'];
 const GW = 'https://bailian-cs.console.aliyun.com/data/api.json?action=BroadScopeAspnGateway&product=sfm_bailian&api=zeldaEasy.broadscope-bailian.freeTrial.queryFreeTierQuotaAsyn&_v=undefined';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const post = async (payload) => {{
-  await fetch('http://localhost:49733/api/bailian/quota_result', {{
+  await fetch('http://localhost:39733/api/bailian/quota_result', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
     body: JSON.stringify({{ ...payload, token: TOKEN }}),
@@ -567,7 +568,7 @@ const post = async (payload) => {{
 }};
 const progress = async (payload) => {{
   try {{
-    await fetch('http://localhost:49733/api/bailian/quota_progress', {{
+    await fetch('http://localhost:39733/api/bailian/quota_progress', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
       body: JSON.stringify({{ ...payload, token: TOKEN }}),
@@ -955,6 +956,19 @@ async fn delete_bili_download(
         bvid, deleted_files, deleted_assets
     );
     Ok(DeleteBiliResult { deleted_files, deleted_assets })
+}
+
+#[tauri::command]
+async fn set_bili_favorite(
+    bvid: String,
+    favorite: bool,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let db = {
+        let g = state.db.read().await;
+        g.as_ref().ok_or("数据库未初始化")?.clone()
+    };
+    db.set_bili_favorite(&bvid, favorite).await
 }
 
 #[tauri::command]
@@ -1648,13 +1662,17 @@ pub fn run() {
     let bili_state = Arc::new(BiliState::new());
     let bailian_state = Arc::new(BailianState::new());
     let bili_dl_state = Arc::new(BiliDownloadState::new());
+    let transcribe_q_state = Arc::new(transcribe_queue::TranscribeQueueState::new());
     let focus_lock_state = Arc::new(focus_lock::FocusLockState::new());
 
-    // 把 DB 注入到下载状态（用于写资产表）
+    // 把 DB 注入到下载状态 + 转录队列（用于写资产/转录表）
     if let Some(db_for_dl) = db.clone() {
         let dl = bili_dl_state.clone();
+        let tq = transcribe_q_state.clone();
+        let db_for_tq = db_for_dl.clone();
         tauri::async_runtime::block_on(async move {
             dl.set_db(db_for_dl).await;
+            tq.set_db(db_for_tq).await;
         });
     }
 
@@ -1672,6 +1690,7 @@ pub fn run() {
         .manage(bili_state.clone())
         .manage(bailian_state.clone())
         .manage(bili_dl_state.clone())
+        .manage(transcribe_q_state.clone())
         .manage(focus_lock_state)
         .setup(move |app| {
             // 注册专注锁 Native Messaging host（幂等；失败只降级，不阻断启动）
@@ -1691,7 +1710,7 @@ pub fn run() {
                     std::sync::Arc::new(app.handle().clone());
                 let app_handle_for_startup = app_handle_for_api.clone();
                 tauri::async_runtime::spawn(async move {
-                    api::start_server(db_for_api, bili_clone, bailian_clone, bili_dl_clone, app_handle_for_api, 49733).await;
+                    api::start_server(db_for_api, bili_clone, bailian_clone, bili_dl_clone, app_handle_for_api, 39733).await;
                 });
 
                 // 启动后台同步：等 HTTP server 起来 + 多播广播完成，再扫一遍已链接设备
@@ -1848,9 +1867,11 @@ pub fn run() {
             get_bili_assets_by_bvid,
             get_recent_bili_assets,
             delete_bili_download,
+            set_bili_favorite,
             ocr::extract_video_frames,
             ocr::grab_video_frame,
             ocr::qwen_vl_ocr,
+            transcribe_queue::enqueue_transcribe,
             get_bili_transcripts,
             update_bili_transcript,
             qwen_asr::qwen_asr_transcribe,

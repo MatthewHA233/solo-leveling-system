@@ -472,6 +472,7 @@ pub struct BiliSpan {
     pub downloaded: bool, // bili_video_assets 中存在 download_status='done' 即为 true
     pub file_size_bytes: Option<i64>, // 已下载时 = 资产合并后文件大小（多份 done 取最大）；未下载 = null
     pub transcribed: bool, // bili_video_assets 中存在 visual_transcript 或 audio_transcript 非空
+    pub favorite: bool, // bili_video_assets 中存在 is_favorite=1（转录后自动收藏）
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -522,6 +523,8 @@ pub struct BiliVideoAsset {
     pub audio_transcript: Option<String>,
     pub visual_transcribed_at: Option<String>,
     pub audio_transcribed_at: Option<String>,
+    /// 是否收藏（转录完成自动置 true；删除资产时随行消失）
+    pub is_favorite: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -861,6 +864,10 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN audio_transcribed_at TEXT");
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN combined_transcript TEXT");
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN combined_transcribed_at TEXT");
+        // 收藏属性：转录完成自动置 1；删除资产行时随行消失（DELETE 整行）
+        let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0");
+        // 收藏真相统一在历史表（所有看过的视频都可收藏，不限是否下载）
+        let _ = conn.execute_batch("ALTER TABLE bili_history ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0");
 
         conn.execute_batch(r#"
             -- B站历史表
@@ -873,7 +880,8 @@ impl Database {
                 duration INTEGER NOT NULL DEFAULT 0,
                 progress INTEGER NOT NULL DEFAULT 0,
                 view_at INTEGER NOT NULL DEFAULT 0,
-                event_id TEXT  -- 旧版字段，保留兼容；新模型用 activity_blocks 关联
+                event_id TEXT,  -- 旧版字段，保留兼容；新模型用 activity_blocks 关联
+                is_favorite INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_bili_view_at ON bili_history(view_at DESC);
 
@@ -1094,7 +1102,8 @@ impl Database {
                 combined_transcript TEXT,
                 combined_transcribed_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                is_favorite INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_bili_assets_bvid ON bili_video_assets(bvid);
             CREATE INDEX IF NOT EXISTS idx_bili_assets_status ON bili_video_assets(download_status);
@@ -2993,7 +3002,8 @@ impl Database {
                 EXISTS (SELECT 1 FROM bili_video_assets a
                   WHERE a.bvid = s.bvid
                     AND (a.visual_transcript IS NOT NULL OR a.audio_transcript IS NOT NULL OR a.combined_transcript IS NOT NULL)
-                ) AS transcribed
+                ) AS transcribed,
+                COALESCE((SELECT h.is_favorite FROM bili_history h WHERE h.bvid = s.bvid), 0) AS favorite
             FROM spans s
             WHERE date(s.view_at,    'unixepoch', 'localtime') = ?1
                OR date(s.start_unix, 'unixepoch', 'localtime') = ?1
@@ -3004,6 +3014,7 @@ impl Database {
             let file_size_bytes: Option<i64> = row.get(11)?;
             let downloaded: bool = row.get(12)?;
             let transcribed: bool = row.get(13)?;
+            let favorite: bool = row.get(14)?;
             Ok(BiliSpan {
                 bvid:        row.get(0)?,
                 oid:         row.get(1)?,
@@ -3019,6 +3030,7 @@ impl Database {
                 downloaded,
                 file_size_bytes,
                 transcribed,
+                favorite,
             })
         }).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -4005,7 +4017,8 @@ impl Database {
                       started_at, completed_at, transcript, ai_summary, notes,
                       created_at, updated_at,
                       visual_transcript, audio_transcript,
-                      visual_transcribed_at, audio_transcribed_at
+                      visual_transcribed_at, audio_transcribed_at,
+                      is_favorite
                FROM bili_video_assets WHERE bvid = ? ORDER BY created_at DESC"#,
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([bvid], BiliVideoAsset::from_row)
@@ -4023,7 +4036,19 @@ impl Database {
         let n = conn
             .execute("DELETE FROM bili_video_assets WHERE bvid = ?", [bvid])
             .map_err(|e| e.to_string())?;
+        // 删除下载/转录 → 同时清除该视频收藏（收藏统一在历史表）
+        let _ = conn.execute("UPDATE bili_history SET is_favorite = 0 WHERE bvid = ?", [bvid]);
         Ok(n)
+    }
+
+    /// 设置某视频收藏态（收藏存历史表，所有看过的视频都可收藏，不限是否下载）
+    pub async fn set_bili_favorite(&self, bvid: &str, favorite: bool) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE bili_history SET is_favorite = ? WHERE bvid = ?",
+            params![if favorite { 1 } else { 0 }, bvid],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// 查询最近的资产记录（用于下载列表面板，未来用）
@@ -4035,7 +4060,8 @@ impl Database {
                       started_at, completed_at, transcript, ai_summary, notes,
                       created_at, updated_at,
                       visual_transcript, audio_transcript,
-                      visual_transcribed_at, audio_transcribed_at
+                      visual_transcribed_at, audio_transcribed_at,
+                      is_favorite
                FROM bili_video_assets ORDER BY created_at DESC LIMIT ?"#,
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([limit], BiliVideoAsset::from_row)
@@ -4419,6 +4445,8 @@ impl BiliVideoAsset {
             audio_transcript:     row.get(18).ok(),
             visual_transcribed_at: row.get(19).ok(),
             audio_transcribed_at:  row.get(20).ok(),
+            // 容错读：旧查询若未 SELECT 该列也不 panic，回退 false
+            is_favorite:      row.get(21).unwrap_or(false),
         })
     }
 }
@@ -4517,6 +4545,12 @@ impl Database {
         if n == 0 {
             return Err(format!("未找到对应资产记录: {}", download_path));
         }
+        // 转录完成 → 该视频在历史表标记收藏（收藏统一在 bili_history，覆盖所有视频）
+        let _ = conn.execute(
+            "UPDATE bili_history SET is_favorite = 1 WHERE bvid = \
+             (SELECT bvid FROM bili_video_assets WHERE download_path = ? AND download_status = 'done' LIMIT 1)",
+            params![download_path],
+        );
         if !save_history || text.trim().is_empty() {
             return Ok(None);
         }

@@ -21,7 +21,7 @@ use tauri::AppHandle;
 use tokio::time::timeout;
 
 const DASHSCOPE_UPLOAD_TIMEOUT_SECS: u64 = 180;
-const AUDIO_EXTRACT_TIMEOUT_SECS: u64 = 180;
+const AUDIO_EXTRACT_TIMEOUT_SECS: u64 = 900;
 
 #[derive(Debug, Deserialize)]
 struct PolicyResponse {
@@ -183,28 +183,40 @@ pub async fn qwen_audio_extract(
     let dir = crate::ffmpeg::find_ffmpeg_dir_pub(&app)?;
     let ffmpeg = dir.join(crate::ffmpeg::ffmpeg_bin_name());
 
-    let mut cmd = tokio::process::Command::new(&ffmpeg);
-    cmd.args(["-hide_banner", "-y", "-nostats"])
-        .arg("-i").arg(&input)
-        .args(["-vn", "-c:a", "aac", "-b:a", "128k"])
-        .arg(&output)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    let out = cmd
-        .output();
-    let out = timeout(Duration::from_secs(AUDIO_EXTRACT_TIMEOUT_SECS), out)
-        .await
-        .map_err(|_| format!("音频提取超时（>{}s）", AUDIO_EXTRACT_TIMEOUT_SECS))?
-        .map_err(|e| format!("ffmpeg 音频提取失败: {e}"))?;
-
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("音频提取失败: {}", stderr.chars().rev().take(200).collect::<String>().chars().rev().collect::<String>()));
+    // 先试 -c:a copy（B站音轨多为 AAC，直接 remux 秒出，不重编码）；
+    // 失败（如 Opus 不兼容 m4a 容器）再回退 -c:a aac 重编码。
+    let attempts: [&[&str]; 2] = [&["-c:a", "copy"], &["-c:a", "aac", "-b:a", "128k"]];
+    let mut last_err = String::new();
+    let mut ok = false;
+    for (i, audio_args) in attempts.iter().enumerate() {
+        if i > 0 {
+            let _ = tokio::fs::remove_file(&output).await; // 清掉上一次的残缺产物
+        }
+        let mut cmd = tokio::process::Command::new(&ffmpeg);
+        cmd.args(["-hide_banner", "-y", "-nostats"])
+            .arg("-i").arg(&input)
+            .arg("-vn")
+            .args(*audio_args)
+            .arg(&output)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let out = timeout(Duration::from_secs(AUDIO_EXTRACT_TIMEOUT_SECS), cmd.output())
+            .await
+            .map_err(|_| format!("音频提取超时（>{}s）", AUDIO_EXTRACT_TIMEOUT_SECS))?
+            .map_err(|e| format!("ffmpeg 音频提取失败: {e}"))?;
+        if out.status.success() {
+            log::info!("[QwenAudio] 提取完成({}): {}", if i == 0 { "copy" } else { "aac" }, output.display());
+            ok = true;
+            break;
+        }
+        last_err = String::from_utf8_lossy(&out.stderr)
+            .chars().rev().take(200).collect::<String>().chars().rev().collect::<String>();
     }
-
-    log::info!("[QwenAudio] 提取完成: {}", output.display());
+    if !ok {
+        return Err(format!("音频提取失败: {}", last_err));
+    }
     Ok(output.to_string_lossy().to_string())
 }
 
