@@ -2237,7 +2237,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
       const img = new Image()
       img.onload  = () => { cache.set(name, img); redrawRef.current?.() }
       img.onerror = () => { cache.set(name, null) }
-      img.src = `http://localhost:49733/api/perception/app-icon?name=${encodeURIComponent(name)}`
+      img.src = `http://localhost:39733/api/perception/app-icon?name=${encodeURIComponent(name)}`
       return null
     }
 

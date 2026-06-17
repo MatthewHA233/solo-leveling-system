@@ -123,7 +123,7 @@ const TRANSCRIBE_MODE_OPTIONS = [
 const OCR_MODEL = 'qwen-vl-ocr'
 const OCR_FEATURE = 'bili_ocr_transcribe'
 const OCR_CONCURRENCY = 5       // OCR 并发路数
-const FRAME_API = 'http://localhost:49733/api/ocr/frame?path='
+const FRAME_API = 'http://localhost:39733/api/ocr/frame?path='
 
 interface OcrFrame { index: number; path: string; ts_sec: number }
 type OcrPhase = 'idle' | 'config' | 'extracting' | 'ocr' | 'stitching'

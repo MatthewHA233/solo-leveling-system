@@ -8,7 +8,7 @@
 //     手势期间直接改 DOM style 不走 React 重渲染（否则 video 子树每帧重渲染会卡）
 //     位置 + 尺寸存 localStorage，关闭/重启后记忆
 //   · 播放中持续广播 solevup:transcript-time { refPath, sec }，逐句视图点亮当前句
-//   · 解码复用 HudVideoPlayer（h264 自愈 + 49733 流式）
+//   · 解码复用 HudVideoPlayer（h264 自愈 + 39733 流式）
 // ══════════════════════════════════════════════
 
 import { useCallback, useEffect, useRef, useState } from 'react'

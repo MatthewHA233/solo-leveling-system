@@ -2,7 +2,7 @@
 // Native Messaging host — 扩展 ↔ 桌面端的桥
 //
 // Chrome 用 stdio + 4 字节小端长度前缀的 JSON 帧和本进程通信；
-// 本进程再用极简 HTTP/1.1 轮询桌面端 127.0.0.1:49733：
+// 本进程再用极简 HTTP/1.1 轮询桌面端 127.0.0.1:39733：
 //   · GET  /api/focus/rules     → 规则有新 revision 就推给扩展
 //   · POST /api/focus/heartbeat → 上报「扩展在线」（本进程存活即扩展已连接，
 //                                   扩展被禁用时 Chrome 会杀掉本进程，心跳自然中断）
@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-const DESKTOP_HOST: &str = "127.0.0.1:49733";
+const DESKTOP_HOST: &str = "127.0.0.1:39733";
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
 fn main() {

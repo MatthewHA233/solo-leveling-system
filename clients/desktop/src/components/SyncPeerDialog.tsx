@@ -304,7 +304,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
       localStorage.setItem('slu.sync.peerUrl', manualUrl)
       const url = new URL(manualUrl.startsWith('http') ? manualUrl : `http://${manualUrl}`)
       const ip = url.hostname
-      const port = Number(url.port || 49733)
+      const port = Number(url.port || 39733)
       const lastBase = `http://${ip}:${port}`
       const link = await addSyncLink(hello.device_id, hello.alias || ip, lastBase)
       setLinks((prev) => {
@@ -667,7 +667,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
               <input
                 value={manualUrl}
                 onChange={(e) => setManualUrl(e.target.value)}
-                placeholder="例：192.168.1.10 或 192.168.1.10:49733"
+                placeholder="例：192.168.1.10 或 192.168.1.10:39733"
                 style={inputStyle}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !manualBusy) connectAndLinkManual() }}
               />

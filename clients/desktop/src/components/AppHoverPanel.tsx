@@ -115,7 +115,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
   useEffect(() => {
     if (!span.group_name) return
     let objUrl: string | null = null
-    fetch(`http://localhost:49733/api/perception/app-icon?name=${encodeURIComponent(span.group_name)}`)
+    fetch(`http://localhost:39733/api/perception/app-icon?name=${encodeURIComponent(span.group_name)}`)
       .then((r) => { if (!r.ok) throw new Error('no icon'); return r.blob() })
       .then((blob) => { objUrl = URL.createObjectURL(blob); setIconUrl(objUrl) })
       .catch(() => setIconUrl(null))
@@ -135,7 +135,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
     } else {
       timeStr = span.start_at.split(' ')[1] ?? '00:00:00'
     }
-    const url = `http://localhost:49733/api/perception/screenshot?date=${dateStr}&time=${encodeURIComponent(timeStr)}`
+    const url = `http://localhost:39733/api/perception/screenshot?date=${dateStr}&time=${encodeURIComponent(timeStr)}`
 
     let objectUrl: string | null = null
     fetch(url)

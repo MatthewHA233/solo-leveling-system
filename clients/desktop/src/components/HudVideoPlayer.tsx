@@ -13,9 +13,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import PrepOverlay from './PrepOverlay'
 
-// 走 axum 49733 的 /api/local-video，不用 Tauri asset.localhost
+// 走 axum 39733 的 /api/local-video，不用 Tauri asset.localhost
 // （asset.localhost 响应漏 Accept-Ranges 头，Chromium 不肯走流式播放，会卡死在初始 buffered 末端）
-const VIDEO_API_BASE = 'http://localhost:49733'
+const VIDEO_API_BASE = 'http://localhost:39733'
 const buildVideoSrc = (path: string) =>
   `${VIDEO_API_BASE}/api/local-video?path=${encodeURIComponent(path)}`
 

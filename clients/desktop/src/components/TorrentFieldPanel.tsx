@@ -969,7 +969,7 @@ function BiliContextCard({ item }: { readonly item: ContextFeedItem }) {
   }
 
   const coverSrc = item.cover_url
-    ? `http://localhost:49733/api/bilibili/cover?url=${encodeURIComponent(item.cover_url)}`
+    ? `http://localhost:39733/api/bilibili/cover?url=${encodeURIComponent(item.cover_url)}`
     : null
 
   const canExpand = Boolean(item.ref_path)
