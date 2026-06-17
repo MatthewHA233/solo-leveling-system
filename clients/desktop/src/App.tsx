@@ -82,6 +82,7 @@ import AppHoverPanel from './components/AppHoverPanel'
 import BiliVideoPanel from './components/BiliVideoPanel'
 import BiliHistoryDialog from './components/BiliHistoryDialog'
 import ModelDialog from './components/ModelDialog'
+import BiliJobsWidget from './components/BiliJobsWidget'
 import SyncPeerDialog, { type SyncLogEntry } from './components/SyncPeerDialog'
 import { useBiliHistory } from './lib/bilibili/useHistory'
 import ActivityTagPalette from './components/ActivityTagPalette'
@@ -3065,6 +3066,10 @@ export default function App() {
         })()}
 
         <div style={{ flex: 1 }} />
+
+        {/* BiliJobsWidget：常驻编排 + 后端进度收集 + 进度面板（无顶栏按钮，不可见；
+            面板由 B站历史弹窗工具栏入口经 solevup:toggle-bili-jobs 打开）。 */}
+        <BiliJobsWidget />
 
         {/* ── 右：图标按钮 ── */}
         <Tooltip content="B站历史记录">

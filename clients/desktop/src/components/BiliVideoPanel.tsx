@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { Download, Check, AlertTriangle, Loader2, FolderOpen, ScanText, Trash2 } from 'lucide-react'
+import { Download, Check, AlertTriangle, Loader2, FolderOpen, ScanText, Trash2, Star } from 'lucide-react'
 import type { BiliSpan } from '../lib/local-api'
 import { theme } from '../theme'
 import { loadConfig } from '../lib/agent/agent-config'
@@ -87,6 +87,8 @@ interface BiliVideoAsset {
   completed_at: string | null
   created_at: string
   updated_at: string
+  /** 是否收藏（转录完成自动置 true；删除资产时随行清除） */
+  is_favorite: boolean
 }
 
 const STAGE_LABEL: Record<DlStage, string> = {
@@ -287,6 +289,12 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
         }}>
           哔哩哔哩
         </span>
+        <span style={{ flex: 1 }} />
+        {span.favorite && (
+          <Tooltip content="已收藏（转录后自动收藏）">
+            <Star size={13} style={{ color: '#ffcf4a', fill: '#ffcf4a', flexShrink: 0 }} />
+          </Tooltip>
+        )}
       </div>
 
       {/* 封面（有本地视频→点击进入影院/外部详情；否则打开浏览器；影院模式下隐藏） */}
@@ -304,7 +312,7 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
           }}
         >
           <img
-            src={`http://localhost:49733/api/bilibili/cover?url=${encodeURIComponent(span.cover)}`}
+            src={`http://localhost:39733/api/bilibili/cover?url=${encodeURIComponent(span.cover)}`}
             alt={span.title}
             style={{
               width: '100%', display: 'block',

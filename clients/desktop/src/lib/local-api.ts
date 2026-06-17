@@ -12,7 +12,7 @@ import type {
   PlannedBlock,
 } from '../types'
 
-const API_BASE = 'http://localhost:49733'
+const API_BASE = 'http://localhost:39733'
 
 interface ApiResponse<T> {
   success: boolean
@@ -490,7 +490,7 @@ function normalizeSyncBase(base: string): string {
   const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
   try {
     const url = new URL(withProtocol)
-    if (!url.port) url.port = '49733'
+    if (!url.port) url.port = '39733'
     return url.toString().replace(/\/$/, '')
   } catch {
     return withProtocol
@@ -645,6 +645,7 @@ export interface BiliSpan {
   downloaded: boolean // bili_video_assets 中存在 done 状态
   file_size_bytes: number | null // 已下载时 = 文件字节数；未下载 = null
   transcribed: boolean // bili_video_assets 中存在 visual 或 audio 转录
+  favorite: boolean // bili_video_assets 中存在 is_favorite=1（转录后自动收藏）
 }
 
 // 日历角标用：某月每日的观看数 / 已下载数 / 已转录数

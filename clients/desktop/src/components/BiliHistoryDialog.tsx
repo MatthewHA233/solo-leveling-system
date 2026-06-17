@@ -6,7 +6,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties } from 'react'
-import { X, RefreshCw, Pause, Play, LogIn, ChevronDown, ChevronLeft, ChevronRight, Settings, FolderOpen, Telescope, Sparkles, Search } from 'lucide-react'
+import { X, RefreshCw, LogIn, ChevronDown, ChevronLeft, ChevronRight, Settings, FolderOpen, Telescope, Sparkles, Search, Check, CheckSquare, ListChecks, Star, Download, ScanText } from 'lucide-react'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -25,6 +25,9 @@ import { loadConfig, updateConfig } from '../lib/agent/agent-config'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import { theme, hud } from '../theme'
 import Tooltip from './Tooltip'
+
+// 转录主题色：橙（取代紫——紫和 ✨ 一样是 AI 视觉重灾区，见 memory feedback-no-sparkles-icon 同类偏好）
+const TRANSCRIBE_COLOR = '#FF9F45'
 
 // ── 布局常量 ──
 const RAIL_X = 86              // 主轴 x 坐标
@@ -221,7 +224,7 @@ export default function BiliHistoryDialog({
   isLoading, error, lastUpdated, countdown, intervalSeconds, isPaused,
   windowClosed, cursor, hasMoreRemote: _hasMoreRemote,
   scanProgress, scanSnapshotBvids, scanLastPage,
-  onPause, onResume, onRefresh, onFullScan, onSetInterval, onClose,
+  onRefresh, onFullScan, onSetInterval, onClose,
   pendingDetail,
 }: Props) {
   const [date, setDate] = useState<Date>(initialDate)
@@ -518,13 +521,55 @@ export default function BiliHistoryDialog({
     return Math.min(n, MAX_COLS)
   }, [containerW])
 
-  const [filter, setFilter] = useState<'all' | 'downloaded' | 'transcribed'>('all')
-  // 切日时清掉过滤
-  useEffect(() => { setFilter('all') }, [dayStr])
+  const [filter, setFilter] = useState<'all' | 'downloaded' | 'transcribed' | 'favorite'>('all')
+  // 任务面板（BiliJobsWidget）活跃数角标：由其广播 'solevup:bili-jobs-active'
+  const [jobsActive, setJobsActive] = useState(0)
+  // 多选批量：勾选模式 + 选中的 bvid
+  const [multiSelect, setMultiSelect] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  // 切日时清掉过滤 + 退出多选
+  useEffect(() => { setFilter('all'); setMultiSelect(false); setSelected(new Set()) }, [dayStr])
+
+  // 监听任务面板活跃数 → 工具栏入口角标
+  useEffect(() => {
+    const onCount = (e: Event) => setJobsActive((e as CustomEvent<{ count: number }>).detail?.count ?? 0)
+    window.addEventListener('solevup:bili-jobs-active', onCount)
+    return () => window.removeEventListener('solevup:bili-jobs-active', onCount)
+  }, [])
+
+  const toggleSelect = useCallback((bvid: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(bvid)) next.delete(bvid); else next.add(bvid)
+      return next
+    })
+  }, [])
+
+  // 批量「下载+转录选中」→ 交给顶栏任务 widget 并发编排（关界面也继续）
+  const collectSelected = useCallback(
+    () => spans.filter((s) => selected.has(s.bvid)).map((s) => ({ bvid: s.bvid, title: s.title, cover: s.cover })),
+    [spans, selected],
+  )
+  // 多选批量：下载 / 下载并转录（走顶部任务列表编排，已下载的自动跳过下载）
+  const runBatch = useCallback((mode: 'download' | 'download_transcribe') => {
+    const videos = collectSelected()
+    if (!videos.length) return
+    window.dispatchEvent(new CustomEvent('solevup:bili-batch-enqueue', { detail: { videos, mode } }))
+    setMultiSelect(false); setSelected(new Set())
+  }, [collectSelected])
+  // 多选批量：收藏（逐个 set_bili_favorite，不进任务队列）
+  const runBatchFavorite = useCallback(() => {
+    const videos = collectSelected()
+    if (!videos.length) return
+    Promise.all(videos.map((v) => invoke('set_bili_favorite', { bvid: v.bvid, favorite: true }).catch(() => {})))
+      .then(() => window.dispatchEvent(new CustomEvent('solevup:bili-assets-changed', { detail: { reason: 'favorite' } })))
+    setMultiSelect(false); setSelected(new Set())
+  }, [collectSelected])
 
   const filteredSpans = useMemo(() => {
     if (filter === 'downloaded')  return spans.filter((s) => s.downloaded)
     if (filter === 'transcribed') return spans.filter((s) => s.transcribed)
+    if (filter === 'favorite')    return spans.filter((s) => s.favorite)
     return spans
   }, [spans, filter])
 
@@ -591,6 +636,7 @@ export default function BiliHistoryDialog({
   const weekday = ['日', '一', '二', '三', '四', '五', '六'][date.getDay()]
   const downloadedCount = spans.filter((s) => s.downloaded).length
   const transcribedCount = spans.filter((s) => s.transcribed).length
+  const favoriteCount = spans.filter((s) => s.favorite).length
   const totalCount = spans.length
 
   return (
@@ -677,10 +723,16 @@ export default function BiliHistoryDialog({
           border-color: ${theme.electricBlue};
           z-index: 5;
         }
+        .bhd-card-ops { opacity: 0; transition: opacity .14s; }
+        .bhd-card:hover .bhd-card-ops { opacity: 1; }
+        .bhd-fav-badge { transition: opacity .14s; }
+        .bhd-card:hover .bhd-fav-badge { opacity: 0; }
+        @keyframes bhd-fav-flow { to { background-position-y: 20px; } }
+        .bhd-card:hover .bhd-fav-meander { animation: bhd-fav-flow 1.2s linear infinite; }
         .bhd-card.downloaded { border-color: ${theme.expGreen}55; }
         .bhd-card.downloaded:hover { border-color: ${theme.expGreen}; }
-        .bhd-card.transcribed { border-color: ${theme.shadowPurple}66; }
-        .bhd-card.transcribed:hover { border-color: ${theme.shadowPurple}; }
+        .bhd-card.transcribed { border-color: ${TRANSCRIBE_COLOR}66; }
+        .bhd-card.transcribed:hover { border-color: ${TRANSCRIBE_COLOR}; }
         @keyframes bhd-flash {
           0%, 100% { box-shadow: inset 4px 0 6px -4px rgba(255,200,0,0.4), 0 0 0 1px rgba(255,200,0,0.4); }
           50%      { box-shadow: inset 4px 0 6px -4px rgba(255,200,0,0.95), 0 0 16px 2px rgba(255,200,0,0.95), 0 0 32px rgba(255,200,0,0.55); }
@@ -801,6 +853,26 @@ export default function BiliHistoryDialog({
                 </button>
               </Tooltip>
             )}
+            {favoriteCount > 0 && (
+              <>
+                <span style={{ color: theme.textMuted, opacity: 0.6 }}>·</span>
+                <Tooltip content={filter === 'favorite' ? '点击取消过滤' : '只看收藏'}>
+                  <button
+                    type="button"
+                    onClick={() => setFilter((f) => f === 'favorite' ? 'all' : 'favorite')}
+                    style={{
+                      ...countChipStyle(filter === 'favorite'),
+                      color: '#ffcf4a',
+                      textShadow: '0 0 6px #ffcf4a88',
+                      borderColor: filter === 'favorite' ? '#ffcf4a99' : 'transparent',
+                      background: filter === 'favorite' ? '#ffcf4a1A' : 'transparent',
+                    }}
+                  >
+                    {favoriteCount} 收藏
+                  </button>
+                </Tooltip>
+              </>
+            )}
             {downloadedCount > 0 && (
               <>
                 <span style={{ color: theme.textMuted, opacity: 0.6 }}>·</span>
@@ -830,10 +902,10 @@ export default function BiliHistoryDialog({
                     onClick={() => setFilter((f) => f === 'transcribed' ? 'all' : 'transcribed')}
                     style={{
                       ...countChipStyle(filter === 'transcribed'),
-                      color: '#C9A8FF',
-                      textShadow: `0 0 6px ${theme.shadowPurple}AA`,
-                      borderColor: filter === 'transcribed' ? `${theme.shadowPurple}99` : 'transparent',
-                      background: filter === 'transcribed' ? `${theme.shadowPurple}1A` : 'transparent',
+                      color: TRANSCRIBE_COLOR,
+                      textShadow: `0 0 6px ${TRANSCRIBE_COLOR}AA`,
+                      borderColor: filter === 'transcribed' ? `${TRANSCRIBE_COLOR}99` : 'transparent',
+                      background: filter === 'transcribed' ? `${TRANSCRIBE_COLOR}1A` : 'transparent',
                     }}
                   >
                     {transcribedCount} 已转录
@@ -846,6 +918,7 @@ export default function BiliHistoryDialog({
 
           <div style={{ flex: 1 }} />
 
+          {/* 任务进度按钮 + 多选切换 均已移至第二行（状态栏右侧） */}
           <Tooltip content="搜索（标题 / UP主 / BV号）">
             <button
               className="bhd-icon-btn"
@@ -945,16 +1018,7 @@ export default function BiliHistoryDialog({
               { value: '300', label: '5min 一次' },
             ]}
           />
-          <div style={{ flex: 1 }} />
-          <Tooltip content={scanActive ? '深度扫描中，已冻结自动同步' : (isPaused ? '继续' : '暂停')}>
-            <button
-              className="bhd-icon-btn"
-              onClick={isPaused ? onResume : onPause}
-              disabled={scanActive}
-            >
-              {isPaused ? <Play size={12} /> : <Pause size={12} />}
-            </button>
-          </Tooltip>
+          {/* 立即同步 + 深度扫描：紧挨同步间隔下拉（暂停同步已移除——意义不大） */}
           <Tooltip content={scanActive ? '深度扫描中，无法立即同步' : '立即同步'}>
             <button className="bhd-icon-btn" onClick={() => { onRefresh(); loadSpans(date) }} disabled={scanActive}>
               <RefreshCw size={12} />
@@ -974,6 +1038,67 @@ export default function BiliHistoryDialog({
             >
               <Telescope size={12} />
             </button>
+          </Tooltip>
+
+          <div style={{ flex: 1 }} />
+
+          {/* 多选：三批量按钮在左侧展开，切换钮钉死最右（点击前后位置不跳） */}
+          {multiSelect && ([
+            { label: '收藏', Icon: Star, color: '#ffcf4a', on: runBatchFavorite },
+            { label: '下载', Icon: Download, color: theme.expGreen, on: () => runBatch('download') },
+            { label: '下载并转录', Icon: ScanText, color: '#FF9F45', on: () => runBatch('download_transcribe') },
+          ].map(({ label, Icon, color, on }) => (
+            <button
+              key={label}
+              type="button"
+              onClick={on}
+              disabled={selected.size === 0}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '3px 9px', fontSize: 11, fontWeight: 600, fontFamily: theme.fontBody,
+                color: selected.size ? color : theme.textMuted,
+                background: selected.size ? `${color}1A` : 'transparent',
+                border: `1px solid ${selected.size ? `${color}88` : theme.hudFrameSoft}`,
+                borderRadius: 4, cursor: selected.size ? 'pointer' : 'default', whiteSpace: 'nowrap',
+              }}
+            >
+              <Icon size={12} /> {label}{selected.size ? ` ${selected.size}` : ''}
+            </button>
+          )))}
+          <Tooltip content={multiSelect ? '退出多选' : '多选'}>
+            <button
+              className="bhd-icon-btn"
+              onClick={() => { setMultiSelect((v) => !v); setSelected(new Set()) }}
+              style={{ color: multiSelect ? theme.electricBlue : undefined }}
+            >
+              <CheckSquare size={12} />
+            </button>
+          </Tooltip>
+          <Tooltip content="下载 / 转录任务进度">
+            <span style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
+              <button
+                type="button"
+                className="bhd-icon-btn"
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect()
+                  window.dispatchEvent(new CustomEvent('solevup:toggle-bili-jobs', {
+                    detail: { rect: { bottom: r.bottom, right: r.right, cx: r.left + r.width / 2 } },
+                  }))
+                }}
+                style={{ color: jobsActive > 0 ? theme.electricBlue : undefined }}
+              >
+                <ListChecks size={12} />
+              </button>
+              {jobsActive > 0 && (
+                <span style={{
+                  position: 'absolute', top: -5, right: -5, minWidth: 14, height: 14, padding: '0 3px',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  borderRadius: 7, background: theme.electricBlue, color: '#02121a',
+                  fontSize: 9, fontWeight: 800, fontFamily: theme.fontMono,
+                  pointerEvents: 'none', boxShadow: '0 0 5px rgba(0,229,255,0.7)', zIndex: 3,
+                }}>{jobsActive}</span>
+              )}
+            </span>
           </Tooltip>
         </div>
 
@@ -1194,6 +1319,9 @@ export default function BiliHistoryDialog({
                   flashing={flashBvid === p.span.bvid}
                   onOpenDetail={() => { setDetailSpan(p.span); setDetailMode(null) }}
                   onHover={(h) => setHoveredId(h ? p.span.bvid : null)}
+                  selectMode={multiSelect}
+                  selected={selected.has(p.span.bvid)}
+                  onToggleSelect={() => toggleSelect(p.span.bvid)}
                 />
               ))}
               {/* HTML 时间标签层（绝对定位，不进 SVG，杜绝裁剪） */}
@@ -1346,7 +1474,7 @@ function FishboneRail({
         const downloaded = p.span.downloaded
         const transcribed = p.span.transcribed
         const isHi = hoveredId === p.span.bvid
-        const hiColor = transcribed ? theme.shadowPurple : (downloaded ? theme.expGreen : theme.electricBlue)
+        const hiColor = transcribed ? TRANSCRIBE_COLOR : (downloaded ? theme.expGreen : theme.electricBlue)
         const color = isHi ? hiColor : 'rgba(255,255,255,0.55)'
         // 走线：从节点 → 右走到 col 专属竖线 → 上走到行上方 lane → 右走到卡顶中线 → 下走入卡片
         // 每个 col 都有专属的竖线 x 和 lane y，避免与其他列重合
@@ -1395,7 +1523,7 @@ function TimeLabels({
         const isHi = hoveredId === p.span.bvid
         const downloaded = p.span.downloaded
         const transcribed = p.span.transcribed
-        const accent = transcribed ? theme.shadowPurple : (downloaded ? theme.expGreen : theme.electricBlue)
+        const accent = transcribed ? TRANSCRIBE_COLOR : (downloaded ? theme.expGreen : theme.electricBlue)
         const { prefix, time } = fmtTimeLabel(p.span.end_at, dayStr)
         return (
           <div
@@ -1491,7 +1619,7 @@ function SearchResultRow({
         overflow: 'hidden',
       }}>
         <img
-          src={`http://localhost:49733/api/bilibili/cover?url=${encodeURIComponent(item.cover)}`}
+          src={`http://localhost:39733/api/bilibili/cover?url=${encodeURIComponent(item.cover)}`}
           alt=""
           loading="lazy"
           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
@@ -1559,6 +1687,7 @@ function Highlight({ text, query }: { text: string; query: string }) {
 // ══════════════════════════════════════════════
 function Card({
   placed, cardW, gap, flashing, onOpenDetail, onHover,
+  selectMode = false, selected = false, onToggleSelect,
 }: {
   placed: PlacedCard
   cardW: number
@@ -1566,6 +1695,9 @@ function Card({
   flashing: boolean
   onOpenDetail: () => void
   onHover: (hovering: boolean) => void
+  selectMode?: boolean
+  selected?: boolean
+  onToggleSelect?: () => void
 }) {
   const { span, col, top } = placed
   const downloaded = span.downloaded
@@ -1575,10 +1707,33 @@ function Card({
     ? 1
     : (span.duration > 0 ? Math.min(1, span.progress / span.duration) : 0)
   const pct = Math.round(progress * 100)
-  const accent = transcribed ? theme.shadowPurple : (downloaded ? theme.expGreen : theme.electricBlue)
-  const TRANSCRIBED_COLOR = theme.shadowPurple
+  const accent = transcribed ? TRANSCRIBE_COLOR : (downloaded ? theme.expGreen : theme.electricBlue)
+  const TRANSCRIBED_COLOR = TRANSCRIBE_COLOR
 
   const left = RAIL_AREA_W + BRANCH_W + col * (cardW + gap)
+
+  // 收藏本地乐观态（span.favorite 来自后端 spans；点击切换后等 assets-changed 重拉对齐）
+  const [fav, setFav] = useState(span.favorite)
+  useEffect(() => { setFav(span.favorite) }, [span.favorite])
+  // 单个视频操作复用批量事件（mode 区分）：下载 / 转录 → 汇入顶部任务列表
+  const enqueueOne = (mode: 'download' | 'transcribe') => {
+    window.dispatchEvent(new CustomEvent('solevup:bili-batch-enqueue', {
+      detail: { videos: [{ bvid: span.bvid, title: span.title, cover: span.cover }], mode },
+    }))
+  }
+  const toggleFav = () => {
+    const next = !fav
+    setFav(next)
+    invoke('set_bili_favorite', { bvid: span.bvid, favorite: next })
+      .then(() => window.dispatchEvent(new CustomEvent('solevup:bili-assets-changed', { detail: { bvid: span.bvid, reason: 'favorite' } })))
+      .catch(() => setFav(!next))
+  }
+  const cardOpBtn: CSSProperties = {
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: 26, height: 26, padding: 0,
+    background: 'rgba(2,6,14,0.82)', border: '1px solid rgba(255,255,255,0.25)',
+    borderRadius: 5, cursor: 'pointer', color: '#e8f6ff', boxShadow: '0 1px 4px rgba(0,0,0,0.5)',
+  }
 
   return (
     <div
@@ -1586,12 +1741,43 @@ function Card({
       style={{
         left, top, width: cardW,
         borderLeft: `3px solid ${accent}`,
-        boxShadow: `inset 4px 0 6px -4px ${accent}88`,
+        boxShadow: selectMode && selected
+          ? `inset 4px 0 6px -4px ${accent}88, 0 0 0 2px ${theme.electricBlue}, 0 0 10px ${theme.electricBlue}88`
+          : `inset 4px 0 6px -4px ${accent}88`,
+        cursor: 'pointer',
+        // 已收藏：让竖线外侧的金回纹边饰能伸出卡片左缘（覆盖 .bhd-card 的 overflow/contain 裁剪）
+        ...(fav && !selectMode ? { overflow: 'visible' as const, contain: 'none' as const } : null),
       }}
-      onClick={onOpenDetail}
+      onClick={selectMode ? onToggleSelect : onOpenDetail}
       onMouseEnter={() => onHover(true)}
       onMouseLeave={() => onHover(false)}
     >
+      {/* 多选勾选框 */}
+      {selectMode && (
+        <span style={{
+          position: 'absolute', top: 6, left: 6, zIndex: 3,
+          width: 18, height: 18, borderRadius: 4,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: selected ? theme.electricBlue : 'rgba(2,6,14,0.82)',
+          border: `1.5px solid ${selected ? theme.electricBlue : 'rgba(255,255,255,0.6)'}`,
+          color: '#02121a', boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
+        }}>
+          {selected && <Check size={13} strokeWidth={3} />}
+        </span>
+      )}
+
+      {/* 已收藏：竖线外侧向外延伸的金回纹边饰（顶底封口）；常驻显示，与封面左下「★已收藏」胶囊一同标识 */}
+      {fav && !selectMode && (
+        <div className="bhd-fav-meander" style={{
+          position: 'absolute', left: -10, top: 0, bottom: 0, width: 9, zIndex: 8,
+          pointerEvents: 'none', boxSizing: 'border-box',
+          borderTop: '2px solid #ffcf4a', borderBottom: '2px solid #ffcf4a',
+          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='20'%3E%3Crect width='9' height='20' fill='%23ffcf4a' opacity='0.1'/%3E%3Cpath d='M2 0 V20 M2 4 H6.5 V16 H4.5 V8 H5.5' stroke='%23ffcf4a' stroke-width='1.1' fill='none'/%3E%3C/svg%3E")`,
+          backgroundRepeat: 'repeat-y',
+          backgroundSize: '9px 20px',
+          filter: 'drop-shadow(0 0 4px rgba(255,207,74,0.55))',
+        }} />
+      )}
       {/* 封面 */}
       <div style={{
         position: 'relative',
@@ -1601,7 +1787,7 @@ function Card({
         overflow: 'hidden',
       }}>
         <img
-          src={`http://localhost:49733/api/bilibili/cover?url=${encodeURIComponent(span.cover)}`}
+          src={`http://localhost:39733/api/bilibili/cover?url=${encodeURIComponent(span.cover)}`}
           alt=""
           loading="lazy"
           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
@@ -1611,7 +1797,7 @@ function Card({
         {/* 背景是封面图，颜色不可控 → 用近黑实底 + 暗色描边阴影保证任何底色都能读清 */}
         {downloaded && (
           <span style={{
-            position: 'absolute', top: 6, left: 6,
+            position: 'absolute', top: 6, left: selectMode ? 28 : 6,
             padding: '2px 7px',
             fontFamily: theme.fontBody,
             fontSize: 10, fontWeight: 700, letterSpacing: 0.5,
@@ -1632,7 +1818,7 @@ function Card({
             fontSize: 10, fontWeight: 700, letterSpacing: 0.5,
             background: 'rgba(2,6,14,0.88)',
             border: `1px solid ${TRANSCRIBED_COLOR}`,
-            color: '#C9A8FF',
+            color: TRANSCRIBE_COLOR,
             textShadow: '0 0 2px #000, 0 0 2px #000, 0 0 4px rgba(0,0,0,0.9)',
             boxShadow: `0 0 6px ${TRANSCRIBED_COLOR}77, 0 1px 2px rgba(0,0,0,0.6)`,
           }}>
@@ -1655,6 +1841,48 @@ function Card({
             return `${fmtClock(watched)} / ${fmtClock(span.duration)}`
           })()}
         </span>
+        {/* 已收藏徽标：封面左下「★ 已收藏」金胶囊；hover 卡片时淡出，让位给下方操作按钮 */}
+        {fav && !selectMode && (
+          <div className="bhd-fav-badge" style={{
+            position: 'absolute', bottom: 6, left: 6, zIndex: 6,
+            display: 'inline-flex', alignItems: 'center', gap: 3,
+            background: 'rgba(26,18,0,0.92)', color: '#ffcf4a',
+            fontSize: 10, fontWeight: 800, letterSpacing: 0.5,
+            padding: '2px 8px', borderRadius: 10,
+            border: '1px solid #ffcf4a', boxShadow: '0 0 8px rgba(255,207,74,0.5)',
+            pointerEvents: 'none',
+          }}>
+            ★ 已收藏
+          </div>
+        )}
+        {/* hover 浮现的操作按钮：收藏 / 下载 / 转录（多选模式下隐藏，留给勾选） */}
+        {!selectMode && (
+          <div
+            className="bhd-card-ops"
+            style={{ position: 'absolute', bottom: 8, left: 6, zIndex: 4, display: 'flex', gap: 5 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Tooltip content={fav ? '取消收藏' : '收藏'}>
+              <button onClick={toggleFav} style={cardOpBtn}>
+                <Star size={13} style={{ fill: fav ? '#ffcf4a' : 'none', color: fav ? '#ffcf4a' : '#e8f6ff' }} />
+              </button>
+            </Tooltip>
+            <Tooltip content={downloaded ? '已下载' : '下载'}>
+              <button onClick={() => enqueueOne('download')} style={cardOpBtn}>
+                <Download size={13} style={{ color: downloaded ? theme.expGreen : '#e8f6ff' }} />
+              </button>
+            </Tooltip>
+            <Tooltip content={!downloaded ? '需先下载' : transcribed ? '重新转录' : '转录'}>
+              <button
+                onClick={() => { if (downloaded) enqueueOne('transcribe') }}
+                disabled={!downloaded}
+                style={{ ...cardOpBtn, opacity: downloaded ? 1 : 0.4, cursor: downloaded ? 'pointer' : 'not-allowed' }}
+              >
+                <ScanText size={13} style={{ color: transcribed ? TRANSCRIBE_COLOR : '#e8f6ff' }} />
+              </button>
+            </Tooltip>
+          </div>
+        )}
         {/* 进度条（看完了自然拉满，无需额外徽标） */}
         <div style={{
           position: 'absolute', bottom: 0, left: 0, right: 0,
@@ -1841,7 +2069,7 @@ function ScanCard({ card }: { card: ScanFeedItem & { id: number; isNew: boolean 
         overflow: 'hidden',
       }}>
         <img
-          src={`http://localhost:49733/api/bilibili/cover?url=${encodeURIComponent(card.cover)}`}
+          src={`http://localhost:39733/api/bilibili/cover?url=${encodeURIComponent(card.cover)}`}
           alt=""
           loading="lazy"
           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
