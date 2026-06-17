@@ -1864,6 +1864,8 @@ pub fn run() {
             bili_get_nav,
             bili_download::enqueue_bili_download,
             bili_download::probe_bili_qualities,
+            bili_download::pause_bili_download,
+            bili_download::cancel_bili_download,
             get_bili_assets_by_bvid,
             get_recent_bili_assets,
             delete_bili_download,

@@ -10,9 +10,10 @@
 // 进度通过 emit("bili-download-progress", DownloadProgress) 推送给前端
 // ══════════════════════════════════════════════
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
@@ -179,6 +180,8 @@ pub struct BiliDownloadState {
     pending_probe: Mutex<Option<oneshot::Sender<Result<QualityProbe, String>>>>,
     /// 可选的 DB 句柄（用于写资产表）；启动时未初始化也不致命
     db: Mutex<Option<Arc<Database>>>,
+    /// 每个下载任务的中断信号（bvid → 0 正常 / 1 暂停 / 2 取消）；download 流循环轮询
+    controls: Mutex<HashMap<String, Arc<AtomicU8>>>,
 }
 
 impl BiliDownloadState {
@@ -189,6 +192,7 @@ impl BiliDownloadState {
             pending_meta: Mutex::new(None),
             pending_probe: Mutex::new(None),
             db: Mutex::new(None),
+            controls: Mutex::new(HashMap::new()),
         }
     }
 
@@ -244,6 +248,12 @@ pub async fn enqueue_bili_download(
         asset_id,
     };
 
+    // 为本次下载建/重置中断信号（0=正常）；暂停/取消命令据此打断 download 流循环
+    {
+        let mut c = state.controls.lock().await;
+        c.insert(bvid.clone(), Arc::new(AtomicU8::new(0)));
+    }
+
     // 单锁内：入队 + 决定是否拉新 worker（与 worker 的"取空即退出"互斥，避免任务搁浅）
     let (position, spawn) = {
         let mut g = state.inner.lock().await;
@@ -276,6 +286,30 @@ pub async fn enqueue_bili_download(
         });
     }
 
+    Ok(())
+}
+
+/// 暂停下载（信号=1）：download 流循环检测后停止；恢复 = 前端重新 enqueue（A 方案：从头重下）
+#[tauri::command]
+pub async fn pause_bili_download(
+    bvid: String,
+    state: tauri::State<'_, Arc<BiliDownloadState>>,
+) -> Result<(), String> {
+    if let Some(c) = state.controls.lock().await.get(&bvid) {
+        c.store(1, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// 取消下载（信号=2）：download 流循环检测后停止 + 删已下文件 + 标记资产取消
+#[tauri::command]
+pub async fn cancel_bili_download(
+    bvid: String,
+    state: tauri::State<'_, Arc<BiliDownloadState>>,
+) -> Result<(), String> {
+    if let Some(c) = state.controls.lock().await.get(&bvid) {
+        c.store(2, Ordering::Relaxed);
+    }
     Ok(())
 }
 
@@ -378,11 +412,27 @@ async fn worker_loop(state: Arc<BiliDownloadState>, app: AppHandle) {
         };
 
         log::info!("[BiliDL] 开始下载 {}", job.bvid);
-        if let Err(e) = process_job(&state, &app, &job).await {
-            log::warn!("[BiliDL] 任务失败 {}: {}", job.bvid, e);
-            emit_error(&app, &job.bvid, &e);
-            if let (Some(asset_id), Some(db)) = (job.asset_id.as_ref(), state.db().await) {
-                let _ = db.fail_bili_asset(asset_id, &e).await;
+        match process_job(&state, &app, &job).await {
+            Ok(()) => {}
+            Err(e) if e == "__PAUSED__" => {
+                log::info!("[BiliDL] 已暂停 {}", job.bvid);
+                emit_stage(&app, &job.bvid, "paused", 0.0, Some("已暂停"));
+            }
+            Err(e) if e == "__CANCELLED__" => {
+                log::info!("[BiliDL] 已取消 {}", job.bvid);
+                let temp = std::env::temp_dir().join(format!("bili-dl-{}", job.bvid));
+                let _ = tokio::fs::remove_dir_all(&temp).await;
+                if let (Some(asset_id), Some(db)) = (job.asset_id.as_ref(), state.db().await) {
+                    let _ = db.fail_bili_asset(asset_id, "已取消").await;
+                }
+                emit_stage(&app, &job.bvid, "cancelled", 0.0, Some("已取消"));
+            }
+            Err(e) => {
+                log::warn!("[BiliDL] 任务失败 {}: {}", job.bvid, e);
+                emit_error(&app, &job.bvid, &e);
+                if let (Some(asset_id), Some(db)) = (job.asset_id.as_ref(), state.db().await) {
+                    let _ = db.fail_bili_asset(asset_id, &e).await;
+                }
             }
         }
     }
@@ -393,6 +443,10 @@ async fn process_job(
     app: &AppHandle,
     job: &DownloadJob,
 ) -> Result<(), String> {
+    // 本次下载的中断信号（enqueue 已建；缺失则给个常态默认）
+    let control = state.controls.lock().await.get(&job.bvid).cloned()
+        .unwrap_or_else(|| Arc::new(AtomicU8::new(0)));
+
     // 1. 拿 playurl
     let (qn_request, max_id) = quality_to_qn(&job.quality);
     emit_stage(
@@ -463,6 +517,7 @@ async fn process_job(
         &job.bvid,
         "downloading_video",
         app,
+        &control,
     )
     .await?;
 
@@ -473,6 +528,7 @@ async fn process_job(
         &job.bvid,
         "downloading_audio",
         app,
+        &control,
     )
     .await?;
 
@@ -631,6 +687,7 @@ async fn download_with_fallback(
     bvid: &str,
     stage: &str,
     app: &AppHandle,
+    control: &Arc<AtomicU8>,
 ) -> Result<(), String> {
     if candidates.is_empty() {
         return Err("无候选下载链接".into());
@@ -646,11 +703,12 @@ async fn download_with_fallback(
             app, bvid, stage, 0.0,
             Some(&format!("尝试 {} ...", host)),
         );
-        match download_with_progress(url, path, bvid, stage, app).await {
+        match download_with_progress(url, path, bvid, stage, app, control).await {
             Ok(()) => {
                 log::info!("[BiliDL] {} {} 使用 host {} 下载成功", bvid, stage, host);
                 return Ok(());
             }
+            Err(e) if e == "__PAUSED__" || e == "__CANCELLED__" => return Err(e), // 用户中断：不换 host 直接上抛
             Err(e) => {
                 log::warn!("[BiliDL] {} {} host {} 失败: {}", bvid, stage, host, e);
                 last_err = format!("host {} 失败: {}", host, e);
@@ -670,6 +728,7 @@ async fn download_with_progress(
     bvid: &str,
     stage: &str,
     app: &AppHandle,
+    control: &Arc<AtomicU8>,
 ) -> Result<(), String> {
     let referer = format!("https://www.bilibili.com/video/{}", bvid);
 
@@ -708,6 +767,12 @@ async fn download_with_progress(
     const MIN_SPEED_BPS: u64 = 200 * 1024;
 
     while let Some(chunk) = stream.next().await {
+        // 用户中断检查（暂停/取消）：取消先关文件句柄再删 part（Windows 文件占用）
+        match control.load(Ordering::Relaxed) {
+            2 => { drop(file); let _ = tokio::fs::remove_file(path).await; return Err("__CANCELLED__".into()); }
+            1 => return Err("__PAUSED__".into()),
+            _ => {}
+        }
         let chunk = chunk.map_err(|e| format!("接收数据失败: {}", e))?;
         file.write_all(&chunk)
             .await

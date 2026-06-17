@@ -12,16 +12,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
-import { Loader2, X, RotateCcw, ListChecks, Check, AlertTriangle } from 'lucide-react'
+import { Loader2, X, RotateCcw, ListChecks, Check, AlertTriangle, Pause, Play } from 'lucide-react'
 import { theme } from '../theme'
 import { getDashScopeApiKey, loadConfig } from '../lib/agent/agent-config'
+import Tooltip from './Tooltip'
 
-type DlStage = 'queued' | 'fetching_meta' | 'downloading_video' | 'downloading_audio' | 'merging' | 'done' | 'error'
+type DlStage = 'queued' | 'fetching_meta' | 'downloading_video' | 'downloading_audio' | 'merging' | 'done' | 'error' | 'paused' | 'cancelled'
 type TrStage = 'queued' | 'extracting' | 'uploading' | 'transcribing' | 'done' | 'error'
 
 const DL_LABEL: Record<string, string> = {
   queued: '下载排队', fetching_meta: '解析流', downloading_video: '下视频', downloading_audio: '下音频',
-  merging: '合并', done: '已下载', error: '下载失败',
+  merging: '合并', done: '已下载', error: '下载失败', paused: '已暂停', cancelled: '已取消',
 }
 const TR_LABEL: Record<string, string> = {
   queued: '转录排队', extracting: '抽音轨', uploading: '上传', transcribing: '识别中', done: '已转录', error: '转录失败',
@@ -203,6 +204,9 @@ export default function BiliJobsWidget() {
   const removeJob = (bvid: string) => {
     setJobs((prev) => { const next = new Map(prev); next.delete(bvid); return next })
   }
+  // 暂停/取消下载：信号给后端 download 流循环（A 方案：恢复=onRetryDl 从头重下；取消会删已下文件）
+  const pauseDl = (bvid: string) => { invoke('pause_bili_download', { bvid }).catch(() => {}) }
+  const cancelDl = (bvid: string) => { invoke('cancel_bili_download', { bvid }).catch(() => {}) }
 
   // 顶栏不再渲染按钮：本组件常驻 App 仅负责「批量编排 + 后端进度收集 + 进度面板」，
   // 面板由 B站历史弹窗工具栏的入口经 'solevup:toggle-bili-jobs' 打开（编排逻辑因此关弹窗也继续）。
@@ -241,7 +245,7 @@ export default function BiliJobsWidget() {
               </span>
               {activeCount > 0 && <span style={{ fontSize: 10, color: theme.textMuted, fontFamily: theme.fontMono }}>进行中 {activeCount}</span>}
               <span style={{ flex: 1 }} />
-              <button onClick={() => setOpen(false)} className="bhd-icon-btn" style={{ width: 20, height: 20 }}><X size={12} /></button>
+              <Tooltip content="关闭"><button onClick={() => setOpen(false)} className="bhd-icon-btn" style={{ width: 20, height: 20 }}><X size={12} /></button></Tooltip>
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', padding: hasAny ? 6 : 24 }}>
@@ -251,7 +255,7 @@ export default function BiliJobsWidget() {
                 </div>
               )}
               {list.map((j) => (
-                <JobRow key={j.bvid} job={j} onRemove={removeJob} onRetryTr={retryTranscribe} onRetryDl={retryDownload} />
+                <JobRow key={j.bvid} job={j} onRemove={removeJob} onRetryTr={retryTranscribe} onRetryDl={retryDownload} onPauseDl={pauseDl} onCancelDl={cancelDl} />
               ))}
             </div>
           </div>
@@ -276,6 +280,8 @@ function jobProgress(job: Job): { percent: number; color: string; text: string; 
   const tr = job.trStage
   if (dl && dl !== 'done') {
     if (dl === 'error') return { percent: 100, color: theme.dangerRed, text: '下载失败', state: 'error' }
+    if (dl === 'cancelled') return { percent: 0, color: theme.textMuted, text: '已取消', state: 'error' }
+    if (dl === 'paused') return { percent: job.dlPercent ?? 0, color: '#ffb454', text: '已暂停', state: 'error' }
     const p = job.dlPercent ?? 0
     return { percent: p, color: TRACE_BRIGHT, text: `${DL_LABEL[dl] ?? dl}${p > 0 ? ' ' + Math.round(p) + '%' : ''}`, state: 'run' }
   }
@@ -288,15 +294,22 @@ function jobProgress(job: Job): { percent: number; color: string; text: string; 
   return { percent: 0, color: TRACE_BRIGHT, text: '等待', state: 'run' }
 }
 
-function JobRow({ job, onRemove, onRetryTr, onRetryDl }: {
+function JobRow({ job, onRemove, onRetryTr, onRetryDl, onPauseDl, onCancelDl }: {
   job: Job
   onRemove: (bvid: string) => void
   onRetryTr: (j: Job) => void
   onRetryDl: (j: Job) => void
+  onPauseDl: (bvid: string) => void
+  onCancelDl: (bvid: string) => void
 }) {
   const pr = jobProgress(job)
   const dlErr = job.dlStage === 'error'
   const trErr = job.trStage === 'error'
+  // 下载进行中（未到 done/转录/暂停/取消）显示 暂停+取消；暂停态显示 继续+取消；其余显示 移除记录
+  const dlRunning = !!job.dlStage && !['done', 'error', 'paused', 'cancelled'].includes(job.dlStage) && !job.trStage
+  const dlPaused = job.dlStage === 'paused'
+  // 转录已提交 ASR、进行中不可中断 → 不显示移除，避免"转录中就能移除"的误导
+  const trRunning = !!job.trStage && job.trStage !== 'done' && job.trStage !== 'error'
   return (
     <div style={{
       display: 'flex', gap: 8, padding: 7, marginBottom: 5, borderRadius: 5,
@@ -322,9 +335,23 @@ function JobRow({ job, onRemove, onRetryTr, onRetryDl }: {
             flex: 1, minWidth: 0, fontSize: 11.5, color: theme.textPrimary,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>{job.title || job.bvid}</span>
-          {dlErr && <button onClick={() => onRetryDl(job)} title="重试下载" style={iconMini}><RotateCcw size={10} /></button>}
-          {trErr && job.filePath && <button onClick={() => onRetryTr(job)} title="重试转录" style={iconMini}><RotateCcw size={10} /></button>}
-          <button onClick={() => onRemove(job.bvid)} title="移除记录" style={iconMini}><X size={11} /></button>
+          {dlRunning ? (
+            <>
+              <Tooltip content="暂停下载"><button onClick={() => onPauseDl(job.bvid)} style={iconMini}><Pause size={10} /></button></Tooltip>
+              <Tooltip content="取消下载（删已下文件）"><button onClick={() => onCancelDl(job.bvid)} style={iconMini}><X size={11} /></button></Tooltip>
+            </>
+          ) : dlPaused ? (
+            <>
+              <Tooltip content="继续（从头重新下载）"><button onClick={() => onRetryDl(job)} style={iconMini}><Play size={10} /></button></Tooltip>
+              <Tooltip content="取消"><button onClick={() => onCancelDl(job.bvid)} style={iconMini}><X size={11} /></button></Tooltip>
+            </>
+          ) : trRunning ? null : (
+            <>
+              {dlErr && <Tooltip content="重试下载"><button onClick={() => onRetryDl(job)} style={iconMini}><RotateCcw size={10} /></button></Tooltip>}
+              {trErr && job.filePath && <Tooltip content="重试转录"><button onClick={() => onRetryTr(job)} style={iconMini}><RotateCcw size={10} /></button></Tooltip>}
+              <Tooltip content="移除记录"><button onClick={() => onRemove(job.bvid)} style={iconMini}><X size={11} /></button></Tooltip>
+            </>
+          )}
         </div>
         <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.09)', overflow: 'hidden' }}>
           <div style={{ height: '100%', borderRadius: 2, background: pr.color, width: `${pr.percent}%`, transition: 'width 0.25s, background 0.25s' }} />
