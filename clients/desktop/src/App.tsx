@@ -505,6 +505,7 @@ export default function App() {
     text: string
     sourceLabel: string | null
     refPath: string | null   // B 站卡的转录文件路径（注视即锚定）
+    linkBroken: boolean      // 想法卡断链/损坏（指向视频但锚点没回填到视频）
   } | null>(null)
   // 同步一份 state 给 ChatPanel 显示"注视中"提示条
   const [gazeTarget, setGazeTarget] = useState<{
@@ -2116,6 +2117,7 @@ export default function App() {
         text?: string
         sourceLabel?: string | null
         refPath?: string | null
+        linkBroken?: boolean
         clear?: boolean
       }
       if (d.clear) {
@@ -2129,6 +2131,7 @@ export default function App() {
           text: d.text,
           sourceLabel: d.sourceLabel ?? null,
           refPath: d.refPath ?? null,
+          linkBroken: d.linkBroken ?? false,
         }
         setGazeTarget({ kind: d.kind, title: d.title ?? null, text: d.text })
         // B 站卡的 text 只是 150 字摘要：后台拉全文转录替换，

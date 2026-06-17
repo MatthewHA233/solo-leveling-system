@@ -3234,10 +3234,18 @@ impl Database {
         let conn = self.conn.lock().await;
         let mut out: Vec<ContextFeedItem> = Vec::new();
 
-        // 想法卡
+        // 想法卡（带断链判定：指向视频 + 自己有锚点 + 视频侧零回填 → link_broken=1）
         {
             let mut stmt = conn.prepare(
-                "SELECT id, text, source_label, source_card_id, created_at FROM context_cards WHERE kind = 'thought'"
+                "SELECT c.id, c.text, c.source_label, c.source_card_id, c.created_at, \
+                        CASE WHEN c.source_card_id IS NOT NULL \
+                             AND EXISTS(SELECT 1 FROM context_anchor_bindings b \
+                                        JOIN binding_anchors ba ON ba.binding_id = b.id \
+                                        WHERE b.card_id = c.id) \
+                             AND NOT EXISTS(SELECT 1 FROM context_anchor_bindings vb \
+                                            WHERE vb.card_id = c.source_card_id AND vb.source_card_id = c.id) \
+                        THEN 1 ELSE 0 END AS link_broken \
+                 FROM context_cards c WHERE c.kind = 'thought'"
             ).map_err(|e| e.to_string())?;
             let rows = stmt.query_map([], |row| {
                 Ok(ContextFeedItem {
@@ -3251,6 +3259,7 @@ impl Database {
                     source_label: row.get::<_, Option<String>>(2)?,
                     source_card_id: row.get::<_, Option<String>>(3)?,
                     created_at: row.get::<_, String>(4)?,
+                    link_broken: row.get::<_, i64>(5)? != 0,
                 })
             }).map_err(|e| e.to_string())?;
             for r in rows.flatten() { out.push(r); }
@@ -3286,6 +3295,7 @@ impl Database {
                     source_label: None,
                     source_card_id: None,
                     created_at: at,
+                    link_broken: false,
                 })
             }).map_err(|e| e.to_string())?;
             for r in rows.flatten() { out.push(r); }
@@ -4661,6 +4671,9 @@ pub struct ContextFeedItem {
     pub source_label: Option<String>,  // thought 的语境标签
     pub source_card_id: Option<String>, // thought 的来源语境卡 id（语境标签点击跳转用）
     pub created_at: String,
+    // 断链标志（仅 thought）：source_card_id 指向了视频、自己也有锚点句，
+    // 但视频侧零回填（没有 card_id=该视频 且 source_card_id=本卡 的绑定）→ 锚点没传到视频。
+    pub link_broken: bool,
 }
 
 // ── 锚点（语境片段 ↔ 原话 ↔ 关键词）──

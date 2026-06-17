@@ -806,6 +806,7 @@ export interface ContextFeedItem {
   readonly source_label: string | null     // thought 语境标签
   readonly source_card_id: string | null   // thought 来源语境卡 id（语境标签点击跳转用）
   readonly created_at: string
+  readonly link_broken: boolean             // thought 断链：指向了视频但视频侧未回填锚点（损坏）
 }
 
 export async function fetchContextFeed(): Promise<ContextFeedItem[]> {

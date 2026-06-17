@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Hash, Image as ImageIcon, Type, List, ListOrdered, AtSign, Send, Check, ChevronDown, ChevronUp, Pencil, Plus } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Hash, Image as ImageIcon, Type, List, ListOrdered, AtSign, Send, Check, ChevronDown, ChevronUp, Pencil, Plus, Unlink } from 'lucide-react'
 import { hud, theme } from '../theme'
 import { HudFrameSkeleton, HudTabButton, CornerArt, ChartHeaderFrame } from './hud'
 import type { ContextFeedItem, AnchorBinding, AnchorRef, AnchorCategory } from '../lib/local-api'
@@ -458,6 +459,7 @@ function FlomoMain({
         text: card.text,
         sourceLabel: card.source_label,
         refPath: card.ref_path, // B 站卡的转录文件路径（注视即锚定要后台拉全文）
+        linkBroken: card.link_broken, // 想法卡断链：注视时让 AI 也知道这张是损坏的
       },
     }))
   }, [hoveredCard, cards])
@@ -613,6 +615,174 @@ interface DraftAnchor { id: string | null; keyword: string; category: AnchorCate
 
 const CAT_ORDER: readonly AnchorCategory[] = ['motive', 'view', 'practice']
 
+const linkModalBtn = (c: string): CSSProperties => ({
+  flex: 1, padding: '8px 14px', background: 'transparent',
+  border: `1px solid ${c}`, color: c,
+  fontFamily: theme.fontMono, fontSize: 12, letterSpacing: '0.08em',
+})
+
+// ── 链接修复弹层：断链想法卡 → 点选目标视频的转录句子 → 把锚点句回填到视频侧 binding ──
+function LinkToVideoModal({ thought, anchors, onClose, onDone }: {
+  readonly thought: ContextFeedItem
+  readonly anchors: readonly AnchorRef[]
+  readonly onClose: () => void
+  readonly onDone: () => void
+}) {
+  const [video, setVideo] = useState<ContextFeedItem | null>(null)
+  const [sentences, setSentences] = useState<TranscriptSentence[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [pickedOffset, setPickedOffset] = useState<number | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  // 目标视频从 feed 里按 source_card_id(bvid) 找，再拉它的转录句子
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const feed = await fetchContextFeed()
+        const v = feed.find((c) => c.kind === 'bili_transcript' && c.id === thought.source_card_id)
+        if (!alive) return
+        if (!v || !v.ref_path) {
+          setError('目标视频未找到或还没有转录（可能已删除 / 未下载转录）。')
+          setLoading(false)
+          return
+        }
+        setVideo(v)
+        const list = await fetchBiliTranscriptSentences(v.ref_path)
+        if (!alive) return
+        setSentences(list ?? [])
+        setLoading(false)
+      } catch (e) {
+        console.error('[Link] 加载视频转录失败', e)
+        if (alive) { setError('加载视频转录失败。'); setLoading(false) }
+      }
+    })()
+    return () => { alive = false }
+  }, [thought.source_card_id])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const filtered = useMemo(() => {
+    if (!sentences) return []
+    const q = query.trim()
+    return q ? sentences.filter((s) => s.text.includes(q)) : sentences
+  }, [sentences, query])
+
+  const confirm = async () => {
+    if (pickedOffset === null || !sentences || !video) return
+    const s = sentences.find((x) => x.offset === pickedOffset)
+    if (!s) return
+    setSaving(true)
+    try {
+      // 视频侧补一条 binding：区段=点选句、锚点句沿用想法卡（同名同类后端复用同一锚点）、source_card_id 回指想法卡
+      await addBinding({
+        card_id: video.id,
+        start_pos: s.offset,
+        end_pos: s.offset + s.text.length,
+        selected_text: s.text,
+        user_speech: s.text,
+        anchors: anchors.map((a) => ({ keyword: a.keyword, category: a.category })),
+        source_card_id: thought.id,
+      })
+      window.dispatchEvent(new CustomEvent('solevup:context-updated'))
+      onDone()
+    } catch (e) {
+      console.error('[Link] 回填锚点到视频失败', e)
+      setSaving(false)
+    }
+  }
+
+  const canConfirm = pickedOffset !== null && !saving
+
+  return createPortal(
+    <>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 99990, background: 'rgba(2,6,16,0.78)' }} />
+      <div onClick={(e) => e.stopPropagation()} style={{
+        position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+        width: 'min(580px, 92vw)', maxHeight: '82vh', zIndex: 99991,
+        background: theme.hudFill, border: `1px solid ${theme.hudFrame}`,
+        boxShadow: `0 18px 60px rgba(0,0,0,0.7), 0 0 40px ${theme.hudHalo}`,
+        padding: '20px 22px 18px', fontFamily: theme.fontBody,
+        display: 'flex', flexDirection: 'column', gap: 12,
+      }}>
+        <div style={{
+          fontFamily: theme.fontDisplay, fontSize: 11, fontWeight: 700, letterSpacing: 2,
+          color: theme.electricBlue, textShadow: `0 0 8px ${theme.electricBlue}AA`, textTransform: 'uppercase',
+        }}>
+          ▸ 重新链接到视频
+        </div>
+        <div style={{ fontSize: 12, color: theme.textSecondary, lineHeight: 1.5 }}>
+          把这条想法的锚点句，挂到下面视频转录里你点选的那一句上：
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+          {anchors.map((a) => <AnchorChip key={a.id} anchor={a} />)}
+        </div>
+
+        {loading && <div style={{ color: theme.textMuted, fontSize: 12, padding: '20px 0' }}>加载视频转录中…</div>}
+        {error && <div style={{ color: theme.dangerRed, fontSize: 12, padding: '12px 0' }}>{error}</div>}
+
+        {!loading && !error && video && (
+          <>
+            <div style={{ fontSize: 12, color: theme.textMuted }}>
+              目标视频：<span style={{ color: theme.textPrimary }}>{video.title ?? video.id}</span>
+            </div>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索转录句子（按关键词快速定位）…"
+              style={{
+                background: 'rgba(0,12,28,0.5)', border: `1px solid ${theme.hudFrameSoft}`,
+                color: theme.textPrimary, padding: '6px 10px', fontFamily: theme.fontBody, fontSize: 12, outline: 'none',
+              }}
+            />
+            <div style={{
+              overflowY: 'auto', maxHeight: '42vh', display: 'flex', flexDirection: 'column', gap: 2,
+              border: `1px solid ${theme.hudFrameSoft}`, padding: 6,
+            }}>
+              {filtered.length === 0 ? (
+                <div style={{ color: theme.textMuted, fontSize: 12, padding: 10 }}>没有匹配的句子。</div>
+              ) : filtered.map((s) => {
+                const picked = s.offset === pickedOffset
+                return (
+                  <button key={s.offset} type="button" onClick={() => setPickedOffset(s.offset)} style={{
+                    display: 'flex', gap: 8, textAlign: 'left', cursor: 'pointer',
+                    background: picked ? `${theme.electricBlue}22` : 'transparent',
+                    border: `1px solid ${picked ? theme.electricBlue : 'transparent'}`,
+                    color: picked ? theme.textPrimary : theme.textSecondary,
+                    padding: '5px 8px', fontFamily: theme.fontBody, fontSize: 12.5, lineHeight: 1.55,
+                  }}>
+                    <span style={{ flexShrink: 0, color: theme.textMuted, fontFamily: theme.fontMono, fontSize: 10.5 }}>
+                      {s.start !== null ? fmtStamp(s.start) : '--:--'}
+                    </span>
+                    <span>{s.text}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </>
+        )}
+
+        <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+          <button type="button" onClick={onClose} style={{ ...linkModalBtn(theme.textSecondary), cursor: 'pointer' }}>取消</button>
+          <button type="button" onClick={() => void confirm()} disabled={!canConfirm} style={{
+            ...linkModalBtn(theme.electricBlue),
+            opacity: canConfirm ? 1 : 0.4, cursor: canConfirm ? 'pointer' : 'default',
+          }}>
+            {saving ? '链接中…' : '确认链接到此句'}
+          </button>
+        </div>
+      </div>
+    </>,
+    document.body,
+  )
+}
+
 function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
   readonly item: ContextFeedItem
   readonly onRemove: (id: string) => void
@@ -623,6 +793,7 @@ function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
   const [draft, setDraft] = useState('')
   const [draftAnchors, setDraftAnchors] = useState<DraftAnchor[]>([])
   const [saving, setSaving] = useState(false)
+  const [linkOpen, setLinkOpen] = useState(false)
 
   const anchors = useMemo<AnchorRef[]>(() => {
     const seen = new Set<string>()
@@ -727,6 +898,14 @@ function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
             <span style={styles.memoSourceText}>· {item.source_label}</span>
           )
         )}
+        {/* 断链：指向了视频，但视频侧没标记锚点句（锚点没传到语境库）→ 醒目「损坏」，点击重新链接修复 */}
+        {item.link_broken && (
+          <Tooltip content="已指向该视频，但视频侧未标记锚点句——锚点没传到语境库（断链）。点击重新链接修复。" display="flex">
+            <button type="button" onClick={() => setLinkOpen(true)} style={styles.memoBroken}>
+              <Unlink size={9} /> 损坏
+            </button>
+          </Tooltip>
+        )}
         <span style={{ flex: 1 }} />
         {!editing && (
           <span style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -810,6 +989,14 @@ function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
             ))}
           </div>
         )
+      )}
+      {linkOpen && (
+        <LinkToVideoModal
+          thought={item}
+          anchors={anchors}
+          onClose={() => setLinkOpen(false)}
+          onDone={() => setLinkOpen(false)}
+        />
       )}
     </article>
   )
@@ -1457,6 +1644,22 @@ const styles: Record<string, CSSProperties> = {
     whiteSpace: 'nowrap',
     minWidth: 0,
     flexShrink: 1,
+  },
+  memoBroken: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 3,
+    flexShrink: 0,
+    color: '#ff6b6b',
+    background: 'rgba(255,107,107,0.12)',
+    border: '1px solid rgba(255,107,107,0.42)',
+    borderRadius: 3,
+    padding: '0 5px',
+    height: 15,
+    fontSize: 9.5,
+    fontFamily: theme.fontMono,
+    letterSpacing: '0.06em',
+    cursor: 'pointer',
   },
   memoDelete: {
     width: 18,

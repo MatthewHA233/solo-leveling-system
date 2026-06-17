@@ -5,6 +5,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { fetchPerceptionSpans, fetchBiliSpans, fetchActivityBlocks, fetchActivityPalette, fetchContextFeed, fetchCardBindings, addContextCard, addBinding, updateContextCard, updateAnchorKeyword } from '../local-api'
 import type { PerceptionSpan, BiliSpan, AnchorCategory } from '../local-api'
+import { fetchBiliTranscriptSentences } from '../bili-transcript'
 import type { ActivityPalette } from '../../types'
 import type { ToolDefinition } from '../llm/types'
 
@@ -762,6 +763,130 @@ const editFile: Tool = {
   },
 }
 
+// ── ListBrokenThoughtCards（列出断链/损坏的想法卡）──
+
+const listBrokenThoughtCards: Tool = {
+  definition: {
+    type: 'function',
+    function: {
+      name: 'ListBrokenThoughtCards',
+      description:
+        '列出所有「断链/损坏」的想法卡：这些卡指向了某个视频（有 source_card_id）、自己也有锚点句，但锚点句没有回填到那个视频（语境库视频侧没标记）。' +
+        '返回每张的 card_id、时间、指向的视频标题、正文预览、锚点句。' +
+        '主人说"修一下损坏的卡 / 把断链的都修了"时先用这个列出，再对每张用 GetVideoTranscript 读视频转录选句、用 RepairBrokenThoughtCard 回填。',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  async execute() {
+    const feed = await fetchContextFeed()
+    const broken = feed.filter(c => c.kind === 'thought' && c.link_broken)
+    if (broken.length === 0) return '没有损坏的想法卡——所有指向视频的想法卡，锚点都已正常标记到对应视频。'
+    const lines = await Promise.all(broken.slice(0, 30).map(async c => {
+      const bs = await fetchCardBindings(c.id).catch(() => [])
+      const seen = new Set<string>()
+      const anchors = bs.flatMap(b => b.anchors).filter(a => { if (seen.has(a.id)) return false; seen.add(a.id); return true })
+      const vid = feed.find(v => v.kind === 'bili_transcript' && v.id === c.source_card_id)
+      const vidLabel = vid ? `《${vid.title ?? vid.id}》` : `${c.source_card_id}（视频可能已删 / 未转录）`
+      const anchorText = anchors.length ? anchors.map(a => `[${a.category}] ${a.keyword}`).join('；') : '（无锚点句）'
+      return `card_id: ${c.id}\n  ${c.created_at.slice(0, 16)} · 指向视频：${vidLabel}\n  正文：${c.text.slice(0, 50)}…\n  锚点句：${anchorText}`
+    }))
+    return `共 ${broken.length} 张损坏想法卡：\n\n${lines.join('\n\n')}`
+  },
+}
+
+// ── GetVideoTranscript（读视频语境卡的转录句子，供修复时选句）──
+
+const getVideoTranscript: Tool = {
+  definition: {
+    type: 'function',
+    function: {
+      name: 'GetVideoTranscript',
+      description:
+        '读取某个 B 站视频语境卡的转录句子（修复断链想法卡时用来挑选对应原文句）。' +
+        'card_id 传视频语境卡 id（也就是想法卡的 source_card_id，BV 开头）。' +
+        '强烈建议带 keyword（与锚点句相关的词）过滤——长视频句子很多。挑好后把整句原文传给 RepairBrokenThoughtCard 的 video_sentence。',
+      parameters: {
+        type: 'object',
+        properties: {
+          card_id: { type: 'string', description: '视频语境卡 id（BV 开头，= 想法卡的 source_card_id）' },
+          keyword: { type: 'string', description: '按句子文本过滤的关键词（建议传，缩小范围）' },
+        },
+        required: ['card_id'],
+      },
+    },
+  },
+  async execute(args) {
+    const cid = typeof args.card_id === 'string' ? args.card_id.trim() : ''
+    if (!cid) return '请提供视频语境卡 card_id（想法卡的 source_card_id）'
+    const feed = await fetchContextFeed()
+    const v = feed.find(c => c.kind === 'bili_transcript' && c.id.startsWith(cid))
+    if (!v || !v.ref_path) return `未找到该视频语境卡或它没有转录：${cid}`
+    const sents = (await fetchBiliTranscriptSentences(v.ref_path)) ?? []
+    if (sents.length === 0) return '该视频没有转录句子'
+    const kw = typeof args.keyword === 'string' ? args.keyword.trim() : ''
+    const hit = kw ? sents.filter(s => s.text.includes(kw)) : sents
+    if (hit.length === 0) return `转录里没有包含「${kw}」的句子，换个词或不带 keyword 再试`
+    const shown = hit.slice(0, 40)
+    const more = hit.length > 40 ? `\n\n（共 ${hit.length} 句匹配，只显示前 40 句；用更具体的 keyword 缩小）` : ''
+    return `视频《${v.title ?? v.id}》转录${kw ? `（含「${kw}」）` : ''}：\n${shown.map(s => `- ${s.text}`).join('\n')}${more}`
+  },
+}
+
+// ── RepairBrokenThoughtCard（把断链想法卡的锚点句回填到视频选中句）──
+
+const repairBrokenThoughtCard: Tool = {
+  definition: {
+    type: 'function',
+    function: {
+      name: 'RepairBrokenThoughtCard',
+      description:
+        '修复一张断链想法卡：把它现有的锚点句回填到它指向的视频里你挑的那一句上（视频侧建绑定 → 视频被标记、卡不再损坏）。' +
+        '先用 GetVideoTranscript 读视频转录、挑出与锚点句语义对应的整句，把那句原文（可只给有辨识度的一段子串）传给 video_sentence。锚点句用想法卡现有的，不用你重写。',
+      parameters: {
+        type: 'object',
+        properties: {
+          thought_card_id: { type: 'string', description: '要修复的想法卡 card_id' },
+          video_sentence: { type: 'string', description: '在目标视频转录里挑中的那一句（原文，或其中一段有辨识度的子串，用于定位）' },
+        },
+        required: ['thought_card_id', 'video_sentence'],
+      },
+    },
+  },
+  async execute(args) {
+    const tid = typeof args.thought_card_id === 'string' ? args.thought_card_id.trim() : ''
+    const needle = typeof args.video_sentence === 'string' ? args.video_sentence.trim() : ''
+    if (!tid || !needle) return '需要 thought_card_id 和 video_sentence 两个参数'
+    const feed = await fetchContextFeed()
+    const thought = feed.find(c => c.kind === 'thought' && c.id.startsWith(tid))
+    if (!thought) return `未找到想法卡：${tid}`
+    if (!thought.source_card_id) return `想法卡 ${thought.id} 没有指向任何视频（source_card_id 为空），无法回填`
+    const video = feed.find(c => c.kind === 'bili_transcript' && c.id === thought.source_card_id)
+    if (!video || !video.ref_path) return `想法卡指向的视频未找到或没有转录：${thought.source_card_id}`
+    const bs = await fetchCardBindings(thought.id).catch(() => [])
+    const seen = new Set<string>()
+    const anchors = bs.flatMap(b => b.anchors).filter(a => { if (seen.has(a.id)) return false; seen.add(a.id); return true })
+    if (anchors.length === 0) return `想法卡 ${thought.id} 自己没有锚点句，没有可回填的内容`
+    const sents = (await fetchBiliTranscriptSentences(video.ref_path)) ?? []
+    const target = sents.find(s => s.text.includes(needle)) ?? sents.find(s => needle.includes(s.text))
+    if (!target) return `视频转录里没有匹配「${needle.slice(0, 20)}…」的句子，请用 GetVideoTranscript 确认原文后重试`
+    const existing = await fetchCardBindings(video.id).catch(() => [])
+    if (existing.some(b => b.start_pos === target.offset && b.end_pos === target.offset + target.text.length)) {
+      return '该句已有锚点绑定，无需重复回填（换一句，或这张卡可能已修复）'
+    }
+    await addBinding({
+      card_id: video.id,
+      start_pos: target.offset,
+      end_pos: target.offset + target.text.length,
+      selected_text: target.text,
+      user_speech: target.text,
+      anchors: anchors.map(a => ({ keyword: a.keyword, category: a.category })),
+      source_card_id: thought.id,
+    })
+    window.dispatchEvent(new CustomEvent('solevup:context-updated'))
+    return `已修复：想法卡「${thought.text.slice(0, 16)}…」的 ${anchors.length} 条锚点句，已回填到视频《${video.title ?? video.id}》的「${target.text.slice(0, 20)}…」一句上。这张卡不再损坏。`
+  },
+}
+
 // ── Registry ──
 
 const ALL_TOOLS: readonly Tool[] = [
@@ -774,6 +899,9 @@ const ALL_TOOLS: readonly Tool[] = [
   updateThoughtCard,
   getAnchors,
   updateAnchor,
+  listBrokenThoughtCards,
+  getVideoTranscript,
+  repairBrokenThoughtCard,
   readFile,
   writeFile,
   editFile,

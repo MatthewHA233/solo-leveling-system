@@ -313,6 +313,7 @@ export interface DynamicContextParams {
     title: string | null
     text: string
     sourceLabel: string | null
+    linkBroken?: boolean   // 想法卡断链/损坏：指向了视频但锚点句没回填到视频
   }
 }
 
@@ -384,10 +385,15 @@ export function buildDynamicContext(params: DynamicContextParams = {}): string {
     const guide = f.kind === 'thought'
       ? '。要看完整正文/锚点就调 GetThoughtCards 并把这个 card_id 传给 card_id 参数（不要塞进 keyword）；要改它就用这个 card_id 调 UpdateThoughtCard'
       : '。它是 B 站视频的语境卡（不是想法卡，不要用 GetThoughtCards/UpdateThoughtCard 查改它），下面就是视频转录正文，直接依据它回答；若要调 CreateThoughtCard 替主人沉淀，把这个 card_id 传给 source_card_id（连同 source_label）'
+    // 断链想法卡：让 AI 知道它损坏 + 怎么修
+    const brokenNote = (f.kind === 'thought' && f.linkBroken)
+      ? '\n\n⚠ 这张想法卡当前是「断链/损坏」状态：它指向了某个视频，但它的锚点句没有回填到那个视频（语境库视频侧没标记）。' +
+        '主人让你修复时，先用 GetVideoTranscript（传这个 card_id）读那个视频的转录、挑出和锚点句语义对应的一句，再用 RepairBrokenThoughtCard 回填；也可用 ListBrokenThoughtCards 一次性列出所有损坏卡再逐个修。'
+      : ''
     sections.push(
       `# 主人当前选中的卡片\n主人在洪流域用鼠标锁定了一张${head}，card_id: ${f.cardId}。` +
       `主人说"这张卡片 / 这个视频 / 这条 memo"时指的就是它，正文已附在下面，一般不用再查` +
-      `${guide}：\n${body}`,
+      `${guide}：\n${body}${brokenNote}`,
     )
   }
 
