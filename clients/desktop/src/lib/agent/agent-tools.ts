@@ -790,7 +790,12 @@ const listBrokenThoughtCards: Tool = {
       const anchorText = anchors.length ? anchors.map(a => `[${a.category}] ${a.keyword}`).join('；') : '（无锚点句）'
       return `card_id: ${c.id}\n  ${c.created_at.slice(0, 16)} · 指向视频：${vidLabel}\n  正文：${c.text.slice(0, 50)}…\n  锚点句：${anchorText}`
     }))
-    return `共 ${broken.length} 张损坏想法卡：\n\n${lines.join('\n\n')}`
+    return `共 ${broken.length} 张损坏想法卡。修每一张就照这三步（全程只用下面每张的 card_id，不用再找 BV 号 / 不用 GetThoughtCards / 不用查 B 站历史）：\n` +
+      `① GetVideoTranscript(card_id=该卡 card_id, keyword=它锚点句里的一个关键词) → 读它来源视频的转录；\n` +
+      `② 从转录里挑出和锚点句语义最贴的一整句；\n` +
+      `③ RepairBrokenThoughtCard(thought_card_id=该卡 card_id, video_sentence=挑中的那句原文)。\n` +
+      `重要：想法卡常是主人看完视频后的主观发挥，转录里不一定有字面对应句——挑语义"最接近"的一整句就行，不必完美。` +
+      `同一张卡用 GetVideoTranscript 换关键词最多 2 次，再找不到就拿目前读到的最相关一句直接 RepairBrokenThoughtCard，绝不要为一张卡反复搜十几次。\n\n${lines.join('\n\n')}`
   },
 }
 
@@ -802,14 +807,14 @@ const getVideoTranscript: Tool = {
     function: {
       name: 'GetVideoTranscript',
       description:
-        '读取某个 B 站视频语境卡的转录句子（修复断链想法卡时用来挑选对应原文句）。' +
-        'card_id 传视频语境卡 id（也就是想法卡的 source_card_id，BV 开头）。' +
-        '强烈建议带 keyword（与锚点句相关的词）过滤——长视频句子很多。挑好后把整句原文传给 RepairBrokenThoughtCard 的 video_sentence。',
+        '读取某张损坏想法卡「来源视频」的转录句子（修复时用来挑对应原文句）。' +
+        'card_id 直接传那张损坏想法卡的 card_id 即可——工具会自动找到它指向的视频（也可传视频语境卡 BV id）。不用你自己去找 BV 号。' +
+        '强烈建议带 keyword（锚点句里的一个关键词，不要传整句）过滤——长视频句子很多。挑好后把整句原文传给 RepairBrokenThoughtCard 的 video_sentence。',
       parameters: {
         type: 'object',
         properties: {
-          card_id: { type: 'string', description: '视频语境卡 id（BV 开头，= 想法卡的 source_card_id）' },
-          keyword: { type: 'string', description: '按句子文本过滤的关键词（建议传，缩小范围）' },
+          card_id: { type: 'string', description: '损坏想法卡 card_id（推荐，自动找来源视频）；也可传视频语境卡 BV id' },
+          keyword: { type: 'string', description: '锚点句里的一个关键词（单词，别传整句），缩小范围' },
         },
         required: ['card_id'],
       },
@@ -817,10 +822,15 @@ const getVideoTranscript: Tool = {
   },
   async execute(args) {
     const cid = typeof args.card_id === 'string' ? args.card_id.trim() : ''
-    if (!cid) return '请提供视频语境卡 card_id（想法卡的 source_card_id）'
+    if (!cid) return '请提供 card_id（损坏想法卡 id，或视频语境卡 BV id）'
     const feed = await fetchContextFeed()
-    const v = feed.find(c => c.kind === 'bili_transcript' && c.id.startsWith(cid))
-    if (!v || !v.ref_path) return `未找到该视频语境卡或它没有转录：${cid}`
+    // 先按视频卡 id 找；找不到就按想法卡找 → 取它 source_card_id 指向的来源视频
+    let v = feed.find(c => c.kind === 'bili_transcript' && c.id.startsWith(cid))
+    if (!v) {
+      const th = feed.find(c => c.kind === 'thought' && c.id.startsWith(cid))
+      if (th?.source_card_id) v = feed.find(c => c.kind === 'bili_transcript' && c.id === th.source_card_id)
+    }
+    if (!v || !v.ref_path) return `未找到对应视频或它没有转录：${cid}`
     const sents = (await fetchBiliTranscriptSentences(v.ref_path)) ?? []
     if (sents.length === 0) return '该视频没有转录句子'
     const kw = typeof args.keyword === 'string' ? args.keyword.trim() : ''
@@ -828,7 +838,8 @@ const getVideoTranscript: Tool = {
     if (hit.length === 0) return `转录里没有包含「${kw}」的句子，换个词或不带 keyword 再试`
     const shown = hit.slice(0, 40)
     const more = hit.length > 40 ? `\n\n（共 ${hit.length} 句匹配，只显示前 40 句；用更具体的 keyword 缩小）` : ''
-    return `视频《${v.title ?? v.id}》转录${kw ? `（含「${kw}」）` : ''}：\n${shown.map(s => `- ${s.text}`).join('\n')}${more}`
+    return `视频《${v.title ?? v.id}》转录${kw ? `（含「${kw}」）` : ''}：\n${shown.map(s => `- ${s.text}`).join('\n')}${more}` +
+      `\n\n（挑和锚点句语义最接近的一整句即可，不必字面完全匹配；找不到完美的就选目前最相关一句去 RepairBrokenThoughtCard，别再反复换词搜这一张）`
   },
 }
 
