@@ -123,22 +123,55 @@ function freeIntervalAt(
 export function layoutBallFlow(
   ax: number, topY: number, text: string,
   obstacles: readonly Obstacle[], worldW: number,
+  card?: Obstacle | null,
 ): PlacedLine[] {
   const prep = prepareWithSegments(text, FONT_BALL)
   const out: PlacedLine[] = []
   let cursor = { segmentIndex: 0, graphemeIndex: 0 }
   let y = topY
+  // 整块同列：第一行在球正下方贴锚点定下「列心 colCx」，后续行一律对齐它——
+  // 同一条锚点句的多行垂直堆成一列、整块跟着球走，绝不让某行被避让甩到很远（左右撕裂）。
+  let colCx: number | null = null
   for (let guard = 0; guard < MAX_FLOW_LINES; guard++) {
-    const { L, R } = freeIntervalAt(ax, y, y + BALL_LH, obstacles, worldW)
+    // 折行可用宽：首行按球 ax 处空隙，后续行按列心处空隙（窄处自然折更多行，但横向不甩散）
+    const probe = colCx ?? ax
+    const { L, R } = freeIntervalAt(probe, y, y + BALL_LH, obstacles, worldW)
     const availW = Math.max(MIN_LINE_W, Math.min(BALL_MAXW, R - L))
     const line = layoutNextLine(prep, cursor, availW)
     if (!line) break // 文本排完
     const lw = line.width
-    // 居中夹在 [L,R]、尽量贴近锚点；区间比行还窄就居中（接受两侧轻微越界）
-    const cx = (R - L) <= lw ? (L + R) / 2 : Math.max(L + lw / 2, Math.min(R - lw / 2, ax))
+    if (colCx === null) {
+      // 首行：球正下方自由区间里贴锚点居中，定为整列列心
+      colCx = (R - L) <= lw ? (L + R) / 2 : Math.max(L + lw / 2, Math.min(R - lw / 2, ax))
+    }
+    // 整列对齐列心，只做世界边界钳制（不为障碍横向甩开 → 多行始终在一起、跟着球）
+    const cx = Math.max(WORLD_MARGIN + lw / 2, Math.min(worldW - WORLD_MARGIN - lw / 2, colCx))
     out.push({ text: line.text, cx, y, w: lw })
     cursor = line.end
     y += BALL_LH
+  }
+  // 整列横移避开详情卡片：只有真正压到卡片的标签才整体就近平移出去——
+  // 移动量 ≤ 一个卡片宽（绝不像逐行避让那样飘到很远），就近一侧越界就换另一侧，
+  // 两侧都放不下（极少数深埋卡片中心的）才维持原位被遮。整块平移 → 多行依旧对齐、跟着球。
+  if (card && out.length > 0) {
+    let minX = Infinity
+    let maxX = -Infinity
+    for (const ln of out) {
+      if (ln.y + BALL_LH > card.y0 && ln.y < card.y1) {
+        if (ln.cx - ln.w / 2 < minX) minX = ln.cx - ln.w / 2
+        if (ln.cx + ln.w / 2 > maxX) maxX = ln.cx + ln.w / 2
+      }
+    }
+    if (minX < maxX && minX < card.x1 && maxX > card.x0) {
+      const shiftL = (card.x0 - OBST_GAP) - maxX   // ≤0：整列挪到卡片左外
+      const shiftR = (card.x1 + OBST_GAP) - minX   // ≥0：整列挪到卡片右外
+      const inBounds = (sh: number) => out.every((ln) =>
+        ln.cx + sh - ln.w / 2 >= WORLD_MARGIN && ln.cx + sh + ln.w / 2 <= worldW - WORLD_MARGIN)
+      const near = Math.abs(shiftL) <= Math.abs(shiftR) ? shiftL : shiftR
+      const far = near === shiftL ? shiftR : shiftL
+      const shift = inBounds(near) ? near : inBounds(far) ? far : null
+      if (shift !== null) return out.map((ln) => ({ ...ln, cx: ln.cx + shift }))
+    }
   }
   return out
 }

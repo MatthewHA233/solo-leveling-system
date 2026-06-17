@@ -105,7 +105,7 @@ const PANEL_MAX_H = 'min(72%, 520px)' // CSS maxHeight（字符串）
 const PANEL_MAX_H_PX = 520     // panelH 未实测时的垂直钳制估值
 const PANEL_GAP = 44           // 球缘 → 面板缘水平间隙（也是连接折线伸展空间）
 const PANEL_MARGIN = 12        // 面板离容器边的最小留白
-const CARD_BG_ALPHA = 0.6      // 玻璃底透明度（旧 0.92 → 0.6，更透）
+const CARD_BG_ALPHA = 0.42     // 玻璃底默认更透（看清背后地图）；hover 只加 HUD 边框、不改透明
 const CARD_BLUR = 13           // backdrop blur 半径(px)
 const CARD_SAT = 130           // backdrop saturate(%)，让背后地图透出活色
 const BRACKET_LEN = 13         // 四角括号臂长
@@ -779,8 +779,7 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
     return { sx, sy, ballScreenR, left, top, arrowSide, ballOut }
   })()
 
-  // 悬浮卡片的世界坐标矩形（屏幕矩形逆变换回世界）：选中节点的标签要避让它。
-  // arrowSide='left' → 卡片在球右侧（标签往左让）；'right' → 卡片在左侧（往右让）
+  // 悬浮卡片的世界坐标矩形（屏幕矩形逆变换回世界）：球标签整列「横移」避开它（不当避让障碍 → 不被推远）
   const cardWorldRect = (() => {
     if (!calloutPlace || calloutPlace.ballOut) return null
     const { w: cw, h: ch } = hostSize
@@ -796,16 +795,30 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
       y0: toWY(calloutPlace.top), y1: toWY(calloutPlace.top + effH),
     }
   })()
+  const cardX0 = cardWorldRect?.x0, cardX1 = cardWorldRect?.x1, cardY0 = cardWorldRect?.y0, cardY1 = cardWorldRect?.y1
+  const selectedId = selected?.anchor.id ?? null
 
   // 标签整块避让排版：只对「文本」避障——山体半透明、峰形不算障碍；障碍集 =
-  // 山名文本盒（地标固定）+ 弹出的悬浮卡片（选中时）+ 已放置的球标签块（球-球互避）。
-  // 字号在世界单位、重叠缩放不变 → 只依赖世界量 + fontReady + showBallLabels + 卡片矩形，
-  // 不依赖 view 平移（平移不重算；卡片开时其世界矩形随之变，按基本量入依赖）、不依赖 hoverBall。
-  const cardX0 = cardWorldRect?.x0, cardX1 = cardWorldRect?.x1, cardY0 = cardWorldRect?.y0, cardY1 = cardWorldRect?.y1
+  // 山名文本盒（地标固定）+ 已放置的球标签块（球-球互避）。
+  // 弹出的详情卡片只让「选中球 + 它附近一圈的球」整列横移避开（卡片就在选中球旁，只有这一圈会压到它）；
+  // 离得远的球一律不避、留在球旁——节点多时全体避卡片太复杂，只保卡片附近这一小圈整洁即可。
   const labelLayout = useMemo<{ mountainWraps: Map<string, WrappedLabel>; ballLines: Map<string, PlacedLine[]> }>(() => {
     const mountainWraps = new Map<string, WrappedLabel>()
     const ballLines = new Map<string, PlacedLine[]>()
     if (!data || !fontReady) return { mountainWraps, ballLines }
+    const card: Obstacle | null = (cardX0 != null && cardX1 != null && cardY0 != null && cardY1 != null)
+      ? { x0: cardX0, x1: cardX1, y0: cardY0, y1: cardY1 } : null
+    // 避让范围按「离选中球的距离」判：x 很窄、y 宽松——卡片紧贴选中球纵向延展，
+    // 只有跟选中球几乎同一竖列（x 近）、上下各种高度（y 宽）的标签才让它避卡片；
+    // x 离选中球远的一律不避（即使压到卡片也留原位被遮，不被拉来挪动、飘过去）。
+    const selPos = selectedId ? (positions.get(selectedId) ?? null) : null
+    // x 避让阈值 = 选中球↔卡片连线的 x 跨度（球心 → 卡片近缘）+ 本节点半径：
+    // 恰好「整个球塞得进选中球与卡片之间缝隙」的节点才算压到、才让它避；再偏一点缝隙放得下就不避。
+    // 缝隙(spanX)与节点半径(r)都是世界量 → 缩放时缝隙相对节点大小会随之放大缩小（这正是想要的）。
+    const spanX = (selPos && cardX0 != null && cardX1 != null)
+      ? (cardX0 >= selPos.x ? cardX0 - selPos.x : cardX1 <= selPos.x ? selPos.x - cardX1 : 0)
+      : 0
+    const NEAR_DY = 150  // y 宽松：离选中球纵向 ≤150 都算（卡片高）
     const obstacles: Obstacle[] = []
     for (const c of clusters) {
       const name = clusterNames.get(c.hash) ?? '起名中…'
@@ -818,11 +831,7 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
         y0: c.cy + MOUNT_ANCHOR_DY - 9, y1: c.cy + MOUNT_ANCHOR_DY + (nameLines - 1) * MOUNT_LH + 3,
       })
     }
-    // 悬浮卡片也是障碍（选中时弹出）：所有球标签都避开它
-    if (cardX0 != null && cardX1 != null && cardY0 != null && cardY1 != null) {
-      obstacles.push({ x0: cardX0, x1: cardX1, y0: cardY0, y1: cardY1 })
-    }
-    // 球标签：按绑定数降序放置（重要的先占位）；整块避让，放完把本块各行加入障碍 → 球-球互避
+    // 球标签：按绑定数降序放置（重要的先占位）；整列避山名 + 整块横移避卡片，放完把各行加入障碍 → 球-球互避
     if (showBallLabels) {
       const ordered = [...data.nodes].sort((a, b) => b.bindings.length - a.bindings.length)
       for (const n of ordered) {
@@ -830,13 +839,16 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
         if (!p) continue
         const r = ballRadius(n.bindings.length)
         const topY = p.y + r + BALL_GAP
-        const placed = layoutBallFlow(p.x, topY, n.anchor.keyword, obstacles, WORLD_W)
+        const near = !!(card && selPos
+          && Math.abs(p.x - selPos.x) < spanX + r
+          && Math.abs(p.y - selPos.y) < NEAR_DY)
+        const placed = layoutBallFlow(p.x, topY, n.anchor.keyword, obstacles, WORLD_W, near ? card : null)
         ballLines.set(n.anchor.id, placed)
         placed.forEach((ln) => obstacles.push({ x0: ln.cx - ln.w / 2, x1: ln.cx + ln.w / 2, y0: ln.y, y1: ln.y + BALL_LH }))
       }
     }
     return { mountainWraps, ballLines }
-  }, [data, clusters, clusterNames, positions, showBallLabels, fontReady, cardX0, cardX1, cardY0, cardY1])
+  }, [data, clusters, clusterNames, positions, showBallLabels, fontReady, cardX0, cardX1, cardY0, cardY1, selectedId])
 
   // 悬浮焦点（山或球）：用于等高线的局部逐层点亮
   const hoverFocus = (() => {
@@ -1020,44 +1032,23 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
                 onMouseEnter={() => setHoverBall(n.anchor.id)}
                 onMouseLeave={() => setHoverBall((prev) => (prev === n.anchor.id ? null : prev))}
               />
-              {/* 球标签：放大态用逐行流式排版的避让位置（hover 只改金色高亮、位置不跳）；
-                  缩小态没算避让时，hover 才退化为球正下方即时居中 */}
-              {/* active = 悬浮或选中（卡片展开）。两者标签都显示且金色高亮 */}
-              {(active || showBallLabels) && (() => {
-                const highlight = active // 悬浮或卡片展开 → 文字金色高亮
+              {/* 非高亮球标签：高亮(active)标签移到「山名之上、山体之下」的专门层画，这里只画非高亮 */}
+              {showBallLabels && !active && (() => {
                 const placed = labelLayout.ballLines.get(n.anchor.id)
-                if (placed) {
-                  return placed.map((ln, li) => (
-                    <text
-                      key={li}
-                      x={ln.cx - p.x}
-                      y={(ln.y - p.y) + BALL_LH * 0.8}
-                      textAnchor="middle"
-                      fill={highlight ? '#f4d896' : theme.textMuted}
-                      fontSize={8}
-                      fontFamily={theme.fontBody}
-                      pointerEvents="none"
-                      style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.85)', strokeWidth: 2.5 }}
-                    >
-                      {ln.text}
-                    </text>
-                  ))
-                }
-                if (!hovered) return null
-                // 缩小态悬浮：无避让结果，球正下方即时居中
-                const lines = fontReady ? measureBall(n.anchor.keyword).lines : splitTwoLines(n.anchor.keyword, 13)
-                return lines.map((line, li) => (
+                if (!placed) return null
+                return placed.map((ln, li) => (
                   <text
                     key={li}
-                    y={r + 10 + li * BALL_LH}
+                    x={ln.cx - p.x}
+                    y={(ln.y - p.y) + BALL_LH * 0.8}
                     textAnchor="middle"
-                    fill="#f4d896"
+                    fill={theme.textMuted}
                     fontSize={8}
                     fontFamily={theme.fontBody}
                     pointerEvents="none"
                     style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.85)', strokeWidth: 2.5 }}
                   >
-                    {line}
+                    {ln.text}
                   </text>
                 ))
               })()}
@@ -1065,12 +1056,71 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
           )
         })}
 
-        {/* 山（簇）：实心双面地标 + AI 起的主题名。最后画 → 压在球与球标签之上（地标层级最高）*/}
+        {/* 山名文本层：先于高亮球标签画 → 高亮锚点句能盖过山名看清；纯展示，交互在下方山体图标层 */}
+        {clusters.map((c) => {
+          const hot = hoverCluster === c.hash || focusedCluster === c.hash
+          const m = labelLayout.mountainWraps.get(c.hash)
+          const lines = m ? m.lines : splitTwoLines(clusterNames.get(c.hash) ?? '起名中…', 10)
+          return (
+            <g key={`mname-${c.hash}`} transform={`translate(${c.cx}, ${c.cy})`} pointerEvents="none">
+              {lines.map((line, li) => (
+                <text
+                  key={li}
+                  y={16 + li * MOUNT_LH}
+                  textAnchor="middle"
+                  fill={hot ? '#f4d896' : '#e6f2fc'}
+                  fontSize={11.5}
+                  fontWeight={600}
+                  fontFamily={theme.fontBody}
+                  style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.88)', strokeWidth: 3 }}
+                >
+                  {line}
+                </text>
+              ))}
+            </g>
+          )
+        })}
+
+        {/* 高亮球标签层：画在山名之上 → 选中/悬浮的锚点句盖过山名看得清；但被下面山体图标层压住（低于山体图标）*/}
+        {data.nodes.map((n) => {
+          const hovered = hoverBall === n.anchor.id
+          const active = selected?.anchor.id === n.anchor.id || hovered
+          if (!active) return null
+          const p = positions.get(n.anchor.id)
+          if (!p) return null
+          const r = ballRadius(n.bindings.length) * (hovered ? 1.35 : 1)
+          const placed = labelLayout.ballLines.get(n.anchor.id)
+          const lines = placed
+            ? placed
+            : (hovered
+              ? (fontReady ? measureBall(n.anchor.keyword).lines : splitTwoLines(n.anchor.keyword, 13))
+                .map((text, li) => ({ text, cx: p.x, y: p.y + r + 10 + li * BALL_LH - BALL_LH * 0.8, w: 0 }))
+              : [])
+          return (
+            <g key={`hl-${n.anchor.id}`} transform={`translate(${p.x}, ${p.y})`} pointerEvents="none">
+              {lines.map((ln, li) => (
+                <text
+                  key={li}
+                  x={ln.cx - p.x}
+                  y={(ln.y - p.y) + BALL_LH * 0.8}
+                  textAnchor="middle"
+                  fill="#f4d896"
+                  fontSize={8}
+                  fontFamily={theme.fontBody}
+                  style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.85)', strokeWidth: 2.5 }}
+                >
+                  {ln.text}
+                </text>
+              ))}
+            </g>
+          )
+        })}
+
+        {/* 山体图标层：最后画、压在最上（含高亮标签）—— 三角是纯地标符号，盖住文本不损失信息（低于它=高亮文本仍清晰）*/}
         {clusters.map((c) => {
           const s = mountainSize(c.members.length)
           const h = s * 0.95
           const hot = hoverCluster === c.hash || focusedCluster === c.hash
-          const name = clusterNames.get(c.hash)
           return (
             <g
               key={c.hash}
@@ -1100,25 +1150,6 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
               />
               {/* 右侧暗面，给山体一点体积感 */}
               <path d={`M ${s * 0.32},${-h} L ${s},0 L 0,0 Z`} fill="rgba(10,24,40,0.30)" />
-              {(() => {
-                // 山名：地标，居中渲染（不动）。fontReady 后用 Pretext 真实折行，否则 splitTwoLines 占位
-                const m = labelLayout.mountainWraps.get(c.hash)
-                const lines = m ? m.lines : splitTwoLines(name ?? '起名中…', 10)
-                return lines.map((line, li) => (
-                  <text
-                    key={li}
-                    y={16 + li * MOUNT_LH}
-                    textAnchor="middle"
-                    fill={hot ? '#f4d896' : '#e6f2fc'}
-                    fontSize={11.5}
-                    fontWeight={600}
-                    fontFamily={theme.fontBody}
-                    style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.88)', strokeWidth: 3 }}
-                  >
-                    {line}
-                  </text>
-                ))
-              })()}
             </g>
           )
         })}
@@ -1215,7 +1246,8 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
           容器未测量/位置缺失 → 退化固定右上角；节点完全移出可视区 → 隐藏（保留 selected，回到视野自动重现）*/}
       {selected && !calloutPlace && (
         <AnchorDetail key={selected.anchor.id} node={selected} cardById={cardById} cardRef={cardRef}
-          onClose={() => setSelected(null)} onJumpToCard={onJumpToCard} placement={null} arrowSide="left" />
+          onClose={() => setSelected(null)} onJumpToCard={onJumpToCard} placement={null} arrowSide="left"
+          nodeHovered={hoverBall === selected.anchor.id} />
       )}
       {selected && calloutPlace && !calloutPlace.ballOut && (
         <>
@@ -1231,7 +1263,8 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
           />
           <AnchorDetail key={selected.anchor.id} node={selected} cardById={cardById} cardRef={cardRef}
             onClose={() => setSelected(null)} onJumpToCard={onJumpToCard}
-            placement={{ left: calloutPlace.left, top: calloutPlace.top }} arrowSide={calloutPlace.arrowSide} />
+            placement={{ left: calloutPlace.left, top: calloutPlace.top }} arrowSide={calloutPlace.arrowSide}
+            nodeHovered={hoverBall === selected.anchor.id} />
         </>
       )}
     </div>
@@ -1302,7 +1335,7 @@ function catShort(cat: AnchorCategory): string {
   return cat === 'motive' ? '动机' : cat === 'view' ? '观点' : '实践'
 }
 
-function AnchorDetail({ node, cardById, cardRef, onClose, onJumpToCard, placement, arrowSide }: {
+function AnchorDetail({ node, cardById, cardRef, onClose, onJumpToCard, placement, arrowSide, nodeHovered = false }: {
   readonly node: AnchorNode
   readonly cardById: Map<string, ContextFeedItem>
   readonly cardRef: Ref<HTMLDivElement>
@@ -1311,9 +1344,13 @@ function AnchorDetail({ node, cardById, cardRef, onClose, onJumpToCard, placemen
   readonly placement: { left: number; top: number } | null
   // 收起条所在侧 = 朝向节点的那一侧：'left' = 面板在球右侧（条在左缘）/ 'right' = 面板在球左侧（条在右缘）
   readonly arrowSide: 'left' | 'right'
+  // 鼠标是否正悬在「这张卡对应的节点」上（父级 hoverBall===selected）；与卡片自身 hover 一起触发 HUD 边框
+  readonly nodeHovered?: boolean
 }) {
   const c = ANCHOR_CAT_COLOR[node.anchor.category]
   const [editing, setEditing] = useState(false)
+  const [cardHovered, setCardHovered] = useState(false)
+  const hudOn = cardHovered || nodeHovered  // 鼠标在卡片或节点上 → 浮出 HUD 边框（否则只是透明玻璃卡）
   const [draft, setDraft] = useState(node.anchor.keyword)
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
@@ -1381,15 +1418,21 @@ function AnchorDetail({ node, cardById, cardRef, onClose, onJumpToCard, placemen
         ref={cardRef}
         onWheel={(e) => e.stopPropagation()}        // 防穿透：在面板上滚动不触发地图缩放
         onPointerDown={(e) => e.stopPropagation()}  // 防穿透：在面板上按下不触发地图平移
+        onMouseEnter={() => setCardHovered(true)}
+        onMouseLeave={() => setCardHovered(false)}
         style={{
           ...styles.calloutCard,
-          borderColor: `${c}59`,
-          boxShadow: `0 16px 46px rgba(0,0,0,0.5), 0 0 22px ${c}33, inset 0 1px 0 rgba(255,255,255,0.05)`,
+          // 默认：弱中性细边，只留玻璃感、不抢镜；hover 节点/卡片才点亮成类别色 HUD 边框 + 光晕
+          borderColor: hudOn ? `${c}aa` : 'rgba(150,200,255,0.14)',
+          boxShadow: hudOn
+            ? `0 16px 46px rgba(0,0,0,0.5), 0 0 22px ${c}55, inset 0 1px 0 rgba(255,255,255,0.06)`
+            : '0 16px 40px rgba(0,0,0,0.45)',
+          transition: 'border-color 0.18s, box-shadow 0.18s',
           // 从节点侧延展打开（arrowSide='left' 面板在球右侧→从左缘展开；'right' 反之）
           animation: `${arrowSide === 'left' ? 'afCalloutRevealL' : 'afCalloutRevealR'} 0.3s cubic-bezier(0.22,1,0.36,1)`,
         }}
       >
-        <CornerBrackets color={c} />
+        {hudOn && <CornerBrackets color={c} />}
 
         {/* 收起条在朝向节点一侧（左缘 / 右缘） */}
         {arrowSide === 'left' && collapseBar}
