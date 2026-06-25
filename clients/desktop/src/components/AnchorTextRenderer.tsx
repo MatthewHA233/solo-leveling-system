@@ -217,9 +217,14 @@ export default function AnchorTextRenderer({ text, bindings, onRemoveBinding }: 
     measure()
     const container = containerRef.current
     if (!container) return
-    const ro = new ResizeObserver(measure)
+    // rAF 节流：一帧内多次 resize 合并成一次测量（避免 getBoundingClientRect 风暴 / 抖动）
+    let raf = 0
+    const ro = new ResizeObserver(() => {
+      if (raf) return
+      raf = requestAnimationFrame(() => { raf = 0; measure() })
+    })
     ro.observe(container)
-    return () => ro.disconnect()
+    return () => { if (raf) cancelAnimationFrame(raf); ro.disconnect() }
   }, [segments, ranges, phraseBindingIds])
 
   const showTip = (rs: AnchorRange[], el: HTMLElement) => {

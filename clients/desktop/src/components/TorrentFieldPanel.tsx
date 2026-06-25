@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { Hash, Image as ImageIcon, Type, List, ListOrdered, AtSign, Send, Check, ChevronDown, ChevronUp, Pencil, Plus, Unlink } from 'lucide-react'
 import { hud, theme } from '../theme'
 import { HudFrameSkeleton, HudTabButton, CornerArt, ChartHeaderFrame } from './hud'
 import type { ContextFeedItem, AnchorBinding, AnchorRef, AnchorCategory } from '../lib/local-api'
-import { fetchContextFeed, addContextCard, deleteContextCard, updateContextCard, fetchCardBindings, deleteBinding, addBinding, updateAnchor, addAnchorToBinding } from '../lib/local-api'
+import { fetchContextFeed, addContextCard, deleteContextCard, updateContextCard, fetchAllBindings, groupBindingsByCard, deleteBinding, addBinding, updateAnchor, addAnchorToBinding } from '../lib/local-api'
 import AnchorTextRenderer, { AnchorChip, ANCHOR_CAT_COLOR, ANCHOR_CAT_SHORT } from './AnchorTextRenderer'
 import AnchorFieldMap from './AnchorFieldMap'
 import CardHoverEffect from './CardHoverEffect'
@@ -17,6 +17,10 @@ import Tooltip from './Tooltip'
 // 老想法卡迁移标记；原 localStorage 数据保留作备份不删
 const THOUGHT_STORAGE_KEY = 'slu.torrent.thoughtCards.v1'
 const MIGRATED_KEY = 'slu.torrent.migrated.v1'
+
+// 锚点绑定按 card_id 分组的全局 Map：顶层一次 fetchAllBindings 灌入，各卡 useContext 直取，
+// 不再每卡一个 fetchCardBindings 请求（上万卡时这是性能命门）。
+const BindingsContext = createContext<Map<string, AnchorBinding[]>>(new Map())
 
 // feed 滚动容器底部内边距。sticky 的 bottom 偏移以内容盒为基准（padding 区不算），
 // 收起胶囊要贴住可视底边必须把这个值补回去（同 dayHeader 吸顶要求 paddingTop: 0 的原因）
@@ -119,6 +123,8 @@ export default function TorrentFieldPanel() {
   const [subview, setSubview] = useState<TorrentSubview>('cards')
   const [thoughtDraft, setThoughtDraft] = useState('')
   const [feed, setFeed] = useState<ContextFeedItem[]>([])
+  // 全部锚点绑定按 card_id 分组：一次拉、各卡共享（替代每卡一个 fetchCardBindings 请求）
+  const [bindingsByCard, setBindingsByCard] = useState<Map<string, AnchorBinding[]>>(new Map())
   const [jumpCardId, setJumpCardId] = useState<string | null>(null)
   // 从锚点域点视频标题：跳到语境库后要「注视」该卡（带 tick 以便重复点击同一卡也能重新触发）
   const [gazeReq, setGazeReq] = useState<{ cardId: string; tick: number } | null>(null)
@@ -133,9 +139,12 @@ export default function TorrentFieldPanel() {
 
   const reload = useCallback(async () => {
     try {
-      setFeed(await fetchContextFeed())
+      // 语境流 + 全部锚点绑定并行拉，绑定按 card_id 分组给各卡（上万卡也只两个请求）
+      const [f, allBindings] = await Promise.all([fetchContextFeed(), fetchAllBindings()])
+      setFeed(f)
+      setBindingsByCard(groupBindingsByCard(allBindings))
     } catch (e) {
-      console.error('[Torrent] 语境流加载失败', e)
+      console.error('[Torrent] 语境流/锚点加载失败', e)
     }
   }, [])
 
@@ -149,11 +158,19 @@ export default function TorrentFieldPanel() {
     return () => { alive = false }
   }, [reload])
 
-  // 跨组件实时刷新：聊天沉淀想法卡 / B站转录完成后，外部 dispatch 此事件即重拉
+  // 跨组件实时刷新：聊天沉淀想法卡 / B站转录完成 / 编辑锚点后，外部 dispatch 此事件即重拉。
+  // 防抖 250ms：连续编辑（多条锚点、批量操作）只触发一次重拉，避免抖动 + 请求风暴
   useEffect(() => {
-    const onUpdate = () => { void reload() }
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const onUpdate = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => { void reload() }, 250)
+    }
     window.addEventListener('solevup:context-updated', onUpdate)
-    return () => window.removeEventListener('solevup:context-updated', onUpdate)
+    return () => {
+      if (timer) clearTimeout(timer)
+      window.removeEventListener('solevup:context-updated', onUpdate)
+    }
   }, [reload])
 
   const submitThought = async () => {
@@ -192,6 +209,7 @@ export default function TorrentFieldPanel() {
   const contextCards = useMemo(() => feed.filter((f) => f.kind === 'bili_transcript'), [feed])
 
   return (
+    <BindingsContext.Provider value={bindingsByCard}>
     <div style={styles.root}>
       <div style={styles.backdrop} />
       <div style={styles.grid} />
@@ -306,6 +324,7 @@ export default function TorrentFieldPanel() {
           ) : (
             <AnchorFieldMap
               cards={feed}
+              bindingsByCard={bindingsByCard}
               onJumpToCard={(cardId) => {
                 setSubview('context')
                 setJumpCardId(cardId)
@@ -336,6 +355,7 @@ export default function TorrentFieldPanel() {
         onCancel={() => setPendingDelete(null)}
       />
     </div>
+    </BindingsContext.Provider>
   )
 }
 
@@ -582,29 +602,19 @@ function FlomoMain({
   )
 }
 
-// ── 锚点 hook：加载卡上的绑定 + 删除（框选创建已下线，新建走聊天锚定/Fairy 工具）──
+// ── 锚点 hook：从全局 BindingsContext 直取本卡绑定（顶层一次批量加载灌入，不再每卡请求）+ 删除 ──
 function useCardAnchors(cardId: string, enabled: boolean) {
-  const [bindings, setBindings] = useState<AnchorBinding[]>([])
+  const bindingsByCard = useContext(BindingsContext)
+  const bindings = useMemo(
+    () => (enabled ? (bindingsByCard.get(cardId) ?? []) : []),
+    [bindingsByCard, cardId, enabled],
+  )
 
-  const reload = useCallback(async () => {
-    if (!enabled) return
-    try { setBindings(await fetchCardBindings(cardId)) }
-    catch (e) { console.error('[Anchor] 加载锚点失败', e) }
-  }, [cardId, enabled])
-
-  useEffect(() => { void reload() }, [reload])
-
-  // 锚点句被编辑（手动/AI）时高亮上的锚点实时刷新
-  useEffect(() => {
-    const onUpdate = () => { void reload() }
-    window.addEventListener('solevup:context-updated', onUpdate)
-    return () => window.removeEventListener('solevup:context-updated', onUpdate)
-  }, [reload])
-
+  // 删除后只 dispatch：顶层防抖重拉全部绑定，各卡 useContext 自动跟新（不再各自 fetch）
   const remove = useCallback(async (id: string) => {
-    try { await deleteBinding(id); await reload() }
+    try { await deleteBinding(id); window.dispatchEvent(new CustomEvent('solevup:context-updated')) }
     catch (e) { console.error('[Anchor] 删除失败', e) }
-  }, [reload])
+  }, [])
 
   return { bindings, remove }
 }
@@ -788,7 +798,8 @@ function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
   readonly onRemove: (id: string) => void
   readonly onJumpToContext?: (cardId: string) => void
 }) {
-  const [bindings, setBindings] = useState<AnchorBinding[]>([])
+  const bindingsByCard = useContext(BindingsContext)
+  const bindings = bindingsByCard.get(item.id) ?? []  // 顶层一次批量加载，不再各卡请求
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [draftAnchors, setDraftAnchors] = useState<DraftAnchor[]>([])
@@ -803,22 +814,6 @@ function ThoughtMemoCard({ item, onRemove, onJumpToContext }: {
       return true
     })
   }, [bindings])
-
-  useEffect(() => {
-    let alive = true
-    const load = () => {
-      fetchCardBindings(item.id)
-        .then((bs) => { if (alive) setBindings(bs) })
-        .catch(() => {})
-    }
-    load()
-    // 锚点句被编辑（手动/AI）时 chips 实时刷新——feed 重拉不会换 item.id，必须自己监听
-    window.addEventListener('solevup:context-updated', load)
-    return () => {
-      alive = false
-      window.removeEventListener('solevup:context-updated', load)
-    }
-  }, [item.id])
 
   const beginEdit = () => {
     setDraft(item.text)

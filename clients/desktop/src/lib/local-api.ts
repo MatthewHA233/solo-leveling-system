@@ -861,6 +861,25 @@ export async function fetchCardBindings(cardId: string): Promise<AnchorBinding[]
   return json.data
 }
 
+/** 一次取全部锚点绑定（前端按 card_id 分组）。替代「每张卡各发一个请求」，支撑上万卡。 */
+export async function fetchAllBindings(): Promise<AnchorBinding[]> {
+  const res = await fetch(`${API_BASE}/api/context/all-bindings`)
+  const json: ApiResponse<AnchorBinding[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '批量查询锚点失败')
+  return json.data
+}
+
+/** 把 AnchorBinding[] 按 card_id 分组成 Map（顶层加载一次，各卡从 Map 直取，不再单独请求） */
+export function groupBindingsByCard(all: readonly AnchorBinding[]): Map<string, AnchorBinding[]> {
+  const m = new Map<string, AnchorBinding[]>()
+  for (const b of all) {
+    const arr = m.get(b.card_id)
+    if (arr) arr.push(b)
+    else m.set(b.card_id, [b])
+  }
+  return m
+}
+
 export async function addBinding(input: {
   card_id: string
   start_pos: number

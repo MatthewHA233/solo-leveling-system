@@ -3407,6 +3407,51 @@ impl Database {
         Ok(out)
     }
 
+    /// 一次取「全部」锚点绑定（含各自锚点）——前端按 card_id 分组，替代「每卡一个请求」。
+    /// 仅两条 SQL：全量 binding_anchors JOIN 一次、全量 binding 一次，Rust 侧组装，杜绝 N+1。
+    pub async fn list_all_bindings(&self) -> Result<Vec<BindingRow>, String> {
+        use std::collections::HashMap;
+        let conn = self.conn.lock().await;
+        // binding_id → 它的锚点们（全量 JOIN 一次拉完）
+        let mut amap: HashMap<String, Vec<AnchorRef>> = HashMap::new();
+        {
+            let mut astmt = conn.prepare(
+                "SELECT ba.binding_id, a.id, a.keyword, a.category FROM binding_anchors ba \
+                 JOIN anchors a ON a.id = ba.anchor_id"
+            ).map_err(|e| e.to_string())?;
+            let rows = astmt
+                .query_map([], |r| Ok((
+                    r.get::<_, String>(0)?,
+                    AnchorRef { id: r.get(1)?, keyword: r.get(2)?, category: r.get(3)? },
+                )))
+                .map_err(|e| e.to_string())?;
+            for x in rows.flatten() { amap.entry(x.0).or_default().push(x.1); }
+        }
+        // 全部 binding，逐条组装锚点
+        let mut stmt = conn.prepare(
+            "SELECT id, card_id, start_pos, end_pos, selected_text, user_speech, created_at \
+             FROM context_anchor_bindings ORDER BY card_id, start_pos"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok(BindingRow {
+                id: r.get(0)?,
+                card_id: r.get(1)?,
+                start_pos: r.get(2)?,
+                end_pos: r.get(3)?,
+                selected_text: r.get(4)?,
+                user_speech: r.get(5)?,
+                created_at: r.get(6)?,
+                anchors: Vec::new(),
+            }))
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows.flatten() {
+            let anchors = amap.remove(&row.id).unwrap_or_default();
+            out.push(BindingRow { anchors, ..row });
+        }
+        Ok(out)
+    }
+
     pub async fn delete_anchor_binding(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
         conn.execute("DELETE FROM binding_anchors WHERE binding_id = ?", [id]).map_err(|e| e.to_string())?;

@@ -12,7 +12,7 @@ import type { CSSProperties, Ref } from 'react'
 import { Check, ChevronLeft, ChevronRight, HelpCircle, Minus, Pencil, Plus, RotateCcw } from 'lucide-react'
 import { theme } from '../theme'
 import type { AnchorBinding, AnchorCategory, AnchorRef, ContextFeedItem } from '../lib/local-api'
-import { fetchCardBindings, updateAnchorKeyword } from '../lib/local-api'
+import { updateAnchorKeyword } from '../lib/local-api'
 import { ensureAnchorEmbeddings } from '../lib/anchor-embedding'
 import { clusterByCosine, clusterByDistance, clusterMemberHash, projectAnchors, relaxOverlap, resolveClusterNames } from '../lib/anchor-map-layout'
 import {
@@ -361,10 +361,11 @@ function fmtDate(d: Date): string {
 
 interface Props {
   readonly cards: readonly ContextFeedItem[]
+  readonly bindingsByCard: ReadonlyMap<string, AnchorBinding[]>
   readonly onJumpToCard: (cardId: string) => void
 }
 
-export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
+export default function AnchorFieldMap({ cards, bindingsByCard, onJumpToCard }: Props) {
   const [data, setData] = useState<MapData | null>(null)
   const [vectors, setVectors] = useState<Map<string, number[]> | null>(null)
   const [selected, setSelected] = useState<AnchorNode | null>(null)
@@ -440,21 +441,12 @@ export default function AnchorFieldMap({ cards, onJumpToCard }: Props) {
   }
   useEffect(() => () => stopAnim(), [])
 
-  const reload = useCallback(async () => {
-    try {
-      const perCard = await Promise.all(cards.map((c) => fetchCardBindings(c.id).catch(() => [])))
-      setData(aggregate(perCard))
-    } catch (e) {
-      console.error('[AnchorField] 加载锚点失败', e)
-    }
-  }, [cards])
-
-  useEffect(() => { void reload() }, [reload])
+  // 锚点绑定由父级批量加载传入（bindingsByCard）→ 按卡取后 aggregate；
+  // 不再每卡 fetch、不再自己监听 context-updated（顶层防抖重拉后 prop 变即自动重算）
   useEffect(() => {
-    const onUpdate = () => { void reload() }
-    window.addEventListener('solevup:context-updated', onUpdate)
-    return () => window.removeEventListener('solevup:context-updated', onUpdate)
-  }, [reload])
+    const perCard = cards.map((c) => bindingsByCard.get(c.id) ?? [])
+    setData(aggregate(perCard))
+  }, [cards, bindingsByCard])
 
   // 选中面板实测高度：selected 变（内容变）才量一次缓存，不每帧读 offsetHeight（避免强制 reflow）；
   // 内容超高由 calloutList 的 overflowY:auto 兜底

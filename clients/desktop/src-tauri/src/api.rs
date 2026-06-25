@@ -1393,6 +1393,16 @@ async fn get_card_bindings(
     }
 }
 
+/// GET /api/context/all-bindings — 一次取全部绑定（前端按 card_id 分组，消除每卡一请求 + N+1）
+async fn get_all_bindings(
+    State(s): State<ApiState>,
+) -> Json<ApiResponse<Vec<BindingRow>>> {
+    match s.db.list_all_bindings().await {
+        Ok(rows) => Json(ApiResponse::ok(rows)),
+        Err(e)   => Json(ApiResponse::error(&e)),
+    }
+}
+
 async fn delete_binding(
     State(s): State<ApiState>,
     Path(id): Path<String>,
@@ -1673,6 +1683,7 @@ pub fn create_router(
         .route("/api/context/cards", post(add_context_card))
         .route("/api/context/cards/{id}", delete(delete_context_card).patch(update_context_card))
         .route("/api/context/cards/{id}/bindings", get(get_card_bindings))
+        .route("/api/context/all-bindings", get(get_all_bindings))
         .route("/api/context/bindings", post(add_binding))
         .route("/api/context/bindings/{id}", delete(delete_binding))
         .route("/api/context/bindings/{id}/anchors", post(add_binding_anchor))
