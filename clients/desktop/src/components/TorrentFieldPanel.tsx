@@ -1483,8 +1483,8 @@ const styles: Record<string, CSSProperties> = {
     paddingRight: 10,
     paddingTop: 0, // 不留缝：sticky 日期头要贴住滚动口顶边，padding 会露出滚动内容
     paddingBottom: FEED_BOTTOM_PAD,
-    scrollSnapType: 'y proximity',
-    scrollPaddingTop: 8,
+    scrollSnapType: 'none',  // 关闭 scroll-snap：原 'y proximity' 会在滚动停下时把视口"吸/推"到最近卡顶 → 「停下被推一下/叠影滚动」真因
+    scrollPaddingTop: 8,     // 保留：scrollIntoView 跳卡时顶部留白（与 snap 无关）
     scrollbarWidth: 'none',
     msOverflowStyle: 'none',
     overscrollBehavior: 'contain',
@@ -1552,9 +1552,9 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: 7,
-    scrollSnapAlign: 'start',
-    scrollSnapStop: 'always',
-    scrollMarginTop: 8,
+    // 去掉 scroll-snap 对齐点：原 align:'start'+stop:'always' 让每张卡都是必停吸附点，
+    // 滚动停下时浏览器把视口「回推」到最近卡顶 → 这就是「停下后被推一下/叠影滚动」的真因。
+    scrollMarginTop: 8,  // 仍保留：scrollIntoView(jumpCardId) 跳卡时顶部留白
     transition: 'border-color 0.18s, box-shadow 0.18s',
   },
   // 编辑中：边框与投影亮起（flomo 编辑态的绿框语义，用本面板的 flameTeal）
