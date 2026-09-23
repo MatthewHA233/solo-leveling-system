@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit
  *
  * 协议严格对齐 desktop sync_discovery.rs：
  *   - multicast group: 224.0.0.167
- *   - 端口: 跟 HTTP server 同（默认 49733）
+ *   - 端口: 跟 HTTP server 同（默认 39733，与 desktop 统一）
  *   - 报文 JSON 字段: alias / version / device_id / pair_code /
  *     port / protocol / announce / device_type / device_model
  *   - 频率: 启动后立即广播 + 每 30s 重广播；每次发 3 帧 (0/180/650ms)

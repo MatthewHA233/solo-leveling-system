@@ -31,6 +31,7 @@ import {
   fetchSyncHello,
   fetchSyncLinks,
   fetchSyncPeers,
+  probeSyncPeer,
   removeSyncLink,
   runSyncLink,
   setLocalSyncAlias,
@@ -103,6 +104,8 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
   const [manualOpen, setManualOpen] = useState(false)
   const [manualUrl, setManualUrl] = useState(() => localStorage.getItem('slu.sync.peerUrl') ?? '')
   const [manualBusy, setManualBusy] = useState(false)
+  // 手动链接失败原因就地显示在按钮下方（全局日志默认收起，用户看不到 → 以前表现为"点了没反应"）
+  const [manualError, setManualError] = useState<string | null>(null)
   const [busyLinkId, setBusyLinkId] = useState<string | null>(null)
   const [logOpen, setLogOpen] = useState(false)
   // 本地反馈直接写入全局日志（替代之前底部 toast 行）
@@ -198,8 +201,9 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
     return map
   }, [peers])
 
-  // 对每个 linked device 主动 fetch /api/sync/hello 拿 device_type/model + 在线状态。
-  // mDNS 不广播的设备（如 mobile）也能识别成"手机"+ 显示真实在线。
+  // 对每个 linked device 探测 /api/sync/hello 拿 device_type/model + 在线状态。
+  // 组播不广播的设备（如 mobile）也能识别成"手机"+ 显示真实在线。
+  // 走本机后端代探（probeSyncPeer），前端直连对端会被跨域拦下、手机永远显示离线。
   // 5 秒一次轮询；失败视为离线。
   const [helloByDeviceId, setHelloByDeviceId] = useState<Map<string, SyncHello>>(new Map())
   useEffect(() => {
@@ -209,8 +213,8 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
       const results = await Promise.all(
         links.map(async (l) => {
           try {
-            const h = await fetchSyncHello(l.last_base)
-            return [l.device_id, h] as const
+            const { hello } = await probeSyncPeer(l.last_base)
+            return [l.device_id, hello] as const
           } catch {
             return [l.device_id, null] as const
           }
@@ -293,20 +297,16 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
 
   const connectAndLinkManual = useCallback(async () => {
     if (!manualUrl.trim()) {
-      setError('请先输入对方电脑的 IP 或地址')
+      setManualError('请先输入对方的 IP 或地址')
       return
     }
-    setError(null)
-    setMessage(null)
+    setManualError(null)
     setManualBusy(true)
     try {
-      const hello = await fetchSyncHello(manualUrl)
+      // 后端代探：只填 IP 时自动试 39733 和旧端口 49733，返回实际连通的地址
+      const { base, hello } = await probeSyncPeer(manualUrl)
       localStorage.setItem('slu.sync.peerUrl', manualUrl)
-      const url = new URL(manualUrl.startsWith('http') ? manualUrl : `http://${manualUrl}`)
-      const ip = url.hostname
-      const port = Number(url.port || 39733)
-      const lastBase = `http://${ip}:${port}`
-      const link = await addSyncLink(hello.device_id, hello.alias || ip, lastBase)
+      const link = await addSyncLink(hello.device_id, hello.alias || new URL(base).hostname, base)
       setLinks((prev) => {
         const without = prev.filter((l) => l.device_id !== link.device_id)
         return [link, ...without]
@@ -314,11 +314,13 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
       setMessage(`已与 ${link.alias} 建立链接`)
       setManualOpen(false)
     } catch (e) {
-      setError(`连接失败：${e instanceof Error ? e.message : String(e)}`)
+      const reason = e instanceof Error ? e.message : String(e)
+      setManualError(reason)
+      setError(`连接失败：${reason}`)
     } finally {
       setManualBusy(false)
     }
-  }, [manualUrl])
+  }, [manualUrl, setError, setMessage])
 
   const startAliasEdit = useCallback(() => {
     setAliasDraft(localHello?.alias ?? '')
@@ -662,12 +664,17 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
             <Plug size={12} color={theme.electricBlue} />
             <span>找不到设备？手动输入 IP 建立链接</span>
           </button>
+          {manualOpen && manualError && (
+            <div style={{ padding: '0 10px 6px', color: '#ff9b9b', fontSize: 11, lineHeight: 1.5, wordBreak: 'break-all' }}>
+              连接失败：{manualError}
+            </div>
+          )}
           {manualOpen && (
             <div style={{ padding: '0 10px 10px', display: 'flex', gap: 6 }}>
               <input
                 value={manualUrl}
-                onChange={(e) => setManualUrl(e.target.value)}
-                placeholder="例：192.168.1.10 或 192.168.1.10:39733"
+                onChange={(e) => { setManualUrl(e.target.value); setManualError(null) }}
+                placeholder="例：192.168.1.10（端口可省略）"
                 style={inputStyle}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !manualBusy) connectAndLinkManual() }}
               />

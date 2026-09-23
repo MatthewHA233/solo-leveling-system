@@ -13,8 +13,9 @@ import java.net.NetworkInterface
 /**
  * 桥接 SyncHttpServer 的启停 + 显示当前监听地址。
  *
- * 端口对齐 desktop sync_engine.rs 的 49733（避免冲突也能用 49734，
- * 但 desktop discover 走 multicast 看 49733；mobile 端先用 49733 直连即可）。
+ * 端口 39733，与 desktop 统一（全平台一个端口，照 LocalSend 的做法）。
+ * 旧版用 49733：它落在 Windows 动态端口段（≥49152），desktop 已于 2026-06 迁走；
+ * desktop 仍兼容监听/探测 49733，所以未升级的旧手机也能被发现。
  */
 class SyncServerModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
@@ -145,7 +146,7 @@ class SyncServerModule(private val reactContext: ReactApplicationContext) :
 
   companion object {
     const val NAME = "SyncServer"
-    private const val DEFAULT_PORT = 49733
+    private const val DEFAULT_PORT = 39733
     private const val SOCKET_TIMEOUT_MS = 30_000
   }
 }

@@ -703,13 +703,27 @@ async fn sync_peers(State(state): State<ApiState>) -> Json<ApiResponse<Vec<SyncP
     Json(ApiResponse::ok(state.sync_discovery.peers().await))
 }
 
-/// POST /api/sync/discover
+/// POST /api/sync/discover —— 分阶段发现：组播 + 探测已链接设备，1 秒没确认到设备再扫网段
 async fn sync_discover(State(state): State<ApiState>) -> Json<ApiResponse<Vec<SyncPeer>>> {
-    if let Err(e) = state.sync_discovery.send_announcement().await {
-        return Json(ApiResponse::error(&e));
+    Json(ApiResponse::ok(state.sync_discovery.discover_round().await))
+}
+
+#[derive(Deserialize)]
+struct SyncProbeQuery {
+    target: String,
+}
+
+/// GET /api/sync/probe?target=192.168.1.10[:port]
+/// 由后端去请求对端 /api/sync/hello（纯查询，不登记不同步）。
+/// 前端不能直连对端：页面跑在 localhost:5172，直连局域网设备属于跨域，对端没开 CORS 就会被 WebView2 拦下。
+async fn sync_probe(
+    State(state): State<ApiState>,
+    Query(query): Query<SyncProbeQuery>,
+) -> Json<ApiResponse<crate::sync_discovery::ProbeResult>> {
+    match state.sync_discovery.probe(&query.target).await {
+        Ok(result) => Json(ApiResponse::ok(result)),
+        Err(e) => Json(ApiResponse::error(&e)),
     }
-    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-    Json(ApiResponse::ok(state.sync_discovery.peers().await))
 }
 
 /// GET /api/sessions?limit=N
@@ -1647,6 +1661,7 @@ pub fn create_router(
         .route("/api/sync/import", post(sync_import))
         .route("/api/sync/peers", get(sync_peers))
         .route("/api/sync/discover", post(sync_discover))
+        .route("/api/sync/probe", get(sync_probe))
         .route("/api/sync/links", get(sync_links).post(sync_link_add))
         .route("/api/sync/links/{device_id}", delete(sync_link_remove))
         .route("/api/sync/links/{device_id}/sync", post(sync_link_run))

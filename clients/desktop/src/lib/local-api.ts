@@ -504,6 +504,25 @@ export async function fetchSyncHello(base = API_BASE): Promise<SyncHello> {
   return json.data
 }
 
+export interface SyncProbeResult {
+  /** 实际连通的地址（含端口）——建立链接时存这个 */
+  base: string
+  hello: SyncHello
+}
+
+/**
+ * 让本机后端去探测一个局域网设备（手动链接 / 已链接设备在线检测都走这里）。
+ * 不能在前端直接 fetch 对端：页面跑在 localhost:5172，直连 192.168.x.x 属于跨域，
+ * 对端没开 CORS 时会被 WebView2 直接拦下，表现为"点了没反应"。
+ * target 可只填 IP，后端会依次试 39733 和旧端口 49733。
+ */
+export async function probeSyncPeer(target: string): Promise<SyncProbeResult> {
+  const res = await fetch(`${API_BASE}/api/sync/probe?target=${encodeURIComponent(target.trim())}`)
+  const json: ApiResponse<SyncProbeResult> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '连接失败')
+  return json.data
+}
+
 export async function fetchSyncPeers(): Promise<SyncPeer[]> {
   const res = await fetch(`${API_BASE}/api/sync/peers`)
   const json: ApiResponse<SyncPeer[]> = await res.json()

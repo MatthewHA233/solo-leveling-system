@@ -34,7 +34,7 @@ object SyncClient {
   class SyncException(msg: String, cause: Throwable? = null) : Exception(msg, cause)
 
   /**
-   * 完整双向同步。对端 base 形如 "http://192.168.0.104:49733"。
+   * 完整双向同步。对端 base 形如 "http://192.168.0.104:39733"。
    * 失败任意一步立刻抛错并带上下文。
    */
   fun bidirectionalSync(db: SolevupDb, peerBase: String): SyncRoundResult {
@@ -99,9 +99,9 @@ object SyncClient {
     val withScheme = if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
       trimmed
     } else "http://$trimmed"
-    // 没端口默认 49733
+    // 没端口默认 39733（desktop 同步端口；旧 49733 已随 desktop 迁移弃用）
     val url = URL(withScheme)
-    val port = if (url.port == -1) 49733 else url.port
+    val port = if (url.port == -1) 39733 else url.port
     return "${url.protocol}://${url.host}:$port"
   }
 

@@ -44,7 +44,7 @@ class SyncClientModule(private val reactContext: ReactApplicationContext) :
   }
 
   /**
-   * 输入对端 baseUrl (形如 192.168.0.104 或 http://x:49733)，
+   * 输入对端 baseUrl (形如 192.168.0.104 或 http://x:39733)，
    * 走 hello 拿 device_id + alias → 写 linked_devices → 立即 bidirectional 一次。
    * 返回 { deviceId, alias, pulled{...}, pushed{...} }
    */
@@ -168,7 +168,7 @@ class SyncClientModule(private val reactContext: ReactApplicationContext) :
       trimmed
     } else "http://$trimmed"
     val url = java.net.URL(withScheme)
-    val port = if (url.port == -1) 49733 else url.port
+    val port = if (url.port == -1) 39733 else url.port
     return "${url.protocol}://${url.host}:$port"
   }
 

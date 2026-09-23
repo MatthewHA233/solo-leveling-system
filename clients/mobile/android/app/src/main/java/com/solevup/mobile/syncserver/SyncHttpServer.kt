@@ -27,8 +27,10 @@ class SyncHttpServer(
 
   override fun serve(session: IHTTPSession): Response {
     val uri = session.uri ?: "/"
-    return try {
+    val response = try {
       when {
+        // 浏览器跨域预检：直接放行（真正的请求由下方路由处理）
+        session.method == Method.OPTIONS -> newFixedLengthResponse(Response.Status.NO_CONTENT, "text/plain", "")
         // desktop SyncPeerDialog 走 /api/sync/hello 做握手；/api/ping 是 alias 兜底
         session.method == Method.GET && (uri == "/api/sync/hello" || uri == "/api/ping") -> handlePing()
         session.method == Method.GET && uri == "/api/sync/export" -> handleExport(session)
@@ -38,6 +40,19 @@ class SyncHttpServer(
     } catch (e: Throwable) {
       envelopeError(e.message ?: "internal error")
     }
+    return withCors(response)
+  }
+
+  /**
+   * 允许跨域：desktop 页面跑在 http://localhost:5172，直接 fetch 本机属于跨域，
+   * 不带这组头会被 WebView2 拦下（表现为电脑端"建立链接"点了没反应、手机永远显示离线）。
+   * 同步数据只在局域网内、且需先建立链接，放开任意来源与 desktop api.rs 的 CorsLayer 一致。
+   */
+  private fun withCors(response: Response): Response = response.apply {
+    addHeader("Access-Control-Allow-Origin", "*")
+    addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+    addHeader("Access-Control-Allow-Headers", "Content-Type")
+    addHeader("Access-Control-Max-Age", "600")
   }
 
   private fun handlePing(): Response {

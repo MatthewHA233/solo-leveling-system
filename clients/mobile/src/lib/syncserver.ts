@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════
 // SyncServer Native Module 桥接 (Android-only)
-// 启停 NanoHTTPD，端口默认 49733（对齐 desktop）
+// 启停 NanoHTTPD，端口默认 39733（与 desktop 统一；旧版 49733 已弃用）
 // ══════════════════════════════════════════════
 
 import { NativeModules, Platform } from 'react-native'
@@ -20,7 +20,7 @@ interface SyncServerNative {
 const Native: SyncServerNative | null =
   Platform.OS === 'android' ? (NativeModules.SyncServer as SyncServerNative) ?? null : null
 
-export const SYNC_SERVER_DEFAULT_PORT = 49733
+export const SYNC_SERVER_DEFAULT_PORT = 39733
 
 export function isSyncServerAvailable(): boolean {
   return Native != null
