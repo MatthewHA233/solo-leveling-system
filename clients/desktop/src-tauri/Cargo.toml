@@ -99,3 +99,10 @@ windows = { version = "0.61", features = [
 # overflow-checks 保持默认（dev 启用），跟 Tauri race 无关，关它纯亏。
 [profile.dev]
 debug-assertions = false
+# 调试版瘦身：默认的完整调试符号让 target 涨到 15 GB（Windows 下 PDB + 调试信息是大头），
+# 曾把 D 盘吃满导致编译失败。本项目代码只留行号——panic / 日志栈仍能定位到文件行；
+debug = "line-tables-only"
+
+# 第三方依赖不要调试符号：从不单步调试 Tauri / tokio 等库的源码
+[profile.dev.package."*"]
+debug = false
