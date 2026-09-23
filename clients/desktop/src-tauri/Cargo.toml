@@ -75,6 +75,16 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 winreg = "0.55"
+# Core Audio 是 COM 接口，windows-sys 不含 COM 包装，需用 windows crate（与 webview2-com 同版本避免重复编译）
+# 用途：audio_session_name.rs 把 WebView2 子进程的音量合成器会话改名为 Solevup
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
 
 # ── Profile：dev 模式关 debug-assertions 防上游 race 把我们崩掉 ──
 # 上游 Tauri/wry 有一条 Rc<tao::EventLoopRunner> 在 WebView2 的

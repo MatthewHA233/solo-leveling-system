@@ -19,6 +19,8 @@ mod ffmpeg;
 mod ocr;
 mod focus_lock;
 #[cfg(windows)]
+mod audio_session_name;
+#[cfg(windows)]
 mod gpu_pref;
 #[cfg(windows)]
 mod hotkey;
@@ -1697,6 +1699,9 @@ pub fn run() {
             focus_lock::register_native_host();
             // 启动扩展掉线阶梯惩罚监控（常驻；无活跃网站组时近乎零开销）
             focus_lock::spawn_enforcement_watcher(app.handle().clone());
+            // 音量合成器里把 WebView2 子进程的音频会话显示为「Solevup」（常驻低频轮询）
+            #[cfg(windows)]
+            audio_session_name::spawn(app.package_info().name.clone());
 
             // 启动 HTTP 服务器（在 Tauri runtime 内）
             if let Some(db_clone) = db.clone() {
