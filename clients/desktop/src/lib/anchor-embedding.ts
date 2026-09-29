@@ -2,6 +2,7 @@
 // 锚点句嵌入 — 锚点域地图的语义定位
 //   · DashScope text-embedding-v4（OpenAI 兼容 /v1/embeddings），256 维够聚类用
 //   · 已存向量从本地 API 拉取，只对缺失的锚点增量嵌入并回存（每条锚点只花一次钱）
+//   · 只复用当前绑定模型算出的向量：换模型后旧向量不在同一语义空间，视为缺失重嵌
 //   · 调用计入 model_call_log（feature: anchor_embedding）
 // ══════════════════════════════════════════════
 
@@ -12,10 +13,11 @@ import { fetchAnchorEmbeddings, saveAnchorEmbeddings } from './local-api'
 const EMBED_DIMS = 256
 const BATCH_SIZE = 10 // text-embedding-v4 单次最多 10 条
 
-export async function loadStoredEmbeddings(): Promise<Map<string, number[]>> {
+export async function loadStoredEmbeddings(model: string): Promise<Map<string, number[]>> {
   const map = new Map<string, number[]>()
   try {
     for (const row of await fetchAnchorEmbeddings()) {
+      if (row.model !== model) continue // 别的模型算的向量不能和当前模型的混着比余弦
       try {
         const v = JSON.parse(row.vector) as unknown
         if (Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'number')) {
@@ -42,7 +44,8 @@ interface EmbeddingsApiResponse {
 export async function ensureAnchorEmbeddings(
   anchors: ReadonlyArray<{ id: string; keyword: string }>,
 ): Promise<Map<string, number[]>> {
-  const stored = await loadStoredEmbeddings()
+  const model = await getFeatureModel('anchor_embedding', 'text-embedding-v4')
+  const stored = await loadStoredEmbeddings(model)
   const missing = anchors.filter((a) => !stored.has(a.id))
   if (missing.length === 0) return stored
 
@@ -50,7 +53,6 @@ export async function ensureAnchorEmbeddings(
   const apiKey = getDashScopeApiKey(config) ?? ''
   if (!apiKey) return stored // 无 key：只用已存的，缺的回退
 
-  const model = await getFeatureModel('anchor_embedding', 'text-embedding-v4')
   for (let i = 0; i < missing.length; i += BATCH_SIZE) {
     const batch = missing.slice(i, i + BATCH_SIZE)
     const startedAt = new Date().toISOString()
