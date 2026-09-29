@@ -1749,7 +1749,9 @@ pub fn run() {
                 }
             }
 
-            if cfg!(debug_assertions) {
+            // 不能用 cfg!(debug_assertions)：dev profile 为防闪退关了 debug-assertions，
+            // 那样调试版一行日志都没有；is_dev() 只在连 Vite dev server 时为真
+            if tauri::is_dev() {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
                         .level(log::LevelFilter::Debug)

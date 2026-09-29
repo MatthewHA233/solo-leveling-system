@@ -86,6 +86,12 @@ windows = { version = "0.61", features = [
     "Win32_System_Diagnostics_ToolHelp",
 ] }
 
+# 排障用：`cargo xwin build --features devtools` 打开 WebView 开发者工具（Ctrl+Shift+I / 右键检查）。
+# 下面 dev profile 关了 debug-assertions，Tauri 默认就不给开发者工具了，只能靠这个 feature；
+# 正式打包不带它，发布版不会有开发者工具。
+[features]
+devtools = ["tauri/devtools"]
+
 # ── Profile：dev 模式关 debug-assertions 防上游 race 把我们崩掉 ──
 # 上游 Tauri/wry 有一条 Rc<tao::EventLoopRunner> 在 WebView2 的
 # WebResourceRequested custom_protocol_handler 里非主线程 clone 的 race
