@@ -19,6 +19,7 @@ mod ffmpeg;
 mod ocr;
 mod focus_lock;
 mod fairy_fs;
+mod voice;
 #[cfg(windows)]
 mod audio_session_name;
 #[cfg(windows)]
@@ -1707,6 +1708,7 @@ pub fn run() {
         .manage(bili_dl_state.clone())
         .manage(transcribe_q_state.clone())
         .manage(focus_lock_state)
+        .manage(voice::VoiceState::default())
         .setup(move |app| {
             // 注册专注锁 Native Messaging host（幂等；失败只降级，不阻断启动）
             focus_lock::register_native_host();
@@ -1897,6 +1899,9 @@ pub fn run() {
             get_bili_transcripts,
             update_bili_transcript,
             qwen_asr::qwen_asr_transcribe,
+            voice::voice_start,
+            voice::voice_stop,
+            voice::voice_cancel,
             qwen_asr::qwen_asr_filetrans,
             qwen_video::qwen_video_upload,
             qwen_video::qwen_audio_extract,

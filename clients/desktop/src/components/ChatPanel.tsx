@@ -47,7 +47,7 @@ interface Props {
   readonly sessionsOpen?: boolean
 }
 
-export default function ChatPanel({ messages, isProcessing, onSend, agentName = 'Fairy', userCallsign = '主人', gazeTarget = null, aiMode = 'omni', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
+export default function ChatPanel({ messages, isProcessing, onSend, agentName = 'Fairy', userCallsign = '主人', gazeTarget = null, aiMode = 'regular', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
   const [input, setInput] = useState('')
   const [models, setModels] = useState<ModelDef[]>([])
   const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
@@ -458,7 +458,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
             }}
           >
             <Tooltip
-              content={isOmniMode ? 'Fairy 全模态聊天模型' : 'Fairy 常规聊天模型'}
+              content={isOmniMode ? 'Fairy 实时语音模型（实验，只管语音）' : 'Fairy 聊天模型（打字和语音共用）'}
               display="flex"
               wrapStyle={{ flex: '1 1 auto', minWidth: 0, maxWidth: 224 }}
             >
@@ -473,7 +473,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
               </div>
             </Tooltip>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
-            <Tooltip content={isOmniMode ? '当前：Omni 全模态，点击切换普通聊天' : '当前：普通聊天，点击切换 Omni 全模态'}>
+            <Tooltip content={isOmniMode ? '当前：实时语音（实验）——说话交给独立的小模型，打字仍走常规模型。点击切回级联语音' : '当前：级联语音（推荐）——说话和打字都是同一个 Fairy。点击切换实时语音（实验）'}>
               <button
                 onClick={onToggleAiMode}
                 disabled={!onToggleAiMode || isProcessing}

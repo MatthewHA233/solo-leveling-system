@@ -8,7 +8,7 @@
 // 数据来源：cn-beijing 百炼价目（2026-04 人工核对，价为元/百万 token）。
 // ══════════════════════════════════════════════
 
-export type ModelCategory = 'text' | 'omni' | 'realtime' | 'embedding'
+export type ModelCategory = 'text' | 'omni' | 'realtime' | 'embedding' | 'asr'
 
 // 与 desktop local-api.ts 的 ModelPricingTier 同形
 export interface ModelPricingTier {
@@ -154,6 +154,11 @@ const SEEDS: Seed[] = [
     [0, null, 3.3, 3.3, null, 27.0, 20.0, 107.0],
   ]],
 
+  // ── 流式语音识别（Fun-ASR 协议，价目 2026-09-29 核对）：输入主要是音频，按 token 计 ──
+  [['qwen-audio-3.1-asr-flash-streaming'], 'asr', 'Qwen-Audio 3.1 ASR Flash Streaming', ['audio_in'], 8_192, [
+    [0, null, null, null, null, 6.0, 4.5, null],
+  ]],
+
   // ── 向量嵌入 / 重排序（无输出 token 计费；context_window 存单次最大输入）──
   [['text-embedding-v4'], 'embedding', 'Text Embedding V4', ['text'], 8_192, [
     [0, null, 0.5, null, null, null, null, null],
@@ -194,6 +199,7 @@ const NOTES: ReadonlyArray<[string, string]> = [
   ['qwen3.8-omni-flash', '只输出文本（不出语音）；文本/图片/视频/音频输入同价；缓存命中 0.1 元/百万'],
   ['qwen3.8-omni-flash-realtime', '输出语音时音频和对应文本分别计费（Qwen3.5-Omni-Realtime 只计音频）'],
   ['qwen3.7-flash', '阶梯计费(≤32K/32K~256K/256K~1M)；Batch 调用半价'],
+  ['qwen-audio-3.1-asr-flash-streaming', '流式识别（run-task 协议）；支持即时热词与对话上下文；输入含上下文文本，统一按音频输入价记'],
   ['qwen3.7-plus', '阶梯计费(≤256K/256K~1M)；当前限时8折、Batch Chat 5折，库内存原价；缓存命中 0.4/1.2 元/百万'],
   ['qwen3.7-max', '无阶梯；Batch 调用半价；缓存命中 2.4、显式缓存创建 15/命中 1.2'],
   ['qwen3.7-max-preview', '预览版：仅思考模式；限流低(RPM 60/TPM 50万)'],

@@ -105,6 +105,7 @@ const FEATURE_SPECS: readonly FeatureSpec[] = [
   { feature: 'thought_distill', label: '想法沉淀', category: 'text', hint: '日常聊天判断值不值得记成想法卡（建议低价模型）' },
   { feature: 'anchor_extract', label: '框选锚点提取', category: 'text', hint: '手动框选语境后从原话提取锚点句' },
   { feature: 'anchor_embedding', label: '锚点语义嵌入', category: 'embedding', hint: '锚点域地图的球定位（语义近 = 空间近）', allowedCategories: ['embedding'] },
+  { feature: 'fairy_voice_asr', label: 'Fairy 语音识别', category: 'asr', hint: '按住右 Alt 说话的流式识别（带热词与对话上下文）', allowedCategories: ['asr'] },
   { feature: 'anchor_cluster_name', label: '锚点域簇命名', category: 'text', hint: '给认知地图聚簇起 2~6 字主题名（建议低价模型）' },
   { feature: 'motive_blueprint', label: '协议志·动机蓝图', category: 'text', hint: '把一条动机展开成行动方向与具体步骤（建议中高质量模型）' },
 ]
@@ -2036,6 +2037,7 @@ function LibraryTab({
               { value: 'omni', label: 'Omni 全模态' },
               { value: 'realtime', label: 'Realtime' },
               { value: 'embedding', label: '向量嵌入' },
+              { value: 'asr', label: '语音识别' },
             ]}
             onChange={(v) => onCategory(v as ModelCategory)}
           />
@@ -2077,6 +2079,7 @@ function modelCategoryAccent(cat: ModelCategory): string {
   if (cat === 'omni') return theme.flameTeal
   if (cat === 'realtime') return theme.warningOrange
   if (cat === 'embedding') return theme.shadowPurple
+  if (cat === 'asr') return theme.expGreen
   return theme.electricBlue
 }
 
@@ -2406,6 +2409,7 @@ function ModelEditor({
                   { value: 'omni', label: 'Omni 全模态' },
                   { value: 'realtime', label: 'Realtime' },
                   { value: 'embedding', label: '向量嵌入' },
+                  { value: 'asr', label: '语音识别' },
                 ]}
                 onChange={(v) => setDraft((m) => ({ ...m, category: v as ModelCategory }))}
               />

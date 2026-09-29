@@ -22,7 +22,7 @@ import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLaye
 import { theme, hud } from './theme'
 
 // Agent
-import { getDashScopeApiKey, getOmniApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
+import { getDashScopeApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
 import { getFeatureModel, logModelUsage, realtimeUsageToDashScope, type RealtimeUsage } from './lib/model-audit'
 import { buildStaticPrompt, buildDynamicContext, buildConversationSummary } from './lib/ai/prompt-templates'
@@ -32,6 +32,7 @@ import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
 // LLM Engine（新）
 import { runQueryLoop } from './lib/llm/query-loop'
 import { compactHistory, withSystemReminder } from './lib/llm/context-window'
+import { buildAsrContext, buildAsrVocabulary } from './lib/voice/asr-hints'
 import { createUserMessage, createAssistantMessage, getMessageText, isAssistantMessage } from './lib/llm/types'
 import type { Message } from './lib/llm/types'
 import type { ApiRequestSnapshot } from './lib/llm/api'
@@ -494,6 +495,9 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false)
   // LLM 对话历史（新类型系统），与 UI 展示的 chatMessages 分离
   const conversationRef = useRef<Message[]>([])
+  // 回复轮次与打断控制：主人按右 Alt 开口时，停掉正在进行的生成与朗读
+  const replyTurnRef = useRef(0)
+  const replyControlRef = useRef<{ interrupt: () => void } | null>(null)
   const handleSendRef = useRef<HandleSend | null>(null)
   // 当前对话绑定的语境卡（语境库里展开转录的那张）；聊天锚定到它
   const activeContextRef = useRef<{ cardId: string; text: string; title: string } | null>(null)
@@ -523,7 +527,10 @@ export default function App() {
   const persistedBufferRef = useRef<SessionMessage[]>([])  // 已持久化的历史（用于 title 生成的上下文窗口）
   const lastOmniUserInputRef = useRef<string>('')        // Omni 本轮用户输入（文字 or 转写）
   const audioDirRef = useRef<string>('')                 // 音频根目录（Rust data_local/solevup/audio）
-  const pendingAudioRef = useRef<Map<string, { audioPath: string; durationMs: number }>>(new Map())
+  // 语音气泡录音的落盘任务（消息 id → 落盘结果）：定稿文本可能比落盘先到，持久化前要等它
+  const audioSaveRef = useRef<Map<string, Promise<{ audioPath: string; durationMs: number } | null>>>(new Map())
+  // 语音识别热词（refreshSystemPrompt 顺手更新：目标、常用应用名）
+  const asrVocabularyRef = useRef<string[]>(buildAsrVocabulary({}))
   const blobAudioUrlsRef = useRef<Set<string>>(new Set())
 
   const trackBlobAudioUrl = useCallback((url: string) => {
@@ -1431,30 +1438,64 @@ export default function App() {
         onPhaseChange: (phase) => {
           emitFairy(phase as FairyState)
         },
+        onPartialTranscript: (text, sessionMsgId) => {
+          // 边说边出字：先以文字气泡出现，录音到手后变成语音气泡（同一条消息 id）
+          setChatMessages((prev) => prev.some((m) => m.id === sessionMsgId)
+            ? prev.map((m) => m.id === sessionMsgId ? { ...m, content: m.audioUrl ? m.content : text, transcript: text } : m)
+            : [...prev, {
+                id: sessionMsgId, role: 'user' as const,
+                content: text, transcript: text, timestamp: new Date().toISOString(),
+              }])
+        },
+        onAsrResult: (r, startedAt) => {
+          const u = r.usage
+          void logModelUsage({
+            feature: 'fairy_voice_asr',
+            modelId: r.model,
+            startedAt,
+            durationMs: r.timings.totalMs,
+            usage: u ? {
+              prompt_tokens: u.input_tokens,
+              completion_tokens: u.output_tokens,
+              total_tokens: u.input_tokens + u.output_tokens,
+              prompt_tokens_details: { audio_tokens: u.input_tokens },
+            } : null,
+            success: r.text.trim().length > 0,
+            errorMessage: r.text.trim() ? null : (r.hadSpeech ? '有声音但没识别出文字' : '没有录到声音'),
+            metadata: {
+              timings: r.timings, attempts: r.attempts, fallback: r.fallback,
+              device: r.device, audioMs: r.durationMs, hadSpeech: r.hadSpeech,
+            },
+          })
+        },
         onUserAudio: (wavBase64, durationMs, sessionMsgId) => {
-          // 把录音转成 blob URL，作为用户语音气泡显示
-          // 使用 sessionMsgId 作为消息 ID，以便 onTranscript 能找到并更新
+          // 把录音转成 blob URL，作为用户语音气泡显示；边说边出字时气泡已存在，就地补上音频
           const bytes = Uint8Array.from(atob(wavBase64), (c) => c.charCodeAt(0))
           const blob = new Blob([bytes], { type: 'audio/wav' })
           const audioUrl = trackBlobAudioUrl(URL.createObjectURL(blob))
           const msgTimestamp = new Date().toISOString()
-          setChatMessages((prev) => [...prev, {
-            id: sessionMsgId, role: 'user' as const,
-            content: '', audioUrl, durationMs,
-            timestamp: msgTimestamp,
-          }])
+          setChatMessages((prev) => prev.some((m) => m.id === sessionMsgId)
+            ? prev.map((m) => m.id === sessionMsgId ? { ...m, content: '', audioUrl, durationMs } : m)
+            : [...prev, {
+                id: sessionMsgId, role: 'user' as const,
+                content: '', audioUrl, durationMs,
+                timestamp: msgTimestamp,
+              }])
 
-          // 异步保存到磁盘，存入 pendingAudio Map，等转写或发送时一并写 DB
-          if (sessionIdRef.current) {
-            const wavBytes = Uint8Array.from(atob(wavBase64), c => c.charCodeAt(0))
-            invoke<string>('save_audio_file', {
-              sessionId: sessionIdRef.current,
-              wavBytes,
+          // 异步落盘；onTranscript 持久化前会等它
+          const sid = sessionIdRef.current
+          if (sid) {
+            audioSaveRef.current.set(sessionMsgId, invoke<string>('save_audio_file', {
+              sessionId: sid,
+              wavBytes: bytes,
               timestamp: msgTimestamp,
             }).then((audioPath) => {
-              pendingAudioRef.current.set(sessionMsgId, { audioPath, durationMs })
               replaceBlobAudioUrlWithFile(sessionMsgId, audioUrl, audioPath)
-            }).catch(() => {})
+              return { audioPath, durationMs }
+            }).catch((e) => {
+              console.warn('[Voice] 录音落盘失败，消息仍会保存文字', e)
+              return null
+            }))
           }
           // Omni 模式：把音频 item 追加到已有快照（Alt 按下时已创建快照）
           if (configRef.current.aiMode === 'omni') {
@@ -1484,16 +1525,17 @@ export default function App() {
             prev.map((m) => m.id === sessionMsgId ? { ...m, transcript: text } : m)
           )
 
-          // 语音消息持久化：转写完成时将用户语音消息写入 DB（含 audioPath）
-          if (sessionIdRef.current) {
-            const pending = pendingAudioRef.current.get(sessionMsgId)
-            if (pending) {
-              pendingAudioRef.current.delete(sessionMsgId)
-              const voiceMsg = makeSessionMessage('user', text, pending.audioPath, pending.durationMs)
+          // 语音消息持久化：等录音落盘拿到 audioPath（落盘失败也照样存文字，别丢主人说的话）
+          const sid = sessionIdRef.current
+          if (sid) {
+            const saving = audioSaveRef.current.get(sessionMsgId) ?? Promise.resolve(null)
+            audioSaveRef.current.delete(sessionMsgId)
+            if (isOmniMode) omniUserInputPersistedRef.current = true
+            void saving.then((saved) => {
+              const voiceMsg = makeSessionMessage('user', text, saved?.audioPath, saved?.durationMs)
               persistedBufferRef.current = [...persistedBufferRef.current, voiceMsg]
-              if (isOmniMode) omniUserInputPersistedRef.current = true
-              persistMessages(sessionIdRef.current, [voiceMsg]).catch(() => {})
-            }
+              return persistMessages(sid, [voiceMsg])
+            }).catch((e) => console.warn('[Voice] 语音消息持久化失败', e))
           }
 
           // Omni 模式：音频已经走 WS，工具调用走 omni://tool_call 事件，不回落 handleSend
@@ -1504,7 +1546,7 @@ export default function App() {
           }
         },
         onAudioLevel: () => {
-          // FairyHUD 自己通过 analyser 获取，这里暂不处理
+          // 音量走 voice://level 事件直接广播给 Fairy 悬浮窗，这里不用处理
         },
         onError: (message) => {
           omniUsageStartedAtRef.current = 0
@@ -1516,6 +1558,7 @@ export default function App() {
         },
       },
       () => toRealtimeTools(TOOL_DEFINITIONS),
+      () => ({ vocabulary: asrVocabularyRef.current, context: buildAsrContext(conversationRef.current) }),
     )
     voiceServiceRef.current = svc
     return svc
@@ -1848,7 +1891,10 @@ export default function App() {
       pressingRef.current = true
       console.log('[RAlt] keydown received')
       altDownTimeRef.current = Date.now()
-      // 按下就开始连 WS、开麦克风（开麦常要 1~2 秒，别再白等长按阈值）；
+      // Fairy 正在想或正在说：主人一开口就停下（打断），轻按一下右 Alt 也能让她闭嘴
+      replyControlRef.current?.interrupt()
+      replyControlRef.current = null
+      // 按下就开始录音、连识别服务，长按阈值只用于松手时区分误触；
       // 不满 LONG_PRESS_MS 就松开时，onUp 的 cancel() 会把它们一并关掉
       getVoiceService().startRecording()
 
@@ -1898,6 +1944,8 @@ export default function App() {
       if (!pressingRef.current) return
       console.log('[RAlt] cancel via RCtrl')
       pressingRef.current = false
+      replyControlRef.current?.interrupt()
+      replyControlRef.current = null
       const svc = voiceServiceRef.current
       if (svc) svc.cancel()
       try { invoke('omni_stop') } catch {}
@@ -2066,6 +2114,11 @@ export default function App() {
       focusedCard: focusedCardRef.current ?? undefined,
     })
     promptPartsRef.current = { staticPrompt, dynamicContext }
+    asrVocabularyRef.current = buildAsrVocabulary({
+      agentName: cfg.agentName,
+      goalTitles: goals.map((g) => g.title),
+      appNames: appUsage.map((a) => a.appName),
+    })
     // Omni 实时会话每次都是新连接，要靠 instructions 带上动态背景和最近对话摘要；
     // 文字模式不用它（历史就在消息里），只用 promptPartsRef
     const history = buildConversationSummary(
@@ -2144,7 +2197,9 @@ export default function App() {
   }, [])
 
   // ── Send Message ──
-  const handleSend = useCallback(async (text: string, fromVoice = false, modeOverride?: ChatMode) => {
+  // 打字和语音（级联）都走这里：同一个主循环、同一个 Fairy（一个大脑）。
+  // 实时（实验）语音模式的回复另走 Omni WS，不经过这里。
+  const handleSend = useCallback(async (text: string, fromVoice = false) => {
     if (!text.trim()) return
 
     // 文字输入：添加用户气泡（语音输入的气泡在 onUserAudio 已添加，不重复）
@@ -2155,59 +2210,15 @@ export default function App() {
       }])
     }
 
+    // 本轮回复的轮次号：被打断的轮次收尾时不再动 Fairy 状态和「处理中」标志，免得盖掉新一轮
+    const turnId = ++replyTurnRef.current
+    let interrupted = false
+    const ownsUi = () => replyTurnRef.current === turnId && !interrupted
     setIsProcessing(true)
-    // 文字输入也要立即显示思考动画
-    if (!fromVoice) emitFairy('thinking')
+    emitFairy('thinking')
 
-    // D2 + D4 — 构建 system prompt（按本条消息意图裁剪上下文段，缓存在 systemPromptRef）
+    // D2 + D4 — 刷新提示词各段（静态段 + 本轮实时背景，缓存在 promptPartsRef）
     const systemPrompt = await refreshSystemPrompt(text)
-
-    const aiMode = modeOverride ?? configRef.current.aiMode
-
-    // ── Omni 全模态：文字输入直接走 WS，返回音频+文本，不走独立 LLM ──
-    if (aiMode === 'omni') {
-      const cfg = configRef.current
-      const omniApiKey = getOmniApiKey(cfg)
-      if (!omniApiKey) {
-        setChatMessages((prev) => [...prev, {
-          id: crypto.randomUUID(), role: 'system' as const,
-          content: 'Omni 模式未配置 API Key', timestamp: new Date().toISOString(),
-        }])
-        setIsProcessing(false)
-        return
-      }
-      const omniModel = await getFeatureModel('fairy_omni_chat', cfg.omniModel)
-      omniUsageStartedAtRef.current = Date.now()
-      lastOmniUserInputRef.current = text
-      omniUserInputPersistedRef.current = false
-      // 记录 debug 快照（text_chunk 建气泡时写入 ChatMessage）
-      omniDebugInfoRef.current = {
-        systemPrompt,
-        model: omniModel,
-        voice: cfg.omniVoice || 'Tina',
-        ts: new Date().toISOString(),
-        items: [{ type: 'text', content: text, ts: new Date().toISOString() }],
-      }
-      try {
-        await invoke('omni_connect', {
-          apiKey: omniApiKey, model: omniModel,
-          voice: cfg.omniVoice || '', systemPrompt,
-          tools: toRealtimeTools(TOOL_DEFINITIONS),
-        })
-        await invoke('omni_send_text', { text })
-        // 后续由 omni://text_chunk / omni://audio_chunk / omni://status(audio_done) 处理
-        // setIsProcessing(false) 在 audio_done handler 里触发
-      } catch (err) {
-        omniUsageStartedAtRef.current = 0
-        setChatMessages((prev) => [...prev, {
-          id: crypto.randomUUID(), role: 'system' as const,
-          content: `Omni 错误: ${err instanceof Error ? err.message : String(err)}`,
-          timestamp: new Date().toISOString(),
-        }])
-        setIsProcessing(false)
-      }
-      return
-    }
 
     const agentMsgId = crypto.randomUUID()
     const userMsg = createUserMessage(text)
@@ -2229,7 +2240,8 @@ export default function App() {
     }
     let tts: TtsState | null = null
 
-    if (config.ttsEnabled && config.fishApiKey) {
+    // 用语音问的，就用语音答；打字的按「语音播报」开关
+    if ((config.ttsEnabled || fromVoice) && config.fishApiKey) {
       const audioCtx = new AudioContext({ sampleRate: 24000 })
       const state: TtsState = {
         client: null as any,
@@ -2272,6 +2284,23 @@ export default function App() {
       tts = state
     }
 
+    // ── 打断：按下右 Alt 时停掉本轮的生成与朗读（主人开口说话优先）──
+    const abort = new AbortController()
+    replyControlRef.current = {
+      interrupt: () => {
+        if (interrupted) return
+        interrupted = true
+        abort.abort()
+        const t = tts
+        if (t) {
+          t.client.stop().catch(() => {})
+          if (t.audioCtx.state !== 'closed') void t.audioCtx.close()
+          t.finishResolve?.()
+        }
+        setIsProcessing(false)
+      },
+    }
+
     // 句子缓冲：LLM 流式时按标点切句实时送 TTS
     // 含逗号、分号、换行 → 长句中文用逗号断句也能边出边读，避免等到 LLM 结束才一次性 force-flush
     let sentBuf = ''
@@ -2308,6 +2337,7 @@ export default function App() {
           feature: 'fairy_chat',
           maxTokens: 8000,
           tools: TOOL_DEFINITIONS,
+          signal: abort.signal,
           onRequestSnapshot: (snap) => capturedSnapshots.push(snap),
           onUsageLogged: (call) => {
             capturedUsage = call
@@ -2373,6 +2403,7 @@ export default function App() {
                 : m
             ))
           } else if (event.type === 'error') {
+            if (interrupted) return // 主人打断导致的中止，不算错误
             // API 错误（工具调用后的第二次请求失败是常见原因）→ 直接显示给用户
             setChatMessages((prev) => [...prev, {
               id: crypto.randomUUID(), role: 'system' as const,
@@ -2385,6 +2416,10 @@ export default function App() {
       })
       // 工具调用与结果留在历史里（下一轮还能引用刚查到的数据）；体量超高水位时才按整轮分批压缩
       conversationRef.current = compactHistory(newHistory.map((m) => (m === apiUserMsg ? userMsg : m)))
+      if (interrupted) {
+        setChatMessages((prev) => prev.map((m) =>
+          m.id === agentMsgId && m.content ? { ...m, content: `${m.content}……（被打断）` } : m))
+      }
 
       // 把本轮快照 patch 到对应 agent 气泡
       if (capturedSnapshots.length > 0) {
@@ -2524,8 +2559,8 @@ export default function App() {
       let aiAudioPath: string | undefined
       let aiAudioDurationMs: number | undefined
       if (tts) {
-        if (replyText.trim()) {
-          emitFairy('speaking', replyText)
+        if (replyText.trim() && !interrupted) {
+          if (ownsUi()) emitFairy('speaking', replyText)
           try {
             pushToTts('', true)  // flush 缓冲区剩余文字
             // 确保连接就绪后 flush
@@ -2579,14 +2614,15 @@ export default function App() {
             // TTS 失败不影响主流程
           } finally {
             if (tts.timeout) clearTimeout(tts.timeout)
-            tts.audioCtx.close()
-            emitFairy('idle')
+            if (tts.audioCtx.state !== 'closed') void tts.audioCtx.close() // 打断时已关过
+            if (ownsUi()) emitFairy('idle')
           }
         } else {
-          tts.audioCtx.close()
-          emitFairy('idle')
+          tts.client.stop().catch(() => {})
+          if (tts.audioCtx.state !== 'closed') void tts.audioCtx.close()
+          if (ownsUi()) emitFairy('idle')
         }
-      } else {
+      } else if (ownsUi()) {
         emitFairy('idle')
       }
 
@@ -2627,14 +2663,17 @@ export default function App() {
         }
       }
     } catch (err) {
-      setChatMessages((prev) => [...prev, {
-        id: crypto.randomUUID(), role: 'system' as const,
-        content: `错误: ${err instanceof Error ? err.message : String(err)}`,
-        timestamp: new Date().toISOString(),
-      }])
+      if (!interrupted) {
+        setChatMessages((prev) => [...prev, {
+          id: crypto.randomUUID(), role: 'system' as const,
+          content: `错误: ${err instanceof Error ? err.message : String(err)}`,
+          timestamp: new Date().toISOString(),
+        }])
+      }
     }
 
-    setIsProcessing(false)
+    if (replyTurnRef.current === turnId) replyControlRef.current = null
+    if (ownsUi()) setIsProcessing(false)
   }, [chatMessages, config, replaceBlobAudioUrlWithFile, trackBlobAudioUrl])
 
   useEffect(() => {

@@ -76,6 +76,16 @@ pub async fn qwen_asr_transcribe(
     let pcm16 = find_wav_data(&wav_bytes)
         .ok_or_else(|| "WAV 格式无效".to_string())?;
 
+    transcribe_pcm16(pcm16, &api_key, &model, &ws_url).await
+}
+
+/// 把一整段 16 kHz 单声道 PCM16（小端）一次性送去识别；也是流式语音识别失败时的兜底
+pub async fn transcribe_pcm16(
+    pcm16: &[u8],
+    api_key: &str,
+    model: &str,
+    ws_url: &str,
+) -> Result<String, String> {
     if pcm16.is_empty() {
         return Err("PCM 数据为空".to_string());
     }

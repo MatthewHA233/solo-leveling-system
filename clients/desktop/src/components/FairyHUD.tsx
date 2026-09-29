@@ -4,6 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useEffect, useRef } from 'react'
+import { listen } from '@tauri-apps/api/event'
 
 export type FairyState = 'idle' | 'listening' | 'thinking' | 'speaking'
 
@@ -256,6 +257,14 @@ const styles = `
 
 `
 
+/** 音量事件超过这么久没更新就当静音（录音结束或事件中断） */
+const LEVEL_STALE_MS = 400
+
+/** 录音 RMS（0~1；笔记本麦克风安静时约 0.008）→ 动画用的 0~1 音量：先减底噪再放大 */
+function levelToVolume(rms: number): number {
+  return Math.min(1, Math.max(0, rms - 0.012) * 6)
+}
+
 export default function FairyHUD({ state, text = '', scale = 1, onContextMenu }: Props) {
   // ── Element refs ──
   const gyroRef = useRef<HTMLDivElement>(null)
@@ -274,10 +283,8 @@ export default function FairyHUD({ state, text = '', scale = 1, onContextMenu }:
   const bgDiscRef = useRef<HTMLDivElement>(null)
   const pupilRingsRef = useRef<(HTMLDivElement | null)[]>([])
 
-  // ── Audio refs ──
-  const audioCtxRef = useRef<AudioContext | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
-  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  // ── Audio：录音方广播的实时音量（voice://level），不再自己开麦 ──
+  const levelRef = useRef({ value: 0, at: 0 })
 
   const requestRef = useRef<number>(0)
   const stateRef = useRef({
@@ -352,12 +359,8 @@ export default function FairyHUD({ state, text = '', scale = 1, onContextMenu }:
 
       // Audio analysis
       let rawVol = 0
-      if ((state === 'listening' || state === 'speaking') && analyserRef.current) {
-        const data = new Uint8Array(analyserRef.current.frequencyBinCount)
-        analyserRef.current.getByteFrequencyData(data)
-        let sum = 0
-        for (let i = 0; i < data.length; i++) sum += data[i]
-        rawVol = sum / data.length / 255
+      if ((state === 'listening' || state === 'speaking') && now - levelRef.current.at < LEVEL_STALE_MS) {
+        rawVol = levelToVolume(levelRef.current.value)
       }
       s.audioSmooth += (rawVol - s.audioSmooth) * 0.25
       if (rawVol > s.audioPeak) s.audioPeak += (rawVol - s.audioPeak) * 0.6
@@ -495,42 +498,21 @@ export default function FairyHUD({ state, text = '', scale = 1, onContextMenu }:
     return () => cancelAnimationFrame(requestRef.current)
   }, [state])
 
-  // ── Audio: mic for listening ──
+  // ── Audio：订阅录音音量。以前这里自己再开一次麦克风，和主窗口录音抢设备、拖慢开麦 ──
   useEffect(() => {
-    if (state === 'listening') {
-      startMic()
-    } else {
-      stopAudio()
+    let disposed = false
+    let unlisten: (() => void) | null = null
+    listen<{ level: number }>('voice://level', ({ payload }) => {
+      levelRef.current = { value: payload.level, at: Date.now() } // 与动画循环的 now 同一个时钟
+    }).then((u) => {
+      if (disposed) u()
+      else unlisten = u
+    }).catch(() => {})
+    return () => {
+      disposed = true
+      unlisten?.()
     }
-    return () => stopAudio()
-  }, [state])
-
-  const startMic = async () => {
-    stopAudio()
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-      audioCtxRef.current = new AudioContext()
-      analyserRef.current = audioCtxRef.current.createAnalyser()
-      analyserRef.current.fftSize = 256
-      sourceRef.current = audioCtxRef.current.createMediaStreamSource(stream)
-      sourceRef.current.connect(analyserRef.current)
-    } catch {
-      // mic not available — fairy still animates without audio input
-    }
-  }
-
-  const stopAudio = () => {
-    if (sourceRef.current) {
-      sourceRef.current.mediaStream.getTracks().forEach(t => t.stop())
-      sourceRef.current.disconnect()
-      sourceRef.current = null
-    }
-    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
-      audioCtxRef.current.close()
-    }
-    audioCtxRef.current = null
-    analyserRef.current = null
-  }
+  }, [])
 
   const handleDrag = (e: React.MouseEvent) => {
     if (e.button !== 0) return

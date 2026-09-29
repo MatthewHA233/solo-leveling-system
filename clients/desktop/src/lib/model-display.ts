@@ -7,6 +7,7 @@ export const MODEL_CATEGORY_LABEL: Record<ModelCategory, string> = {
   omni: 'Omni \u5168\u6a21\u6001',
   realtime: 'Realtime',
   embedding: '\u5411\u91cf\u5d4c\u5165',
+  asr: '\u8bed\u97f3\u8bc6\u522b',
 }
 
 export function formatModelName(model: ModelDef): string {

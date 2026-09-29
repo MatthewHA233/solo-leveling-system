@@ -12,7 +12,10 @@ export interface AgentConfig {
   // ── AI Provider ──
   readonly aiProvider: 'openai' | 'gemini'
   readonly aiEnabled: boolean
-  readonly aiMode: 'regular' | 'omni'   // 当前激活的模型模式
+  /** 语音模式：regular = 级联（原生录音 + 流式识别 → 主循环，默认）；omni = 实时（实验，独立小模型） */
+  readonly aiMode: 'regular' | 'omni'
+  /** 已把旧版默认的实时模式迁到级联（只迁一次，之后尊重主人自己的选择） */
+  readonly voiceCascadeMigrated?: boolean
   readonly dashscopeApiKey: string | null
 
   // ── Gemini (legacy) ──
@@ -91,7 +94,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
   aiProvider: 'openai',
   aiEnabled: true,
-  aiMode: 'omni',
+  aiMode: 'regular',
+  voiceCascadeMigrated: true,
 
   geminiApiKey: null,
   geminiApiBase: 'https://generativelanguage.googleapis.com',
@@ -179,9 +183,14 @@ export function loadConfig(): AgentConfig {
       }
       const merged = { ...DEFAULT_CONFIG, ...cleaned }
       // 迁移：存量配置里已下架的旧模型名（qwen-plus/turbo/max 一代）改写为现代默认
-      const migrated = /^qwen-(plus|turbo|max)/.test(merged.openaiCardModel ?? '')
+      const modelMigrated = /^qwen-(plus|turbo|max)/.test(merged.openaiCardModel ?? '')
         ? { ...merged, openaiCardModel: DEFAULT_CONFIG.openaiCardModel }
         : merged
+      // 迁移（2026-09）：语音默认改为级联——实时模式是独立的小模型大脑，答不上 Fairy 的水平
+      // 看存档里有没有这个标记（merged 已带默认值 true，不能用它判断）
+      const migrated = parsed.voiceCascadeMigrated
+        ? modelMigrated
+        : { ...modelMigrated, aiMode: 'regular' as const, voiceCascadeMigrated: true }
       const dashscopeApiKey = migrated.dashscopeApiKey
         ?? migrated.openaiApiKey
         ?? migrated.omniApiKey
