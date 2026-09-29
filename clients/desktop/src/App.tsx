@@ -25,12 +25,13 @@ import { theme, hud } from './theme'
 import { getDashScopeApiKey, getOmniApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
 import { getFeatureModel, logModelUsage, realtimeUsageToDashScope, type RealtimeUsage } from './lib/model-audit'
-import { buildSystemPrompt, buildConversationSummary } from './lib/ai/prompt-templates'
+import { buildStaticPrompt, buildDynamicContext, buildConversationSummary } from './lib/ai/prompt-templates'
 import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from './lib/ai/prompt-templates'
 import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
 
 // LLM Engine（新）
 import { runQueryLoop } from './lib/llm/query-loop'
+import { compactHistory, withSystemReminder } from './lib/llm/context-window'
 import { createUserMessage, createAssistantMessage, getMessageText, isAssistantMessage } from './lib/llm/types'
 import type { Message } from './lib/llm/types'
 import type { ApiRequestSnapshot } from './lib/llm/api'
@@ -662,6 +663,8 @@ export default function App() {
   const voiceServiceRef = useRef<VoiceService | null>(null)
   const configRef = useRef(config)
   const systemPromptRef = useRef<string>('')
+  // 文字模式用：静态段作系统提示词（跨轮不变，吃得到前缀缓存），动态段作本轮 <system-reminder>
+  const promptPartsRef = useRef<{ staticPrompt: string; dynamicContext: string }>({ staticPrompt: '', dynamicContext: '' })
   const chatMessagesRef = useRef<ChatMessage[]>([])
   const omniUserInputPersistedRef = useRef(false)
   // 同步 ref，供 refreshSystemPrompt 读取最新值（避免 useCallback 闭包过期）
@@ -686,7 +689,7 @@ export default function App() {
 
         if (state.messages.length > 0) {
           setChatMessages(sessionMessagesToChatMessages(state.messages, audioDir))
-          conversationRef.current = sessionMessagesToLLMHistory(state.messages).slice(-12)
+          conversationRef.current = compactHistory(sessionMessagesToLLMHistory(state.messages))
         }
       } catch {
         // 后端不可用：静默降级（不影响功能，不持久化）
@@ -2065,23 +2068,24 @@ export default function App() {
           .map((s) => ({ time: toHHmm(s.start_at), title: s.title, url: `https://www.bilibili.com/video/${s.bvid}` }))
       : []
 
+    const staticPrompt = buildStaticPrompt(cfg.agentName, cfg.agentPersona, cfg.agentCallUser, cfg.mainQuest)
     // 按意图选择性注入；传 undefined 的段 buildDynamicContext 会自动跳过
-    const base = buildSystemPrompt(
-      cfg.agentName, cfg.agentPersona, cfg.agentCallUser,
-      cfg.mainQuest,
-      {
-        goals: wantGoals ? goals : undefined,
-        activityTags: wantActivity ? activityTags : undefined,
-        appUsage: wantActivity ? appUsage : undefined,
-        biliHistory: wantBili ? biliHistory : undefined,
-        presence,
-        // 锁定卡不走意图裁剪：体量小且主人随时可能说"这张卡片"
-        focusedCard: focusedCardRef.current ?? undefined,
-      },
-    )
+    const dynamicContext = buildDynamicContext({
+      goals: wantGoals ? goals : undefined,
+      activityTags: wantActivity ? activityTags : undefined,
+      appUsage: wantActivity ? appUsage : undefined,
+      biliHistory: wantBili ? biliHistory : undefined,
+      presence,
+      // 锁定卡不走意图裁剪：体量小且主人随时可能说"这张卡片"
+      focusedCard: focusedCardRef.current ?? undefined,
+    })
+    promptPartsRef.current = { staticPrompt, dynamicContext }
+    // Omni 实时会话每次都是新连接，要靠 instructions 带上动态背景和最近对话摘要；
+    // 文字模式不用它（历史就在消息里），只用 promptPartsRef
     const history = buildConversationSummary(
       chatMessagesRef.current.map((m) => ({ role: m.role, content: m.content || m.transcript || '' }))
     )
+    const base = `${staticPrompt}\n\n${dynamicContext}`
     systemPromptRef.current = history ? `${base}\n\n${history}` : base
     return systemPromptRef.current
   }, [presence, activityPalette])
@@ -2303,10 +2307,14 @@ export default function App() {
     const chatModel = await getFeatureModel('fairy_chat', config.openaiCardModel || 'qwen3.6-flash')
     const dashscopeApiKey = getDashScopeApiKey(config) ?? ''
 
+    // 本轮实时背景只附在发给模型的这条消息上；存进历史的是不带背景的原话，让前缀跨轮不变
+    const { staticPrompt, dynamicContext } = promptPartsRef.current
+    const apiUserMsg = { ...userMsg, message: { ...userMsg.message, content: withSystemReminder(text, dynamicContext) } }
+
     try {
       const newHistory = await runQueryLoop({
-        messages: [...conversationRef.current.slice(-20), userMsg],
-        systemPrompt,
+        messages: [...conversationRef.current, apiUserMsg],
+        systemPrompt: staticPrompt || systemPrompt,
         apiOptions: {
           apiKey: dashscopeApiKey,
           apiBase: config.openaiApiBase,
@@ -2389,18 +2397,8 @@ export default function App() {
         },
         executeTool: (call) => executeAgentTool(call.name, call.arguments),
       })
-      // 只保留 user + 最终 assistant 文本消息，丢弃工具调用/结果链，防止 context 爆炸
-      // 取最后一条 assistant（最终回复）+ 所有 human turn（无工具结果的 user 消息）
-      const compactHistory = newHistory.filter((m) => {
-        if (m.type === 'user') return !('toolUseResult' in m && m.toolUseResult !== undefined)
-        if (m.type === 'assistant') {
-          // 只保留纯文本 assistant 消息（过滤含 tool_use blocks 的中间轮）
-          return isAssistantMessage(m) &&
-            m.message.content.every((b: any) => b.type === 'text')
-        }
-        return false
-      })
-      conversationRef.current = compactHistory.slice(-12) // 最多保留 6 轮对话
+      // 工具调用与结果留在历史里（下一轮还能引用刚查到的数据）；体量超高水位时才按整轮分批压缩
+      conversationRef.current = compactHistory(newHistory.map((m) => (m === apiUserMsg ? userMsg : m)))
 
       // 把本轮快照 patch 到对应 agent 气泡
       if (capturedSnapshots.length > 0) {
@@ -2694,7 +2692,7 @@ export default function App() {
       persistedBufferRef.current = [...msgs]
       const info = sessions.find((s) => s.id === sessionId)
       sessionTitleRef.current = info?.title || '新会话'
-      conversationRef.current = sessionMessagesToLLMHistory(msgs).slice(-12)
+      conversationRef.current = compactHistory(sessionMessagesToLLMHistory(msgs))
       revokeTrackedBlobAudioUrls()
       setChatMessages(sessionMessagesToChatMessages(msgs, audioDirRef.current))
       performJump()

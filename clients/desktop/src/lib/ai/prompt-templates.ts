@@ -411,21 +411,6 @@ export function buildDynamicContext(params: DynamicContextParams = {}): string {
   return sections.join('\n\n')
 }
 
-// ── 组合入口（供 App.tsx 调用） ──
-
-export function buildSystemPrompt(
-  agentName: string,
-  agentPersona: string,
-  agentCallUser: string,
-  mainQuest: string | null,
-  dynamicParams?: DynamicContextParams,
-): string {
-  return [
-    buildStaticPrompt(agentName, agentPersona, agentCallUser, mainQuest),
-    buildDynamicContext(dynamicParams),
-  ].join('\n\n')
-}
-
 // ── 对话历史摘要（供 Omni Realtime instructions 注入） ──────────────────────
 
 const MAX_SUMMARY_CHARS = 2000
