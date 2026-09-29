@@ -1859,6 +1859,9 @@ export default function App() {
       pressingRef.current = true
       console.log('[RAlt] keydown received')
       altDownTimeRef.current = Date.now()
+      // 按下就开始连 WS、开麦克风（开麦常要 1~2 秒，别再白等长按阈值）；
+      // 不满 LONG_PRESS_MS 就松开时，onUp 的 cancel() 会把它们一并关掉
+      getVoiceService().startRecording()
 
       setTimeout(() => {
         if (pressingRef.current && Date.now() - altDownTimeRef.current >= LONG_PRESS_MS) {
@@ -1877,8 +1880,6 @@ export default function App() {
               }
             })
           }
-          const svc = getVoiceService()
-          svc.startRecording()
         }
       }, LONG_PRESS_MS)
     }

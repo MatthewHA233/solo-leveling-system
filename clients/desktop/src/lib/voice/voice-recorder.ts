@@ -39,19 +39,34 @@ export function createStreamingRecorder(): StreamingVoiceRecorder {
   let recording = false
   let accumulator: number[] = []   // float32 samples accumulator
   let onChunkCb: ((pcm16: Uint8Array) => void) | null = null
+  let chunksEmitted = 0
+  let startedAt = 0
 
   const CHUNK_SAMPLES = 1600  // 100ms at 16kHz
+  const RESUME_TIMEOUT_MS = 500
+  const SLOW_START_MS = 800
 
   const start = async (opts: StreamingRecorderOptions) => {
     onChunkCb = opts.onChunk
     accumulator = []
+    chunksEmitted = 0
+    startedAt = Date.now()
 
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: { sampleRate: { ideal: TARGET_SAMPLE_RATE }, channelCount: 1 },
       video: false,
     })
+    const micMs = Date.now() - startedAt
 
     audioCtx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE })
+    // 右 Alt 由 Rust 全局钩子触发，不算页面内的用户手势：新建的 AudioContext 可能停在 suspended，
+    // onaudioprocess 一次都不回调，服务端只收到空缓冲。主动 resume，带超时以免卡住整个录音
+    if (audioCtx.state === 'suspended') {
+      await Promise.race([
+        audioCtx.resume(),
+        new Promise<void>((resolve) => setTimeout(resolve, RESUME_TIMEOUT_MS)),
+      ])
+    }
     source = audioCtx.createMediaStreamSource(mediaStream)
 
     analyser = audioCtx.createAnalyser()
@@ -72,6 +87,7 @@ export function createStreamingRecorder(): StreamingVoiceRecorder {
       // emit chunks when we have enough samples
       while (accumulator.length >= CHUNK_SAMPLES) {
         const chunk = accumulator.splice(0, CHUNK_SAMPLES)
+        chunksEmitted++
         onChunkCb?.(float32ToPcm16(new Float32Array(chunk)))
       }
     }
@@ -79,6 +95,10 @@ export function createStreamingRecorder(): StreamingVoiceRecorder {
     processor.connect(audioCtx.destination)
 
     recording = true
+    const totalMs = Date.now() - startedAt
+    if (totalMs > SLOW_START_MS) {
+      console.warn(`[StreamRecorder] 麦克风打开较慢：getUserMedia ${micMs}ms，就绪共 ${totalMs}ms`)
+    }
   }
 
   const stop = async (): Promise<void> => {
@@ -87,10 +107,14 @@ export function createStreamingRecorder(): StreamingVoiceRecorder {
 
     // flush remaining samples
     if (accumulator.length > 0 && onChunkCb) {
+      chunksEmitted++
       onChunkCb(float32ToPcm16(new Float32Array(accumulator)))
       accumulator = []
     }
     onChunkCb = null
+    if (chunksEmitted === 0) {
+      console.warn(`[StreamRecorder] 本次没录到任何音频块：AudioContext=${audioCtx?.state ?? 'null'}，录音 ${Date.now() - startedAt}ms`)
+    }
 
     if (processor) { processor.disconnect(); processor = null }
     if (source) { source.disconnect(); source = null }

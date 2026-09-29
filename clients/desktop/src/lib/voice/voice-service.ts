@@ -58,6 +58,9 @@ export function createVoiceService(
   // Session 隔离：每次新录音自增，旧 session 的所有异步回调检查此值后放弃执行
   let sessionSeq = 0
   let startingSeq: number | null = null
+  // 启动（连 WS / 开麦克风）还没完成就松开了：记下来，启动完成后立刻收尾，不静默丢弃
+  let stopRequestedSeq: number | null = null
+  let micOpenMs = 0
 
   const setPhase = (p: VoicePhase) => {
     phase = p
@@ -105,34 +108,41 @@ export function createVoiceService(
       // 用局部 sr，防止 await 期间 cancel()/stopAndProcess() 把闭包 streamRecorder 置 null
       const sr = createStreamingRecorder()
       streamRecorder = sr
+      omniPcmChunks = []
+      omniRecordStartMs = Date.now()
+      // 麦克风与 WS 并行启动：开麦克风常要 1~2 秒，串在连接后面会吞掉按住后的前几秒。
+      // WS 就绪前录到的块先攒着，连上后按顺序补发
+      let wsReady = false
+      const unsent: Uint8Array[] = []
+      const sendChunk = (pcm16: Uint8Array) => {
+        invoke('omni_send_audio', { pcmBase64: pcm16ToBase64(pcm16) }).catch(() => {})
+      }
       try {
         const omniModel = await getFeatureModel('fairy_omni_chat', config.omniModel)
         if (mySeq !== sessionSeq || streamRecorder !== sr) {
           clearStarting(mySeq)
-          await sr.stop().catch(() => {})
           return
         }
-        await invoke('omni_connect', {
-          apiKey: omniApiKey,
-          model: omniModel,
-          voice: config.omniVoice || '',
-          systemPrompt: getSystemPrompt(),
-          tools: getOmniTools(),
-        })
-        if (mySeq !== sessionSeq || streamRecorder !== sr) {
-          clearStarting(mySeq)
-          await sr.stop().catch(() => {})
-          invoke('omni_stop').catch(() => {})
-          return
-        }
-        omniPcmChunks = []
-        omniRecordStartMs = Date.now()
-        await sr.start({
-          onChunk: (pcm16) => {
-            omniPcmChunks.push(pcm16)
-            invoke('omni_send_audio', { pcmBase64: pcm16ToBase64(pcm16) }).catch(() => {})
-          },
-        })
+        const micT0 = Date.now()
+        await Promise.all([
+          invoke('omni_connect', {
+            apiKey: omniApiKey,
+            model: omniModel,
+            voice: config.omniVoice || '',
+            systemPrompt: getSystemPrompt(),
+            tools: getOmniTools(),
+          }).then(() => {
+            wsReady = true
+            if (mySeq === sessionSeq) unsent.splice(0).forEach(sendChunk)
+          }),
+          sr.start({
+            onChunk: (pcm16) => {
+              omniPcmChunks.push(pcm16)
+              if (wsReady) sendChunk(pcm16)
+              else unsent.push(pcm16)
+            },
+          }).then(() => { micOpenMs = Date.now() - micT0 }),
+        ])
         if (mySeq !== sessionSeq || streamRecorder !== sr) {
           clearStarting(mySeq)
           await sr.stop().catch(() => {})
@@ -141,15 +151,22 @@ export function createVoiceService(
         }
         clearStarting(mySeq)
         setPhase('listening')
+        if (stopRequestedSeq === mySeq) {
+          stopRequestedSeq = null
+          void stopAndProcess()
+        }
       } catch (err) {
+        await sr.stop().catch(() => {})
         if (mySeq !== sessionSeq) {
           clearStarting(mySeq)
           return
         }
         clearStarting(mySeq)
+        stopRequestedSeq = null
         callbacks.onError(`Omni ASR 启动失败: ${err instanceof Error ? err.message : String(err)}`)
         if (streamRecorder === sr) streamRecorder = null
         invoke('omni_stop').catch(() => {})
+        setPhase('idle')
       }
     } else {
       // ── 默认批量录音 ──
@@ -164,12 +181,17 @@ export function createVoiceService(
         }
         clearStarting(mySeq)
         setPhase('listening')
+        if (stopRequestedSeq === mySeq) {
+          stopRequestedSeq = null
+          void stopAndProcess()
+        }
       } catch (err) {
         if (mySeq !== sessionSeq) {
           clearStarting(mySeq)
           return
         }
         clearStarting(mySeq)
+        stopRequestedSeq = null
         if (batchRecorder === br) batchRecorder = null
         callbacks.onError(`麦克风访问失败: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -178,7 +200,8 @@ export function createVoiceService(
 
   const stopAndProcess = async () => {
     if (phase !== 'listening') {
-      if (startingSeq != null) cancel()
+      // 还在启动中就松开：不丢弃，等启动完成后由 startRecording 接着收尾
+      if (startingSeq != null) stopRequestedSeq = startingSeq
       return
     }
     setPhase('thinking')
@@ -191,6 +214,14 @@ export function createVoiceService(
       // ── Omni 流式 ASR 收尾 ──
       await streamRecorder.stop()
       streamRecorder = null
+
+      // 一块都没录到（麦克风刚开就松手）：不去 commit 空缓冲，否则服务端只回一句看不懂的错误
+      if (omniPcmChunks.length === 0) {
+        invoke('omni_stop').catch(() => {})
+        callbacks.onError(`没录到声音：麦克风打开用了 ${micOpenMs} ms，松开时还没开始录。按住右 Alt 稍等再开口`)
+        setPhase('idle')
+        return
+      }
 
       // 立刻生成用户语音气泡（先无文字，transcript 到来后由 App.tsx 更新）
       const durationMs = Date.now() - omniRecordStartMs
@@ -284,6 +315,7 @@ export function createVoiceService(
   const cancel = () => {
     sessionSeq++
     startingSeq = null
+    stopRequestedSeq = null
     if (batchRecorder) { batchRecorder.stop(); batchRecorder = null }
     if (streamRecorder) { streamRecorder.stop().catch(() => {}); streamRecorder = null }
     invoke('omni_stop').catch(() => {})
