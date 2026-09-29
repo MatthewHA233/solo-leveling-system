@@ -18,6 +18,7 @@ mod transcribe_queue;
 mod ffmpeg;
 mod ocr;
 mod focus_lock;
+mod fairy_fs;
 #[cfg(windows)]
 mod audio_session_name;
 #[cfg(windows)]
@@ -1474,20 +1475,32 @@ fn get_audio_dir() -> String {
     audio_root().to_string_lossy().into_owned()
 }
 
-// ── 文件操作命令（供 AI 工具调用） ──
+// ── 文件操作命令（供 Fairy 的 Read / Write / Edit 工具调用；权限规则见 fairy_fs.rs） ──
 
 #[tauri::command]
-async fn read_file(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| format!("读取失败: {}", e))
+async fn read_file(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    fairy_fs::read(&app, &path).await
+}
+
+/// 返回实际写入的绝对路径（相对路径会落在 Fairy 工作区）
+#[tauri::command]
+async fn write_file(app: tauri::AppHandle, path: String, content: String) -> Result<String, String> {
+    fairy_fs::write(&app, &path, &content).await
 }
 
 #[tauri::command]
-async fn write_file(path: String, content: String) -> Result<(), String> {
-    // 如父目录不存在则创建
-    if let Some(parent) = std::path::Path::new(&path).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
-    }
-    std::fs::write(&path, content).map_err(|e| format!("写入失败: {}", e))
+async fn edit_file(
+    app: tauri::AppHandle,
+    path: String,
+    old_string: String,
+    new_string: String,
+) -> Result<String, String> {
+    fairy_fs::edit(&app, &path, &old_string, &new_string).await
+}
+
+#[tauri::command]
+fn get_fairy_workspace() -> String {
+    fairy_fs::workspace_dir().to_string_lossy().into_owned()
 }
 
 // ── 入口 ──
@@ -1906,6 +1919,8 @@ pub fn run() {
             list_model_free_quotas,
             read_file,
             write_file,
+            edit_file,
+            get_fairy_workspace,
             save_audio_file,
             get_audio_dir,
             setup_fairy,

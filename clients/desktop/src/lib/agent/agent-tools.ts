@@ -676,6 +676,11 @@ const updateAnchor: Tool = {
   },
 }
 
+// ── 文件工具的权限约定（执行端在 Rust fairy_fs.rs）──
+
+const FILE_SCOPE_NOTE = '你有自己的工作区：写相对路径就落在工作区里，可自由读写；工作区外的路径每次都会弹窗请主人确认，被拒绝时不要换路径重试。'
+const FILE_PATH_DESC = '文件路径。相对路径落在你的工作区；工作区外请写绝对路径（会请主人确认）'
+
 // ── Read ──
 
 const readFile: Tool = {
@@ -683,11 +688,11 @@ const readFile: Tool = {
     type: 'function',
     function: {
       name: 'Read',
-      description: '读取本地文件内容，返回文本。',
+      description: `读取本地文件内容，返回文本。${FILE_SCOPE_NOTE}`,
       parameters: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: '文件的绝对路径' },
+          file_path: { type: 'string', description: FILE_PATH_DESC },
         },
         required: ['file_path'],
       },
@@ -707,11 +712,11 @@ const writeFile: Tool = {
     type: 'function',
     function: {
       name: 'Write',
-      description: '将内容写入本地文件（完全覆盖）。写入前确认路径正确。',
+      description: `将内容写入本地文件（完全覆盖）。${FILE_SCOPE_NOTE}`,
       parameters: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: '文件的绝对路径' },
+          file_path: { type: 'string', description: FILE_PATH_DESC },
           content:   { type: 'string', description: '要写入的文件内容' },
         },
         required: ['file_path', 'content'],
@@ -722,8 +727,8 @@ const writeFile: Tool = {
     const path = args.file_path as string
     const content = args.content as string
     if (!path) return '缺少参数：file_path'
-    await invoke('write_file', { path, content })
-    return `已写入：${path}`
+    const written = await invoke<string>('write_file', { path, content })
+    return `已写入：${written}`
   },
 }
 
@@ -734,11 +739,11 @@ const editFile: Tool = {
     type: 'function',
     function: {
       name: 'Edit',
-      description: '在文件中执行精确字符串替换。old_string 必须在文件中唯一存在，否则报错。',
+      description: `在文件中执行精确字符串替换。old_string 必须在文件中唯一存在，否则报错。${FILE_SCOPE_NOTE}`,
       parameters: {
         type: 'object',
         properties: {
-          file_path:  { type: 'string', description: '文件的绝对路径' },
+          file_path:  { type: 'string', description: FILE_PATH_DESC },
           old_string: { type: 'string', description: '要替换的原始字符串（必须唯一存在）' },
           new_string: { type: 'string', description: '替换后的新字符串' },
         },
@@ -748,18 +753,12 @@ const editFile: Tool = {
   },
   async execute(args) {
     const path = args.file_path as string
-    const oldStr = args.old_string as string
-    const newStr = args.new_string as string
-    if (!path || oldStr === undefined) return '缺少参数：file_path 或 old_string'
-
-    const content = await invoke<string>('read_file', { path })
-    const count = content.split(oldStr).length - 1
-    if (count === 0) return `未找到要替换的字符串：${oldStr.slice(0, 80)}`
-    if (count > 1) return `字符串不唯一（出现 ${count} 次），请提供更多上下文`
-
-    const newContent = content.replace(oldStr, newStr)
-    await invoke('write_file', { path, content: newContent })
-    return `已替换：${path}`
+    const oldString = args.old_string as string
+    const newString = (args.new_string as string | undefined) ?? ''
+    if (!path || !oldString) return '缺少参数：file_path 或 old_string'
+    // 读 → 校验唯一 → 询问 → 写回在 Rust 里一次完成（工作区外只弹一次确认窗）
+    const edited = await invoke<string>('edit_file', { path, oldString, newString })
+    return `已替换：${edited}`
   },
 }
 
