@@ -13,7 +13,7 @@ import {
   fetchSyncLinks, fetchSyncPeers, runSyncLink,
   addContextCard, addBinding,
 } from './lib/local-api'
-import type { PerceptionSpan, BiliSpan, ModelCallLog, LinkedDevice, SyncPeer, Goal } from './lib/local-api'
+import type { PerceptionSpan, BiliSpan, ModelCallLog, LinkedDevice, SyncPeer } from './lib/local-api'
 import { distillThought } from './lib/thought-distill'
 import { anchorToContext } from './lib/anchor-to-context'
 import { locateSegment } from './lib/segment-locate'
@@ -312,7 +312,6 @@ export default function App() {
   const [activityBlocks, setActivityBlocks] = useState<ActivityBlock[]>([])
   const [plannedBlocks, setPlannedBlocks] = useState<PlannedBlock[]>([])
   const [planNodes, setPlanNodes] = useState<PlanNode[]>([])
-  const [activeGoals, setActiveGoals] = useState<Goal[]>([])
   const [recordLayer, setRecordLayer] = useState<RecordLayer>('actual')
   const [editMode, setEditMode] = useState(false)
   const [selectedTagId, setSelectedTagId] = useState<number | null>(null)
@@ -777,21 +776,8 @@ export default function App() {
       date.getMonth() === now.getMonth() &&
       date.getDate() === now.getDate()
   }, [])
-  const selectedDateIsToday = isToday(selectedDate)
   const protocolViewLabel = '协议志'
 
-  const refreshActiveGoals = useCallback(() => {
-    fetchGoals('active')
-      .then(setActiveGoals)
-      .catch((err) => {
-        console.error('[Goals] 获取目标失败:', err)
-        setActiveGoals([])
-      })
-  }, [])
-
-  useEffect(() => {
-    refreshActiveGoals()
-  }, [refreshActiveGoals])
 
   const refreshPerceptionSpans = useCallback(() => {
     fetchPerceptionSpans(selectedDate)
