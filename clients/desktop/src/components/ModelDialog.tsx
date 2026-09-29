@@ -195,7 +195,10 @@ function priceOf(tok: number, p: number | null | undefined): number {
   return tok > 0 && p != null && Number.isFinite(p) ? (tok * p) / 1_000_000 : 0
 }
 
-/** 镜像 db.rs::compute_cost：算每子项金额贡献，文本+音频输出口径下 text 输出归 0 */
+/** 镜像 db.rs::bills_text_with_audio：3.8 Omni 起输出语音时文本另计费 */
+const billsTextWithAudio = (modelId: string): boolean => modelId.startsWith('qwen3.8-omni')
+
+/** 镜像 db.rs::compute_cost：算每子项金额贡献，文本+音频输出口径下 text 输出归 0（3.8 Omni 起另计） */
 function breakdownCallCost(call: ModelCallLog, pricing: ModelPricingTier[] | null | undefined): CallCostBreakdown {
   const tiers = pricing ?? []
   const promptTotal = call.prompt_text_tokens + call.prompt_image_tokens + call.prompt_video_tokens + call.prompt_audio_tokens
@@ -215,7 +218,7 @@ function breakdownCallCost(call: ModelCallLog, pricing: ModelPricingTier[] | nul
       { label: '音频', tokens: call.prompt_audio_tokens, cost: priceOf(call.prompt_audio_tokens, audP)  },
     ].filter((p) => p.tokens > 0),
     outputs: [
-      { label: '文本', tokens: call.completion_text_tokens,  cost: hasAudio ? 0 : priceOf(call.completion_text_tokens, outTextP) },
+      { label: '文本', tokens: call.completion_text_tokens,  cost: hasAudio && !billsTextWithAudio(call.model_id) ? 0 : priceOf(call.completion_text_tokens, outTextP) },
       { label: '音频', tokens: call.completion_audio_tokens, cost: priceOf(call.completion_audio_tokens, outAudP) },
     ].filter((p) => p.tokens > 0),
   }

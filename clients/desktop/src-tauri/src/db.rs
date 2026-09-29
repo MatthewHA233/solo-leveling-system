@@ -4973,6 +4973,24 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
     // ids 第一项为主 id（display_name 取它），其余为同价表别名（每个独立成行）
     // tier 字段顺序：(min, max, in_text, in_image, in_video, in_audio, out_text, out_audio)
     let seeds: Vec<Seed> = vec![
+        // ── Qwen3.8 文本（2026-09 上线；价目 2026-09-29 从官方价目页 help.aliyun.com/zh/model-studio/model-pricing 核对）──
+        // 均无阶梯（0<Token≤1M）；多模态版图片/视频与文本同价；prime = max 的优速模式，价格翻倍
+        (&["qwen3.8-max", "qwen3.8-max-0902"], "text", "Qwen3.8 Max", &["text","image","video"], 1_000_000, &[
+            (0, None, Some(12.0), Some(12.0), Some(12.0), None, Some(36.0), None),
+        ]),
+        (&["qwen3.8-max-prime"], "text", "Qwen3.8 Max Prime", &["text","image","video"], 1_000_000, &[
+            (0, None, Some(24.0), Some(24.0), Some(24.0), None, Some(72.0), None),
+        ]),
+        (&["qwen3.8-flash"], "text", "Qwen3.8 Flash", &["text","image","video"], 1_000_000, &[
+            (0, None, Some(0.8), Some(0.8), Some(0.8), None, Some(2.7), None),
+        ]),
+        (&["qwen3.8-2.4t-a95b"], "text", "Qwen3.8 2.4T A95B", &["text"], 1_000_000, &[
+            (0, None, Some(12.0), None, None, None, Some(36.0), None),
+        ]),
+        (&["qwen3.8-27b"], "text", "Qwen3.8 27B", &["text","image","video"], 1_000_000, &[
+            (0, None, Some(3.0), Some(3.0), Some(3.0), None, Some(12.0), None),
+        ]),
+
         // ── Qwen3.7 文本（2026-05 上线；价目 2026-06-11 从控制台模型广场详情页人工核对，存原价）──
         // max 无阶梯；06-08 快照较 05-20 增加视觉模态理解（价目相同）
         (&["qwen3.7-max", "qwen3.7-max-2026-06-08", "qwen3.7-max-2026-05-20", "qwen3.7-max-2026-05-17"], "text", "Qwen3.7 Max", &["text"], 1_048_576, &[
@@ -4985,6 +5003,12 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
         (&["qwen3.7-plus", "qwen3.7-plus-2026-05-26"], "text", "Qwen3.7 Plus", &["text","image","video"], 1_048_576, &[
             (0,       Some(262_144),   Some(2.0), Some(2.0), Some(2.0), None, Some(8.0),  None),
             (262_144, Some(1_048_576), Some(6.0), Some(6.0), Some(6.0), None, Some(24.0), None),
+        ]),
+        // flash 2026-07 上线（价目 2026-09-29 核对），阶梯三档：≤32K / 32K~256K / 256K~1M
+        (&["qwen3.7-flash", "qwen3.7-flash-2026-07-15"], "text", "Qwen3.7 Flash", &["text","image","video"], 1_000_000, &[
+            (0,       Some(32_768),    Some(0.2), Some(0.2), Some(0.2), None, Some(0.8), None),
+            (32_768,  Some(262_144),   Some(0.6), Some(0.6), Some(0.6), None, Some(2.4), None),
+            (262_144, Some(1_048_576), Some(1.2), Some(1.2), Some(1.2), None, Some(4.8), None),
         ]),
 
         // ── Qwen3.6 文本 ──
@@ -5035,12 +5059,22 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
             (131_072, Some(262_144), Some(1.6), Some(1.6), Some(1.6), None, Some(12.8), None),
         ]),
 
+        // ── Qwen3.8 Omni HTTP（只输出文本，不出语音；各输入模态同价）──
+        (&["qwen3.8-omni-flash"], "omni", "Qwen3.8 Omni Flash", &["text","image","video","audio_in"], 1_000_000, &[
+            (0, None, Some(0.8), Some(0.8), Some(0.8), Some(0.8), Some(2.7), None),
+        ]),
+
         // ── Qwen3.5 Omni HTTP ──
         (&["qwen3.5-omni-plus", "qwen3.5-omni-plus-2026-03-15"], "omni", "Qwen3.5 Omni Plus", &["text","image","video","audio_in","audio_out"], 0, &[
             (0, None, Some(7.0),  Some(7.0),  Some(7.0),  Some(53.0), Some(40.0),  Some(213.0)),
         ]),
         (&["qwen3.5-omni-flash", "qwen3.5-omni-flash-2026-03-15"], "omni", "Qwen3.5 Omni Flash", &["text","image","video","audio_in","audio_out"], 0, &[
             (0, None, Some(2.2),  Some(2.2),  Some(2.2),  Some(18.0), Some(13.3),  Some(72.0)),
+        ]),
+
+        // ── Qwen3.8 Omni Realtime（WS）：输出语音时音频和对应文本分别计费（见 bills_text_with_audio）──
+        (&["qwen3.8-omni-flash-realtime"], "realtime", "Qwen3.8 Omni Flash Realtime", &["text","image","audio_in","audio_out"], 0, &[
+            (0, None, Some(1.5), Some(1.5), Some(1.5), Some(6.0), Some(4.5), Some(12.0)),
         ]),
 
         // ── Qwen3.5 Omni Realtime（WS）──
@@ -5058,12 +5092,23 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
         (&["text-embedding-v3"], "embedding", "Text Embedding V3", &["text"], 8_192, &[
             (0, None, Some(0.5), None, None, None, None, None),
         ]),
+        // Qwen3.7 文本向量/重排序（价目 2026-09-29 核对；单次最大输入未核对，context_window 留空）
+        (&["qwen3.7-text-embedding"], "embedding", "Qwen3.7 Text Embedding", &["text"], 0, &[
+            (0, None, Some(0.5), None, None, None, None, None),
+        ]),
+        (&["qwen3.7-text-embedding-flash"], "embedding", "Qwen3.7 Text Embedding Flash", &["text"], 0, &[
+            (0, None, Some(0.125), None, None, None, None, None),
+        ]),
+        (&["qwen3.7-text-rerank"], "embedding", "Qwen3.7 Text Rerank", &["text"], 0, &[
+            (0, None, Some(0.5), None, None, None, None, None),
+        ]),
         // 视觉向量/重排序（价目 2026-06-11 控制台核对；文本/图片输入分价，存 price_input_text/image）
         (&["qwen3-vl-embedding"], "embedding", "Qwen3 VL Embedding", &["text","image"], 32_768, &[
             (0, None, Some(0.7), Some(1.8), None, None, None, None),
         ]),
+        // rerank 2026-09 降价：文本/图片均 0.5（2026-09-29 核对）
         (&["qwen3-vl-rerank"], "embedding", "Qwen3 VL Rerank", &["text","image"], 122_880, &[
-            (0, None, Some(0.7), Some(1.8), None, None, None, None),
+            (0, None, Some(0.5), Some(0.5), None, None, None, None),
         ]),
         (&["tongyi-embedding-vision-plus", "tongyi-embedding-vision-plus-2026-03-06"], "embedding", "通义 Embedding Vision Plus", &["text","image"], 0, &[
             (0, None, Some(0.5), Some(0.5), None, None, None, None),
@@ -5122,9 +5167,15 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
 
     // 个别模型的补充说明（折扣 / 限流 / 免费额度等计费特例；价目本体在 model_pricing）
     let notes: &[(&str, &str)] = &[
-        ("qwen3.7-plus", "阶梯计费(≤256K/256K~1M)；当前限时8折、Batch Chat 5折，库内存原价；缓存命中 0.4/1.2 元/百万；免费额度至 2026-09-01"),
-        ("qwen3.7-max", "无阶梯；当前限时5折(实付6/18)，库内存原价；缓存命中 2.4、显式缓存创建 15/命中 1.2"),
-        ("qwen3.7-max-preview", "预览版：无折扣；限流低(RPM 60/TPM 50万)；免费额度至 2026-08-24"),
+        ("qwen3.8-max", "无阶梯；Batch 调用半价；缓存命中 1.5、显式缓存创建 15/命中 1 元/百万；快照 qwen3.8-max-0902（别名 qwen3.8-max-2026-09-02）"),
+        ("qwen3.8-max-prime", "qwen3.8-max 的优速模式（Prime），价格翻倍；无免费额度"),
+        ("qwen3.8-flash", "无阶梯；缓存命中 0.1、显式缓存创建 1.25/命中 0.1 元/百万"),
+        ("qwen3.8-omni-flash", "只输出文本（不出语音）；文本/图片/视频/音频输入同价；缓存命中 0.1 元/百万"),
+        ("qwen3.8-omni-flash-realtime", "输出语音时音频和对应文本分别计费（Qwen3.5-Omni-Realtime 只计音频）"),
+        ("qwen3.7-flash", "阶梯计费(≤32K/32K~256K/256K~1M)；Batch 调用半价"),
+        ("qwen3.7-plus", "阶梯计费(≤256K/256K~1M)；当前限时8折、Batch Chat 5折，库内存原价；缓存命中 0.4/1.2 元/百万"),
+        ("qwen3.7-max", "无阶梯；Batch 调用半价；缓存命中 2.4、显式缓存创建 15/命中 1.2"),
+        ("qwen3.7-max-preview", "预览版：仅思考模式；限流低(RPM 60/TPM 50万)"),
         ("text-embedding-v4", "Qwen3-Embedding 系列；Batch 调用半价 0.25 元/百万；维度 64~2048 可选；单次最大输入 8192 token；无免费额度"),
         ("text-embedding-v3", "Batch 调用半价 0.25 元/百万；维度 64~1024 可选；单次最大输入 8192 token；无免费额度"),
         ("qwen3-vl-embedding", "视觉-文本向量；最大输入 32K；无免费额度"),
@@ -5577,9 +5628,15 @@ impl Database {
 
     const QWEN3_ASR_FLASH_FILETRANS_PRICE_PER_SECOND_CNY: f64 = 0.00022;
 
+    /// 输出语音时对应文本是否另计费：Qwen3.5-Omni 系列只计音频；
+    /// qwen3.8-omni-flash-realtime 起音频和文本分别按各自单价计费。
+    fn bills_text_with_audio(model_id: &str) -> bool {
+        model_id.starts_with("qwen3.8-omni")
+    }
+
     /// 按当前价目折算成本（0 token 各模态返回 0）。
     /// 区间命中：用 prompt token 总和（含所有模态）匹配 tier_min/tier_max。
-    /// 输出：completion_audio_tokens > 0 → 整段输出按 audio 价（文本不计费）；否则按 text 价。
+    /// 输出：completion_audio_tokens > 0 → 按 audio 价（3.8 Omni 起文本另计）；否则按 text 价。
     fn compute_cost(req: &LogModelCallRequest, tiers: &[ModelPricingTier]) -> Option<f64> {
         let prompt_total = req.prompt_text_tokens + req.prompt_image_tokens
             + req.prompt_video_tokens + req.prompt_audio_tokens;
@@ -5599,8 +5656,11 @@ impl Database {
         total += price(req.prompt_audio_tokens, tier.price_input_audio);
 
         if req.completion_audio_tokens > 0 {
-            // 按"文本+音频"输出口径：仅按音频计费
+            // 按"文本+音频"输出口径：3.5 仅按音频计费，3.8 Omni 起文本另计
             total += price(req.completion_audio_tokens, tier.price_output_audio);
+            if Self::bills_text_with_audio(&req.model_id) {
+                total += price(req.completion_text_tokens, tier.price_output_text);
+            }
         } else {
             total += price(req.completion_text_tokens, tier.price_output_text);
         }
@@ -5646,6 +5706,9 @@ impl Database {
 
         if req.completion_audio_tokens > 0 {
             total += count(req.completion_audio_tokens, tier.price_output_audio);
+            if Self::bills_text_with_audio(&req.model_id) {
+                total += count(req.completion_text_tokens, tier.price_output_text);
+            }
         } else {
             total += count(req.completion_text_tokens, tier.price_output_text);
         }

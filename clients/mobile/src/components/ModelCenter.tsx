@@ -19,6 +19,7 @@ import type { AgentConfig } from '../lib/agent/agent-config'
 import {
   FEATURE_SPECS,
   MODEL_REGISTRY,
+  billsTextWithAudio,
   getModelDef,
   modelsForFeature,
   parseModalities,
@@ -74,8 +75,8 @@ function computeCallCost(row: ModelCallLogRow): number {
     priceOf(row.promptImageTokens, tier.price_input_image ?? tier.price_input_text) +
     priceOf(row.promptVideoTokens, tier.price_input_video ?? tier.price_input_text) +
     priceOf(row.promptAudioTokens, tier.price_input_audio) +
-    // 有音频输出时文本输出不计费（Omni 双模态口径，对齐 desktop）
-    (hasAudioOut ? 0 : priceOf(row.completionTextTokens, tier.price_output_text)) +
+    // 有音频输出时文本输出不计费（Omni 双模态口径，对齐 desktop；3.8 Omni 起文本另计）
+    (hasAudioOut && !billsTextWithAudio(row.modelId) ? 0 : priceOf(row.completionTextTokens, tier.price_output_text)) +
     priceOf(row.completionAudioTokens, tier.price_output_audio)
   )
 }
