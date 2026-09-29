@@ -7,7 +7,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -1572,6 +1572,46 @@ async fn upsert_cluster_name(
     }
 }
 
+// ── 协议志·动机云 ──
+
+/// GET /api/motives/protocols —— 所有动机的去向与蓝图（没记录的动机前端视为 cloud）
+async fn list_motive_protocols(
+    State(s): State<ApiState>,
+) -> Json<ApiResponse<Vec<crate::db::MotiveProtocol>>> {
+    match s.db.list_motive_protocols().await {
+        Ok(rows) => Json(ApiResponse::ok(rows)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpsertMotiveProtocolBody {
+    /// 不传 = 保持原去向
+    destiny: Option<String>,
+    /// 传了就覆盖蓝图
+    blueprint_json: Option<String>,
+    /// true = 清空蓝图（优先于 blueprint_json）
+    #[serde(default)]
+    clear_blueprint: bool,
+}
+
+/// PUT /api/motives/protocols/{anchor_id} —— 改去向 / 存蓝图（只动传入的字段）
+async fn upsert_motive_protocol(
+    State(s): State<ApiState>,
+    Path(anchor_id): Path<String>,
+    Json(body): Json<UpsertMotiveProtocolBody>,
+) -> Json<ApiResponse<crate::db::MotiveProtocol>> {
+    let blueprint = if body.clear_blueprint {
+        Some(None)
+    } else {
+        body.blueprint_json.as_deref().map(Some)
+    };
+    match s.db.upsert_motive_protocol(&anchor_id, body.destiny.as_deref(), blueprint).await {
+        Ok(row) => Json(ApiResponse::ok(row)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
 // ── Presence Spans ──
 
 #[derive(Deserialize)]
@@ -1704,6 +1744,8 @@ pub fn create_router(
         .route("/api/context/bindings/{id}/anchors", post(add_binding_anchor))
         .route("/api/anchors/embeddings", get(get_anchor_embeddings).post(upsert_anchor_embeddings))
         .route("/api/anchors/cluster-names", get(get_cluster_names).post(upsert_cluster_name))
+        .route("/api/motives/protocols", get(list_motive_protocols))
+        .route("/api/motives/protocols/{anchor_id}", put(upsert_motive_protocol))
         .route("/api/anchors/{id}", patch(update_anchor))
         .layer(
             CorsLayer::new()

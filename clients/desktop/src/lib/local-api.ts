@@ -964,6 +964,87 @@ export async function addAnchorToBinding(bindingId: string, keyword: string, cat
   return json.data
 }
 
+// ── 协议志·动机云（每条动机的去向 + 行动蓝图）──
+
+/** cloud=在云里 / action=展开成行动 / wish=留作愿望 / released=放下（归档不删） */
+export type MotiveDestiny = 'cloud' | 'action' | 'wish' | 'released'
+
+export interface BlueprintDirection {
+  readonly title: string
+  readonly steps: readonly string[]
+}
+
+export interface MotiveBlueprint {
+  readonly directions: readonly BlueprintDirection[]
+}
+
+export interface MotiveProtocol {
+  readonly anchor_id: string
+  readonly destiny: MotiveDestiny
+  readonly blueprint: MotiveBlueprint | null
+  readonly updated_at: string
+}
+
+interface MotiveProtocolRow {
+  readonly anchor_id: string
+  readonly destiny: MotiveDestiny
+  readonly blueprint_json: string | null
+  readonly updated_at: string
+}
+
+function parseBlueprint(json: string | null): MotiveBlueprint | null {
+  if (!json) return null
+  try {
+    const raw = JSON.parse(json) as { directions?: unknown }
+    if (!Array.isArray(raw.directions)) return null
+    const directions = raw.directions
+      .filter((d): d is { title: string; steps: unknown } => typeof d?.title === 'string')
+      .map((d) => ({
+        title: d.title,
+        steps: Array.isArray(d.steps) ? d.steps.filter((s): s is string => typeof s === 'string') : [],
+      }))
+    return { directions }
+  } catch {
+    return null
+  }
+}
+
+function toMotiveProtocol(row: MotiveProtocolRow): MotiveProtocol {
+  return {
+    anchor_id: row.anchor_id,
+    destiny: row.destiny,
+    blueprint: parseBlueprint(row.blueprint_json),
+    updated_at: row.updated_at,
+  }
+}
+
+export async function fetchMotiveProtocols(): Promise<MotiveProtocol[]> {
+  const res = await fetch(`${API_BASE}/api/motives/protocols`)
+  const json: ApiResponse<MotiveProtocolRow[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '读取动机去向失败')
+  return json.data.map(toMotiveProtocol)
+}
+
+/** 只改传入的字段；blueprint 传 null = 清空蓝图 */
+export async function saveMotiveProtocol(
+  anchorId: string,
+  patch: { destiny?: MotiveDestiny; blueprint?: MotiveBlueprint | null },
+): Promise<MotiveProtocol> {
+  const body = {
+    destiny: patch.destiny,
+    blueprint_json: patch.blueprint ? JSON.stringify(patch.blueprint) : undefined,
+    clear_blueprint: patch.blueprint === null,
+  }
+  const res = await fetch(`${API_BASE}/api/motives/protocols/${encodeURIComponent(anchorId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const json: ApiResponse<MotiveProtocolRow> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '保存动机去向失败')
+  return toMotiveProtocol(json.data)
+}
+
 // ── Anchor Embeddings（锚点域地图：语义向量 + 簇名缓存）──
 
 export interface AnchorEmbeddingRecord {

@@ -959,6 +959,16 @@ impl Database {
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            -- 协议志·动机云：每条动机锚点的去向 + 行动蓝图
+            --   destiny: cloud(在云里) / action(展开成行动) / wish(留作愿望) / released(放下，归档不删)
+            --   blueprint_json: { directions: [{ title, steps: [string] }] }，AI 生成后用户可改
+            CREATE TABLE IF NOT EXISTS motive_protocols (
+                anchor_id TEXT PRIMARY KEY,
+                destiny TEXT NOT NULL DEFAULT 'cloud',
+                blueprint_json TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS presence_spans (
                 id TEXT PRIMARY KEY,
                 start_time TEXT NOT NULL,
@@ -3626,6 +3636,60 @@ impl Database {
         Ok(())
     }
 
+    // ── 协议志·动机云 ──
+
+    pub async fn list_motive_protocols(&self) -> Result<Vec<MotiveProtocol>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT anchor_id, destiny, blueprint_json, updated_at FROM motive_protocols"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok(MotiveProtocol {
+                anchor_id: r.get(0)?,
+                destiny: r.get(1)?,
+                blueprint_json: r.get(2)?,
+                updated_at: r.get(3)?,
+            }))
+            .map_err(|e| e.to_string())?
+            .filter_map(|x| x.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// 只更新传入的字段：destiny=None 保持原去向；blueprint=None 保持原蓝图，Some(None) 清空蓝图
+    pub async fn upsert_motive_protocol(
+        &self,
+        anchor_id: &str,
+        destiny: Option<&str>,
+        blueprint: Option<Option<&str>>,
+    ) -> Result<MotiveProtocol, String> {
+        if let Some(d) = destiny {
+            if !matches!(d, "cloud" | "action" | "wish" | "released") {
+                return Err(format!("未知的动机去向：{d}"));
+            }
+        }
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO motive_protocols (anchor_id, destiny, blueprint_json, updated_at)
+             VALUES (?1, COALESCE(?2, 'cloud'), ?4, datetime('now'))
+             ON CONFLICT(anchor_id) DO UPDATE SET
+               destiny = COALESCE(?2, destiny),
+               blueprint_json = CASE WHEN ?3 THEN ?4 ELSE blueprint_json END,
+               updated_at = datetime('now')",
+            params![anchor_id, destiny, blueprint.is_some(), blueprint.flatten()],
+        ).map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT anchor_id, destiny, blueprint_json, updated_at FROM motive_protocols WHERE anchor_id = ?",
+            params![anchor_id],
+            |r| Ok(MotiveProtocol {
+                anchor_id: r.get(0)?,
+                destiny: r.get(1)?,
+                blueprint_json: r.get(2)?,
+                updated_at: r.get(3)?,
+            }),
+        ).map_err(|e| e.to_string())
+    }
+
     // ── Presence Spans ──
 
     pub async fn get_presence_spans_by_date(&self, date: &str) -> Result<Vec<PresenceSpan>, String> {
@@ -4740,6 +4804,15 @@ pub struct BindingRow {
     pub user_speech: String,   // 你的原话，不 AI 总结
     pub created_at: String,
     pub anchors: Vec<AnchorRef>,
+}
+
+/// 协议志·动机云：一条动机锚点的去向与行动蓝图
+#[derive(serde::Serialize, Clone)]
+pub struct MotiveProtocol {
+    pub anchor_id: String,
+    pub destiny: String,
+    pub blueprint_json: Option<String>,
+    pub updated_at: String,
 }
 
 #[derive(serde::Serialize, Clone)]

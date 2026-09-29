@@ -67,7 +67,7 @@ import { pcm16ChunksToWavBlob } from './lib/voice/voice-recorder'
 
 // UI
 import DayNightChart from './components/DayNightChart'
-import MotivationDashboard from './components/MotivationDashboard'
+import MotiveCloud from './components/motive-cloud/MotiveCloud'
 import ProtocolDemoPanel from './components/ProtocolDemoPanel'
 import TorrentFieldPanel from './components/TorrentFieldPanel'
 import TorrentFieldDemoPanel from './components/TorrentFieldDemoPanel'
@@ -3193,21 +3193,8 @@ export default function App() {
               />
             </div>
             <div style={mainPanelStyle('motivation')}>
-              <MotivationDashboard
-                protocolLabel={protocolViewLabel}
-                isTodayProtocol={selectedDateIsToday}
-                selectedDate={selectedDate}
-                goals={activeGoals}
-                activityPalette={activityPalette}
-                activityBlocks={activityBlocks}
-                plannedBlocks={plannedBlocks}
-                planNodes={planNodes}
-                onOpenPlanLayer={() => {
-                  setRecordLayer('plan')
-                  setEditMode(true)
-                  setMainView('daynight')
-                }}
-              />
+              {/* 协议志 · 动机云（取代旧的动机仪表盘 MotivationDashboard —— scoreboard 方向已废弃） */}
+              <MotiveCloud />
             </div>
             <div style={mainPanelStyle('motivation_static')}>
               <ProtocolDemoPanel />

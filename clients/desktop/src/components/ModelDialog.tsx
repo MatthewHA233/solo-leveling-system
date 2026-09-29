@@ -106,6 +106,7 @@ const FEATURE_SPECS: readonly FeatureSpec[] = [
   { feature: 'anchor_extract', label: '框选锚点提取', category: 'text', hint: '手动框选语境后从原话提取锚点句' },
   { feature: 'anchor_embedding', label: '锚点语义嵌入', category: 'embedding', hint: '锚点域地图的球定位（语义近 = 空间近）', allowedCategories: ['embedding'] },
   { feature: 'anchor_cluster_name', label: '锚点域簇命名', category: 'text', hint: '给认知地图聚簇起 2~6 字主题名（建议低价模型）' },
+  { feature: 'motive_blueprint', label: '协议志·动机蓝图', category: 'text', hint: '把一条动机展开成行动方向与具体步骤（建议中高质量模型）' },
 ]
 
 const FEATURE_LABEL = new Map(FEATURE_SPECS.map((f) => [f.feature, f.label]))
