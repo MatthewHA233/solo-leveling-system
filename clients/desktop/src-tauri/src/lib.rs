@@ -1768,8 +1768,12 @@ pub fn run() {
             // 那样调试版一行日志都没有；is_dev() 只在连 Vite dev server 时为真
             if tauri::is_dev() {
                 app.handle().plugin(
+                    // 默认只留一个 40 KB 的文件、全局 Debug：hyper / tungstenite 的噪音几分钟就把排障日志冲掉
                     tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Debug)
+                        .level(log::LevelFilter::Info)
+                        .level_for("app_lib", log::LevelFilter::Debug)
+                        .max_file_size(5 * 1024 * 1024)
+                        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(5))
                         .build(),
                 )?;
             }
