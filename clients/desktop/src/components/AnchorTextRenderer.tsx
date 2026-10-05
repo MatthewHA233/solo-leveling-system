@@ -70,7 +70,7 @@ export function AnchorChip({ anchor }: { readonly anchor: AnchorRef }) {
           lineHeight: 1.5,
         }}
       >
-        <span style={{ display: 'flex', alignItems: 'center', background: c, color: '#051018', fontWeight: 700, padding: '1px 5px', letterSpacing: '0.08em', flexShrink: 0 }}>
+        <span style={{ display: 'flex', alignItems: 'center', background: c, color: '#141311', fontWeight: 700, padding: '1px 5px', letterSpacing: '0.08em', flexShrink: 0 }}>
           {CAT_SHORT[anchor.category]}
         </span>
         {/* 锚点句可能是完整长句，允许换行 */}

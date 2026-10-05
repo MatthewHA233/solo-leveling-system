@@ -5,7 +5,7 @@
 
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { theme } from '../theme'
+import { theme, tiSurface, tiTitle } from '../theme'
 
 interface Props {
   /** 渲染开关；false 时不挂载 */
@@ -48,8 +48,9 @@ export default function ConfirmDialog({
 
   if (!open) return null
 
-  const titleC = titleColor ?? theme.electricBlue
-  const confirmC = confirmColor ?? (danger ? theme.dangerRed : theme.electricBlue)
+  const titleC = titleColor ?? (danger ? theme.dangerRed : theme.textPrimary)
+  // 危险操作 = 红字实体键；其余确认 = 橙色主键；自定义色照用
+  const confirmC = confirmColor ?? (danger ? theme.dangerRed : null)
 
   return createPortal(
     <>
@@ -61,21 +62,10 @@ export default function ConfirmDialog({
         }
         .confirm-btn {
           flex: 1;
-          padding: 9px 14px;
-          background: transparent;
-          border: 1px solid var(--btn-color);
-          color: var(--btn-color);
-          font-family: ${theme.fontMono};
-          font-size: 12px;
-          letter-spacing: 0.08em;
-          cursor: pointer;
-          transition: background 0.14s, box-shadow 0.14s;
-          clip-path: polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px);
-          -webkit-clip-path: polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px);
-        }
-        .confirm-btn:hover {
-          background: color-mix(in srgb, var(--btn-color) 14%, transparent);
-          box-shadow: 0 0 12px color-mix(in srgb, var(--btn-color) 40%, transparent);
+          height: 34px;
+          font-family: ${theme.fontBody};
+          font-size: 13px;
+          letter-spacing: 0.06em;
         }
       `}</style>
 
@@ -83,7 +73,7 @@ export default function ConfirmDialog({
         onClick={onCancel}
         style={{
           position: 'fixed', inset: 0, zIndex: 99990,
-          background: 'rgba(2, 6, 16, 0.78)',
+          background: 'rgba(12,11,9,0.78)',
           animation: 'confirm-overlay-in 0.15s ease-out',
         }}
       />
@@ -95,28 +85,19 @@ export default function ConfirmDialog({
           transform: 'translate(-50%, -50%)',
           width: 'min(440px, 90vw)',
           zIndex: 99991,
-          background: theme.hudFill,
-          border: `1px solid ${theme.hudFrame}`,
-          boxShadow: `0 18px 60px rgba(0,0,0,0.7), 0 0 40px ${theme.hudHalo}, inset 0 1px 0 rgba(255,255,255,0.04)`,
-          clipPath: 'polygon(10px 0, calc(100% - 10px) 0, 100% 10px, 100% calc(100% - 10px), calc(100% - 10px) 100%, 10px 100%, 0 calc(100% - 10px), 0 10px)',
-          WebkitClipPath: 'polygon(10px 0, calc(100% - 10px) 0, 100% 10px, 100% calc(100% - 10px), calc(100% - 10px) 100%, 10px 100%, 0 calc(100% - 10px), 0 10px)',
+          background: tiSurface.plate,
+          border: 'none',
+          boxShadow: tiSurface.plateShadow,
+          borderRadius: 8,
           padding: '22px 24px 20px',
           fontFamily: theme.fontBody,
           animation: 'confirm-pop 0.18s ease-out',
         }}
       >
-        {/* HUD 标题 */}
-        <div style={{
-          fontFamily: theme.fontDisplay,
-          fontSize: 11,
-          fontWeight: 700,
-          letterSpacing: 2,
-          color: titleC,
-          textShadow: `0 0 8px ${titleC}AA`,
-          marginBottom: 12,
-          textTransform: 'uppercase',
-        }}>
-          ▸ {title}
+        {/* 标题：菱形 + 粗斜体 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <span className="ti-diamond" aria-hidden />
+          <span style={{ ...tiTitle, fontSize: 14, color: titleC }}>{title}</span>
         </div>
 
         {/* 主问题 */}
@@ -136,8 +117,9 @@ export default function ConfirmDialog({
             display: 'flex', flexDirection: 'column', gap: 8,
             marginBottom: 18,
             padding: '10px 12px',
-            background: 'rgba(0,12,28,0.5)',
-            border: `1px solid ${theme.hudFrameSoft}`,
+            background: tiSurface.well,
+            boxShadow: tiSurface.wellShadow,
+            borderRadius: 5,
             fontSize: 12,
             color: theme.textSecondary,
             lineHeight: 1.6,
@@ -151,16 +133,17 @@ export default function ConfirmDialog({
         {/* 按钮 */}
         <div style={{ display: 'flex', gap: 10 }}>
           <button
+            type="button"
             onClick={onCancel}
-            className="confirm-btn"
-            style={{ ['--btn-color' as string]: theme.textSecondary } as React.CSSProperties}
+            className="confirm-btn ti-key"
           >
             {cancelLabel}
           </button>
           <button
+            type="button"
             onClick={onConfirm}
-            className="confirm-btn"
-            style={{ ['--btn-color' as string]: confirmC } as React.CSSProperties}
+            className={confirmC ? 'confirm-btn ti-key' : 'confirm-btn ti-key ti-key-primary'}
+            style={confirmC ? { color: confirmC } : undefined}
           >
             {confirmLabel}
           </button>

@@ -3,8 +3,9 @@ import type { CSSProperties } from 'react'
 import { X } from 'lucide-react'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from '../types'
 import type { PerceptionSpan, BiliSpan } from '../lib/local-api'
-import { theme, hud } from '../theme'
-import { HudFrameSkeleton, HudTabButton, CornerArt, ChartHeaderFrame, ChartHeaderButtons } from './hud'
+import { theme } from '../theme'
+import DayNightToolbar from './daynight/DayNightToolbar'
+import { tone, PIPE_TONE } from '../lib/color/harmonize'
 import Tooltip from './Tooltip'
 
 interface Props {
@@ -65,10 +66,23 @@ function getAppTrackLabel(): string {
 // 每列行数决定列密度：12行/列=1列/小时，6行/列=2列/小时，4行/列=3列/小时，3行/列=4列/小时
 
 const DENSITY_ROWS = [12, 6, 4, 3] as const
+
+/** 顶部轴区高度（= 原 topPad 28，不加高：高度一紧格子就会跌破 CELL_H_SWITCH 切成大格模式）
+ *  28px 里分三层：时段名（0–12）/ 小时点阵数字（基线 21）/ 日照带（24–26） */
+const AXIS_TOP = 28
+/** 左侧分钟刻度尺宽度 */
+const AXIS_W = 46
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
 type RowsPerCol = (typeof DENSITY_ROWS)[number]
 
 /** 小时组之间的间距（非 12行/列 模式下，相邻小时列之间留小间距） */
 const HOUR_GROUP_GAP = 12
+
+/** canvas 左内边距 / 右尾部留白 / 底部留白（totalW、totalH 与自适应反解共用） */
+const GRID_H_PAD = 4
+const GRID_TAIL_PAD = 16
+const GRID_BOTTOM_PAD = 8
 
 /** 区时边界（凌晨/上午/下午/黄昏/夜晚）处额外叠加的间距，所有密度模式均生效 */
 const ZONE_GAP_EXTRA = 14
@@ -101,7 +115,7 @@ function solveCellH(availGrid: number, rpc: number): number {
 }
 
 function chooseModeByHeight(availH: number): { rowsPerCol: RowsPerCol; cellH: number; cellW: number } {
-  const topPad = 28, bottomPad = 8
+  const topPad = AXIS_TOP, bottomPad = GRID_BOTTOM_PAD
   const availGrid = availH - topPad - bottomPad
 
   for (const rpc of DENSITY_ROWS) {
@@ -130,9 +144,9 @@ function getGridParams(rowsPerCol: RowsPerCol, cellW: number, cellHOverride?: nu
   const defaultCellH = Math.max(4, Math.round(cellW * 0.65))
   const cellH = cellHOverride ?? defaultCellH
   const rowGap = Math.max(2, Math.round(cellH * 0.14))
-  const hPad = 4  // canvas 内 axis 让位由 wrapper.left 实现（不再让 hPad 让位）
-  const topPad = 28
-  const bottomPad = 8
+  const hPad = GRID_H_PAD  // canvas 内 axis 让位由 wrapper.left 实现（不再让 hPad 让位）
+  const topPad = AXIS_TOP
+  const bottomPad = GRID_BOTTOM_PAD
   const minuteH = cellH / 5
   const traceBaseX = 0  // 管道贴单元格左边缘，无腾空
   const trackSp = Math.max(2, Math.round(cellW * 0.09))
@@ -142,7 +156,7 @@ function getGridParams(rowsPerCol: RowsPerCol, cellW: number, cellHOverride?: nu
   // 每小时组内宽：colsPerHour 列宽 + (colsPerHour-1) 列间距
   const hourGroupInnerW = colsPerHour * colStride - colGap
   // 4 个区时边界（6,12,18,20 点）各额外加 ZONE_GAP_EXTRA
-  const totalW = hPad + 24 * hourGroupInnerW + 23 * hgGap + 4 * ZONE_GAP_EXTRA + 16
+  const totalW = hPad + 24 * hourGroupInnerW + 23 * hgGap + 4 * ZONE_GAP_EXTRA + GRID_TAIL_PAD
   const totalH = topPad + gridH + bottomPad
   // 字体随 cellH 等比缩放（基准 cellH=50，不超过原始大小）
   const textScale = Math.min(1.0, cellH / 50)
@@ -154,6 +168,8 @@ function getGridParams(rowsPerCol: RowsPerCol, cellW: number, cellHOverride?: nu
     hourGroupInnerW, hgGap, fs,
   }
 }
+
+type GridParams = ReturnType<typeof getGridParams>
 
 /** 列索引 → canvas X 坐标（考虑小时组间距 + 区时边界额外间距） */
 function colX(col: number, p: ReturnType<typeof getGridParams>) {
@@ -191,35 +207,6 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`
 }
 
-/** 感知亮度（0–255），暗色自动朝白色方向拉亮到 minLum */
-function brightenForDark(hex: string, minLum = 150): string {
-  const r = parseInt(hex.slice(1, 3), 16)
-  const g = parseInt(hex.slice(3, 5), 16)
-  const b = parseInt(hex.slice(5, 7), 16)
-  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
-  if (lum >= minLum) return hex
-  const t = (minLum - lum) / (255 - lum)  // 向白色插值
-  const nr = Math.round(r + (255 - r) * t)
-  const ng = Math.round(g + (255 - g) * t)
-  const nb = Math.round(b + (255 - b) * t)
-  return `#${nr.toString(16).padStart(2, '0')}${ng.toString(16).padStart(2, '0')}${nb.toString(16).padStart(2, '0')}`
-}
-
-/** 斜切矩形路径（八角 HUD 风格），不 fill/stroke，由调用方决定 */
-function chamferPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, c: number) {
-  const cx = Math.min(c, w / 2, h / 2)
-  ctx.beginPath()
-  ctx.moveTo(x + cx, y)
-  ctx.lineTo(x + w - cx, y)
-  ctx.lineTo(x + w, y + cx)
-  ctx.lineTo(x + w, y + h - cx)
-  ctx.lineTo(x + w - cx, y + h)
-  ctx.lineTo(x + cx, y + h)
-  ctx.lineTo(x, y + h - cx)
-  ctx.lineTo(x, y + cx)
-  ctx.closePath()
-}
-
 // ── 工具函数 ──
 
 /** 将某分钟映射到 canvas Y 坐标（贯穿行间隙） */
@@ -253,123 +240,99 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
 
 type ZoneInfo = { label: string; bgColor: [number, number, number]; bgAlpha: number; textColor: string }
 
+// 时段：夜里偏冷（冰蓝投影光），白天几乎不着色，黄昏一抹信号橙
 function getZoneInfo(hour: number): ZoneInfo {
-  if (hour < 6)  return { label: '凌晨', bgColor: [15,  10,  120], bgAlpha: 0.32, textColor: 'rgba(120,140,255,0.80)' }
-  if (hour < 12) return { label: '上午', bgColor: [190, 200, 50],  bgAlpha: 0.18, textColor: 'rgba(220,240,100,0.85)' }
-  if (hour < 18) return { label: '下午', bgColor: [220, 180, 20],  bgAlpha: 0.18, textColor: 'rgba(255,220,80,0.85)'  }
-  if (hour < 20) return { label: '黄昏', bgColor: [220, 70,  20],  bgAlpha: 0.28, textColor: 'rgba(255,130,60,0.95)'  }
-  return           { label: '夜晚', bgColor: [30,  10,  110], bgAlpha: 0.32, textColor: 'rgba(160,110,255,0.80)' }
+  if (hour < 6)  return { label: '凌晨', bgColor: [70, 120, 205],  bgAlpha: 0.075, textColor: '#9DC2EE' }
+  if (hour < 12) return { label: '上午', bgColor: [180, 215, 235], bgAlpha: 0.03,  textColor: '#CFE4EE' }
+  if (hour < 18) return { label: '下午', bgColor: [240, 225, 200], bgAlpha: 0.03,  textColor: '#E6DCC8' }
+  if (hour < 20) return { label: '黄昏', bgColor: [255, 138, 76],  bgAlpha: 0.07,  textColor: '#FFB98A' }
+  return           { label: '夜晚', bgColor: [90, 100, 200],  bgAlpha: 0.085, textColor: '#AFB6F0' }
 }
 
+// 日照带：一天里天空的颜色（深夜蓝 → 破晓 → 白昼 → 黄昏橙 → 入夜），画在小时数字下沿
+const SKY_STOPS: ReadonlyArray<readonly [number, string]> = [
+  [0, '#1A2447'], [4.5, '#1F2C55'], [5.5, '#4A4A8C'], [6.5, '#E39A78'], [8, '#8FC4DE'],
+  [12, '#D6E9F0'], [15.5, '#E6D6A4'], [17.5, '#F2A564'], [19, '#FF8A4C'], [20, '#7E4E9E'],
+  [21.5, '#2C2C62'], [24, '#1A2447'],
+]
 
-// 阶段背景 hatching pattern 缓存：避免每帧重建
-const _zoneHatchCache = new Map<string, CanvasPattern>()
-
-/** 强制提亮：避免 hatching 在暗背景下接近黑色看不清（仅救治凌晨/夜晚等暗 zone） */
-function ensureHatchBright(r: number, g: number, b: number, minLum = 100): [number, number, number] {
-  const lum = 0.299 * r + 0.587 * g + 0.114 * b
-  if (lum >= minLum) return [r, g, b]
-  // 保持色相，整体抬亮：先按比例拉伸，再加 60 的"地板"基底
-  const factor = minLum / Math.max(lum, 1)
-  return [
-    Math.min(255, Math.round(r * factor + 60)),
-    Math.min(255, Math.round(g * factor + 60)),
-    Math.min(255, Math.round(b * factor + 60)),
-  ]
+/** 小时（可带小数）→ canvas X（列内按分钟线性插值） */
+function hourToX(hour: number, p: GridParams): number {
+  const minute = Math.max(0, Math.min(1440, hour * 60))
+  const col = Math.min(p.cols - 1, Math.floor(minute / p.minutesPerCol))
+  const frac = (minute - col * p.minutesPerCol) / p.minutesPerCol
+  return colX(col, p) + frac * p.cellW
 }
 
-/** 创建对角斜线填充 pattern（从右上 → 左下，~45°） */
-function makeZoneHatchPattern(
-  ctx: CanvasRenderingContext2D,
-  r: number, g: number, b: number,
-  lineAlpha: number,
-  spacing = 7,
-  lineW = 1,
-): CanvasPattern | null {
-  const key = `${r},${g},${b},${lineAlpha},${spacing},${lineW}`
-  const cached = _zoneHatchCache.get(key)
-  if (cached) return cached
-
-  const off = document.createElement('canvas')
-  off.width = off.height = spacing
-  const oc = off.getContext('2d')
-  if (!oc) return null
-  oc.strokeStyle = `rgba(${r},${g},${b},${lineAlpha})`
-  oc.lineWidth = lineW
-  oc.lineCap = 'square'
-  // 主对角线（右上 → 左下）
-  oc.beginPath()
-  oc.moveTo(-1, spacing + 1)
-  oc.lineTo(spacing + 1, -1)
-  oc.stroke()
-  // 上/下角缝：让 pattern 在 tile 边界上仍连续
-  oc.beginPath()
-  oc.moveTo(-1, 1); oc.lineTo(1, -1)
-  oc.moveTo(spacing - 1, spacing + 1); oc.lineTo(spacing + 1, spacing - 1)
-  oc.stroke()
-
-  const pat = ctx.createPattern(off, 'repeat')
-  if (pat) _zoneHatchCache.set(key, pat)
-  return pat
+function drawSkyRibbon(ctx: CanvasRenderingContext2D, p: GridParams) {
+  const x0 = colX(0, p)
+  const x1 = colX(p.cols - 1, p) + p.cellW
+  const y = p.topPad - 4
+  const grad = ctx.createLinearGradient(x0, 0, x1, 0)
+  for (const [h, c] of SKY_STOPS) {
+    grad.addColorStop(Math.min(1, Math.max(0, (hourToX(h, p) - x0) / (x1 - x0))), c)
+  }
+  ctx.save()
+  ctx.fillStyle = grad
+  ctx.globalAlpha = 0.9
+  ctx.fillRect(x0, y, x1 - x0, 2)
+  ctx.globalAlpha = 0.16   // 往下晕开一点，像光带
+  ctx.fillRect(x0, y + 2, x1 - x0, 2)
+  ctx.restore()
 }
 
-function drawZoneBands(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getGridParams>) {
-  // 按小时组绘制色带：阶段背景用斜线 hatching（透气，不遮 grid）
-  // 在 hatching 之下加一层极淡的纯色底，保留色彩身份
-  const zones: [number, number][] = [[0,6],[6,12],[12,18],[18,20],[20,24]]
+/** 区时分界线的 X：落在两个时段之间那道缝的正中 */
+function zoneBoundaryX(hour: number, p: GridParams): number {
+  const col = Math.floor(hour * 60 / p.minutesPerCol)
+  return colX(col, p) - (p.hgGap + ZONE_GAP_EXTRA) / 2
+}
+
+function drawZoneBands(ctx: CanvasRenderingContext2D, p: GridParams) {
+  // 1) 时段投影光柱：顶部略亮、往下淡出（不再用斜线 hatching）
+  const zones: [number, number][] = [[0, 6], [6, 12], [12, 18], [18, 20], [20, 24]]
   for (const [startH, endH] of zones) {
     const z = getZoneInfo(startH)
     const [r, g, b] = z.bgColor
-    // hatching 线条颜色：强制提亮（暗 zone 如凌晨/夜晚原色接近黑，加亮度补偿后仍保留色相）
-    const [hr, hg, hb] = ensureHatchBright(r, g, b)
-    // hatching 线条透明度（淅淅沥沥感：略淡，让单条线不显眼）
-    const lineAlpha = Math.min(0.75, z.bgAlpha * 1.5)
-    const pattern = makeZoneHatchPattern(ctx, hr, hg, hb, lineAlpha, 10, 1)
-    // 极淡纯色底用原色（保留色彩识别），原 alpha 的 1/12
-    const baseAlpha = z.bgAlpha * 0.08
-    for (let h = startH; h < endH; h++) {
-      const firstCol = Math.floor(h * 60 / p.minutesPerCol)
-      const lastCol  = Math.floor((h + 1) * 60 / p.minutesPerCol) - 1
-      if (firstCol >= p.cols) continue
-      const x0 = colX(firstCol, p)
-      const x1 = colX(Math.min(lastCol, p.cols - 1), p) + p.cellW
-      // 1) 极淡纯色底
-      ctx.fillStyle = `rgba(${r},${g},${b},${baseAlpha})`
-      ctx.fillRect(x0, 0, x1 - x0, p.totalH)
-      // 2) 斜线 hatching 叠加
-      if (pattern) {
-        ctx.fillStyle = pattern
-        ctx.fillRect(x0, 0, x1 - x0, p.totalH)
-      }
-    }
+    const firstCol = Math.floor(startH * 60 / p.minutesPerCol)
+    const lastCol = Math.min(p.cols - 1, Math.floor(endH * 60 / p.minutesPerCol) - 1)
+    if (firstCol >= p.cols) continue
+    const x0 = colX(firstCol, p) - 3
+    const x1 = colX(lastCol, p) + p.cellW + 3
+    const grad = ctx.createLinearGradient(0, p.topPad, 0, p.topPad + p.gridH)
+    grad.addColorStop(0, `rgba(${r},${g},${b},${z.bgAlpha * 1.7})`)
+    grad.addColorStop(1, `rgba(${r},${g},${b},${z.bgAlpha * 0.5})`)
+    ctx.fillStyle = grad
+    ctx.fillRect(x0, p.topPad - 2, x1 - x0, p.gridH + 4)
   }
 
-  // 阶段分界竖线（每个阶段开始处：顶部 ┬ 标 + 向下半透虚线，让稀疏 hatching 下边界仍清晰）
-  const boundaries = [6, 12, 18, 20]
-  for (const h of boundaries) {
+  // 2) 日照带
+  drawSkyRibbon(ctx, p)
+
+  // 3) 时段分界：冰蓝虚线 + 日照带上一颗菱形灯
+  for (const h of [6, 12, 18, 20]) {
     const col = Math.floor(h * 60 / p.minutesPerCol)
     if (col >= p.cols) continue
-    const x = colX(col, p)
+    const x = Math.round(zoneBoundaryX(h, p)) + 0.5
     ctx.save()
-    // 顶部 ┬：4px 横线 + 6px 实心竖线
-    ctx.strokeStyle = `rgba(0,229,255,0.55)`
+    ctx.strokeStyle = 'rgba(158,216,242,0.22)'
     ctx.lineWidth = 1
+    ctx.setLineDash([2, 4])
     ctx.beginPath()
-    ctx.moveTo(x - 5, 0.5); ctx.lineTo(x + 5, 0.5)
-    ctx.moveTo(x, 0); ctx.lineTo(x, 6)
+    ctx.moveTo(x, p.topPad)
+    ctx.lineTo(x, p.topPad + p.gridH)
     ctx.stroke()
-    // 向下虚线
-    ctx.strokeStyle = `rgba(0,229,255,0.16)`
-    ctx.lineWidth = 1
-    ctx.setLineDash([3, 4])
+    ctx.setLineDash([])
+    ctx.fillStyle = '#C8ECFC'
+    ctx.shadowColor = 'rgba(150,215,245,0.9)'
+    ctx.shadowBlur = 5
+    const dy = p.topPad - 3
     ctx.beginPath()
-    ctx.moveTo(x, 6); ctx.lineTo(x, p.totalH)
-    ctx.stroke()
+    ctx.moveTo(x, dy - 3.5); ctx.lineTo(x + 3.5, dy); ctx.lineTo(x, dy + 3.5); ctx.lineTo(x - 3.5, dy)
+    ctx.closePath()
+    ctx.fill()
     ctx.restore()
   }
-
-  // 时段中文标签已由 ChartTopAxisRow 在 axis row 内渲染（随 scrollLeft 同步），
-  // canvas 内不再绘制以避免重叠。
+  // 时段中文名由 ScrollingZoneLabels 在 sticky 层渲染（随 scrollLeft 同步）
 }
 
 // ── Perception 感知轨道 ──
@@ -409,7 +372,7 @@ function drawTagFills(
     const endMin   = dtToMinute(span.end_at)
     if (endMin <= startMin) continue
 
-    const color   = span.color ?? '#4488ff'
+    const color   = tone(span.color ?? '#4488ff')   // 颜色统一明度彩度（lib/color/harmonize）
     const hovered = hoveredSpanId === span.id
     const alphaScale = layer === 'plan' ? 0.72 : 1
 
@@ -521,11 +484,10 @@ function drawAppTraces(
 
     const color = span.color ?? '#888888'
     const isHighlighted = highlightedSpanId != null && span.id === highlightedSpanId
+    const vivid = tone(color, PIPE_TONE)
     const startCol = Math.floor(startMin / p.minutesPerCol)
     const endCol   = Math.floor((endMin - 0.0001) / p.minutesPerCol)
 
-    // 暗色自动提亮（紫色、深蓝等在暗背景下被吞没的颜色）
-    const vivid = brightenForDark(color, 160)
 
     for (let c = startCol; c <= endCol && c < p.cols; c++) {
       const segStart = Math.max(startMin, c * p.minutesPerCol)
@@ -540,8 +502,8 @@ function drawAppTraces(
       const barX = lx + 1
       const barW = (rx - lx) - 1
       ctx.save()
-      ctx.shadowColor = hexToRgba(vivid, isHighlighted ? 0.9 : 0.55)
-      ctx.shadowBlur = isHighlighted ? 8 : 4
+      ctx.shadowColor = hexToRgba(vivid, isHighlighted ? 0.9 : 0.4)
+      ctx.shadowBlur = isHighlighted ? 8 : 2
       ctx.fillStyle = vivid
       ctx.fillRect(barX, py0, barW, py1 - py0)
       ctx.restore()
@@ -612,7 +574,7 @@ function drawBiliTracesInPipe(
     if (endMin <= startMin) continue
 
     const railColor = si % 2 === 0 ? BILI_COLOR : BILI_YELLOW
-    const vivid = brightenForDark(railColor, 160)
+    const vivid = tone(railColor, PIPE_TONE)
     const startCol = Math.floor(startMin / p.minutesPerCol)
     const endCol   = Math.floor((endMin - 1) / p.minutesPerCol)
 
@@ -629,8 +591,8 @@ function drawBiliTracesInPipe(
       const barX = lx + 1
       const barW = (rx - lx) - 1
       ctx.save()
-      ctx.shadowColor = hexToRgba(vivid, 0.55)
-      ctx.shadowBlur = 4
+      ctx.shadowColor = hexToRgba(vivid, 0.4)
+      ctx.shadowBlur = 2
       ctx.fillStyle = vivid
       ctx.fillRect(barX, py0, barW, Math.max(1, py1 - py0))
       ctx.restore()
@@ -710,392 +672,126 @@ const BILI_YELLOW   = '#F5C842'
 
 // ── Canvas 绘制函数 ──
 
-function drawGrid(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getGridParams>) {
-  const blue = theme.electricBlue
-  // 区时边界精确分钟数（包括 0 点）
-  const ZONE_BOUNDARY_MINS = new Set([0, 6*60, 12*60, 18*60, 20*60])
-  const cornerLen = Math.min(8, p.cellW * 0.12, p.cellH * 0.15)
-
-  // 绘制单个 bracket 角：side 控制绘制左侧还是右侧角
-  function drawCorners(
-    x: number, y: number, w: number, h: number,
-    drawLeft: boolean, drawRight: boolean,
-    color: string, lw: number, glow: boolean,
-  ) {
-    ctx.strokeStyle = color
-    ctx.lineWidth = lw
-    if (glow) { ctx.save(); ctx.shadowColor = blue; ctx.shadowBlur = 4 }
-    if (drawLeft) {
-      ctx.beginPath(); ctx.moveTo(x, y + cornerLen); ctx.lineTo(x, y); ctx.lineTo(x + cornerLen, y); ctx.stroke()
-      ctx.beginPath(); ctx.moveTo(x, y + h - cornerLen); ctx.lineTo(x, y + h); ctx.lineTo(x + cornerLen, y + h); ctx.stroke()
-    }
-    if (drawRight) {
-      ctx.beginPath(); ctx.moveTo(x + w - cornerLen, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cornerLen); ctx.stroke()
-      ctx.beginPath(); ctx.moveTo(x + w - cornerLen, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cornerLen); ctx.stroke()
-    }
-    if (glow) ctx.restore()
-  }
-
+function drawGrid(ctx: CanvasRenderingContext2D, p: GridParams) {
+  // 玻璃砖：极淡冷光底 + 上沿亮线 + 下沿压暗（不画格线、不画四角括号）
   for (let c = 0; c < p.cols; c++) {
-    const startMin  = c * p.minutesPerCol
-    const startHour = Math.floor(startMin / 60)
-    const isNight = startHour < 6 || startHour >= 22
-    const baseA = isNight ? 0.08 : 0.15
-
-    // 该列起始分钟恰好是区时边界 → 左侧高亮
-    const leftEdge  = ZONE_BOUNDARY_MINS.has(startMin)
-    // 该列结束分钟恰好是区时边界 → 右侧高亮（即下一列是区时第一列）
-    const rightEdge = ZONE_BOUNDARY_MINS.has(startMin + p.minutesPerCol)
-
+    const x = colX(c, p)
     for (let r = 0; r < p.rows; r++) {
-      const x = colX(c, p)
       const y = p.topPad + r * p.rowStride
-      const w = p.cellW
-      const h = p.cellH
-
-      // 底色扫描线（每格交替微亮）
-      if ((c + r) % 2 === 0) {
-        ctx.fillStyle = hexToRgba(blue, 0.02)
-        ctx.fillRect(x, y, w, h)
-      }
-
-      // 边框细线
-      ctx.strokeStyle = hexToRgba(blue, baseA)
-      ctx.lineWidth = 0.5
-      ctx.strokeRect(x, y, w, h)
-
-      // 普通四角（非边界侧）
-      drawCorners(x, y, w, h, !leftEdge, !rightEdge, hexToRgba(blue, baseA * 2.5), 1, false)
-
-      // 区时边界侧：更亮更粗有辉光
-      if (leftEdge || rightEdge) {
-        drawCorners(x, y, w, h, leftEdge, rightEdge, hexToRgba(blue, 0.75), 1.5, true)
-      }
+      ctx.fillStyle = 'rgba(158,216,242,0.032)'
+      ctx.fillRect(x, y, p.cellW, p.cellH)
+      ctx.fillStyle = 'rgba(200,236,252,0.075)'
+      ctx.fillRect(x, y, p.cellW, 1)
+      ctx.fillStyle = 'rgba(0,0,0,0.28)'
+      ctx.fillRect(x, y + p.cellH - 1, p.cellW, 1)
     }
   }
-
 }
 
-function drawTimeLabels(ctx: CanvasRenderingContext2D, p: ReturnType<typeof getGridParams>) {
-  const ZONE_BOUNDARY_MINS = new Set([0, 6*60, 12*60, 18*60, 20*60])
+function drawTimeLabels(ctx: CanvasRenderingContext2D, p: GridParams) {
+  // 只在列头标小时（点阵数字）；分钟交给左侧刻度尺，格子里不再逐格印时间
+  const ZONE_START_HOURS = new Set([0, 6, 12, 18, 20])
+  const y = p.topPad - 7
+  ctx.save()
   ctx.textAlign = 'center'
+  ctx.textBaseline = 'alphabetic'
   for (let c = 0; c < p.cols; c++) {
+    const m = c * p.minutesPerCol
     const x = colX(c, p) + p.cellW / 2
-    const colStartMin = c * p.minutesPerCol
-    const major = ZONE_BOUNDARY_MINS.has(colStartMin)
-    ctx.font = `${major ? 'bold' : '500'} ${major ? p.fs(12) : p.fs(10)}px 'JetBrains Mono', 'Courier New', monospace`
-    ctx.fillStyle = major ? theme.electricBlue : theme.textPrimary
-    ctx.fillText(fmt(colStartMin), x, p.topPad - 8)
-  }
-  // 行间小标签
-  for (let c = 0; c < p.cols; c++) {
-    const cx = colX(c, p) + p.cellW / 2
-    const colStartMin = c * p.minutesPerCol
-    for (let r = 0; r < p.rows - 1; r++) {
-      const boundaryMin = colStartMin + (r + 1) * 5
-      const gapY = p.topPad + r * p.rowStride + p.cellH + p.rowGap / 2
-      const isMajor = boundaryMin % 10 === 0
-      ctx.font = `${isMajor ? 'bold' : 'normal'} ${isMajor ? p.fs(10) : p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
-      ctx.fillStyle = theme.textSecondary
-      ctx.fillText(fmt(boundaryMin), cx, gapY + 3)
+    if (m % 60 === 0) {
+      const hour = m / 60
+      const zoneStart = ZONE_START_HOURS.has(hour)
+      ctx.font = `900 ${p.fs(13)}px 'Doto', 'JetBrains Mono', monospace`
+      ctx.fillStyle = zoneStart ? '#C8ECFC' : '#CBC6BF'
+      ctx.shadowColor = zoneStart ? 'rgba(150,215,245,0.7)' : 'transparent'
+      ctx.shadowBlur = zoneStart ? 6 : 0
+      ctx.fillText(pad2(hour), x, y)
+    } else {
+      ctx.font = `700 ${p.fs(10)}px 'Doto', 'JetBrains Mono', monospace`
+      ctx.fillStyle = '#8E8982'
+      ctx.shadowBlur = 0
+      ctx.fillText(`:${pad2(m % 60)}`, x, y)
     }
   }
+  ctx.restore()
 }
 
-
-function drawNowTick(
-  ctx: CanvasRenderingContext2D,
-  p: ReturnType<typeof getGridParams>,
-  isToday: boolean,
-) {
+function drawNowTick(ctx: CanvasRenderingContext2D, p: GridParams, isToday: boolean) {
   if (!isToday) return
   const now = new Date()
   const nowMinute = now.getHours() * 60 + now.getMinutes()
   const col = Math.floor(nowMinute / p.minutesPerCol)
   if (col >= p.cols) return
   const row = Math.floor((nowMinute % p.minutesPerCol) / 5)
-  const localMin = nowMinute % 5
   if (row >= p.rows) return
-
   const cx = colX(col, p)
-  const cy = p.topPad + row * p.rowStride
-  const y = cy + localMin * p.minuteH
-  const cyan = '#00E5FF'
-  const seconds = now.getSeconds()
-  // 每 3 秒 pulse 一次（用秒做静态强度调制，避免额外 rAF）
-  const pulse = 0.7 + 0.3 * Math.abs(Math.sin((seconds / 60) * Math.PI * 2))
+  const y = p.topPad + row * p.rowStride + (nowMinute % 5) * p.minuteH
 
-  // ── 全列纵向扫描光柱（居中在 y，上下渐隐） ──
-  const colCx = cx + p.cellW / 2
-  const sweepGrad = ctx.createLinearGradient(colCx, p.topPad, colCx, p.topPad + p.gridH)
-  sweepGrad.addColorStop(0, 'rgba(0,229,255,0)')
-  sweepGrad.addColorStop(Math.max(0, (y - p.topPad - 80) / p.gridH), 'rgba(0,229,255,0)')
-  sweepGrad.addColorStop((y - p.topPad) / p.gridH, `rgba(0,229,255,${0.08 * pulse})`)
-  sweepGrad.addColorStop(Math.min(1, (y - p.topPad + 80) / p.gridH), 'rgba(0,229,255,0)')
-  sweepGrad.addColorStop(1, 'rgba(0,229,255,0)')
-  ctx.fillStyle = sweepGrad
-  ctx.fillRect(cx, p.topPad, p.cellW, p.gridH)
-
-  // ── 外层大光晕条 ──
   ctx.save()
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 22
+  // 1) 当前列：冷光投影柱 + 顶沿亮条
+  const colGrad = ctx.createLinearGradient(0, p.topPad, 0, p.topPad + p.gridH)
+  colGrad.addColorStop(0, 'rgba(158,216,242,0.11)')
+  colGrad.addColorStop(1, 'rgba(158,216,242,0.025)')
+  ctx.fillStyle = colGrad
+  ctx.fillRect(cx - 2, p.topPad, p.cellW + 4, p.gridH)
+  ctx.shadowColor = 'rgba(150,215,245,0.9)'
+  ctx.shadowBlur = 6
+  ctx.fillStyle = '#C8ECFC'
+  ctx.fillRect(cx, p.topPad - 1, p.cellW, 2)
+
+  // 2) 此刻：橙色 LED 线 + 左端菱形
+  ctx.shadowColor = 'rgba(255,120,60,0.95)'
+  ctx.shadowBlur = 8
+  ctx.fillStyle = '#FF8A4C'
+  ctx.fillRect(cx - 2, y - 1, p.cellW + 4, 2)
+  ctx.fillStyle = '#FFB98A'
   ctx.beginPath()
-  ctx.moveTo(cx - 14, y); ctx.lineTo(cx + p.cellW + 14, y)
-  ctx.strokeStyle = hexToRgba(cyan, 0.22 * pulse)
-  ctx.lineWidth = 10
-  ctx.stroke()
-  ctx.restore()
-
-  // ── 主扫描线（三段渐变：透明 → 亮 → 透明反向）──
-  const lineGrad = ctx.createLinearGradient(cx - 6, y, cx + p.cellW + 6, y)
-  lineGrad.addColorStop(0,    'rgba(0,229,255,0)')
-  lineGrad.addColorStop(0.15, cyan)
-  lineGrad.addColorStop(0.5,  '#FFFFFF')
-  lineGrad.addColorStop(0.85, cyan)
-  lineGrad.addColorStop(1,    'rgba(0,229,255,0)')
-  ctx.save()
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 2
-  ctx.beginPath()
-  // 右端在列末收尾，避免辉光蔓延到右侧 chip
-  ctx.moveTo(cx - 6, y); ctx.lineTo(cx + p.cellW, y)
-  ctx.strokeStyle = lineGrad
-  ctx.lineWidth = 1.25
-  ctx.stroke()
-  ctx.restore()
-
-  // ── 中段刻度（线上每 ~1/4 处一个小方点） ──
-  ctx.save()
-  ctx.fillStyle = hexToRgba(cyan, 0.7)
-  for (const r of [0.25, 0.5, 0.75]) {
-    const tx = cx + p.cellW * r
-    ctx.fillRect(tx - 0.5, y - 2, 1, 4)
-  }
-  ctx.restore()
-
-  // ── 两端 L 角端盖 ──
-  ctx.save()
-  ctx.strokeStyle = cyan
-  ctx.lineWidth = 1
-  const lArm = 5
-  ctx.beginPath()
-  // 左端
-  ctx.moveTo(cx, y - lArm); ctx.lineTo(cx, y + lArm)
-  // 右端
-  ctx.moveTo(cx + p.cellW, y - lArm); ctx.lineTo(cx + p.cellW, y + lArm)
-  ctx.stroke()
-  ctx.restore()
-
-  // ── 右侧 HUD 时间指示：chip 尺寸适中（时间数字略主导但不喧宾夺主） ──
-  const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  const timeFontSize = p.fs(13)
-  const nowFontSize = p.fs(8)
-  ctx.font = `800 ${timeFontSize}px 'JetBrains Mono', 'Courier New', monospace`
-  const timeW = ctx.measureText(timeStr).width
-
-  ctx.font = `700 ${nowFontSize}px 'JetBrains Mono', 'Courier New', monospace`
-  const nowLabelW = ctx.measureText('NOW').width
-
-  const padX = 8
-  const dotSize = 5
-  const gap = 6
-  const nowTimeGap = 5
-  const chipW = padX + dotSize + gap + nowLabelW + nowTimeGap + timeW + padX
-  const chipH = 21
-
-  // ── ① 圆环锚点（套在左侧管道中线 = cx + (PIPE_LEFT + PIPE_RIGHT)/2 = cx + 3） ──
-  const anchorX = cx + 3
-  const anchorR = 4.5
-  const anchorGlow = 7 * pulse
-  // 外圈呼吸环（更大更淡，alpha 随 pulse 变化）
-  ctx.save()
-  ctx.strokeStyle = hexToRgba(cyan, 0.15 + 0.18 * pulse)
-  ctx.lineWidth = 0.7
-  ctx.beginPath()
-  ctx.arc(anchorX, y, anchorR + 3.2, 0, Math.PI * 2)
-  ctx.stroke()
-  ctx.restore()
-  // 主环
-  ctx.save()
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = anchorGlow
-  ctx.strokeStyle = cyan
-  ctx.lineWidth = 1.4
-  ctx.beginPath()
-  ctx.arc(anchorX, y, anchorR, 0, Math.PI * 2)
-  ctx.stroke()
-  ctx.restore()
-  // 4 向 crosshair 小刻度（主环与呼吸环之间）
-  ctx.save()
-  ctx.strokeStyle = hexToRgba(cyan, 0.92)
-  ctx.lineWidth = 1
-  const tIn = anchorR + 0.6
-  const tOut = anchorR + 2.4
-  ctx.beginPath()
-  ctx.moveTo(anchorX + tIn, y); ctx.lineTo(anchorX + tOut, y)     // 右
-  ctx.moveTo(anchorX - tIn, y); ctx.lineTo(anchorX - tOut, y)     // 左
-  ctx.moveTo(anchorX, y + tIn); ctx.lineTo(anchorX, y + tOut)     // 下
-  ctx.moveTo(anchorX, y - tIn); ctx.lineTo(anchorX, y - tOut)     // 上
-  ctx.stroke()
-  ctx.restore()
-  // 左指三角 ▷（呼吸环外左侧）
-  ctx.save()
-  ctx.fillStyle = cyan
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 3
-  const triRight = anchorX - anchorR - 4
-  ctx.beginPath()
-  ctx.moveTo(triRight, y - 2)
-  ctx.lineTo(triRight - 2.5, y)
-  ctx.lineTo(triRight, y + 2)
+  ctx.moveTo(cx - 10, y); ctx.lineTo(cx - 6, y - 4); ctx.lineTo(cx - 2, y); ctx.lineTo(cx - 6, y + 4)
   ctx.closePath()
   ctx.fill()
   ctx.restore()
-  // 中心实心圆
-  ctx.save()
-  ctx.fillStyle = cyan
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 4
-  ctx.beginPath()
-  ctx.arc(anchorX, y, 1.5, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.restore()
 
-  // ── ② 列尾 → chip 的渐变连接线（cyan + 中心白心，管道感） ──
-  const lineStartX = cx + p.cellW + 5
-  const lineLen = 18
-  const lineEndX = lineStartX + lineLen
-  const chevronSize = 3.2
-  const chevronGap = 1.8
-  const chevronStartX = lineEndX + 2.5
-  const chevronTotalW = 3 * chevronSize + 2 * chevronGap
-  const chevronEndX = chevronStartX + chevronTotalW
-  const chipX = chevronEndX + 4
+  // 3) 读数芯片：黑玻璃 +「此刻」+ 点阵时间（右侧放不下就放到列左侧）
+  const timeStr = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`
+  const timeFont = `900 ${p.fs(15)}px 'Doto', 'JetBrains Mono', monospace`
+  const labelFont = `${p.fs(11)}px 'Microsoft YaHei UI', sans-serif`
+  ctx.save()
+  ctx.font = timeFont
+  const timeW = ctx.measureText(timeStr).width
+  ctx.font = labelFont
+  const labelW = ctx.measureText('此刻').width
+  const padX = 8, gap = 6, chipH = 22
+  const chipW = padX + labelW + gap + timeW + padX
+  let chipX = cx + p.cellW + 10
+  const onRight = chipX + chipW <= p.totalW - 4
+  if (!onRight) chipX = cx - 14 - chipW
   const chipY = y - chipH / 2
 
-  ctx.save()
-  ctx.shadowColor = cyan
+  ctx.strokeStyle = 'rgba(255,138,76,0.7)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  if (onRight) { ctx.moveTo(cx + p.cellW + 2, y + 0.5); ctx.lineTo(chipX, y + 0.5) }
+  else { ctx.moveTo(chipX + chipW, y + 0.5); ctx.lineTo(cx - 10, y + 0.5) }
+  ctx.stroke()
+
+  ctx.beginPath()
+  ctx.roundRect(chipX, chipY, chipW, chipH, 4)
+  ctx.fillStyle = 'rgba(7,7,6,0.92)'
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(255,138,76,0.55)'
+  ctx.stroke()
+
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'left'
+  ctx.font = labelFont
+  ctx.fillStyle = '#A8A39C'
+  ctx.fillText('此刻', chipX + padX, y + 0.5)
+  ctx.font = timeFont
+  ctx.fillStyle = '#FF9A5C'
+  ctx.shadowColor = 'rgba(255,130,60,0.8)'
   ctx.shadowBlur = 6
-  const connGrad = ctx.createLinearGradient(lineStartX, y, lineEndX, y)
-  connGrad.addColorStop(0, hexToRgba(cyan, 0.95))
-  connGrad.addColorStop(1, hexToRgba(cyan, 0.32))
-  ctx.strokeStyle = connGrad
-  ctx.lineWidth = 1.6
-  ctx.beginPath()
-  ctx.moveTo(lineStartX, y); ctx.lineTo(lineEndX, y)
-  ctx.stroke()
+  ctx.fillText(timeStr, chipX + padX + labelW + gap, y + 1)
   ctx.restore()
-  // 中央高光（白心 0.55 厚，让线呈现"管道感"）
-  ctx.save()
-  ctx.strokeStyle = 'rgba(220,250,255,0.72)'
-  ctx.lineWidth = 0.55
-  ctx.beginPath()
-  ctx.moveTo(lineStartX + 1, y); ctx.lineTo(lineEndX - 2, y)
-  ctx.stroke()
-  ctx.restore()
-
-  // ── ③ ▶▶▶ 箭头（3 个实心三角填充，朝右） ──
-  ctx.save()
-  ctx.fillStyle = cyan
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 4
-  for (let i = 0; i < 3; i++) {
-    const cxArrow = chevronStartX + i * (chevronSize + chevronGap)
-    ctx.beginPath()
-    ctx.moveTo(cxArrow, y - chevronSize)
-    ctx.lineTo(cxArrow + chevronSize, y)
-    ctx.lineTo(cxArrow, y + chevronSize)
-    ctx.closePath()
-    ctx.fill()
-  }
-  ctx.restore()
-
-  // ④ 八边形 chip（左右长切角 + 上下短切角，胶囊感）
-  const chamferX = 5
-  const chamferY = 3.5
-  const buildOctPath = (offset: number) => {
-    const x0 = chipX - offset
-    const y0 = chipY - offset
-    const w = chipW + offset * 2
-    const h = chipH + offset * 2
-    ctx.beginPath()
-    ctx.moveTo(x0 + chamferX, y0)
-    ctx.lineTo(x0 + w - chamferX, y0)
-    ctx.lineTo(x0 + w, y0 + chamferY)
-    ctx.lineTo(x0 + w, y0 + h - chamferY)
-    ctx.lineTo(x0 + w - chamferX, y0 + h)
-    ctx.lineTo(x0 + chamferX, y0 + h)
-    ctx.lineTo(x0, y0 + h - chamferY)
-    ctx.lineTo(x0, y0 + chamferY)
-    ctx.closePath()
-  }
-
-  // chip 底色（深青墨）+ inset cyan radial glow
-  ctx.save()
-  buildOctPath(0)
-  ctx.fillStyle = 'rgba(0,30,42,0.82)'
-  ctx.fill()
-  const insetGrad = ctx.createRadialGradient(
-    chipX + chipW / 2, chipY + chipH / 2, 1,
-    chipX + chipW / 2, chipY + chipH / 2, Math.max(chipW, chipH) * 0.7,
-  )
-  insetGrad.addColorStop(0, hexToRgba(cyan, 0.22))
-  insetGrad.addColorStop(0.55, hexToRgba(cyan, 0.07))
-  insetGrad.addColorStop(1, 'rgba(0,229,255,0)')
-  ctx.fillStyle = insetGrad
-  ctx.fill()
-  ctx.restore()
-
-  // chip 主描边（cyan，带 glow）
-  ctx.save()
-  buildOctPath(0)
-  ctx.strokeStyle = hexToRgba(cyan, 0.95)
-  ctx.lineWidth = 1.4
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 5
-  ctx.stroke()
-  ctx.restore()
-  // chip 外侧次描边（offset 2，模拟"双框/重影"）
-  ctx.save()
-  buildOctPath(2)
-  ctx.strokeStyle = hexToRgba(cyan, 0.25)
-  ctx.lineWidth = 0.7
-  ctx.stroke()
-  ctx.restore()
-
-  // 脉冲小圆点（左端，落在 y 上）— 只在圆点上保留细微脉冲
-  ctx.save()
-  ctx.fillStyle = cyan
-  ctx.shadowColor = cyan
-  ctx.shadowBlur = 4 * pulse
-  const dotCx = chipX + padX + dotSize / 2
-  ctx.beginPath()
-  ctx.arc(dotCx, y, dotSize / 2 * (0.78 + 0.22 * pulse), 0, Math.PI * 2)
-  ctx.fill()
-  ctx.restore()
-
-  // NOW 小标签（灰白次要色，让大字时间占主视觉）
-  ctx.save()
-  ctx.font = `700 ${nowFontSize}px 'JetBrains Mono', 'Courier New', monospace`
-  ctx.fillStyle = 'rgba(200,225,235,0.68)'
-  ctx.textAlign = 'left'
-  ctx.textBaseline = 'middle'
-  ctx.fillText('NOW', chipX + padX + dotSize + gap, y + 0.5)
-  ctx.restore()
-
-  // 时间主文本（大字号 + 加粗，纯白带轻微 cyan 内 glow）
-  ctx.save()
-  ctx.font = `800 ${timeFontSize}px 'JetBrains Mono', 'Courier New', monospace`
-  ctx.fillStyle = '#FFFFFF'
-  ctx.shadowColor = hexToRgba(cyan, 0.55)
-  ctx.shadowBlur = 3
-  ctx.textAlign = 'left'
-  ctx.textBaseline = 'middle'
-  ctx.fillText(timeStr, chipX + padX + dotSize + gap + nowLabelW + nowTimeGap, y + 0.5)
-  ctx.restore()
-
-  // 防止全局 textBaseline 漏出
   ctx.textBaseline = 'alphabetic'
 }
 
@@ -1138,7 +834,7 @@ function drawCrosshair(
     const segEnd = Math.min(endMin, (col + 1) * p.minutesPerCol)
     const y0 = minuteToY(segStart, col, p)
     const y1 = minuteToY(segEnd, col, p)
-    const color = span.color ?? '#4488ff'
+    const color = tone(span.color ?? '#4488ff')
     ctx.save()
     ctx.shadowColor = color
     ctx.shadowBlur = 12
@@ -1155,8 +851,8 @@ function drawCrosshair(
   // 跨列高亮管线辅助
   function highlightPipeSpan(startMin: number, endMin: number, _color: string) {
     // 固定高亮色：亮青 + 白，不随 span 颜色变化
-    const frameColor = '#00E5FF'
-    const frameGlow  = 'rgba(0,229,255,0.8)'
+    const frameColor = '#9ED8F2'
+    const frameGlow  = 'rgba(150,215,245,0.8)'
 
     const hStartCol = Math.floor(startMin / p.minutesPerCol)
     const hEndCol   = Math.floor((endMin - 1) / p.minutesPerCol)
@@ -1225,79 +921,44 @@ function drawCrosshair(
     }
   }
 
-  // ── HUD 准星横线：主线 + 两端 L 角 + 中段刻度 ──
-  const lineColor = isPinned ? 'rgba(255,180,60,0.95)' : 'rgba(220,240,255,0.65)'
-  const glowColor = isPinned ? 'rgba(255,180,60,0.55)' : 'rgba(180,220,255,0.45)'
-  const tickColor = isPinned ? 'rgba(255,180,60,0.85)' : 'rgba(200,230,255,0.55)'
-
+  // ── 准星横线：悬停 = 冰蓝，锁定 = 信号橙；两端各一颗小方点 ──
+  const lineColor = isPinned ? 'rgba(255,138,76,0.95)' : 'rgba(200,236,252,0.75)'
+  const glowColor = isPinned ? 'rgba(255,120,60,0.7)' : 'rgba(150,215,245,0.55)'
   ctx.save()
   ctx.shadowColor = glowColor
-  ctx.shadowBlur = isPinned ? 5 : 4
-  ctx.beginPath()
-  ctx.moveTo(x0, mouseY)
-  ctx.lineTo(x1, mouseY)
-  ctx.strokeStyle = lineColor
-  ctx.lineWidth = isPinned ? 1 : 0.75
-  ctx.stroke()
+  ctx.shadowBlur = 5
+  ctx.fillStyle = lineColor
+  ctx.fillRect(x0, Math.round(mouseY) - 0.5, x1 - x0, 1)
+  ctx.fillRect(x0 - 1.5, mouseY - 1.5, 3, 3)
+  ctx.fillRect(x1 - 1.5, mouseY - 1.5, 3, 3)
   ctx.restore()
 
-  // 两端 L 角端盖（向内）
-  ctx.save()
-  ctx.strokeStyle = tickColor
-  ctx.lineWidth = isPinned ? 1 : 0.85
-  ctx.shadowColor = glowColor
-  ctx.shadowBlur = isPinned ? 4 : 2
-  const lArm = 4
-  ctx.beginPath()
-  // 左端：向下 + 向内
-  ctx.moveTo(x0, mouseY - lArm); ctx.lineTo(x0, mouseY + lArm)
-  ctx.moveTo(x0, mouseY);        ctx.lineTo(x0 + 2, mouseY)
-  // 右端
-  ctx.moveTo(x1, mouseY - lArm); ctx.lineTo(x1, mouseY + lArm)
-  ctx.moveTo(x1, mouseY);        ctx.lineTo(x1 - 2, mouseY)
-  ctx.stroke()
-  ctx.restore()
-
-  // 中段 3 枚短刻度（仅在准星较长时画，避免挤压）
-  if (x1 - x0 > 36) {
-    ctx.save()
-    ctx.strokeStyle = tickColor
-    ctx.globalAlpha = 0.55
-    ctx.lineWidth = 0.75
-    const midX = (x0 + x1) / 2
-    ctx.beginPath()
-    for (const dx of [-6, 0, 6]) {
-      ctx.moveTo(midX + dx, mouseY - 2)
-      ctx.lineTo(midX + dx, mouseY + 2)
-    }
-    ctx.stroke()
-    ctx.restore()
-  }
-
-  // ── 管线标签（原风格 + 轻微斜切） ──
+  // ── 管线标签：黑玻璃小窗（应用名 / 视频标题） ──
   if (pipeLabel) {
     const hasIcon  = pipeLabelIcon !== null
     const iconSize = 14
     const gap      = 4
-    const padX     = 4, padY = 3
-    const lineH    = 11
+    const padX     = 5, padY = 3
+    const lineH    = 13
 
     const labelX     = x0 + p.traceBaseX + PIPE_RIGHT + 6
     const maxLabelW  = x1 - labelX - 2
     const availTextW = maxLabelW - padX * 2 - (hasIcon ? iconSize + gap : 0)
 
-    ctx.font = `500 ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
+    const labelFont = `500 ${p.fs(10.5)}px 'Microsoft YaHei UI', 'PingFang SC', sans-serif`
+    ctx.font = labelFont
     const lines     = availTextW > 10 ? wrapText(ctx, pipeLabel, availTextW).slice(0, 3) : [pipeLabel]
     const textBlock = hasIcon ? Math.max(iconSize, lines.length * lineH) : lines.length * lineH
     const labelH    = padY * 2 + textBlock
     const labelY    = mouseY - labelH / 2
 
     ctx.save()
-    chamferPath(ctx, labelX, labelY, maxLabelW, labelH, 2)
-    ctx.fillStyle   = 'rgba(4,8,18,0.80)'
+    ctx.beginPath()
+    ctx.roundRect(labelX, labelY, maxLabelW, labelH, 3)
+    ctx.fillStyle = 'rgba(7,7,6,0.9)'
     ctx.fill()
-    ctx.strokeStyle = isPinned ? 'rgba(255,180,60,0.5)' : (trackMode === 'bili' ? 'rgba(251,114,153,0.3)' : 'rgba(255,255,255,0.18)')
-    ctx.lineWidth   = 0.75
+    ctx.strokeStyle = isPinned ? 'rgba(255,138,76,0.5)' : (trackMode === 'bili' ? 'rgba(251,114,153,0.35)' : 'rgba(158,216,242,0.3)')
+    ctx.lineWidth = 0.75
     ctx.stroke()
     ctx.restore()
 
@@ -1308,63 +969,55 @@ function drawCrosshair(
       textX = labelX + padX + iconSize + gap
     }
 
-    ctx.font         = `500 ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
-    ctx.fillStyle    = 'rgba(255,255,255,0.88)'
+    ctx.font         = labelFont
+    ctx.fillStyle    = '#E4E0DA'
     ctx.textAlign    = 'left'
     ctx.textBaseline = 'alphabetic'
-    const textStartY = labelY + padY + lineH - 1
+    const textStartY = labelY + padY + lineH - 2.5
     lines.forEach((line, i) => {
       ctx.fillText(line, textX, textStartY + i * lineH)
     })
   }
 
-  // ── 锁定/解锁 badge：HUD 指示器（深底 + 彩色边框 + 彩色发光文字） ──
-  const label = isPinned ? '解锁' : '锁定'
-  const font = `bold ${p.fs(9)}px 'JetBrains Mono', 'Courier New', monospace`
-  ctx.font = font
-  const textW = ctx.measureText(label).width
-  const bPadX = 7
-  const badgeW = textW + bPadX * 2
-  const badgeH = 14
-  const badgeX = x1 + 5
+  // ── 读数 + 锁定键：点阵时刻 ｜ 锁定/解锁（整块可点） ──
+  const timeStr = fmt(Math.floor(minute))
+  const actionLabel = isPinned ? '解锁' : '锁定'
+  const timeFont = `900 ${p.fs(13)}px 'Doto', 'JetBrains Mono', monospace`
+  const actFont = `${p.fs(10.5)}px 'Microsoft YaHei UI', sans-serif`
+  ctx.font = timeFont
+  const timeW = ctx.measureText(timeStr).width
+  ctx.font = actFont
+  const actW = ctx.measureText(actionLabel).width
+  const bPadX = 7, bGap = 7
+  const badgeW = bPadX + timeW + bGap + 1 + bGap + actW + bPadX
+  const badgeH = 20
+  let badgeX = x1 + 6
+  if (badgeX + badgeW > p.totalW - 2) badgeX = x0 - 6 - badgeW
   const badgeY = mouseY - badgeH / 2
 
-  const accentC = isPinned ? 'rgba(255,180,60,1)'   : 'rgba(150,210,255,0.9)'
-  const softC   = isPinned ? 'rgba(255,180,60,0.35)': 'rgba(150,210,255,0.3)'
-  const glowC   = isPinned ? 'rgba(255,180,60,0.6)' : 'rgba(150,200,255,0.35)'
-
-  // 主体：深背景 + 彩色边框
   ctx.save()
-  ctx.shadowColor = glowC
-  ctx.shadowBlur = isPinned ? 6 : 3
-  chamferPath(ctx, badgeX, badgeY, badgeW, badgeH, 3)
-  ctx.fillStyle = 'rgba(6,10,20,0.88)'
-  ctx.fill()
-  ctx.strokeStyle = accentC
-  ctx.lineWidth = isPinned ? 1 : 0.8
-  ctx.stroke()
-  ctx.restore()
-
-  // 顶/底 accent 细线（HUD 端口感）
-  ctx.save()
-  ctx.strokeStyle = softC
-  ctx.lineWidth = 0.75
   ctx.beginPath()
-  ctx.moveTo(badgeX + 4, badgeY - 1); ctx.lineTo(badgeX + badgeW - 4, badgeY - 1)
-  ctx.moveTo(badgeX + 4, badgeY + badgeH + 1); ctx.lineTo(badgeX + badgeW - 4, badgeY + badgeH + 1)
+  ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 4)
+  ctx.fillStyle = 'rgba(7,7,6,0.92)'
+  ctx.fill()
+  ctx.strokeStyle = isPinned ? 'rgba(255,138,76,0.6)' : 'rgba(158,216,242,0.35)'
+  ctx.lineWidth = 1
   ctx.stroke()
-  ctx.restore()
-
-  // 文字：彩色发光，严格几何居中
-  ctx.save()
-  ctx.font         = font
-  ctx.fillStyle    = accentC
-  ctx.shadowColor  = glowC
-  ctx.shadowBlur   = isPinned ? 4 : 2
-  ctx.textAlign    = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(label, badgeX + badgeW / 2, badgeY + badgeH / 2 + 0.5)
+  ctx.textAlign = 'left'
+  ctx.font = timeFont
+  ctx.fillStyle = isPinned ? '#FF9A5C' : '#C8ECFC'
+  ctx.shadowColor = isPinned ? 'rgba(255,130,60,0.8)' : 'rgba(150,215,245,0.7)'
+  ctx.shadowBlur = 5
+  ctx.fillText(timeStr, badgeX + bPadX, mouseY + 1)
+  ctx.shadowBlur = 0
+  ctx.fillStyle = 'rgba(255,255,255,0.14)'
+  ctx.fillRect(badgeX + bPadX + timeW + bGap, badgeY + 5, 1, badgeH - 10)
+  ctx.font = actFont
+  ctx.fillStyle = isPinned ? '#FFB98A' : '#A8A39C'
+  ctx.fillText(actionLabel, badgeX + bPadX + timeW + bGap * 2 + 1, mouseY + 0.5)
   ctx.restore()
+  ctx.textBaseline = 'alphabetic'
 
   return { x: badgeX, y: badgeY, w: badgeW, h: badgeH, pin: { col, y: mouseY, minute } }
 }
@@ -1466,76 +1119,28 @@ function drawDragPreview(
 }
 
 
-// ── 顶部 axis 行：左半固定（⊿ + 时间轴 + 当前阶段:中文）+ 底部细横线 ──
-//   时段中文标签由 ScrollingZoneLabels 在 wrapper 内 sticky 层渲染（CSS native 同步）
+// ── 左上角：斜线表头（右上「时」、左下「分」）──
 
-function ChartTopAxisRow() {
-  const cyan = theme.electricBlue
-
+function AxisCorner() {
   return (
-    <div style={{
-      position: 'absolute', top: 0, left: 0, right: 0, height: 28,
-      pointerEvents: 'none', zIndex: 60,
+    <div aria-hidden style={{
+      position: 'absolute', top: 0, left: 0, width: AXIS_W, height: AXIS_TOP,
+      pointerEvents: 'none', zIndex: 6,
     }}>
-      {/* 左半固定：⊿ + 时间轴（⊿ 偏右下，离 frame 折角斜线 ~9px 内层） */}
-      <div style={{
-        position: 'absolute', top: 0, bottom: 0, left: 0,
-        display: 'flex', alignItems: 'center', gap: 9,
-        paddingLeft: 10, paddingRight: 18,
-        background: 'linear-gradient(90deg, rgba(2,8,18,0.98) 0%, rgba(2,8,18,0.95) 75%, rgba(2,8,18,0) 100%)',
-      }}>
-        {/* ⊿ 简化：只主三角 + 内嵌小三角（去掉顶点亮点 / 接线 / 接线端点等"针刺铆钉"装饰） */}
-        <svg width="14" height="14" style={{
-          overflow: 'visible',
-          filter: `drop-shadow(0 0 4px ${cyan}AA) drop-shadow(0 0 1.5px ${cyan})`,
-        }}>
-          <polygon points="1,13 13,13 13,1" fill={`${cyan}22`} stroke={cyan} strokeWidth="1.3" strokeLinejoin="miter" />
-          <polygon points="4.5,11.5 11.5,11.5 11.5,4.5" fill="none" stroke={cyan} strokeWidth="0.8" strokeLinejoin="miter" opacity="0.55" />
-        </svg>
-        <span style={{
-          fontFamily: theme.fontBody, fontSize: 13, fontWeight: 500,
-          color: cyan, letterSpacing: 1,
-          textShadow: `0 0 4px ${cyan}88`,
-        }}>
-          时间轴
-        </span>
-      </div>
-
-      {/* 底部细横线（cyan 极淡） */}
-      <div style={{
-        position: 'absolute', bottom: 0, left: 16, right: 16,
-        height: 1, background: `${cyan}33`,
-        pointerEvents: 'none',
-      }} />
+      <svg width={AXIS_W} height={AXIS_TOP} style={{ position: 'absolute', top: 0, left: 0 }}>
+        <line x1={4} y1={3} x2={AXIS_W - 4} y2={AXIS_TOP - 2} stroke="rgba(158,216,242,0.4)" strokeWidth="1" />
+      </svg>
+      <span style={{ position: 'absolute', top: 1, right: 7, fontSize: 10.5, color: 'var(--ti-text-dim)' }}>时</span>
+      <span style={{ position: 'absolute', bottom: 0, left: 7, fontSize: 10.5, color: 'var(--ti-text-dim)' }}>分</span>
     </div>
   )
 }
 
-// CornerArt 抽到 components/hud/CornerArt.tsx，统一供主舞台外壳使用
+// ── 左侧分钟刻度尺：每行一道刻度，逢 15 / 10 / 5 分钟（随密度）标点阵数字 ──
 
-// ── 左侧 TIME AXIS 区 ──
-//   关键设计：frame 左边线在文字 y 范围内"断开"（黑色遮罩覆盖），顶部装饰朝左上凸出折角；
-//   TIME AXIS 文字在 frame 之外的 padding 溢出区；HUD 刻度尺在 chart canvas 与 axis 交界处；
-//   底部 45° 大折角自 frame 左边线起，端点在 chart pane 内不出界。
-
-function LeftAxis({ params }: { params: ReturnType<typeof getGridParams> }) {
-  const cyan = theme.electricBlue
-  const hostRef = useRef<HTMLDivElement>(null)
-  const [h, setH] = useState(0)
-  useEffect(() => {
-    const el = hostRef.current
-    if (!el) return
-    const obs = new ResizeObserver(([entry]) => setH(Math.round(entry.contentRect.height)))
-    obs.observe(el)
-    return () => obs.disconnect()
-  }, [])
-
-  // 刻度对齐 chart 行间"时间戳单元格"（rowGap）的中线，与 drawTimeLabels 的 gapY 一致：
-  //   - LeftAxis.top = 28 = params.topPad，LeftAxis 自身坐标 y=0 ↔ chart 第 0 行顶
-  //   - gapY = i * rowStride + cellH + rowGap/2，对应时刻 (i+1)*5 分钟
-  //   - major 间隔随密度自适应：12 行 → 每 15min，6/4 行 → 每 10min，3 行 → 每 5min（全 major）
+function LeftAxis({ params }: { params: GridParams }) {
   const majorEvery = params.rowsPerCol >= 12 ? 15 : params.rowsPerCol >= 4 ? 10 : 5
-  const ticks = Array.from({ length: params.rowsPerCol }, (_, i) => {
+  const ticks = Array.from({ length: params.rowsPerCol - 1 }, (_, i) => {
     const minute = (i + 1) * 5
     return {
       minute,
@@ -1543,351 +1148,43 @@ function LeftAxis({ params }: { params: ReturnType<typeof getGridParams> }) {
       major: minute % majorEvery === 0,
     }
   })
-
-  // 几何
-  //   - frame 主线 (xMain) 完整保留，HudFrameSkeleton 自画
-  //   - 刀刃 polyline (4 点)：自 (xMain, slotTop) 斜入 → 竖直（包住 axis 文字）→ 斜出回 (xMain, slotBot)
-  //   - 底部折角独立：自 (xMain, h-diagY) 斜向 (xMain+diagDx, h)，经过 frame 左边线 + 底边线
-  //   - 文字 TIME AXIS 在 frame 主线 与 刀刃竖直段 之间
-  const W = 72              // LeftAxis 宽度（24 padding 区 + 48 axis 内）
-  const xMain = 24          // frame 主线 x
-  const depth = 16          // 刀刃竖直段离 frame 主线
-  const xKnife = xMain + depth
-  const slant = 14          // 刀刃斜入/斜出高度
-  const xText = xMain + 8   // 文字 x（frame 主线 + 刀刃中间）
-  const xTickRail = W - 4
-  // major 刻度几何：主线 7 + cap 2.5×3.6 + 右端 rail 接合焊点 r=1.8
-  // 数字右缘贴 cap 左缘留 2px，整体形成"数字 ▮━━●"紧凑单元
-  const majorLen = 7
-  const capW = 2.5
-  const capH = 3.6
-  const numToCapGap = 2
-  const xNum = xTickRail - majorLen - capW - numToCapGap   // = 56.5
-  void xText
-  const taCenterRatio = 0.22  // 整体往上挪（之前 0.30 还不够上）
-  const taHalfH = 70         // 刀刃 y 半高
-  const diagY = 80
-  const diagDx = 80          // = diagY，让终点 y=h 接到 chart pane 底边线
-
   return (
-    <div
-      ref={hostRef}
-      style={{
-        position: 'absolute', top: 28, left: -24, width: W, bottom: 0,
-        pointerEvents: 'none', zIndex: 80,
-      }}
-    >
-      {h > 0 && (() => {
-        const taY = h * taCenterRatio
-        const slotTop = taY - taHalfH
-        const slotBot = taY + taHalfH
-        const slotInTop = slotTop + slant
-        const slotInBot = slotBot - slant
-        const diagStartY = h - diagY
-        void slotInBot
-
-        return (
-          <svg width={W} height={h} style={{ position: 'absolute', top: 0, left: 0, overflow: 'visible' }}>
-            {/* ── frame 主线遮罩：让 frame 主线在 axis 文字 y 范围断开，文本穿过 ── */}
-            <rect x={xMain - 6} y={slotTop} width={12} height={slotBot - slotTop} fill="#020610" />
-
-            {/* ── frame 主线下端恢复处的光点（slotBot 处实心圆 + glow） ── */}
-            <circle
-              cx={xMain} cy={slotBot}
-              r="3"
-              fill={cyan}
-              style={{ filter: `drop-shadow(0 0 4px ${cyan}) drop-shadow(0 0 1.5px ${cyan})` }}
-            />
-            <circle
-              cx={xMain} cy={slotBot}
-              r="6.5"
-              fill="none"
-              stroke={cyan}
-              strokeOpacity="0.2"
-              strokeWidth="0.7"
-            />
-
-            {/* ── 刀刃刀尖光泽点（slotTop 处 3 条 polyline 起点重合 + 更强 glow） ── */}
-            <defs>
-              <linearGradient id="timeAxisBladeMoonlight" x1="0%" y1="0%" x2="0%" y2="100%">
-                <stop offset="0%" stopColor={cyan} stopOpacity="0.52" />
-                <stop offset="10%" stopColor={cyan} stopOpacity="0.22" />
-                <stop offset="32%" stopColor={cyan} stopOpacity="0.04" />
-                <stop offset="58%" stopColor={cyan} stopOpacity="0" />
-                <stop offset="100%" stopColor={cyan} stopOpacity="0" />
-              </linearGradient>
-              <radialGradient id="timeAxisBladeTipBloom" cx="36%" cy="0%" r="82%">
-                <stop offset="0%" stopColor={cyan} stopOpacity="0.62" />
-                <stop offset="46%" stopColor={cyan} stopOpacity="0.24" />
-                <stop offset="100%" stopColor={cyan} stopOpacity="0" />
-              </radialGradient>
-              <linearGradient id="timeAxisBladeSideLift" x1="0%" y1="0%" x2="0%" y2="100%">
-                <stop offset="0%" stopColor={cyan} stopOpacity="0.2" />
-                <stop offset="18%" stopColor={cyan} stopOpacity="0.12" />
-                <stop offset="42%" stopColor={cyan} stopOpacity="0.025" />
-                <stop offset="68%" stopColor={cyan} stopOpacity="0" />
-                <stop offset="100%" stopColor={cyan} stopOpacity="0" />
-              </linearGradient>
-              <linearGradient id="timeAxisBladeTopTrace" x1="0%" y1="0%" x2="100%" y2="85%">
-                <stop offset="0%" stopColor={cyan} stopOpacity="0.95" />
-                <stop offset="36%" stopColor={cyan} stopOpacity="0.58" />
-                <stop offset="74%" stopColor={cyan} stopOpacity="0.16" />
-                <stop offset="100%" stopColor={cyan} stopOpacity="0" />
-              </linearGradient>
-              <linearGradient id="timeAxisBladeLeftTrace" x1="0%" y1="0%" x2="0%" y2="100%">
-                <stop offset="0%" stopColor={cyan} stopOpacity="0.82" />
-                <stop offset="42%" stopColor={cyan} stopOpacity="0.34" />
-                <stop offset="100%" stopColor={cyan} stopOpacity="0" />
-              </linearGradient>
-              <filter id="timeAxisBladeSoftBlur" x="-40%" y="-18%" width="180%" height="150%">
-                <feGaussianBlur stdDeviation="1.25" />
-              </filter>
-              <pattern id="timeAxisBladeHex" width="6" height="5.2" patternUnits="userSpaceOnUse">
-                <path
-                  d="M1.5 0.3 L4.5 0.3 L6 2.6 L4.5 4.9 L1.5 4.9 L0 2.6 Z"
-                  fill="none"
-                  stroke={cyan}
-                  strokeOpacity="0.055"
-                  strokeWidth="0.45"
-                />
-              </pattern>
-              <linearGradient id="timeAxisLeftEdgeFade" gradientUnits="userSpaceOnUse" x1={xMain - 4} y1={slotTop} x2={xMain - 4} y2={slotTop + 112}>
-                <stop offset="0%" stopColor={cyan} stopOpacity="0.86" />
-                <stop offset="62%" stopColor={cyan} stopOpacity="0.72" />
-                <stop offset="100%" stopColor={cyan} stopOpacity="0" />
-              </linearGradient>
-              <linearGradient id="timeAxisInnerBladeFade" gradientUnits="userSpaceOnUse" x1={xKnife - 7} y1={h - diagY + depth} x2={xKnife - 7} y2={slotTop}>
-                <stop offset="0%" stopColor={cyan} stopOpacity="0.58" />
-                <stop offset="76%" stopColor={cyan} stopOpacity="0.5" />
-                <stop offset="91%" stopColor={cyan} stopOpacity="0.08" />
-                <stop offset="100%" stopColor={cyan} stopOpacity="0" />
-              </linearGradient>
-              <clipPath id="timeAxisBladeLightClip">
-                <path
-                  d={[
-                    `M ${xMain} ${slotTop}`,
-                    `L ${xKnife + 2} ${slotInTop}`,
-                    `L ${xKnife + 2} ${slotBot + 56}`,
-                    `L ${xMain - 4} ${slotBot + 56}`,
-                    `L ${xMain - 4} ${slotTop + 20}`,
-                    'Z',
-                  ].join(' ')}
-                />
-              </clipPath>
-            </defs>
-
-            <path
-              d={[
-                `M ${xMain} ${slotTop}`,
-                `L ${xKnife + 2} ${slotInTop}`,
-              ].join(' ')}
-              fill="none"
-              stroke={cyan}
-              strokeOpacity="0.95"
-              strokeWidth="1.7"
-              strokeLinecap="butt"
-              strokeLinejoin="miter"
-              style={{ filter: `drop-shadow(0 0 4px ${cyan}88)` }}
-            />
-            <line
-              x1={xKnife + 2} y1={slotInTop}
-              x2={xKnife + 0.5} y2={slotInTop + 18}
-              stroke={cyan}
-              strokeOpacity="0.34"
-              strokeWidth="1.05"
-              strokeLinecap="butt"
-            />
-            <path
-              d={[
-                `M ${xMain - 4} ${slotTop + 18}`,
-                `L ${xMain - 4} ${slotTop + 112}`,
-              ].join(' ')}
-              fill="none"
-              stroke="url(#timeAxisLeftEdgeFade)"
-              strokeWidth="1.8"
-              strokeLinecap="butt"
-              strokeLinejoin="miter"
-              style={{ filter: `drop-shadow(0 0 6px ${cyan}99)` }}
-            />
-            <g style={{ filter: `drop-shadow(0 0 6px ${cyan}99)` }}>
-              <line x1={xMain - 3.8} y1={slotTop + 18} x2={xMain + 6.5} y2={slotTop + 8}
-                stroke={cyan} strokeOpacity="0.86" strokeWidth="1.55" strokeLinecap="butt" />
-              <line x1={xMain - 3.9} y1={slotTop + 14} x2={xMain + 5.8} y2={slotTop + 4.5}
-                stroke={cyan} strokeOpacity="0.68" strokeWidth="1.25" strokeLinecap="butt" />
-              <line x1={xMain - 3.7} y1={slotTop + 10.5} x2={xMain + 5.0} y2={slotTop + 2.2}
-                stroke={cyan} strokeOpacity="0.48" strokeWidth="1" strokeLinecap="butt" />
-            </g>
-
-            {/* ── 刀刃 3 层平行 polyline（起点重合于 (xMain, slotTop)，向下扇形分散） ── */}
-            {/* 主线（亮 + glow），最右一条 */}
-            <polyline
-              points={`${xMain},${slotTop} ${xKnife},${slotInTop} ${xKnife},${h - diagY + depth}`}
-              fill="none"
-              stroke={cyan} strokeOpacity="0.95" strokeWidth="1.4"
-              strokeLinejoin="miter"
-              style={{ filter: `drop-shadow(0 0 4px ${cyan}88)` }}
-            />
-            {/* 内层 1（中等）：起点重合主线 → 斜入紧贴 → 竖直段在主线左 5px */}
-            <polyline
-              points={`${xMain},${slotTop} ${xKnife - 5},${slotInTop} ${xKnife - 5},${h - diagY + depth - 5}`}
-              fill="none"
-              stroke="url(#timeAxisInnerBladeFade)" strokeWidth="0.8"
-              strokeLinejoin="miter"
-            />
-            {/* 内层 2（淡）：起点重合主线 → 斜入更紧贴 → 竖直段在主线左 9px */}
-            <polyline
-              points={`${xMain},${slotTop} ${xKnife - 9},${slotInTop} ${xKnife - 9},${h - diagY + depth - 9}`}
-              fill="none"
-              stroke="url(#timeAxisInnerBladeFade)" opacity="0.62" strokeWidth="0.8"
-              strokeLinejoin="miter"
-            />
-
-            {/* ── 底部 45° 大折角 3 条扇形分散（起点重合主线起点，终点提前不同距离）── */}
-            {/* 主线（亮 + glow） */}
-            <line
-              x1={xMain} y1={diagStartY}
-              x2={xMain + diagDx} y2={diagStartY + diagDx}
-              stroke={cyan} strokeOpacity="0.95" strokeWidth="1.4"
-              style={{ filter: `drop-shadow(0 0 4px ${cyan}88)` }}
-            />
-            {/* 内层 1（中等）：起点重合 + 终点提前 5px */}
-            <line
-              x1={xMain} y1={diagStartY}
-              x2={xMain + diagDx - 5} y2={diagStartY + diagDx - 5}
-              stroke={cyan} strokeOpacity="0.55" strokeWidth="0.8"
-            />
-            {/* 内层 2（淡）：起点重合 + 终点提前 9px */}
-            <line
-              x1={xMain} y1={diagStartY}
-              x2={xMain + diagDx - 9} y2={diagStartY + diagDx - 9}
-              stroke={cyan} strokeOpacity="0.32" strokeWidth="0.8"
-            />
-            {/* ── 折角终点水平延伸（向 axis 右侧，连接刻度尺底部） ── */}
-            <line
-              x1={xMain + diagDx} y1={diagStartY + diagDx}
-              x2={W - 2} y2={diagStartY + diagDx}
-              stroke={cyan} strokeOpacity="0.45" strokeWidth="1"
-            />
-
-            {/* ── HUD 刻度尺主竖线（亮 + 微 glow） ── */}
-            <line x1={xTickRail} y1={6} x2={xTickRail} y2={diagStartY - 6}
-              stroke={cyan} strokeOpacity="0.8" strokeWidth="1"
-              style={{ filter: `drop-shadow(0 0 1.5px ${cyan}66)` }} />
-            {/* ── 内侧重影（offset=-3 朝 axis 中心方向） ── */}
-            <line x1={xTickRail - 3} y1={16} x2={xTickRail - 3} y2={diagStartY - 16}
-              stroke={cyan} strokeOpacity="0.26" strokeWidth="0.7" />
-            {/* ── 外侧重影（offset=+1.8，紧贴主线右侧，制造"主+重影"双轨幻象） ── */}
-            <line x1={xTickRail + 1.8} y1={10} x2={xTickRail + 1.8} y2={diagStartY - 10}
-              stroke={cyan} strokeOpacity="0.42" strokeWidth="0.6" />
-            {/* ── 远侧 ghost 重影（offset=+4，更淡更短，渐远消散感） ── */}
-            <line x1={xTickRail + 4} y1={22} x2={xTickRail + 4} y2={diagStartY - 22}
-              stroke={cyan} strokeOpacity="0.18" strokeWidth="0.5" />
-
-            {ticks.map((t, i) => {
-              if (t.y > diagStartY - 8) return null
-              if (t.major) {
-                return (
-                  <g key={i} style={{ filter: `drop-shadow(0 0 2.5px ${cyan}aa)` }}>
-                    {/* 主刻度（亮，stroke 1.3） */}
-                    <line x1={xTickRail - majorLen} y1={t.y} x2={xTickRail} y2={t.y}
-                      stroke={cyan} strokeOpacity="0.95" strokeWidth="1.3" />
-                    {/* 内层 companion 平行线（offset y+2，半长，cyan 中调） */}
-                    <line x1={xTickRail - majorLen + 2.5} y1={t.y + 2} x2={xTickRail - 1} y2={t.y + 2}
-                      stroke={cyan} strokeOpacity="0.5" strokeWidth="0.75" />
-                    {/* 左端方块 cap（2.5×3.6 粗胖锚点） */}
-                    <rect x={xTickRail - majorLen - capW} y={t.y - capH / 2}
-                      width={capW} height={capH} fill={cyan} opacity="0.98" />
-                    {/* 右端 rail 接合"焊点"（HUD 节点语言，跨主线 + 外侧重影） */}
-                    <circle cx={xTickRail} cy={t.y} r="1.8" fill={cyan} opacity="1" />
-                  </g>
-                )
-              }
-              return (
-                /* minor 5min 刻度：长 4 / opacity 0.5（常规风格，不弱化） */
-                <line key={i} x1={xTickRail - 4} y1={t.y} x2={xTickRail} y2={t.y}
-                  stroke={cyan} strokeOpacity="0.5" strokeWidth="0.85" />
-              )
-            })}
-
-          </svg>
-        )
-      })()}
-
-      {/* TIME AXIS 竖排文字（穿过 frame 主线 xMain 位置，frame 在此处被遮罩断开） */}
-      {h > 0 && (
-        <div style={{
-          position: 'absolute',
-          top: h * 0.22, left: xMain + 5,
-          transform: 'translate(-50%, -50%) rotate(-90deg)',
-          transformOrigin: 'center',
-          whiteSpace: 'nowrap',
-          fontFamily: `'Orbitron', 'Rajdhani', ${theme.fontMono}`,
-          fontSize: 9.5,
-          fontWeight: 700,
-          letterSpacing: 4.4,
-          color: cyan,
-          WebkitTextStroke: `0.15px ${cyan}`,
-          opacity: 0.86,
-          textShadow: `0 0 4px ${cyan}88, 0 0 8px ${cyan}33`,
-          pointerEvents: 'none',
+    <div aria-hidden style={{
+      position: 'absolute', top: AXIS_TOP, left: 0, width: AXIS_W, height: params.gridH,
+      pointerEvents: 'none', zIndex: 6,
+    }}>
+      <div style={{
+        position: 'absolute', right: 5, top: 0, bottom: 0, width: 1,
+        background: 'linear-gradient(180deg, rgba(158,216,242,0.55), rgba(158,216,242,0.12))',
+      }} />
+      {ticks.map((t) => (
+        <div key={t.minute} style={{
+          position: 'absolute', top: t.y, right: 5,
+          display: 'flex', alignItems: 'center', gap: 5,
+          transform: 'translateY(-50%)',
         }}>
-          TIME AXIS
-        </div>
-      )}
-
-      {/* 数字：每个刻度都标，所有数字右缘对齐 xNum；major 强、minor 弱形成层次 */}
-      {h > 0 && ticks.map((t) => {
-        if (t.y > h - 80 - 8) return null
-        return (
-          <span
-            key={t.minute}
-            style={{
-              position: 'absolute',
-              top: t.y, left: xNum,
-              transform: 'translate(-100%, -50%)',
-              fontFamily: theme.fontMono,
-              fontSize: t.major ? 10.5 : 8.5,
-              fontWeight: t.major ? 700 : 600,
-              color: cyan,
-              opacity: t.major ? 1 : 0.55,
-              letterSpacing: t.major ? 0.4 : 0.2,
-              whiteSpace: 'nowrap',
-              textShadow: t.major
-                ? `0 0 4px ${cyan}, 0 0 8px ${cyan}55`
-                : `0 0 2px ${cyan}66`,
-              ...(t.major ? { WebkitTextStroke: `0.12px ${cyan}` } : null),
-            }}
-          >
-            {String(t.minute).padStart(2, '0')}
+          <span className="ti-led" style={{
+            fontSize: t.major ? 12 : 10,
+            fontWeight: t.major ? 900 : 700,
+            color: t.major ? '#C8ECFC' : '#8E8982',
+            textShadow: t.major ? '0 0 6px rgba(150,215,245,0.6)' : 'none',
+          }}>
+            {pad2(t.minute)}
           </span>
-        )
-      })}
-
-      {/* DATA STREAM 标签（左下角，折角内 frame 区域） */}
-      <span style={{
-        position: 'absolute',
-        bottom: 14, left: xMain + 11,
-        fontFamily: `'Orbitron', 'Rajdhani', ${theme.fontMono}`,
-        fontSize: 7.8,
-        fontWeight: 700,
-        color: cyan,
-        WebkitTextStroke: `0.15px ${cyan}`,
-        letterSpacing: 1.5,
-        opacity: 0.86,
-        whiteSpace: 'nowrap',
-        lineHeight: 1.15,
-        textShadow: `0 0 4px ${cyan}88, 0 0 8px ${cyan}33`,
-      }}>
-        DATA<br />STREAM
-      </span>
+          <span style={{
+            width: t.major ? 7 : 4, height: 1,
+            background: t.major ? 'rgba(200,236,252,0.9)' : 'rgba(158,216,242,0.4)',
+          }} />
+        </div>
+      ))}
     </div>
   )
 }
 
-// ── 时段中文标签滚动层（CSS sticky，跟 wrapper 内容横向 native 同步） ──
+// ── 时段名：跨整段的一道渐隐细线，名字居中（CSS sticky，跟 canvas 共享 scrollLeft） ──
 
-function ScrollingZoneLabels({ params }: { params: ReturnType<typeof getGridParams> }) {
-  const zoneDefs: [number, number][] = [[0,6],[6,12],[12,18],[18,20],[20,24]]
+function ScrollingZoneLabels({ params }: { params: GridParams }) {
+  const zoneDefs: [number, number][] = [[0, 6], [6, 12], [12, 18], [18, 20], [20, 24]]
   return (
     // sticky 容器 height:0：不占 wrapper 流式空间（避免纵向滚动条），子内容 absolute 浮出
     <div style={{
@@ -1896,40 +1193,25 @@ function ScrollingZoneLabels({ params }: { params: ReturnType<typeof getGridPara
       zIndex: 3,
       pointerEvents: 'none',
     }}>
-      <div style={{
-        position: 'absolute', top: 0, left: 0,
-        width: params.totalW, height: 28,
-        pointerEvents: 'none',
-      }}>
+      <div style={{ position: 'absolute', top: 0, left: 0, width: params.totalW, height: 12 }}>
         {zoneDefs.map(([startH, endH]) => {
           const z = getZoneInfo(startH)
-          const [zr, zg, zb] = z.bgColor
-          const [br, bg, bb] = ensureHatchBright(zr, zg, zb, 140)
           const firstCol = Math.floor(startH * 60 / params.minutesPerCol)
           const lastCol = Math.floor(endH * 60 / params.minutesPerCol) - 1
           if (firstCol >= params.cols) return null
           const x0 = colX(firstCol, params)
           const x1 = colX(Math.min(lastCol, params.cols - 1), params) + params.cellW
-          const cx = (x0 + x1) / 2
-          const fillColor = `rgba(${br},${bg},${bb},0.92)`
-
           return (
-            <span
-              key={startH}
-              style={{
-                position: 'absolute',
-                top: '50%', left: cx,
-                transform: 'translate(-50%, -50%)',
-                fontFamily: `'DengXian', '等线', 'Microsoft YaHei', 'PingFang SC', sans-serif`,
-                fontSize: 14,
-                fontWeight: 600,
-                letterSpacing: 1.5,
-                whiteSpace: 'nowrap',
-                color: fillColor,
-              }}
-            >
-              {z.label}
-            </span>
+            <div key={startH} style={{
+              position: 'absolute', top: 0, left: x0, width: x1 - x0, height: 12,
+              display: 'flex', alignItems: 'center', gap: 8,
+            }}>
+              <span style={{ flex: 1, height: 1, background: `linear-gradient(90deg, transparent, ${z.textColor}66)` }} />
+              <span style={{ fontSize: 10.5, lineHeight: '12px', letterSpacing: '0.4em', paddingLeft: '0.4em', color: z.textColor, whiteSpace: 'nowrap' }}>
+                {z.label}
+              </span>
+              <span style={{ flex: 1, height: 1, background: `linear-gradient(90deg, ${z.textColor}66, transparent)` }} />
+            </div>
           )
         })}
       </div>
@@ -2215,7 +1497,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     ctx.scale(dpr, dpr)
 
     // 背景
-    ctx.fillStyle = theme.background
+    ctx.fillStyle = '#05080B'
     ctx.fillRect(0, 0, p.totalW, p.totalH)
 
     drawZoneBands(ctx, p)
@@ -2265,7 +1547,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     // 拖刷预览（覆盖在 tag 填充之上）
     const drag = dragRef.current
     if (drag) {
-      drawDragPreview(ctx, p, drag.startMin, drag.currentMin, drag.color, drag.tagId, drag.initial)
+      drawDragPreview(ctx, p, drag.startMin, drag.currentMin, tone(drag.color), drag.tagId, drag.initial)
     }
 
     drawNowTick(ctx, p, isToday)
@@ -2310,6 +1592,17 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     })
   }, [draw])
   redrawRef.current = scheduleRedraw
+
+  // canvas 用到 Doto 点阵字：字体到位后补一次重绘，避免首帧回落成等宽字
+  useEffect(() => {
+    let cancelled = false
+    const fonts = document.fonts
+    if (!fonts) return
+    Promise.all([fonts.load("900 14px 'Doto'"), fonts.load("700 11px 'Doto'")])
+      .then(() => { if (!cancelled) redrawRef.current?.() })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   // 检测鼠标是否在活动边缘（±6px）→ 返回 edge 信息
   // 将鼠标事件坐标转换为分钟（跨列支持，snap to 5 min）
@@ -2711,7 +2004,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
       const subName = parts.slice(1).join('/') || ''
       // 局部 Map 的 mutable 累加是安全的 — useMemo 内新建对象，无外部副作用
       let entry = map.get(firstName)
-      if (!entry) { entry = { color: s.color ?? '#4488ff', mins: 0, subTagMap: new Map() }; map.set(firstName, entry) }
+      if (!entry) { entry = { color: tone(s.color ?? '#4488ff'), mins: 0, subTagMap: new Map() }; map.set(firstName, entry) }
       entry.mins += mins
       if (subName) entry.subTagMap.set(subName, (entry.subTagMap.get(subName) ?? 0) + mins)
     })
@@ -2752,128 +2045,37 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     return sum + Math.max(0, toMin(s.end_at) - toMin(s.start_at))
   }, 0)
 
-  const tabsHeight = 30
-
   return (
     <div
       style={{
         display: 'flex', flexDirection: 'column', height: '100%',
-        background: theme.background, position: 'relative',
-        paddingLeft: 24,  // 左外边距：给 axis 溢出文本/装饰留空间（双层线 + TIME AXIS 文字）
-        paddingRight: 24.5,  // 右外边距：给 ChartHeaderFrame 长竖线显示空间（= rightOffset + 0.5）
+        background: 'transparent', position: 'relative',
       }}
     >
-      {/* 管线模式切换：tab 区紧贴顶部，tab 之间无 gap；tab 整体贴底,标签/按钮单独居中
-          paddingRight: 24 给 ChartHeaderFrame 右侧装饰让出空间，避免按钮跟装饰挤在一起 */}
-      <div style={{
-        display: 'flex', alignItems: 'flex-end', gap: 0,
-        padding: '0 24px 0 12px',
-        flexShrink: 0,
-        height: tabsHeight,
-      }}>
-        {/* 面板标题（与 TaskScheduleBoard 顶部"任务调度"对称） */}
-        <span style={{
-          alignSelf: 'center',
-          fontFamily: theme.fontBody,
-          fontSize: 12,
-          fontWeight: 600,
-          color: theme.textPrimary,
-          letterSpacing: 0.4,
-          paddingLeft: 12,
-          paddingRight: 10,
-          marginRight: 4,
-          marginTop: 6,
-        }}>
-          昼夜表
-        </span>
-        <span style={{
-          alignSelf: 'center',
-          fontFamily: theme.fontBody,
-          fontSize: 10,
-          fontWeight: 500,
-          letterSpacing: 0.2,
-          color: theme.textMuted,
-          paddingRight: 6,
-          marginRight: 2,
-          marginTop: 6,
-        }}>
-          数据源
-        </span>
-        {(['apps', 'bili'] as const).map((mode) => {
-          const active = trackMode === mode
-          const label = mode === 'apps' ? getAppTrackLabel() : '哔哩哔哩'
-          const color = mode === 'apps' ? theme.electricBlue : BILI_COLOR
-          return (
-            <HudTabButton
-              key={mode}
-              label={label}
-              active={active}
-              color={color}
-              width={mode === 'apps' ? 96 : 82}
-              height={24}
-              onClick={() => onTrackModeChange?.(mode)}
-            />
-          )
-        })}
+      <DayNightToolbar
+        trackMode={trackMode}
+        onTrackModeChange={onTrackModeChange}
+        appLabel={getAppTrackLabel()}
+        recordLayer={recordLayer}
+        onRecordLayerChange={onRecordLayerChange}
+        editMode={editMode}
+        onToggleEdit={onEditModeToggle}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onUndo={() => onUndo?.()}
+        onRedo={() => onRedo?.()}
+      />
 
-        {/* "层 / 实际记录 / 计划安排" 已下放到 ChartHeaderButtons（右侧夹缝垂直图标按钮）
-            编辑模式 + 撤回 + 恢复 也在 ChartHeaderButtons 里 */}
-      </div>
-
-      {/* 图表区：滚动 wrapper 占整片，sticky 时段层 + canvas；左半固定 axis 浮在上层 */}
+      {/* 图表区：滚动 wrapper（sticky 时段名 + canvas）；左侧斜线表头 + 分钟刻度尺浮在上层 */}
       <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-        {/* 切角矩形 HUD frame，仅包裹 chart pane（不含 tabs / legend） */}
-        <HudFrameSkeleton />
-
-        {/* 4 角折角艺术装饰：双层折角 + 内 L 描线 + 端点小口 */}
-        <CornerArt position="tl" />
-        <CornerArt position="tr" />
-        <CornerArt position="bl" />
-        <CornerArt position="br" />
-
-        {/* 左下大折角遮罩三角（80×80，覆盖 LeftAxis 大折角区域）*/}
-        <div style={{
-          position: 'absolute',
-          left: 0, bottom: 0, width: 80, height: 80,
-          background: theme.background,
-          clipPath: 'polygon(0 0, 0 100%, 100% 100%)',
-          WebkitClipPath: 'polygon(0 0, 0 100%, 100% 100%)',
-          zIndex: 65,
-          pointerEvents: 'none',
-        }} />
-
-        {/* 右上 frame 切角遮罩三角（18×18，frame cornerCut 范围）*/}
-        <div style={{
-          position: 'absolute',
-          right: 0, top: 0, width: 18, height: 18,
-          background: theme.background,
-          clipPath: 'polygon(100% 0, 100% 100%, 0 0)',
-          WebkitClipPath: 'polygon(100% 0, 100% 100%, 0 0)',
-          zIndex: 65,
-          pointerEvents: 'none',
-        }} />
-
-        {/* 右下 frame 切角遮罩三角（18×18，frame cornerCut 范围）*/}
-        <div style={{
-          position: 'absolute',
-          right: 0, bottom: 0, width: 18, height: 18,
-          background: theme.background,
-          clipPath: 'polygon(0 100%, 100% 0, 100% 100%)',
-          WebkitClipPath: 'polygon(0 100%, 100% 0, 100% 100%)',
-          zIndex: 65,
-          pointerEvents: 'none',
-        }} />
-
-        {/* 滚动 wrapper：覆盖 chart pane，sticky 时段层 + canvas 都跟随它滚 */}
         <div
           ref={containerRef}
           className="daynight-scroll"
           style={{
-            position: 'absolute', top: 0, left: 48, right: 0, bottom: 0,
+            position: 'absolute', top: 0, left: AXIS_W, right: 0, bottom: 0,
             overflowX: 'auto', overflowY: 'auto', cursor: 'pointer',
           }}
         >
-          {/* sticky 时段中文标签层（CSS native 同步，跟 canvas 共享 scrollLeft） */}
           <ScrollingZoneLabels params={p} />
 
           <canvas
@@ -2890,43 +2092,17 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
           />
         </div>
 
-        {/* 左半固定 axis row：⊿ + 时间轴 + 当前阶段（zIndex 60，覆盖 sticky 内 0..100） */}
-        <ChartTopAxisRow />
-
-        {/* 左侧 TIME AXIS 区（双层竖线 + 顶/底折角 + 跟随 rowsPerCol 的 5 分钟刻度） */}
+        <AxisCorner />
         <LeftAxis params={p} />
-
-        {/* 顶部 HUD 装饰带：叠加在标题栏 tab 区上层，右端凸塔接 chart pane 右上切角 */}
-        <ChartHeaderFrame mainHeight={tabsHeight} rightOffset={24} paddingRightFull={24.5} topOffsetLeft={24} topOffsetRight={24} slopeLen={14} rightSegLen={90} notchWidth={150} />
-
-        {/* 嵌在双层 svg 夹缝中的三个按钮：① 记录 ② 撤回 ③ 恢复 */}
-        <ChartHeaderButtons
-          mainHeight={tabsHeight}
-          rightOffset={24}
-          paddingRightFull={24.5}
-          topOffsetRight={24}
-          slopeLen={14}
-          rightSegLen={90}
-          notchWidth={150}
-          editMode={editMode}
-          recordLayerColor={recordLayer === 'plan' ? theme.warningOrange : theme.expGreen}
-          recordLayerLabel={recordLayer === 'plan' ? '计划安排' : '实际记录'}
-          recordLayer={recordLayer}
-          onRecordLayerChange={onRecordLayerChange}
-          canUndo={canUndo}
-          canRedo={canRedo}
-          onToggleEdit={onEditModeToggle}
-          onUndo={() => onUndo?.()}
-          onRedo={() => onRedo?.()}
-        />
       </div>
 
       {/* 底部：百分比条 + 横向分类胶囊 */}
       <div style={{
+        position: 'relative',
         padding: '7px 14px 8px',
-        borderTop: `1px solid ${hexToRgba(theme.electricBlue, 0.12)}`,
-        background: `linear-gradient(180deg, ${hexToRgba(theme.electricBlue, 0.03)} 0%, transparent 100%)`,
+        background: 'linear-gradient(180deg, rgba(158,216,242,0.04) 0%, transparent 100%)',
       }}>
+        <div className="ti-groove-h" style={{ position: 'absolute', left: 0, right: 0, top: 0 }} />
         {tagLegend.length > 0 ? (
           <>
             {/* 百分比条：点击打开分类弹窗 */}
@@ -2939,20 +2115,17 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
               tabIndex={0}
               onClick={() => { setLegendOpen((o) => !o); setExpandedChip(null); setChipPos(null) }}
               onKeyDown={(e) => e.key === 'Enter' && setLegendOpen((o) => !o)}
+              className="ti-well"
               style={{
                 display: 'flex', height: 5, borderRadius: 3, overflow: 'hidden',
                 cursor: 'pointer', gap: 1, marginBottom: 7,
-                background: hexToRgba(theme.electricBlue, 0.08),
               }}
             >
               {tagLegend.map((s) => (
-                <div key={s.name} style={{
-                  flex: s.mins, background: s.color,
-                  filter: 'saturate(1.4) brightness(1.1)',
-                }} />
+                <div key={s.name} style={{ flex: s.mins, background: s.color }} />
               ))}
               {totalTagMinutes < 1440 && (
-                <div style={{ flex: 1440 - totalTagMinutes, background: hexToRgba(theme.electricBlue, 0.04) }} />
+                <div style={{ flex: 1440 - totalTagMinutes, background: 'transparent' }} />
               )}
             </div>
             </Tooltip>
@@ -2972,12 +2145,12 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
                     key={s.name}
                     onClick={(e) => handleChipClick(s.name, e)}
                     style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 5,
-                      padding: '3px 8px 3px 6px', borderRadius: 10, flexShrink: 0,
-                      background: active ? `${s.color}33` : `${s.color}1a`,
-                      border: `1px solid ${active ? s.color : `${s.color}44`}`,
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      padding: '3px 9px 3px 7px', borderRadius: 4, flexShrink: 0,
+                      background: active ? `${s.color}22` : '#070706',
+                      border: 'none',
                       whiteSpace: 'nowrap', cursor: 'pointer',
-                      boxShadow: active ? `0 0 8px ${s.color}66` : 'none',
+                      boxShadow: `inset 0 1px 3px rgba(0,0,0,0.9), 0 0 0 1px ${active ? `${s.color}99` : 'rgba(255,255,255,0.05)'}`,
                       transition: 'all 0.12s ease',
                     }}
                   >
@@ -2986,37 +2159,33 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
                       background: s.color, boxShadow: `0 0 5px ${s.color}aa`,
                       display: 'inline-block',
                     }} />
-                    <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: theme.textSecondary }}>
+                    <span style={{ fontFamily: theme.fontBody, fontSize: 11, color: theme.textSecondary }}>
                       {s.name}
                     </span>
-                    <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: s.color, fontWeight: 700 }}>
+                    <span className="ti-led" style={{ fontSize: 12, color: s.color, textShadow: `0 0 6px ${s.color}88` }}>
                       {label}
                     </span>
                   </button>
                 )
               })}
               {/* 段数 + 总时长徽章 */}
-              <div style={{
+              <div className="ti-well" style={{
                 marginLeft: 'auto', flexShrink: 0,
-                display: 'inline-flex', alignItems: 'center', gap: 4,
-                padding: '3px 10px', borderRadius: 10,
-                background: hexToRgba(theme.electricBlue, 0.1),
-                border: `1px solid ${hexToRgba(theme.electricBlue, 0.35)}`,
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '3px 10px', borderRadius: 4,
               }}>
-                <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: theme.electricBlue, fontWeight: 700 }}>
-                  {tagSpans.length}
-                </span>
-                <span style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted }}>段</span>
-                <span style={{ fontFamily: theme.fontMono, fontSize: 9.5, color: hexToRgba(theme.electricBlue, 0.45) }}>·</span>
-                <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: theme.electricBlue, fontWeight: 700 }}>
+                <span className="ti-led" style={{ fontSize: 13 }}>{tagSpans.length}</span>
+                <span style={{ fontSize: 10.5, color: theme.textMuted }}>段</span>
+                <span style={{ width: 1, height: 10, background: 'rgba(255,255,255,0.12)' }} />
+                <span className="ti-led" style={{ fontSize: 13 }}>
                   {Math.floor(totalTagMinutes / 60)}h{totalTagMinutes % 60 > 0 ? `${totalTagMinutes % 60}m` : ''}
                 </span>
               </div>
             </div>
           </>
         ) : (
-          <span style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted, letterSpacing: 0.5 }}>
-            今日无标签记录
+          <span style={{ fontSize: 11.5, color: theme.textMuted, letterSpacing: '0.1em' }}>
+            这一天还没有标签记录 · 点「记录」开始涂
           </span>
         )}
       </div>
@@ -3025,26 +2194,22 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
       {legendOpen && (
         <>
           <div
-            style={{ position: 'fixed', inset: 0, zIndex: 900, background: 'rgba(2,6,16,0.78)' }}
+            style={{ position: 'fixed', inset: 0, zIndex: 900, background: 'rgba(0,0,0,0.62)' }}
             onClick={() => setLegendOpen(false)}
           />
           <div
             onClick={(e) => e.stopPropagation()}
+            className="ti-plate"
             style={{
               position: 'fixed', left: '50%', top: '50%',
               transform: 'translate(-50%, -50%)',
               width: 440, maxHeight: '72vh',
               display: 'flex', flexDirection: 'column',
               zIndex: 901,
-              background: theme.hudFill,
-              border: `1px solid ${theme.hudFrame}`,
-              clipPath: hud.chamfer12,
-              WebkitClipPath: hud.chamfer12,
-              boxShadow: `0 24px 80px rgba(0,0,0,0.8), 0 0 60px ${theme.hudHalo}, inset 0 1px 0 rgba(255,255,255,0.04)`,
+              borderRadius: 9,
               overflow: 'hidden',
             }}
           >
-            <div style={{ position: 'absolute', inset: 0, background: hud.scanlines, opacity: 0.45, pointerEvents: 'none', zIndex: 0 }} />
 
             {/* Header */}
             <div style={{
@@ -3055,7 +2220,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
               flexShrink: 0,
             }}>
               <div>
-                <span style={{ fontFamily: theme.fontDisplay, fontSize: 12, fontWeight: 700, letterSpacing: 2.5, color: theme.electricBlue, textShadow: `0 0 10px ${theme.electricBlue}99` }}>
+                <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: 2.5, color: theme.textPrimary }}>
                   标签时段分布
                 </span>
                 <span style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted, marginLeft: 10, letterSpacing: 0.5 }}>
@@ -3140,21 +2305,17 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
             />
             <div
               onClick={(e) => e.stopPropagation()}
+              className="ti-plate"
               style={{
                 position: 'fixed',
                 left: chipPos.x, bottom: chipPos.bottom,
                 transform: 'translateX(-50%)',
                 zIndex: 901,
                 width: 240,
-                background: theme.hudFill,
-                border: `1px solid ${theme.hudFrame}`,
-                clipPath: hud.chamfer8,
-                WebkitClipPath: hud.chamfer8,
-                boxShadow: `0 8px 32px rgba(0,0,0,0.75), 0 0 24px ${theme.hudHalo}, inset 0 1px 0 rgba(255,255,255,0.04)`,
+                borderRadius: 7,
                 overflow: 'hidden',
               }}
             >
-              <div style={{ position: 'absolute', inset: 0, background: hud.scanlines, opacity: 0.5, pointerEvents: 'none' }} />
               {/* Header */}
               <div style={{
                 position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between',

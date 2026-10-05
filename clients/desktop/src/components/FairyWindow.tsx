@@ -631,10 +631,11 @@ export default function FairyWindow() {
         }
         .fairy-context-title {
           padding: 4px 6px 7px;
-          font-family: ${theme.fontMono};
-          font-size: 10px;
-          font-weight: 800;
-          letter-spacing: 1.5px;
+          font-family: ${theme.fontBody};
+          font-size: 12px;
+          font-weight: 900;
+          font-style: italic;
+          letter-spacing: 1px;
           color: ${theme.electricBlue};
           text-shadow: 0 0 8px ${theme.electricBlue}88;
         }
@@ -744,7 +745,7 @@ function FairyQuickMenu({
 }) {
   return (
     <>
-      <div className="fairy-context-title">FAIRY QUICK PANEL</div>
+      <div className="fairy-context-title">Fairy 快捷面板</div>
       <FairyMenuButton meta="ALT" onClick={() => onOpenPanel('chat')}>呼出对话框</FairyMenuButton>
       <FairyMenuButton meta="MODEL" onClick={() => onOpenPanel('models')}>快捷换模型</FairyMenuButton>
       <FairyMenuButton meta="CFG" onClick={onOpenSettings}>Fairy详细设置</FairyMenuButton>
@@ -778,7 +779,7 @@ function FairyMiniChat({
 
   return (
     <>
-      <PanelHeader title="MINI CHAT" onBack={onBack} />
+      <PanelHeader title="迷你聊天" onBack={onBack} />
       <div className="fairy-context-subtitle">直接把一句话交给 Fairy，不切回主界面。</div>
       <div
         className="fairy-mini-input-wrap"
@@ -895,7 +896,7 @@ function FairyModelQuickPanel({
 }) {
   return (
     <>
-      <PanelHeader title="MODEL SWITCH" onBack={onBack} />
+      <PanelHeader title="切换模型" onBack={onBack} />
       <div className="fairy-context-subtitle">复用主对话框的模型选择器，改的是 Fairy 实际绑定。</div>
       <FeatureModelSelect
         label="常规聊天"

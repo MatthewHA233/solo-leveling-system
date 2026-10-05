@@ -60,35 +60,35 @@ export default function TranscribePrepOverlay({ stage }: Props) {
 function phaseCopy(stage: Props['stage']) {
   if (stage === 'extracting') {
     return {
-      sourceTag: 'SOURCE · LOCAL',
+      sourceTag: '来源 · 本地',
       sourceTitle: '本地视频',
       sourceMeta: 'MP4 / MOV · 读取音轨',
-      centerLabel: 'EXTRACT · 音轨提取中',
-      centerSub: 'ffmpeg · audio only',
-      sinkTag: 'SINK · CACHE',
+      centerLabel: '音轨提取中',
+      centerSub: 'ffmpeg · 只取音轨',
+      sinkTag: '去向 · 缓存',
       sinkTitle: '本地音频缓存',
       sinkMeta: '生成 m4a · 准备上传',
     }
   }
   if (stage === 'uploading') {
     return {
-      sourceTag: 'SOURCE · AUDIO',
+      sourceTag: '来源 · 音频',
       sourceTitle: '本地音频',
       sourceMeta: 'M4A · 仅上传音轨',
-      centerLabel: 'PUT · 音频上传中',
-      centerSub: 'dashscope oss · multipart',
-      sinkTag: 'SINK · DASHSCOPE',
+      centerLabel: '音频上传中',
+      centerSub: '百炼临时存储 · 分片上传',
+      sinkTag: '去向 · 百炼',
       sinkTitle: 'OSS 临时文件',
       sinkMeta: '等待握手 · 准备提交 ASR',
     }
   }
   return {
-    sourceTag: 'SOURCE · OSS',
-    sourceTitle: 'ASR FILETRANS',
+    sourceTag: '来源 · 云端',
+    sourceTitle: '录音文件识别',
     sourceMeta: '任务已提交 · 等待结果',
-    centerLabel: 'ASR · 语音识别中',
-    centerSub: 'sentence timestamp · polling',
-    sinkTag: 'SINK',
+    centerLabel: '语音识别中',
+    centerSub: '句级时间戳 · 轮询中',
+    sinkTag: '去向',
     sinkTitle: '时间戳段落',
     sinkMeta: '等待句级时间轴',
   }
@@ -151,7 +151,7 @@ function CenterTag({ label, sub, color }: { label: string; sub: string; color: s
       position: 'relative',
       padding: '6px 16px',
       border: `1px solid ${color}88`,
-      background: 'rgba(1, 10, 14, 0.68)',
+      background: 'rgba(14,13,11,0.68)',
       backdropFilter: 'blur(2px)',
       WebkitBackdropFilter: 'blur(2px)',
       clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)',

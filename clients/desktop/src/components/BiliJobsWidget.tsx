@@ -13,7 +13,7 @@ import { createPortal } from 'react-dom'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { Loader2, X, RotateCcw, ListChecks, Check, AlertTriangle, Pause, Play } from 'lucide-react'
-import { theme } from '../theme'
+import { theme, tiKey, tiSurface, tiTitle } from '../theme'
 import { getDashScopeApiKey, loadConfig } from '../lib/agent/agent-config'
 import Tooltip from './Tooltip'
 
@@ -230,22 +230,22 @@ export default function BiliJobsWidget() {
           )}
           <div style={{
             position: 'fixed', top: panelTop, right: panelRight, width: PANEL_W, maxHeight: '70vh', zIndex: 99981,
-            background: theme.hudFill, border: `1px solid ${TRACE}66`,
-            boxShadow: `0 16px 48px rgba(0,0,0,0.7), 0 0 24px ${TRACE}33`,
-            borderRadius: 6, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            background: tiSurface.plate, border: 'none',
+            boxShadow: `${tiSurface.plateShadow}, inset 0 2px 0 ${TRACE}`,
+            borderRadius: 7, display: 'flex', flexDirection: 'column', overflow: 'hidden',
             fontFamily: theme.fontBody,
           }}>
             <div style={{
               display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px',
-              borderBottom: `1px solid ${theme.hudFrameSoft}`, flexShrink: 0,
+              borderBottom: '1px solid rgba(0,0,0,0.88)', boxShadow: '0 1px 0 rgba(255,255,255,0.1)', flexShrink: 0,
             }}>
               <ListChecks size={13} style={{ color: TRACE_BRIGHT }} />
-              <span style={{ fontFamily: theme.fontDisplay, fontSize: 11, fontWeight: 700, letterSpacing: 1.5, color: TRACE_BRIGHT }}>
+              <span style={{ ...tiTitle, fontSize: 13 }}>
                 下载 / 转录任务
               </span>
-              {activeCount > 0 && <span style={{ fontSize: 10, color: theme.textMuted, fontFamily: theme.fontMono }}>进行中 {activeCount}</span>}
+              {activeCount > 0 && <span style={{ fontSize: 11, color: theme.textSecondary }}>进行中 <span className="ti-led" style={{ fontSize: 12 }}>{activeCount}</span></span>}
               <span style={{ flex: 1 }} />
-              <Tooltip content="关闭"><button onClick={() => setOpen(false)} className="bhd-icon-btn" style={{ width: 20, height: 20 }}><X size={12} /></button></Tooltip>
+              <Tooltip content="关闭"><button onClick={() => setOpen(false)} className="ti-key" style={{ width: 24, height: 24 }} aria-label="关闭"><X size={12} /></button></Tooltip>
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', padding: hasAny ? 6 : 24 }}>
@@ -313,12 +313,13 @@ function JobRow({ job, onRemove, onRetryTr, onRetryDl, onPauseDl, onCancelDl }: 
   return (
     <div style={{
       display: 'flex', gap: 8, padding: 7, marginBottom: 5, borderRadius: 5,
-      background: 'rgba(0, 215, 232, 0.045)', border: `1px solid ${theme.hudFrameSoft}`,
+      background: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(0,0,0,0.12)), #1F1D1A',
+      boxShadow: '0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.08), 0 2px 5px rgba(0,0,0,0.45)',
     }}>
       {/* 封面：贴合 B站搜索结果的「图片 + 标题」风格 */}
       <div style={{
         width: 68, aspectRatio: '16 / 10', flexShrink: 0, borderRadius: 3, overflow: 'hidden',
-        background: 'rgba(20,20,30,0.5)', border: `1px solid ${theme.hudFrameSoft}`,
+        background: tiSurface.well, boxShadow: tiSurface.wellShadow,
       }}>
         {job.cover && (
           <img
@@ -369,7 +370,8 @@ function JobRow({ job, onRemove, onRetryTr, onRetryDl, onPauseDl, onCancelDl }: 
 
 const iconMini: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-  width: 18, height: 18, flexShrink: 0, padding: 0,
-  color: theme.textMuted, background: 'transparent',
-  border: `1px solid ${theme.hudFrameSoft}`, borderRadius: 3, cursor: 'pointer',
+  width: 22, height: 22, flexShrink: 0, padding: 0,
+  ...tiKey,
+  borderRadius: 4,
+  color: theme.textSecondary, cursor: 'pointer',
 }

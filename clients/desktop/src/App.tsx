@@ -3,8 +3,8 @@
 // 核心：昼夜表 + AI 聊天整理
 // ══════════════════════════════════════════════
 
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { Boxes, ChevronLeft, ChevronRight, Globe, Laptop, Link2, Monitor, Server, Settings, Smartphone, X } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { Boxes, ChevronLeft, ChevronRight, PictureInPicture2, Settings, X } from 'lucide-react'
 import BiliIcon from './components/icons/BiliIcon'
 import {
   fetchPerceptionSpans, fetchBiliSpans, searchBiliHistory, fetchGoals, parseGoalTags,
@@ -19,7 +19,7 @@ import { anchorToContext } from './lib/anchor-to-context'
 import { locateSegment } from './lib/segment-locate'
 import { fetchBiliTranscriptPlain } from './lib/bili-transcript'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from './types'
-import { theme, hud } from './theme'
+import { theme, hud, ti } from './theme'
 
 // Agent
 import { getDashScopeApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
@@ -31,7 +31,8 @@ import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
 
 // LLM Engine（新）
 import { runQueryLoop } from './lib/llm/query-loop'
-import { compactHistory, withSystemReminder } from './lib/llm/context-window'
+import { compactHistory, estimateChars, HIGH_WATER_CHARS, withSystemReminder } from './lib/llm/context-window'
+import { withBrowserArgs } from './lib/webview-args'
 import { buildAsrContext, buildAsrVocabulary } from './lib/voice/asr-hints'
 import { createUserMessage, createAssistantMessage, getMessageText, isAssistantMessage } from './lib/llm/types'
 import type { Message } from './lib/llm/types'
@@ -44,7 +45,7 @@ import {
   cleanupEmptyChatSessions,
 } from './lib/agent/agent-memory'
 import type { ChatSessionInfo, SessionMessage } from './lib/agent/agent-memory'
-import { generateSessionTitle } from './lib/ai/session-title'
+import { createTitleFlow, DEFAULT_SESSION_TITLE, type TitleFlow } from './lib/ai/session-title-flow'
 
 // Agent Tools
 import { TOOL_DEFINITIONS, executeAgentTool } from './lib/agent/agent-tools'
@@ -52,6 +53,19 @@ import { TOOL_DEFINITIONS, executeAgentTool } from './lib/agent/agent-tools'
 // OpenAI Chat Completions tools → Realtime API flat tools
 // Chat 格式: { type: 'function', function: { name, description, parameters } }
 // Realtime 格式: { type: 'function', name, description, parameters }
+const WEEKDAY_ZH = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const
+
+/** 顶栏日期读数下的相对说明：今天 / 昨天 / 前天 / N 天前 / N 天后 */
+function relativeDayLabel(date: Date): string {
+  const DAY_MS = 86_400_000
+  const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const diff = Math.round((startOf(new Date()) - startOf(date)) / DAY_MS)
+  if (diff === 0) return '今天'
+  if (diff === 1) return '昨天'
+  if (diff === 2) return '前天'
+  return diff > 0 ? `${diff} 天前` : `${-diff} 天后`
+}
+
 function toRealtimeTools(tools: typeof TOOL_DEFINITIONS) {
   return tools.map((t) => ({
     type: 'function' as const,
@@ -75,8 +89,12 @@ import TorrentFieldPanel from './components/TorrentFieldPanel'
 import TorrentFieldDemoPanel from './components/TorrentFieldDemoPanel'
 import FocusPanel from './components/FocusPanel'
 import ViewSwitcher, { type MainViewMode } from './components/ViewSwitcher'
+import IconButton from './components/ui/IconButton'
+import ScreenBezel from './components/ui/ScreenBezel'
+import ChassisPlate from './components/ui/ChassisPlate'
 import ChatPanel from './components/ChatPanel'
 import SessionPicker from './components/SessionPicker'
+import { useDockPresence } from './components/ui/DockCoupler'
 import SettingsPanel from './components/SettingsPanel'
 import DatePickerPopover, { invalidateActivityRangeCache } from './components/DatePickerPopover'
 import SpanDetailPanel from './components/SpanDetailPanel'
@@ -91,13 +109,11 @@ import ActivityTagPalette from './components/ActivityTagPalette'
 import TodoListPanel from './components/TodoListPanel'
 import ActivityToast from './components/ActivityToast'
 import type { FairyState } from './components/FairyHUD'
-import { HudFrame, NeonRule } from './components/hud'
 import { CloseConfirmModal } from './components/CloseConfirmModal'
 import Tooltip from './components/Tooltip'
 import { usePresenceDetection } from './hooks/usePresenceDetection'
 import { useDataDays, hasDataOrIsToday } from './hooks/useDataDays'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
-import appIcon from './assets/app-icon.png'
 
 export interface OmniDebugItem {
   type: 'text' | 'audio'
@@ -213,6 +229,11 @@ function sessionMessagesToLLMHistory(msgs: readonly SessionMessage[]): Message[]
   return out
 }
 
+/** 会话里主人说过几句（起标题的计数从这里接上） */
+function countUserMessages(messages: readonly SessionMessage[]): number {
+  return messages.filter((m) => m.role === 'user' && (m.content ?? '').trim()).length
+}
+
 function makeSessionMessage(
   role: SessionMessage['role'],
   content: string,
@@ -231,7 +252,6 @@ function makeSessionMessage(
   }
 }
 
-const TITLE_TRIGGER_MIN_MESSAGES = 4       // 累计到此数后，首次生成 AI 标题
 
 const ACTIVITY_BLOCK_MINUTES = 5
 
@@ -524,11 +544,33 @@ export default function App() {
   // ── Session 持久化 ──
   const sessionIdRef = useRef<string | null>(null)
   const sessionTitleRef = useRef<string>('新会话')       // 现存标题，用于决定是否触发 AI 重命名
+  const [sessionTitle, setSessionTitle] = useState('新会话') // 同一份标题给通讯栏显示
+  /** 标题只从这里改：ref（逻辑判断用）和 state（界面显示用）一起走 */
+  const applySessionTitle = useCallback((title: string) => {
+    sessionTitleRef.current = title
+    setSessionTitle(title)
+  }, [])
+  // 自动起标题的节奏：主人第 1 句立刻起、第 3 句拿整段对话再起（见 lib/ai/session-title-flow.ts）
+  const titleFlowRef = useRef<TitleFlow | null>(null)
+  if (!titleFlowRef.current) {
+    titleFlowRef.current = createTitleFlow({
+      getConfig: () => configRef.current,
+      getMessages: () => persistedBufferRef.current,
+      apply: (sid, title) => {
+        patchSession(sid, { title }).catch(() => {})
+        setSessions((prev) => prev.map((s) => (s.id === sid ? { ...s, title } : s)))
+        if (sid === sessionIdRef.current) applySessionTitle(title)
+      },
+    })
+  }
+  const titleFlow = titleFlowRef.current
   const persistedBufferRef = useRef<SessionMessage[]>([])  // 已持久化的历史（用于 title 生成的上下文窗口）
   const lastOmniUserInputRef = useRef<string>('')        // Omni 本轮用户输入（文字 or 转写）
   const audioDirRef = useRef<string>('')                 // 音频根目录（Rust data_local/solevup/audio）
   // 语音气泡录音的落盘任务（消息 id → 落盘结果）：定稿文本可能比落盘先到，持久化前要等它
   const audioSaveRef = useRef<Map<string, Promise<{ audioPath: string; durationMs: number } | null>>>(new Map())
+  // 语音消息的录音时刻：入库用它当时间戳，保证用户语音排在 AI 回复前面（转写晚到 / 兜底入库时也不乱序）
+  const voiceRecordedAtRef = useRef<Map<string, string>>(new Map())
   // 语音识别热词（refreshSystemPrompt 顺手更新：目标、常用应用名）
   const asrVocabularyRef = useRef<string[]>(buildAsrVocabulary({}))
   const blobAudioUrlsRef = useRef<Set<string>>(new Set())
@@ -556,6 +598,7 @@ export default function App() {
   useEffect(() => revokeTrackedBlobAudioUrls, [revokeTrackedBlobAudioUrls])
   const [sessions, setSessions] = useState<readonly ChatSessionInfo[]>([])
   const [pickerOpen, setPickerOpen] = useState(false)
+  const pickerDock = useDockPresence(pickerOpen)
 
   // ── Presence Detection ──
   const { presence, videoRef } = usePresenceDetection(config.overlayEnabled)
@@ -640,18 +683,19 @@ export default function App() {
       return
     }
     const url = window.location.href.replace(/#.*$/, '') + '#camera'
+    const options = await withBrowserArgs({
+      url,
+      title: 'Camera Preview',
+      width: 240,
+      height: 220,
+      alwaysOnTop: true,
+      decorations: false,
+      resizable: false,
+      skipTaskbar: true,
+    })
     let win: import('@tauri-apps/api/webviewWindow').WebviewWindow
     try {
-      win = new WebviewWindow('camera-preview', {
-        url,
-        title: 'Camera Preview',
-        width: 240,
-        height: 220,
-        alwaysOnTop: true,
-        decorations: false,
-        resizable: false,
-        skipTaskbar: true,
-      })
+      win = new WebviewWindow('camera-preview', options)
     } catch (e) {
       console.error('[camera] WebviewWindow create failed:', e)
       return
@@ -666,6 +710,8 @@ export default function App() {
   const altDownTimeRef = useRef<number>(0)
   const pressingRef = useRef(false)
   const fairyStateRef = useRef<FairyState>('idle')
+  // 同一状态的 React 版：聊天栏据此显示「正在听」
+  const [fairyUiState, setFairyUiState] = useState<FairyState>('idle')
   const voiceServiceRef = useRef<VoiceService | null>(null)
   const configRef = useRef(config)
   const systemPromptRef = useRef<string>('')
@@ -691,7 +737,9 @@ export default function App() {
 
         // 恢复最近一次的 session title（用于决定是否要 AI 重命名）
         const recent = await getRecentChatSessions(1)
-        if (recent[0]?.id === sessionId) sessionTitleRef.current = recent[0].title || '新会话'
+        const restoredTitle = recent[0]?.id === sessionId ? (recent[0].title || DEFAULT_SESSION_TITLE) : DEFAULT_SESSION_TITLE
+        applySessionTitle(restoredTitle)
+        titleFlow.reset(sessionId, restoredTitle, countUserMessages(state.messages))
 
         if (state.messages.length > 0) {
           setChatMessages(sessionMessagesToChatMessages(state.messages, audioDir))
@@ -718,21 +766,23 @@ export default function App() {
       if (cancelled) return
       const url = window.location.href.replace(/#.*$/, '') + '#fairy'
       const initialSize = Math.round(280 * clampFairyScale(config.fairyWindowScale))
+      const options = await withBrowserArgs({
+        url,
+        title: 'Fairy',
+        width: initialSize,
+        height: initialSize,
+        alwaysOnTop: true,
+        decorations: false,
+        resizable: true,
+        maximizable: false,   // 禁用 Aero Snap 最大化（拖到屏幕边缘）
+        minimizable: false,
+        skipTaskbar: true,
+        transparent: true,
+        shadow: false,
+      })
+      if (cancelled) return
       try {
-        const win = new WebviewWindow('fairy-window', {
-          url,
-          title: 'Fairy',
-          width: initialSize,
-          height: initialSize,
-          alwaysOnTop: true,
-          decorations: false,
-          resizable: true,
-          maximizable: false,   // 禁用 Aero Snap 最大化（拖到屏幕边缘）
-          minimizable: false,
-          skipTaskbar: true,
-          transparent: true,
-          shadow: false,
-        })
+        const win = new WebviewWindow('fairy-window', options)
         fairyWinRef.current = win
         win.once('destroyed', () => { fairyWinRef.current = null })
       } catch (e) {
@@ -763,6 +813,7 @@ export default function App() {
 
   const emitFairy = useCallback((state: FairyState, text = '') => {
     fairyStateRef.current = state
+    setFairyUiState(state)
     import('@tauri-apps/api/event').then(({ emitTo }) => {
       emitTo('fairy-window', 'fairy-state', { state, text }).catch(() => {})
     })
@@ -784,6 +835,9 @@ export default function App() {
       date.getDate() === now.getDate()
   }, [])
   const protocolViewLabel = '协议志'
+  // 上下文占用（聊天栏 CTX 段码条）：当前历史字符数 / 压缩高水位，过线后旧对话会被压缩
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const contextRatio = useMemo(() => estimateChars(conversationRef.current) / HIGH_WATER_CHARS, [chatMessages])
 
 
   const refreshPerceptionSpans = useCallback(() => {
@@ -1474,6 +1528,7 @@ export default function App() {
           const blob = new Blob([bytes], { type: 'audio/wav' })
           const audioUrl = trackBlobAudioUrl(URL.createObjectURL(blob))
           const msgTimestamp = new Date().toISOString()
+          voiceRecordedAtRef.current.set(sessionMsgId, msgTimestamp)
           setChatMessages((prev) => prev.some((m) => m.id === sessionMsgId)
             ? prev.map((m) => m.id === sessionMsgId ? { ...m, content: '', audioUrl, durationMs } : m)
             : [...prev, {
@@ -1520,6 +1575,8 @@ export default function App() {
         onTranscript: (text, sessionMsgId) => {
           const isOmniMode = configRef.current.aiMode === 'omni'
           if (isOmniMode) omniUserInputPersistedRef.current = false
+          // 起标题按「主人说了几句」数；没转写出文字的那句不算
+          if (text.trim()) titleFlowRef.current?.onUserMessage(text)
           // 更新用户气泡的转写文字
           setChatMessages((prev) =>
             prev.map((m) => m.id === sessionMsgId ? { ...m, transcript: text } : m)
@@ -1530,9 +1587,14 @@ export default function App() {
           if (sid) {
             const saving = audioSaveRef.current.get(sessionMsgId) ?? Promise.resolve(null)
             audioSaveRef.current.delete(sessionMsgId)
+            const recordedAt = voiceRecordedAtRef.current.get(sessionMsgId)
+            voiceRecordedAtRef.current.delete(sessionMsgId)
             if (isOmniMode) omniUserInputPersistedRef.current = true
             void saving.then((saved) => {
-              const voiceMsg = makeSessionMessage('user', text, saved?.audioPath, saved?.durationMs)
+              const voiceMsg = {
+                ...makeSessionMessage('user', text, saved?.audioPath, saved?.durationMs),
+                ...(recordedAt ? { timestamp: recordedAt } : null),
+              }
               persistedBufferRef.current = [...persistedBufferRef.current, voiceMsg]
               return persistMessages(sid, [voiceMsg])
             }).catch((e) => console.warn('[Voice] 语音消息持久化失败', e))
@@ -1792,7 +1854,6 @@ export default function App() {
             // ── Omni 持久化：保存本轮 user input + assistant 回复 ──
             if (sessionIdRef.current) {
               const sid = sessionIdRef.current
-              const cfg = configRef.current
               const newPairs: SessionMessage[] = []
               const userInput = lastOmniUserInputRef.current.trim()
               const aiText = (msgId
@@ -1837,18 +1898,6 @@ export default function App() {
                   if (newPairs.length > 0) {
                     persistedBufferRef.current = [...persistedBufferRef.current, ...newPairs]
                     persistMessages(sid, newPairs).catch(() => {})
-                    if (
-                      persistedBufferRef.current.length >= TITLE_TRIGGER_MIN_MESSAGES &&
-                      (sessionTitleRef.current === '新会话' || sessionTitleRef.current === '')
-                    ) {
-                      generateSessionTitle(persistedBufferRef.current, cfg)
-                        .then((title) => {
-                          if (!title) return
-                          sessionTitleRef.current = title
-                          patchSession(sid, { title }).catch(() => {})
-                        })
-                        .catch(() => {})
-                    }
                   }
                 })
                 .catch(() => {})
@@ -2201,6 +2250,8 @@ export default function App() {
   // 实时（实验）语音模式的回复另走 Omni WS，不经过这里。
   const handleSend = useCallback(async (text: string, fromVoice = false) => {
     if (!text.trim()) return
+    // 语音那句在转写定稿时已经数过（onTranscript），这里只数打字
+    if (!fromVoice) titleFlowRef.current?.onUserMessage(text)
 
     // 文字输入：添加用户气泡（语音输入的气泡在 onUserAudio 已添加，不重复）
     if (!fromVoice) {
@@ -2629,7 +2680,6 @@ export default function App() {
       // ── 持久化本轮对话（在 TTS 之后，最终 assistant 顺手带上 audioPath/durationMs）──
       if (sessionIdRef.current) {
         const sid = sessionIdRef.current
-        const cfg = configRef.current
         if (aiAudioPath) {
           for (let i = newPairs.length - 1; i >= 0; i--) {
             if (newPairs[i].role === 'assistant') {
@@ -2648,19 +2698,6 @@ export default function App() {
           persistMessages(sid, deduplicated).catch(() => {})
         }
 
-        // AI 标题：消息数达到阈值且标题仍为默认时才触发（fire-and-forget）
-        if (
-          persistedBufferRef.current.length >= TITLE_TRIGGER_MIN_MESSAGES &&
-          (sessionTitleRef.current === '新会话' || sessionTitleRef.current === '')
-        ) {
-          generateSessionTitle(persistedBufferRef.current, cfg)
-            .then((title) => {
-              if (!title) return
-              sessionTitleRef.current = title
-              patchSession(sid, { title }).catch(() => {})
-            })
-            .catch(() => {})
-        }
       }
     } catch (err) {
       if (!interrupted) {
@@ -2716,7 +2753,8 @@ export default function App() {
       sessionIdRef.current = sessionId
       persistedBufferRef.current = [...msgs]
       const info = sessions.find((s) => s.id === sessionId)
-      sessionTitleRef.current = info?.title || '新会话'
+      applySessionTitle(info?.title || DEFAULT_SESSION_TITLE)
+      titleFlow.reset(sessionId, info?.title || DEFAULT_SESSION_TITLE, countUserMessages(msgs))
       conversationRef.current = compactHistory(sessionMessagesToLLMHistory(msgs))
       revokeTrackedBlobAudioUrls()
       setChatMessages(sessionMessagesToChatMessages(msgs, audioDirRef.current))
@@ -2730,7 +2768,8 @@ export default function App() {
     try {
       const s = await createChatSession()
       sessionIdRef.current = s.id
-      sessionTitleRef.current = '新会话'
+      applySessionTitle(DEFAULT_SESSION_TITLE)
+      titleFlow.reset(s.id, DEFAULT_SESSION_TITLE, 0)
       persistedBufferRef.current = []
       conversationRef.current = []
       revokeTrackedBlobAudioUrls()
@@ -2739,7 +2778,8 @@ export default function App() {
     } catch {
       // 无网络时降级
       sessionIdRef.current = null
-      sessionTitleRef.current = '新会话'
+      applySessionTitle(DEFAULT_SESSION_TITLE)
+      titleFlow.reset(null, DEFAULT_SESSION_TITLE, 0)
       persistedBufferRef.current = []
       conversationRef.current = []
       revokeTrackedBlobAudioUrls()
@@ -2780,8 +2820,9 @@ export default function App() {
   }
 
   return (
-    <div style={{
+    <div className="app-shell" style={{
       display: 'flex', flexDirection: 'column',
+      gap: 8, padding: 8,
       height: '100vh',
       background: hud.backdrop,
       color: theme.textPrimary,
@@ -2789,8 +2830,8 @@ export default function App() {
       overflow: 'hidden',
       position: 'relative',
     }}>
-      {/* 全局 HUD 背景栅格（遮罩成椭圆渐隐） */}
-      <div className="hud-grid-bg" style={{ zIndex: 0 }} />
+      {/* 全局颗粒：所有钛板共用的材质噪点（静态瓦片，不重绘） */}
+      <div className="ti-grain" aria-hidden />
       {/* ── 隐藏摄像头（presence detection） ── */}
       <video
         ref={videoRef}
@@ -2799,172 +2840,122 @@ export default function App() {
         playsInline
       />
 
-      {/* ── Top Bar ── 紧凑版（参考图风格：左字标 / 中日期+状态 / 右图标+版本） */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 14,
-        padding: '0 24px', height: 52, flexShrink: 0,
-        background: `linear-gradient(180deg, rgba(4,10,26,0.85) 0%, rgba(2,6,18,0.55) 100%)`,
-        boxShadow: `inset 0 -1px 0 ${theme.hudFrameSoft}`,
-        position: 'relative',
-        overflow: 'visible',
-        zIndex: 2,
-      }}>
-        {/* ── 左：Logo 图标 + 字标 + SLU-V{version}（从 package.json 注入） ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <img
-            src={appIcon}
-            alt="Solevup"
-            draggable={false}
-            onContextMenu={(e) => {
-              e.preventDefault()
-              navigator.clipboard.writeText('Solevup').catch(() => {})
-            }}
-            style={{
-              height: 28, width: 28, objectFit: 'contain',
-              userSelect: 'none', WebkitUserSelect: 'none',
-              filter: `drop-shadow(0 0 6px ${theme.electricBlue}88) drop-shadow(0 0 12px ${theme.shadowPurple}55)`,
-              cursor: 'default',
-            }}
-          />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 1, lineHeight: 1 }}>
-            <span style={{
-              fontFamily: theme.fontDisplay,
-              fontSize: 14, fontWeight: 700,
-              letterSpacing: 2.2, color: theme.textPrimary,
-              textShadow: `0 0 8px ${theme.electricBlue}AA`,
-              whiteSpace: 'nowrap',
-            }}>
-              SOLEVUP
+      {/* ── Top Bar ──（钛合金机体：一整块拉丝钛板；铭牌 / 视图键位 / LED 日期读数 / 链路 / 实体键） */}
+      <ChassisPlate
+        cut={10}
+        className="ti-plate"
+        outerStyle={{ height: 52, flexShrink: 0, zIndex: 2 }}
+        style={{ display: 'flex', alignItems: 'stretch' }}
+      >
+        {/* ── 铭牌：点阵 S + 字标 + 型号（版本号也在悬停提示里） ── */}
+        <Tooltip content={`Solevup v${__APP_VERSION__}`} display="flex" wrapStyle={{ alignSelf: 'stretch' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '0 16px 0 14px', cursor: 'default', userSelect: 'none' }}>
+            <span
+              className="ti-well ti-led"
+              onContextMenu={(e) => {
+                e.preventDefault()
+                navigator.clipboard.writeText('Solevup').catch(() => {})
+              }}
+              style={{ width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, borderRadius: 6 }}
+            >
+              S
             </span>
-            <span style={{
-              fontFamily: theme.fontMono,
-              fontSize: 8.5, fontWeight: 700,
-              letterSpacing: 2.4, color: theme.electricBlue,
-              opacity: 0.6,
-            }}>
-              SLU-V{__APP_VERSION__.replace(/\./g, '-')}
-            </span>
+            <div>
+              <div className="ti-tech" style={{ fontSize: 15, fontWeight: 700, letterSpacing: '0.24em', color: theme.paper, lineHeight: 1.1 }}>
+                SOLEVUP
+              </div>
+              <div className="ti-label" style={{ marginTop: 3, fontSize: 8.5, letterSpacing: '0.16em' }}>v{__APP_VERSION__}</div>
+            </div>
           </div>
-          <Tooltip content={config.fairyWindowEnabled ? '隐藏 Fairy 桌面窗口' : '启动 Fairy 桌面窗口'}>
+        </Tooltip>
+
+        <div className="ti-groove-v" style={{ margin: '12px 0' }} />
+
+        {/* ── 视图键位（悬停时背后的视图卡向上露顶，见 mainPanelStyle） ── */}
+        <div
+          onMouseEnter={() => setTabsHovering(true)}
+          onMouseLeave={() => setTabsHovering(false)}
+          style={{ display: 'flex', alignItems: 'stretch', minWidth: 0 }}
+        >
+          <ViewSwitcher viewMode={mainView} onChange={setMainView} protocolLabel={protocolViewLabel} />
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        {/* BiliJobsWidget：常驻编排 + 后端进度收集 + 进度面板（无顶栏按钮，不可见；
+            面板由 B站历史弹窗工具栏入口经 solevup:toggle-bili-jobs 打开）。 */}
+        <BiliJobsWidget />
+
+        {/* ── 日期：点阵 LED 读数（点开选日期），两侧实体键翻页 ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px' }}>
+          <IconButton tip={prevHasData ? '前一天' : '前一天无数据'} onClick={prevDay} disabled={!prevHasData} size={22}>
+            <ChevronLeft size={12} />
+          </IconButton>
+          <Tooltip content="选择日期">
             <button
+              ref={dateAnchorRef}
               type="button"
-              onClick={toggleFairyWindow}
+              className="ti-well"
+              onClick={() => setDatePickerOpen((v) => !v)}
               style={{
-                ...navBtn,
-                minWidth: 0,
-                height: 24,
-                marginLeft: 2,
-                padding: '4px 10px',
-                color: config.fairyWindowEnabled ? theme.expGreen : theme.warningOrange,
-                border: `1px solid ${config.fairyWindowEnabled ? theme.expGreen + '66' : theme.warningOrange + '66'}`,
-                background: config.fairyWindowEnabled ? `${theme.expGreen}10` : `${theme.warningOrange}10`,
-                cursor: 'pointer',
-                textShadow: `0 0 6px ${config.fairyWindowEnabled ? theme.expGreen : theme.warningOrange}88`,
+                display: 'flex', alignItems: 'center', gap: 9,
+                height: 34, padding: '0 11px',
+                border: 'none', cursor: 'pointer', borderRadius: 5,
+                outline: datePickerOpen ? `1px solid ${ti.led}66` : 'none',
               }}
             >
-              {config.fairyWindowEnabled ? '隐藏Fairy窗口' : '启动Fairy窗口'}
+              <span className="ti-led" style={{ fontSize: 19, letterSpacing: '0.04em' }}>
+                {String(selectedDate.getMonth() + 1).padStart(2, '0')}·{String(selectedDate.getDate()).padStart(2, '0')}
+              </span>
+              <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.1 }}>
+                <span style={{ fontSize: 11.5, color: theme.paper }}>{WEEKDAY_ZH[selectedDate.getDay()]}</span>
+                <span style={{ fontSize: 10, color: theme.paperMuted }}>{relativeDayLabel(selectedDate)}</span>
+              </span>
             </button>
           </Tooltip>
+          <IconButton tip={nextHasData ? '后一天' : '后一天无数据'} onClick={nextDay} disabled={!nextHasData} size={22}>
+            <ChevronRight size={12} />
+          </IconButton>
+          {!isToday(selectedDate) && (
+            <Tooltip content="回到今天">
+              <button
+                type="button"
+                className="ti-key ti-key-primary"
+                onClick={goToday}
+                style={{ height: 24, padding: '0 10px', marginLeft: 4, fontSize: 12 }}
+              >
+                回今天
+              </button>
+            </Tooltip>
+          )}
         </div>
 
-        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 6px' }} />
+        <div className="ti-groove-v" style={{ margin: '12px 0' }} />
 
-        {/* ── 日期段：label + ◀ DATE ▶ + 今天 ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{
-            fontFamily: theme.fontMono, fontSize: 9, fontWeight: 700,
-            letterSpacing: 2, color: theme.textSecondary, opacity: 0.7,
-          }}>日期</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-            <Tooltip content={prevHasData ? '前一天' : '前一天无数据'}>
-              <button
-                onClick={prevDay}
-                disabled={!prevHasData}
-                style={{
-                  ...navBtn,
-                  opacity: prevHasData ? 1 : 0.3,
-                  cursor: prevHasData ? 'pointer' : 'not-allowed',
-                  padding: '4px 5px',
-                }}
-              >
-                <ChevronLeft size={11} />
-              </button>
-            </Tooltip>
-            <Tooltip content="选择日期">
-              <button
-                ref={dateAnchorRef}
-                onClick={() => setDatePickerOpen((v) => !v)}
-                style={{
-                  background: datePickerOpen ? `${theme.electricBlue}12` : 'transparent',
-                  border: `1px solid ${datePickerOpen ? `${theme.electricBlue}55` : 'transparent'}`,
-                  borderRadius: 3,
-                  padding: '2px 8px',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease',
-                  fontFamily: theme.fontMono,
-                  fontSize: 13,
-                  fontWeight: 700,
-                  letterSpacing: 1.3,
-                  color: theme.textPrimary,
-                  textShadow: `0 0 6px ${theme.electricBlue}66`,
-                }}
-                onMouseEnter={(e) => { if (!datePickerOpen) e.currentTarget.style.background = theme.glassHover }}
-                onMouseLeave={(e) => { if (!datePickerOpen) e.currentTarget.style.background = 'transparent' }}
-              >
-                {selectedDate.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', weekday: 'short' })}
-              </button>
-            </Tooltip>
-            <Tooltip content={nextHasData ? '后一天' : '后一天无数据'}>
-              <button
-                onClick={nextDay}
-                disabled={!nextHasData}
-                style={{
-                  ...navBtn,
-                  opacity: nextHasData ? 1 : 0.3,
-                  cursor: nextHasData ? 'pointer' : 'not-allowed',
-                  padding: '4px 5px',
-                }}
-              >
-                <ChevronRight size={11} />
-              </button>
-            </Tooltip>
-          </div>
-          <button onClick={goToday} style={{
-            ...navBtn,
-            color: theme.electricBlue,
-            padding: '4px 10px',
-            border: `1px solid ${theme.electricBlue}55`,
-            background: `${theme.electricBlue}0E`,
-            textShadow: `0 0 6px ${theme.electricBlue}AA`,
-            letterSpacing: 1.6,
-            fontSize: 10.5,
-          }}>
-            今天
-          </button>
-        </div>
-
-        <NeonRule vertical intensity="soft" style={{ height: 28, margin: '0 6px' }} />
-
-        {/* ── 同步设备链接状态：取代 ONLINE/心跳，整块点击打开 SyncPeerDialog ── */}
+        {/* ── 链路：同步设备状态（点开 SyncPeerDialog） ── */}
         {(() => {
           const onlineDeviceIds = new Set(discoveredPeers.map((p) => p.device_id))
           const hasLinks = linkedDevices.length > 0
           const anyOnline = linkedDevices.some((l) => onlineDeviceIds.has(l.device_id))
           const anySyncing = syncingDeviceIds.size > 0
-          const tintColor = anySyncing
-            ? theme.expGreen
-            : anyOnline
-              ? theme.electricBlue
-              : hasLinks
-                ? theme.textSecondary
-                : theme.textMuted
-          const visibleLinks = linkedDevices.slice(0, 3)
-          const overflow = Math.max(0, linkedDevices.length - visibleLinks.length)
-
+          const dotClass = anySyncing ? 'ti-dot ti-dot-led' : anyOnline ? 'ti-dot ti-dot-ok' : 'ti-dot ti-dot-off'
+          const summary = !hasLinks
+            ? '未链接设备'
+            : linkedDevices.length === 1
+              ? linkedDevices[0].alias
+              : `${linkedDevices[0].alias} 等 ${linkedDevices.length} 台`
+          const detail = hasLinks
+            ? linkedDevices.map((l) => {
+                const state = syncingDeviceIds.has(l.device_id) ? '同步中' : onlineDeviceIds.has(l.device_id) ? '在线' : '离线'
+                return `${l.alias}：${state}`
+              }).join('；') + '（启动即自动同步）'
+            : '点击建立同步链接'
           return (
-            <Tooltip content={hasLinks ? `已链接 ${linkedDevices.length} 台 · 启动即自动同步` : '点击建立同步链接'}>
+            <Tooltip content={detail} display="flex" wrapStyle={{ alignSelf: 'stretch' }}>
               <button
                 ref={syncTriggerRef}
+                type="button"
+                className="ui-icon-btn"
                 onClick={() => {
                   setShowSync((open) => {
                     const next = !open
@@ -2975,132 +2966,38 @@ export default function App() {
                   })
                 }}
                 style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 7,
-                  height: 28,
-                  padding: '0 10px',
-                  background: showSync ? `${tintColor}1A` : `${tintColor}08`,
-                  border: `1px solid ${showSync ? `${tintColor}88` : `${tintColor}33`}`,
-                  color: tintColor,
-                  cursor: 'pointer',
-                  fontFamily: theme.fontBody,
-                  boxShadow: anySyncing ? `0 0 10px ${theme.expGreen}33` : undefined,
+                  display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'flex-start',
+                  padding: '0 14px',
+                  background: showSync ? theme.surfaceRaised : 'transparent',
+                  border: 'none', cursor: 'pointer',
+                  color: theme.paperDim, fontFamily: theme.fontBody,
                 }}
               >
-                <Link2 size={12} />
-                <span style={{
-                  fontFamily: theme.fontMono, fontSize: 9, fontWeight: 700,
-                  letterSpacing: 1.6, color: theme.textSecondary, opacity: 0.8,
-                }}>
-                  同步设备
-                </span>
-
-                {!hasLinks && (
-                  <span style={{ fontSize: 11, color: theme.textMuted, fontStyle: 'italic' }}>
-                    未链接
-                  </span>
-                )}
-
-                {visibleLinks.map((link) => {
-                  const peer = discoveredPeers.find((p) => p.device_id === link.device_id)
-                  const isOnline = onlineDeviceIds.has(link.device_id)
-                  const isSyncing = syncingDeviceIds.has(link.device_id)
-                  const chipColor = isSyncing ? theme.expGreen : isOnline ? theme.electricBlue : theme.textMuted
-                  const pickIcon = (() => {
-                    const t = (peer?.device_type ?? '').toLowerCase()
-                    const m = (peer?.device_model ?? '').toLowerCase()
-                    if (t === 'mobile') return Smartphone
-                    if (t === 'web') return Globe
-                    if (t === 'server' || t === 'headless') return Server
-                    if (t === 'desktop' && m.includes('mac')) return Laptop
-                    if (/(iphone|ipad|android|redmi|xiaomi|huawei|honor|pixel|oppo|vivo|samsung|mi\s*\d)/i.test(link.alias)) return Smartphone
-                    if (/(macbook|mac\b|imac)/i.test(link.alias)) return Laptop
-                    return Monitor
-                  })()
-                  const Icon = pickIcon
-                  return (
-                    <span
-                      key={link.device_id}
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 5,
-                        padding: '2px 7px',
-                        background: `${chipColor}14`,
-                        border: `1px solid ${chipColor}55`,
-                        color: chipColor,
-                        fontSize: 10.5,
-                        fontWeight: 600,
-                        maxWidth: 110,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      <Icon
-                        size={11}
-                        style={{
-                          flexShrink: 0,
-                          filter: isOnline || isSyncing ? `drop-shadow(0 0 4px ${chipColor})` : undefined,
-                          animation: isSyncing
-                            ? 'glowPulse 0.8s ease-in-out infinite'
-                            : isOnline
-                              ? 'glowPulse 2.2s ease-in-out infinite'
-                              : undefined,
-                          opacity: isOnline || isSyncing ? 1 : 0.6,
-                        }}
-                      />
-                      {link.alias}
-                    </span>
-                  )
-                })}
-
-                {overflow > 0 && (
-                  <span style={{
-                    fontFamily: theme.fontMono,
-                    fontSize: 10, color: theme.textMuted,
-                  }}>+{overflow}</span>
-                )}
-
-                {/* 三态波形：
-                    - 同步中：完整波浪 + 快滚 + 加粗 + 强光
-                    - 在线 idle：完整波浪 + 慢滚（呼吸）
-                    - 未链接 / 全离线：几乎平直，中间一小段小起伏 */}
-                <svg width={52} height={18} viewBox="0 0 52 18" style={{ overflow: 'visible', marginLeft: 2 }}>
-                  <polyline
-                    className={anySyncing ? 'sync-flow' : anyOnline ? 'sync-flow-slow' : undefined}
-                    points={
-                      anyOnline || anySyncing
-                        ? '0,9 8,9 12,4 16,14 20,2 24,16 28,9 36,9 40,5 44,13 48,9 52,9'
-                        : '0,9 19,9 22,8 25,10 28,8 31,9 52,9'
-                    }
-                    fill="none"
-                    stroke={tintColor}
-                    strokeWidth={anySyncing ? 1.8 : 1.3}
-                    strokeDasharray={anySyncing || anyOnline ? '4 3' : undefined}
-                    style={{
-                      filter: anySyncing
-                        ? `drop-shadow(0 0 6px ${tintColor}) drop-shadow(0 0 2px ${tintColor})`
-                        : `drop-shadow(0 0 3px ${tintColor}AA)`,
-                      opacity: anySyncing ? 1 : anyOnline ? 0.85 : hasLinks ? 0.45 : 0.35,
-                    }}
+                <span style={{ fontSize: 10, color: theme.paperMuted, letterSpacing: '0.2em' }}>同步</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 2, fontSize: 12 }}>
+                  <span
+                    className={dotClass}
+                    aria-hidden
+                    style={{ animation: anySyncing ? 'glowPulse 1.2s ease-in-out infinite' : undefined }}
                   />
-                </svg>
+                  <span style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {summary}
+                  </span>
+                </span>
               </button>
             </Tooltip>
           )
         })()}
 
-        <div style={{ flex: 1 }} />
+        <div className="ti-groove-v" style={{ margin: '12px 0' }} />
 
-        {/* BiliJobsWidget：常驻编排 + 后端进度收集 + 进度面板（无顶栏按钮，不可见；
-            面板由 B站历史弹窗工具栏入口经 solevup:toggle-bili-jobs 打开）。 */}
-        <BiliJobsWidget />
-
-        {/* ── 右：图标按钮 ── */}
-        <Tooltip content="B站历史记录">
-          <button
+        {/* ── 实体键 ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '0 12px 0 12px' }}>
+          <IconButton
+            tip="B站历史记录"
+            label="B站"
+            active={showBili}
+            size={32}
             onClick={() => {
               if (showBili) {
                 closeBiliDialog()
@@ -3109,129 +3006,108 @@ export default function App() {
                 setShowSettings(false); setShowModels(false)
               }
             }}
-            style={{
-              ...navBtn,
-              color: showBili ? theme.electricBlue : theme.textSecondary,
-              border: `1px solid ${showBili ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
-              background: showBili ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
-              textShadow: showBili ? `0 0 6px ${theme.electricBlue}AA` : undefined,
-            }}
           >
-            <BiliIcon size={13} />
-          </button>
-        </Tooltip>
-
-        <Tooltip content="模型">
-          <button
+            <BiliIcon size={15} />
+          </IconButton>
+          <IconButton
+            tip="模型与用量"
+            label="模型"
+            active={showModels}
+            size={32}
             onClick={() => {
               setShowModels(!showModels)
               if (!showModels) { setShowSettings(false); closeBiliDialog() }
             }}
-            style={{
-              ...navBtn,
-              color: showModels ? theme.electricBlue : theme.textSecondary,
-              border: `1px solid ${showModels ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
-              background: showModels ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
-              textShadow: showModels ? `0 0 6px ${theme.electricBlue}AA` : undefined,
-            }}
           >
-            <Boxes size={12} />
-          </button>
-        </Tooltip>
-
-        <Tooltip content="设置">
-          <button
+            <Boxes size={15} />
+          </IconButton>
+          <IconButton
+            tip={config.fairyWindowEnabled ? '隐藏 Fairy 桌面窗口' : '显示 Fairy 桌面窗口'}
+            label="Fairy"
+            active={config.fairyWindowEnabled}
+            size={32}
+            onClick={toggleFairyWindow}
+          >
+            <PictureInPicture2 size={15} />
+          </IconButton>
+          <IconButton
+            tip="设置"
+            label="设置"
+            active={showSettings}
+            size={32}
             onClick={() => {
               setSettingsInitialSection(undefined)
               setShowSettings(!showSettings)
               if (!showSettings) { closeBiliDialog(); setShowModels(false) }
             }}
-            style={{
-              ...navBtn,
-              color: showSettings ? theme.electricBlue : theme.textSecondary,
-              border: `1px solid ${showSettings ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
-              background: showSettings ? `${theme.electricBlue}10` : 'rgba(0,229,255,0.04)',
-              textShadow: showSettings ? `0 0 6px ${theme.electricBlue}AA` : undefined,
-            }}
           >
-            <Settings size={11} />
-          </button>
-        </Tooltip>
-
-      </div>
+            <Settings size={15} />
+          </IconButton>
+        </div>
+      </ChassisPlate>
 
       {/* ── Main: Chart + Right Panel ── */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Chart 区：顶部水平 ViewSwitcher tab + 下方主面板 */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div
-            onMouseEnter={() => setTabsHovering(true)}
-            onMouseLeave={() => setTabsHovering(false)}
-            style={{
-              flexShrink: 0,
-              padding: '2px 24px 0',
-              display: 'flex', alignItems: 'flex-end',
-            }}
-          >
-            <ViewSwitcher viewMode={mainView} onChange={setMainView} protocolLabel={protocolViewLabel} />
+      <div style={{ flex: 1, display: 'flex', gap: 8, overflow: 'hidden', minHeight: 0 }}>
+        {/* 主舞台：每个视图各是一整块主面板（钛板 + 光轨框 + 屏），整块 absolute 叠成一摞；
+            悬停顶栏视图键位时当前面板下沉、背后的面板露出各自的光轨凸台和标题——位移的是面板本身 */}
+        <div style={{ flex: 1, minWidth: 0, position: 'relative', perspective: '1400px', perspectiveOrigin: 'top center' }}>
+          <div style={{ ...mainPanelStyle('daynight'), display: 'flex' }}>
+            <ScreenBezel view="daynight">
+                <DayNightChart
+                  activityBlocks={activityBlocks}
+                  plannedBlocks={plannedBlocks}
+                  planNodes={planNodes}
+                  activityPalette={activityPalette}
+                  recordLayer={recordLayer}
+                  onRecordLayerChange={setRecordLayer}
+                  editMode={editMode}
+                  selectedTagId={selectedTagId}
+                  selectedPlanNodeId={selectedPlanNodeId}
+                  onEditModeToggle={() => setEditMode((m) => !m)}
+                  canUndo={recordLayer === 'actual' ? undoStack.length > 0 : planUndoStack.length > 0}
+                  canRedo={recordLayer === 'actual' ? redoStack.length > 0 : planRedoStack.length > 0}
+                  onUndo={handleUndo}
+                  onRedo={handleRedo}
+                  onApplyDrag={handleApplyDrag}
+                  perceptionSpans={perceptionSpans}
+                  biliSpans={biliSpans}
+                  selectedDate={selectedDate}
+                  onSpanClick={() => {}}
+                  onSpanHover={setHoveredTagSpan}
+                  onAppSpanHover={(span, minute) => { setHoveredAppSpan(span); setHoveredAppMinute(minute ?? null) }}
+                  onBiliSpanHover={setHoveredBiliSpan}
+                  trackMode={trackMode}
+                  onTrackModeChange={setTrackMode}
+                  pinnedPos={pinnedPos}
+                  onPinPos={setPinnedPos}
+                />
+            </ScreenBezel>
           </div>
-          {/* 卡片堆叠：三个面板 absolute 重叠；hover tab 时背后卡向上滑出露顶。
-              paddingTop 留出"露出空间"，overflow:hidden 把超出顶部的部分裁掉，
-              避免卡片跑进 ViewSwitcher tab 行遮挡标签。 */}
-          <div style={{
-            flex: 1,
-            position: 'relative',
-            paddingTop: 0,
-            overflow: 'hidden',
-            perspective: '1400px',
-            perspectiveOrigin: 'top center',
-          }}>
-            <div style={mainPanelStyle('daynight')}>
-              <DayNightChart
-                activityBlocks={activityBlocks}
-                plannedBlocks={plannedBlocks}
-                planNodes={planNodes}
-                activityPalette={activityPalette}
-                recordLayer={recordLayer}
-                onRecordLayerChange={setRecordLayer}
-                editMode={editMode}
-                selectedTagId={selectedTagId}
-                selectedPlanNodeId={selectedPlanNodeId}
-                onEditModeToggle={() => setEditMode((m) => !m)}
-                canUndo={recordLayer === 'actual' ? undoStack.length > 0 : planUndoStack.length > 0}
-                canRedo={recordLayer === 'actual' ? redoStack.length > 0 : planRedoStack.length > 0}
-                onUndo={handleUndo}
-                onRedo={handleRedo}
-                onApplyDrag={handleApplyDrag}
-                perceptionSpans={perceptionSpans}
-                biliSpans={biliSpans}
-                selectedDate={selectedDate}
-                onSpanClick={() => {}}
-                onSpanHover={setHoveredTagSpan}
-                onAppSpanHover={(span, minute) => { setHoveredAppSpan(span); setHoveredAppMinute(minute ?? null) }}
-                onBiliSpanHover={setHoveredBiliSpan}
-                trackMode={trackMode}
-                onTrackModeChange={setTrackMode}
-                pinnedPos={pinnedPos}
-                onPinPos={setPinnedPos}
-              />
-            </div>
-            <div style={mainPanelStyle('motivation')}>
+          <div style={{ ...mainPanelStyle('motivation'), display: 'flex' }}>
+            <ScreenBezel view="motivation">
               {/* 协议志 · 动机云（取代旧的动机仪表盘 MotivationDashboard —— scoreboard 方向已废弃） */}
               <MotiveCloud />
-            </div>
-            <div style={mainPanelStyle('motivation_static')}>
+            </ScreenBezel>
+          </div>
+          <div style={{ ...mainPanelStyle('motivation_static'), display: 'flex' }}>
+            <ScreenBezel view="motivation_static">
               <ProtocolDemoPanel />
-            </div>
-            <div style={mainPanelStyle('torrent')}>
+            </ScreenBezel>
+          </div>
+          <div style={{ ...mainPanelStyle('torrent'), display: 'flex' }}>
+            <ScreenBezel view="torrent">
               <TorrentFieldPanel />
-            </div>
-            <div style={mainPanelStyle('torrent_static')}>
+            </ScreenBezel>
+          </div>
+          <div style={{ ...mainPanelStyle('torrent_static'), display: 'flex' }}>
+            <ScreenBezel view="torrent_static">
               <TorrentFieldDemoPanel />
-            </div>
-            <div style={mainPanelStyle('focus')}>
+            </ScreenBezel>
+          </div>
+          <div style={{ ...mainPanelStyle('focus'), display: 'flex' }}>
+            <ScreenBezel view="focus">
               <FocusPanel selectedDate={selectedDate} perceptionSpans={perceptionSpans} />
-            </div>
+            </ScreenBezel>
           </div>
         </div>
 
@@ -3242,21 +3118,51 @@ export default function App() {
             ? (recordLayer === 'plan' ? theme.warningOrange : theme.expGreen)
             : theme.electricBlue
           return (
-        <div
-          className="right-panel-hud"
+        <ChassisPlate
+          className="right-panel-hud ti-plate"
+          outerStyle={{ width: rightPanelWidth, flexShrink: 0 }}
           style={{
-            width: rightPanelWidth,
-            flexShrink: 0,
-            borderLeft: `1px solid ${editMode ? rightPanelAccent + '55' : theme.hudFrameSoft}`,
             display: 'flex', flexDirection: 'column',
-            background: `linear-gradient(180deg, rgba(4,10,26,0.72) 0%, rgba(2,6,14,0.82) 100%)`,
-            boxShadow: `inset 1px 0 0 ${rightPanelAccent}28, inset 0 0 40px ${rightPanelAccent}08`,
-            position: 'relative',
-            transition: 'border-color 0.2s, box-shadow 0.2s',
             // CSS 变量供子级滚动条引用（动态跟随 rightPanelAccent）
             ['--rp-accent' as string]: rightPanelAccent,
           } as React.CSSProperties}
+          outside={
+            /* 拖拽手柄：在两块板之间的缝里（外层不裁切，才不会被轮廓切掉） */
+            <div
+              onMouseDown={(e) => {
+                e.preventDefault()
+                resizingRef.current = true
+                document.body.style.cursor = 'ew-resize'
+                document.body.style.userSelect = 'none'
+              }}
+              onDoubleClick={() => setRightPanelWidth(340)}
+              style={{
+                position: 'absolute',
+                left: -8, top: 12, bottom: 12,
+                width: 8,
+                borderRadius: 4,
+                cursor: 'ew-resize',
+                zIndex: 80,
+                background: 'transparent',
+              }}
+              onMouseEnter={(e) => {
+                const el = e.currentTarget as HTMLDivElement
+                el.style.background = `${ti.led}33`
+              }}
+              onMouseLeave={(e) => {
+                const el = e.currentTarget as HTMLDivElement
+                el.style.background = 'transparent'
+              }}
+            />
+          }
         >
+          {/* 编辑模式：模块顶沿亮一条对应图层颜色的 LED 灯条（实际 = 绿 / 计划 = 橙） */}
+          {editMode && (
+            <span aria-hidden style={{
+              position: 'absolute', left: 14, right: 14, top: 0, height: 2, zIndex: 82,
+              background: rightPanelAccent, boxShadow: `0 0 8px ${rightPanelAccent}`,
+            }} />
+          )}
           {/* 注入右栏 HUD 滚动条样式：跟随 rightPanelAccent，半透明，细 */}
           <style>{`
             .right-panel-hud *::-webkit-scrollbar {
@@ -3267,80 +3173,34 @@ export default function App() {
               background: transparent;
             }
             .right-panel-hud *::-webkit-scrollbar-thumb {
-              background: ${rightPanelAccent}33;
-              border: 1px solid ${rightPanelAccent}22;
-              border-radius: 0;
+              background: rgba(255,255,255,0.12);
+              border-radius: 3px;
             }
             .right-panel-hud *::-webkit-scrollbar-thumb:hover {
-              background: ${rightPanelAccent}77;
-              border-color: ${rightPanelAccent}AA;
-              box-shadow: 0 0 4px ${rightPanelAccent}88;
+              background: ${rightPanelAccent}88;
             }
             .right-panel-hud *::-webkit-scrollbar-corner {
               background: transparent;
             }
             .right-panel-hud * {
-              scrollbar-color: ${rightPanelAccent}55 transparent;
+              scrollbar-color: rgba(255,255,255,0.14) transparent;
               scrollbar-width: thin;
             }
           `}</style>
-          {/* 拖拽手柄：贴在左边框上的不可见 6px 竖条；hover 时左 1px 边线高亮 */}
-          <div
-            onMouseDown={(e) => {
-              e.preventDefault()
-              resizingRef.current = true
-              document.body.style.cursor = 'ew-resize'
-              document.body.style.userSelect = 'none'
-            }}
-            onDoubleClick={() => setRightPanelWidth(340)}
-            style={{
-              position: 'absolute',
-              left: -3, top: 0, bottom: 0,
-              width: 6,
-              cursor: 'ew-resize',
-              zIndex: 80,
-              background: 'transparent',
-              // hover 通过自定义 group：放一根 1px 内嵌线，给个视觉提示
-            }}
-            onMouseEnter={(e) => {
-              const el = e.currentTarget as HTMLDivElement
-              el.style.background = `${theme.electricBlue}22`
-            }}
-            onMouseLeave={(e) => {
-              const el = e.currentTarget as HTMLDivElement
-              el.style.background = 'transparent'
-            }}
-          />
 
           {/* 编辑模式：右上角 X 关闭按钮（HUD 切角风格，= ① 主按钮再点击退出编辑模式） */}
           {editMode && (
             <button
               type="button"
+              className="ti-key"
+              aria-label="退出编辑模式"
               onClick={() => setEditMode(false)}
               style={{
                 position: 'absolute',
-                top: 6, right: 16,
+                top: 8, right: 12,
                 zIndex: 81,
-                width: 22, height: 20,
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                background: `${rightPanelAccent}10`,
-                border: `1px solid ${rightPanelAccent}66`,
+                width: 22, height: 22,
                 color: rightPanelAccent,
-                cursor: 'pointer',
-                padding: 0,
-                lineHeight: 1,
-                clipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
-                transition: 'background 0.15s, border-color 0.15s, color 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                const el = e.currentTarget as HTMLButtonElement
-                el.style.background = `${rightPanelAccent}22`
-                el.style.borderColor = `${rightPanelAccent}AA`
-              }}
-              onMouseLeave={(e) => {
-                const el = e.currentTarget as HTMLButtonElement
-                el.style.background = `${rightPanelAccent}10`
-                el.style.borderColor = `${rightPanelAccent}66`
               }}
             >
               <X size={11} />
@@ -3415,19 +3275,8 @@ export default function App() {
                     position: 'relative',
                     padding: '4px 4px',
                     fontFamily: theme.fontBody,
-                    background: 'rgba(2,6,14,0.45)',
+                    borderTop: '1px solid rgba(0,0,0,0.88)',
                   }}>
-                    <HudFrame
-                      color={theme.warningOrange}
-                      accent={theme.expGreen}
-                      topLabel="EDIT · REF"
-                      showNotchTop
-                      showNotchBottom={false}
-                      notchWidth={64}
-                      notchDepth={7}
-                      cornerSize={14}
-                      intensity="soft"
-                    />
                     <div style={{
                       height: '100%', overflow: 'auto',
                       padding: '8px 4px',
@@ -3509,6 +3358,9 @@ export default function App() {
                     ttsEnabled={config.ttsEnabled}
                     onToggleTts={() => handleConfigUpdate({ ttsEnabled: !config.ttsEnabled })}
                     sessionsOpen={pickerOpen}
+                    sessionTitle={sessionTitle}
+                    fairyState={fairyUiState}
+                    contextRatio={contextRatio}
                     onOpenSessions={() => {
                       if (pickerOpen) {
                         setPickerOpen(false)
@@ -3530,16 +3382,6 @@ export default function App() {
                     padding: '4px 4px',
                     fontFamily: theme.fontBody,
                   }}>
-                    <HudFrame
-                      color={theme.electricBlue}
-                      accent={theme.warningOrange}
-                      topLabel="DETAIL · SCAN"
-                      showNotchTop
-                      showNotchBottom={false}
-                      notchWidth={70}
-                      notchDepth={7}
-                      cornerSize={16}
-                    />
                     <div style={{
                       height: '100%', overflow: 'auto',
                       display: 'flex', flexDirection: 'column',
@@ -3562,14 +3404,15 @@ export default function App() {
               </>
             )
           })()}
-        </div>
+        </ChassisPlate>
         )
         })()}
       </div>
 
       {/* ── Session Picker（侧栏，停靠在聊天面板左侧，不遮挡聊天窗口）── */}
-      {pickerOpen && (
+      {pickerDock.mounted && (
         <SessionPicker
+          phase={pickerDock.phase}
           sessions={sessions}
           currentSessionId={sessionIdRef.current}
           dockRight={rightPanelWidth}
@@ -3590,12 +3433,13 @@ export default function App() {
             }
           }}
           onClose={() => setPickerOpen(false)}
-          onRefresh={() => {
+          onRefresh={(changedId) => {
+            if (changedId) titleFlow.lock(changedId)
             void getRecentChatSessions(50).then((s) => {
               setSessions(s)
               // 手动重命名/重新生成的标题要同步进 ref，避免自动起名逻辑再覆盖
               const cur = s.find((x) => x.id === sessionIdRef.current)
-              if (cur) sessionTitleRef.current = cur.title || '新会话'
+              if (cur) applySessionTitle(cur.title || DEFAULT_SESSION_TITLE)
             }).catch(() => {})
           }}
         />
@@ -3725,22 +3569,3 @@ export default function App() {
 }
 
 // 顶栏 HUD 风格按钮：切角方框 + mono 排版 + cyan 边框
-const navBtn: React.CSSProperties = {
-  background: 'rgba(0,229,255,0.04)',
-  border: `1px solid ${theme.hudFrameSoft}`,
-  color: theme.textSecondary,
-  cursor: 'pointer',
-  fontSize: 11,
-  fontFamily: theme.fontMono,
-  fontWeight: 700,
-  letterSpacing: 1,
-  padding: '5px 7px',
-  lineHeight: 1,
-  clipPath: 'polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)',
-  transition: 'color 0.15s, background 0.15s, border-color 0.15s',
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  minWidth: 26,
-  minHeight: 24,
-}

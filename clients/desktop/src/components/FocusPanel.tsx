@@ -8,7 +8,7 @@ import { ChevronDown, FolderOpen, Globe, Monitor, Plus, Shield, ShieldOff, Trash
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import type { PerceptionSpan } from '../lib/local-api'
-import { hud, theme } from '../theme'
+import { theme, ti, tiInput, tiKey, tiSurface, tiTitle } from '../theme'
 import Tooltip from './Tooltip'
 
 // ── 数据类型 ──────────────────────────────────
@@ -257,9 +257,9 @@ function GroupItem({ group, selected, onClick }: { group: FocusGroup; selected: 
       style={{
         width: '100%',
         textAlign: 'left',
-        background: selected ? 'rgba(0,229,255,0.07)' : 'transparent',
+        background: selected ? 'rgba(255,255,255,0.06)' : 'transparent',
         border: 'none',
-        borderLeft: `2px solid ${selected ? theme.electricBlue : group.isActive ? theme.expGreen : 'transparent'}`,
+        borderLeft: `3px solid ${selected ? ti.led : group.isActive ? theme.expGreen : 'transparent'}`,
         padding: '10px 12px',
         cursor: 'pointer',
         transition: 'background 0.15s',
@@ -310,7 +310,7 @@ function ListRow({ label, subLabel, onRemove }: { label: string; subLabel?: stri
         alignItems: 'center',
         padding: '5px 10px',
         borderRadius: 3,
-        background: hover ? 'rgba(0,229,255,0.05)' : 'transparent',
+        background: hover ? 'rgba(255,255,255,0.05)' : 'transparent',
         transition: 'background 0.1s',
       }}
     >
@@ -349,12 +349,12 @@ function ListRow({ label, subLabel, onRemove }: { label: string; subLabel?: stri
           onClick={onRemove}
           style={{
             flexShrink: 0,
-            padding: '1px 5px',
-            border: `1px solid rgba(255,68,68,0.4)`,
-            borderRadius: 3,
-            background: 'rgba(255,68,68,0.1)',
+            ...tiKey,
+            height: 22,
+            padding: '0 8px',
             color: theme.dangerRed,
             fontSize: 11,
+            fontWeight: 700,
             cursor: 'pointer',
             fontFamily: theme.fontBody,
           }}
@@ -390,13 +390,13 @@ function PresetDropdown({ onAdd }: { onAdd: (domains: string[]) => void }) {
           display: 'flex',
           alignItems: 'center',
           gap: 4,
-          padding: '5px 10px',
-          border: `1px solid rgba(0,229,255,0.22)`,
-          borderRadius: 4,
-          background: 'transparent',
+          ...tiKey,
+          height: 30,
+          padding: '0 10px',
           cursor: 'pointer',
-          color: theme.textSecondary,
+          color: theme.textPrimary,
           fontSize: 12,
+          fontWeight: 700,
           fontFamily: theme.fontBody,
         }}
       >
@@ -409,12 +409,12 @@ function PresetDropdown({ onAdd }: { onAdd: (domains: string[]) => void }) {
             top: 'calc(100% + 4px)',
             left: 0,
             zIndex: 100,
-            background: theme.hudFillDeep,
-            border: `1px solid ${theme.hudFrame}`,
+            background: tiSurface.plate,
             borderRadius: 6,
             overflow: 'hidden',
             minWidth: 140,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+            padding: 4,
+            boxShadow: tiSurface.popShadow,
           }}
         >
           {Object.entries(SITE_PRESETS).map(([label, domains]) => (
@@ -437,7 +437,7 @@ function PresetDropdown({ onAdd }: { onAdd: (domains: string[]) => void }) {
                 cursor: 'pointer',
                 fontFamily: theme.fontBody,
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,229,255,0.08)')}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.07)')}
               onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
             >
               {label}
@@ -469,7 +469,7 @@ function AppUsagePicker({
     return (
       <EmptyHint
         text="当前日期还没有应用轨道数据。等窗口活动同步进昼夜表后，这里会按应用统计时长和占比。"
-        icon={<Monitor size={28} color="rgba(0,229,255,0.15)" />}
+        icon={<Monitor size={28} color={theme.textMuted} />}
       />
     )
   }
@@ -488,10 +488,10 @@ function AppUsagePicker({
             key={usage.app.toLowerCase()}
             style={{
               position: 'relative',
-              border: `1px solid rgba(0,229,255,0.16)`,
-              background: 'linear-gradient(135deg, rgba(0,229,255,0.055), rgba(0,0,0,0.1))',
-              clipPath: hud.chamfer8,
-              padding: '10px 12px',
+              background: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(0,0,0,0.12)), #1F1D1A',
+              borderRadius: 6,
+              boxShadow: '0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.08), 0 2px 6px rgba(0,0,0,0.5)',
+              padding: '10px 12px 10px 15px',
               overflow: 'hidden',
             }}
           >
@@ -502,8 +502,7 @@ function AppUsagePicker({
                 top: 0,
                 bottom: 0,
                 width: 3,
-                background: usage.color || theme.electricBlue,
-                boxShadow: `0 0 14px ${usage.color || theme.electricBlue}`,
+                background: usage.color || ti.led,
               }}
             />
 
@@ -529,13 +528,12 @@ function AppUsagePicker({
                   </span>
                 </div>
 
-                <div style={{ marginTop: 6, height: 4, background: 'rgba(0,229,255,0.08)', borderRadius: 4, overflow: 'hidden' }}>
+                <div style={{ marginTop: 6, height: 5, background: tiSurface.well, boxShadow: tiSurface.wellShadow, borderRadius: 3, overflow: 'hidden' }}>
                   <div
                     style={{
                       width: `${barWidth}%`,
                       height: '100%',
-                      background: usage.color || theme.electricBlue,
-                      boxShadow: `0 0 10px ${usage.color || theme.electricBlue}`,
+                      background: usage.color || ti.led,
                     }}
                   />
                 </div>
@@ -551,12 +549,13 @@ function AppUsagePicker({
                 onClick={() => onAddRule(appRule)}
                 style={{
                   flexShrink: 0,
-                  padding: '5px 10px',
-                  border: `1px solid ${appSelected ? 'rgba(0,255,136,0.25)' : 'rgba(0,229,255,0.28)'}`,
-                  borderRadius: 4,
-                  background: appSelected ? 'rgba(0,255,136,0.08)' : 'rgba(0,229,255,0.08)',
-                  color: appSelected ? theme.expGreen : theme.electricBlue,
+                  ...tiKey,
+                  height: 28,
+                  padding: '0 12px',
+                  color: appSelected ? theme.expGreen : ti.led,
+                  opacity: appSelected ? 0.7 : 1,
                   fontSize: 12,
+                  fontWeight: 800,
                   cursor: appSelected ? 'default' : 'pointer',
                   fontFamily: theme.fontBody,
                 }}
@@ -579,8 +578,8 @@ function AppUsagePicker({
                         alignItems: 'center',
                         gap: 8,
                         padding: '5px 7px',
-                        background: 'rgba(0,0,0,0.14)',
-                        border: `1px solid rgba(0,229,255,0.07)`,
+                        background: tiSurface.well,
+                        boxShadow: tiSurface.wellShadow,
                         borderRadius: 4,
                       }}
                     >
@@ -607,12 +606,13 @@ function AppUsagePicker({
                         onClick={() => onAddRule(rule)}
                         style={{
                           flexShrink: 0,
-                          padding: '3px 7px',
-                          border: `1px solid ${windowSelected ? 'rgba(0,255,136,0.22)' : 'rgba(0,229,255,0.18)'}`,
-                          borderRadius: 3,
-                          background: windowSelected ? 'rgba(0,255,136,0.06)' : 'transparent',
-                          color: windowSelected ? theme.expGreen : theme.textSecondary,
+                          ...tiKey,
+                          height: 24,
+                          padding: '0 9px',
+                          color: windowSelected ? theme.expGreen : theme.textPrimary,
+                          opacity: windowSelected ? 0.7 : 1,
                           fontSize: 11,
+                          fontWeight: 700,
                           cursor: windowSelected ? 'default' : 'pointer',
                           fontFamily: theme.fontBody,
                         }}
@@ -886,17 +886,21 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
       type="button"
       key={id}
       onClick={() => setInnerTab(id)}
+      className="dn-seg"
+      aria-pressed={innerTab === id}
       style={{
-        padding: '7px 16px',
+        height: 26,
+        padding: '0 14px',
         border: 'none',
-        background: 'transparent',
+        borderRadius: 4,
+        background: innerTab === id
+          ? `linear-gradient(180deg, rgba(255,255,255,0.38), rgba(255,255,255,0) 65%), ${ti.led}`
+          : 'transparent',
         cursor: 'pointer',
         fontFamily: theme.fontBody,
         fontSize: 12.5,
-        color: innerTab === id ? theme.electricBlue : theme.textMuted,
-        fontWeight: innerTab === id ? 700 : 400,
-        borderBottom: `2px solid ${innerTab === id ? theme.electricBlue : 'transparent'}`,
-        transition: 'color 0.15s, border-color 0.15s',
+        color: innerTab === id ? '#140A04' : theme.textSecondary,
+        fontWeight: innerTab === id ? 900 : 600,
       }}
     >
       {label}
@@ -906,8 +910,8 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
             marginLeft: 6,
             padding: '1px 6px',
             borderRadius: 10,
-            background: innerTab === id ? 'rgba(0,229,255,0.15)' : 'rgba(255,255,255,0.06)',
-            color: innerTab === id ? theme.electricBlue : theme.textMuted,
+            background: innerTab === id ? 'rgba(0,0,0,0.22)' : 'rgba(255,255,255,0.07)',
+            color: innerTab === id ? '#140A04' : theme.textMuted,
             fontSize: 10.5,
             fontFamily: theme.fontMono,
           }}
@@ -924,14 +928,11 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
-        background: theme.hudFill,
-        clipPath: hud.chamfer12,
-        border: `1px solid ${theme.hudFrame}`,
+        background: 'transparent',
         overflow: 'hidden',
         position: 'relative',
       }}
     >
-      <div style={{ position: 'absolute', inset: 0, background: hud.scanlines, pointerEvents: 'none', zIndex: 0 }} />
 
       {hostsWritable === false && (
         <div
@@ -962,18 +963,24 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
         style={{
           width: 200,
           flexShrink: 0,
-          borderRight: `1px solid ${theme.hudFrameSoft}`,
+          background: 'rgba(0,0,0,0.18)',
+          borderRight: '1px solid rgba(0,0,0,0.88)',
+          boxShadow: '1px 0 0 rgba(255,255,255,0.1)',
           display: 'flex',
           flexDirection: 'column',
           zIndex: 1,
         }}
       >
-        <div style={{ padding: '13px 14px 10px', display: 'flex', alignItems: 'center', gap: 8, borderBottom: `1px solid ${theme.hudFrameSoft}` }}>
-          <Shield size={14} color={theme.electricBlue} />
-          <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: theme.electricBlue, fontFamily: theme.fontBody, letterSpacing: '0.08em' }}>专注锁</span>
+        <div style={{ padding: '12px 14px 10px', display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid rgba(0,0,0,0.88)', boxShadow: '0 1px 0 rgba(255,255,255,0.1)' }}>
+          <span className="ti-diamond" aria-hidden />
+          <span style={{ ...tiTitle, fontSize: 13 }}>屏蔽组</span>
+          <span className="ti-well" style={{ padding: '1px 6px', borderRadius: 4 }}>
+            <span className="ti-led" style={{ fontSize: 11 }}>{groups.length}</span>
+          </span>
+          <span style={{ flex: 1 }} />
           <Tooltip content={extConnected ? 'Chrome 扩展已连接，网站屏蔽由扩展执行' : 'Chrome 扩展未连接，网站屏蔽退化为 hosts 兜底'}>
             <span
-              style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, fontFamily: theme.fontMono, color: extConnected ? theme.expGreen : theme.textMuted }}
+              style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10.5, fontFamily: theme.fontBody, color: extConnected ? theme.expGreen : theme.textMuted }}
             >
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: extConnected ? theme.expGreen : theme.textMuted, boxShadow: extConnected ? `0 0 6px ${theme.expGreen}` : 'none' }} />
               扩展
@@ -1002,38 +1009,37 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
           ))}
         </div>
 
-        <button
-          type="button"
-          onClick={handleCreateGroup}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 7,
-            justifyContent: 'center',
-            padding: '10px 14px',
-            border: 'none',
-            background: 'rgba(0,229,255,0.05)',
-            borderTop: `1px solid ${theme.hudFrameSoft}`,
-            cursor: 'pointer',
-            color: theme.textSecondary,
-            fontSize: 12,
-            fontFamily: theme.fontBody,
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,229,255,0.1)')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(0,229,255,0.05)')}
-        >
-          <Plus size={13} /> 新建屏蔽组
-        </button>
+        <div style={{ padding: 10, borderTop: '1px solid rgba(0,0,0,0.88)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+          <button
+            type="button"
+            className="ti-key ti-key-primary"
+            onClick={handleCreateGroup}
+            style={{ width: '100%', height: 32, gap: 6, fontSize: 12.5, fontFamily: theme.fontBody }}
+          >
+            <Plus size={14} strokeWidth={2.6} /> 新建屏蔽组
+          </button>
+        </div>
       </div>
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', zIndex: 1, overflow: 'hidden', minWidth: 0 }}>
         {!selectedGroup ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.textMuted, fontSize: 13, fontFamily: theme.fontBody }}>
-            选择或新建一个屏蔽组
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, color: theme.textSecondary, fontSize: 13, fontFamily: theme.fontBody }}>
+            <ShieldOff size={30} color={theme.textMuted} strokeWidth={1.6} />
+            <span>{groups.length === 0 ? '还没有屏蔽组，先建一个' : '从左侧选一个屏蔽组'}</span>
+            {groups.length === 0 && (
+              <button
+                type="button"
+                className="ti-key ti-key-primary"
+                onClick={handleCreateGroup}
+                style={{ height: 34, padding: '0 20px', gap: 6, fontSize: 13, fontFamily: theme.fontBody }}
+              >
+                <Plus size={14} strokeWidth={2.6} /> 新建屏蔽组
+              </button>
+            )}
           </div>
         ) : (
           <>
-            <div style={{ padding: '10px 18px', borderBottom: `1px solid ${theme.hudFrameSoft}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ padding: '10px 18px', borderBottom: '1px solid rgba(0,0,0,0.88)', boxShadow: '0 1px 0 rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', gap: 10 }}>
               {editingName ? (
                 <input
                   ref={nameInputRef}
@@ -1046,15 +1052,12 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
                   }}
                   style={{
                     flex: 1,
-                    background: 'rgba(0,229,255,0.06)',
-                    border: '1px solid rgba(0,229,255,0.3)',
-                    borderRadius: 4,
+                    ...tiInput,
+                    boxShadow: `${tiSurface.wellShadow}, 0 0 0 1px ${ti.led}88`,
                     padding: '4px 8px',
                     fontSize: 13.5,
                     fontWeight: 700,
-                    color: theme.textPrimary,
                     fontFamily: theme.fontBody,
-                    outline: 'none',
                   }}
                 />
               ) : (
@@ -1065,21 +1068,24 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
                       setEditingName(true)
                       setTimeout(() => nameInputRef.current?.focus(), 20)
                     }}
-                    style={{ flex: 1, fontSize: 13.5, fontWeight: 700, color: theme.textPrimary, fontFamily: theme.fontBody, cursor: 'text' }}
+                    style={{ ...tiTitle, flex: 1, fontSize: 14.5, cursor: 'text' }}
                   >
                     {selectedGroup.name}
                   </span>
                 </Tooltip>
               )}
               {selectedGroup.isActive && (
-                <span style={{ fontSize: 11, color: theme.expGreen, padding: '2px 8px', borderRadius: 3, background: 'rgba(0,255,136,0.1)', border: '1px solid rgba(0,255,136,0.25)', fontFamily: theme.fontMono }}>
+                <span className="ti-well" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, fontWeight: 800, color: theme.expGreen, padding: '3px 9px', borderRadius: 4, fontFamily: theme.fontBody }}>
+                  <span className="ti-dot ti-dot-ok" />
                   屏蔽中
                 </span>
               )}
               <button
                 type="button"
                 onClick={() => handleDeleteGroup(selectedGroup.id)}
-                style={{ display: 'flex', padding: 4, border: 'none', background: 'transparent', cursor: 'pointer', color: theme.textMuted, borderRadius: 3 }}
+                className="ti-key"
+                aria-label="删除屏蔽组"
+                style={{ width: 28, height: 28, color: theme.textMuted }}
                 onMouseEnter={(e) => (e.currentTarget.style.color = theme.dangerRed)}
                 onMouseLeave={(e) => (e.currentTarget.style.color = theme.textMuted)}
               >
@@ -1087,14 +1093,16 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
               </button>
             </div>
 
-            <div style={{ display: 'flex', borderBottom: `1px solid ${theme.hudFrameSoft}`, paddingLeft: 6 }}>
-              {tabBtn('websites', '网站', selectedGroup.websites.length)}
-              {tabBtn('exceptions', '例外', selectedGroup.exceptions.length)}
-              {tabBtn('apps', '应用轨道', selectedGroup.apps.length)}
+            <div style={{ padding: '10px 14px 0' }}>
+              <div className="ti-well" style={{ display: 'inline-flex', gap: 2, padding: 2, borderRadius: 5 }}>
+                {tabBtn('websites', '网站', selectedGroup.websites.length)}
+                {tabBtn('exceptions', '例外', selectedGroup.exceptions.length)}
+                {tabBtn('apps', '应用轨道', selectedGroup.apps.length)}
+              </div>
             </div>
 
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-              <div style={{ padding: '10px 14px', borderBottom: `1px solid rgba(0,229,255,0.06)`, display: 'flex', gap: 8, alignItems: 'center', flexWrap: innerTab === 'apps' ? 'wrap' : 'nowrap' }}>
+              <div style={{ padding: '10px 14px', borderBottom: '1px solid rgba(0,0,0,0.88)', boxShadow: '0 1px 0 rgba(255,255,255,0.1)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: innerTab === 'apps' ? 'wrap' : 'nowrap' }}>
                 {innerTab !== 'apps' ? (
                   <>
                     <input
@@ -1107,33 +1115,17 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
                       placeholder={innerTab === 'websites' ? '输入域名，例: youtube.com' : '输入放行域名，例: music.youtube.com'}
                       style={{
                         flex: 1,
-                        background: 'rgba(0,229,255,0.05)',
-                        border: '1px solid rgba(0,229,255,0.2)',
-                        borderRadius: 4,
+                        ...tiInput,
                         padding: '6px 10px',
                         fontSize: 12.5,
-                        color: theme.textPrimary,
                         fontFamily: theme.fontMono,
-                        outline: 'none',
                       }}
                     />
                     <button
                       type="button"
                       onClick={() => handleAddUrl(urlInput, innerTab)}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 5,
-                        padding: '6px 14px',
-                        border: `1px solid rgba(0,229,255,0.3)`,
-                        borderRadius: 4,
-                        background: 'rgba(0,229,255,0.1)',
-                        color: theme.electricBlue,
-                        fontSize: 12.5,
-                        cursor: 'pointer',
-                        fontFamily: theme.fontBody,
-                        whiteSpace: 'nowrap',
-                      }}
+                      className="ti-key ti-key-primary"
+                      style={{ height: 30, padding: '0 14px', gap: 5, fontSize: 12.5, fontFamily: theme.fontBody, whiteSpace: 'nowrap' }}
                     >
                       <Plus size={12} /> 添加
                     </button>
@@ -1146,16 +1138,17 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
                         display: 'flex',
                         alignItems: 'center',
                         gap: 8,
-                        padding: '4px 10px',
-                        border: '1px solid rgba(0,229,255,0.12)',
-                        background: 'rgba(0,229,255,0.04)',
-                        borderRadius: 4,
+                        height: 30,
+                        padding: '0 10px',
+                        background: tiSurface.well,
+                        boxShadow: tiSurface.wellShadow,
+                        borderRadius: 5,
                         color: theme.textSecondary,
                         fontFamily: theme.fontMono,
                         fontSize: 11.5,
                       }}
                     >
-                      <span style={{ color: theme.electricBlue }}>应用轨道</span>
+                      <span style={{ color: ti.led, fontWeight: 700 }}>应用轨道</span>
                       <span>{selectedDateLabel}</span>
                       <span>{appUsages.length} 应用</span>
                       <span>{fmtDuration(totalAppSeconds)}</span>
@@ -1163,19 +1156,8 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
                     <button
                       type="button"
                       onClick={handlePickExe}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 7,
-                        padding: '6px 12px',
-                        border: `1px solid rgba(0,229,255,0.24)`,
-                        borderRadius: 4,
-                        background: 'rgba(0,229,255,0.06)',
-                        color: theme.textSecondary,
-                        fontSize: 12,
-                        cursor: 'pointer',
-                        fontFamily: theme.fontBody,
-                      }}
+                      className="ti-key"
+                      style={{ height: 30, padding: '0 12px', gap: 7, fontSize: 12, fontFamily: theme.fontBody }}
                     >
                       <FolderOpen size={13} /> 手动选择 .exe
                     </button>
@@ -1190,33 +1172,17 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
                       style={{
                         flex: 1,
                         minWidth: 220,
-                        background: 'rgba(0,229,255,0.05)',
-                        border: '1px solid rgba(0,229,255,0.2)',
-                        borderRadius: 4,
+                        ...tiInput,
                         padding: '6px 10px',
                         fontSize: 12.5,
-                        color: theme.textPrimary,
                         fontFamily: theme.fontMono,
-                        outline: 'none',
                       }}
                     />
                     <button
                       type="button"
                       onClick={() => addAppRule(urlInput)}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 5,
-                        padding: '6px 12px',
-                        border: `1px solid rgba(0,229,255,0.3)`,
-                        borderRadius: 4,
-                        background: 'rgba(0,229,255,0.1)',
-                        color: theme.electricBlue,
-                        fontSize: 12.5,
-                        cursor: 'pointer',
-                        fontFamily: theme.fontBody,
-                        whiteSpace: 'nowrap',
-                      }}
+                      className="ti-key ti-key-primary"
+                      style={{ height: 30, padding: '0 12px', gap: 5, fontSize: 12.5, fontFamily: theme.fontBody, whiteSpace: 'nowrap' }}
                     >
                       <Plus size={12} /> 添加规则
                     </button>
@@ -1227,12 +1193,12 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
               <div style={{ flex: 1, overflowY: 'auto', padding: innerTab === 'apps' ? '10px 12px' : '4px 8px' }}>
                 {innerTab === 'websites' && (
                   selectedGroup.websites.length === 0
-                    ? <EmptyHint text="还没有屏蔽的网站" icon={<Globe size={28} color="rgba(0,229,255,0.15)" />} />
+                    ? <EmptyHint text="还没有屏蔽的网站" icon={<Globe size={28} color={theme.textMuted} />} />
                     : selectedGroup.websites.map((w) => <ListRow key={w} label={w} onRemove={() => handleRemoveUrl('websites', w)} />)
                 )}
                 {innerTab === 'exceptions' && (
                   selectedGroup.exceptions.length === 0
-                    ? <EmptyHint text="放行域名：即使命中上面的屏蔽规则，这里的域名（含子域）仍可访问。例：屏蔽 youtube.com 但放行 music.youtube.com" icon={<Globe size={28} color="rgba(0,229,255,0.15)" />} />
+                    ? <EmptyHint text="放行域名：即使命中上面的屏蔽规则，这里的域名（含子域）仍可访问。例：屏蔽 youtube.com 但放行 music.youtube.com" icon={<Globe size={28} color={theme.textMuted} />} />
                     : selectedGroup.exceptions.map((e) => <ListRow key={e} label={e} onRemove={() => handleRemoveUrl('exceptions', e)} />)
                 )}
                 {innerTab === 'apps' && (
@@ -1245,13 +1211,13 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
                     />
                     <div
                       style={{
-                        border: `1px solid rgba(0,229,255,0.14)`,
-                        background: 'rgba(0,0,0,0.12)',
-                        clipPath: hud.chamfer8,
+                        background: 'rgba(0,0,0,0.22)',
+                        borderRadius: 6,
+                        boxShadow: 'inset 0 1px 4px rgba(0,0,0,0.85), inset 0 0 0 1px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.1)',
                         padding: '9px 8px',
                       }}
                     >
-                      <div style={{ marginBottom: 6, color: theme.electricBlue, fontSize: 12, fontFamily: theme.fontBody, fontWeight: 700 }}>
+                      <div style={{ marginBottom: 6, color: theme.textPrimary, fontSize: 12.5, fontFamily: theme.fontBody, fontWeight: 800 }}>
                         当前屏蔽规则
                       </div>
                       {selectedGroup.apps.length === 0 ? (
@@ -1270,15 +1236,15 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
               </div>
             </div>
 
-            <div style={{ padding: '12px 18px', borderTop: `1px solid ${theme.hudFrameSoft}` }}>
+            <div style={{ padding: '12px 18px', borderTop: '1px solid rgba(0,0,0,0.88)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)' }}>
               {groupIssues[selectedGroup.id] && (
                 <div
                   style={{
                     marginBottom: 12,
                     padding: '8px 12px',
-                    border: '1px solid rgba(255,153,51,0.35)',
-                    borderRadius: 4,
-                    background: 'rgba(255,153,51,0.08)',
+                    borderRadius: 5,
+                    background: tiSurface.well,
+                    boxShadow: `${tiSurface.wellShadow}, inset 3px 0 0 ${theme.warningOrange}`,
                     color: theme.warningOrange,
                     fontSize: 11.5,
                     lineHeight: 1.6,
@@ -1298,16 +1264,9 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
                         key={opt.label}
                         type="button"
                         onClick={() => mutate(selectedId!, (g) => ({ ...g, durationMins: opt.mins }))}
-                        style={{
-                          padding: '3px 10px',
-                          border: `1px solid ${active ? theme.electricBlue : 'rgba(0,229,255,0.18)'}`,
-                          borderRadius: 4,
-                          background: active ? 'rgba(0,229,255,0.12)' : 'transparent',
-                          color: active ? theme.electricBlue : theme.textMuted,
-                          fontSize: 12,
-                          cursor: 'pointer',
-                          fontFamily: theme.fontBody,
-                        }}
+                        className="ti-key"
+                        data-active={active ? '1' : undefined}
+                        style={{ height: 26, padding: '0 12px', fontSize: 12, fontFamily: theme.fontBody }}
                       >
                         {opt.label}
                       </button>
@@ -1320,21 +1279,14 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
                 <button
                   type="button"
                   onClick={() => handleToggle(selectedGroup.id)}
+                  className={selectedGroup.isActive ? 'ti-key' : 'ti-key ti-key-primary'}
                   style={{
-                    display: 'flex',
-                    alignItems: 'center',
+                    height: 38,
+                    padding: '0 26px',
                     gap: 8,
-                    padding: '9px 24px',
-                    border: `1px solid ${selectedGroup.isActive ? 'rgba(255,68,68,0.35)' : 'rgba(0,229,255,0.3)'}`,
-                    borderRadius: 6,
-                    cursor: 'pointer',
-                    background: selectedGroup.isActive ? 'rgba(255,68,68,0.15)' : 'rgba(0,229,255,0.12)',
-                    color: selectedGroup.isActive ? theme.dangerRed : theme.electricBlue,
-                    fontSize: 13,
-                    fontWeight: 700,
+                    fontSize: 13.5,
                     fontFamily: theme.fontBody,
-                    boxShadow: selectedGroup.isActive ? '0 0 14px rgba(255,68,68,0.18)' : '0 0 14px rgba(0,229,255,0.12)',
-                    transition: 'all 0.2s',
+                    ...(selectedGroup.isActive ? { color: theme.dangerRed } : null),
                   }}
                 >
                   {selectedGroup.isActive ? <><ShieldOff size={14} /> 停止屏蔽</> : <><Shield size={14} /> 开启专注</>}
@@ -1393,7 +1345,7 @@ function ActiveTimer({ activatedAt, durationMins }: { activatedAt: number; durat
         <span style={{ fontSize: 11, color: theme.textMuted, fontFamily: theme.fontMono }}>已过 {elapsedStr}</span>
         <span style={{ fontSize: 11, color: theme.expGreen, fontFamily: theme.fontMono }}>剩余 {String(rm).padStart(2, '0')}:{String(rs).padStart(2, '0')}</span>
       </div>
-      <div style={{ height: 3, background: 'rgba(0,229,255,0.1)', borderRadius: 2, overflow: 'hidden' }}>
+      <div style={{ height: 5, background: tiSurface.well, boxShadow: tiSurface.wellShadow, borderRadius: 3, overflow: 'hidden' }}>
         <div style={{ width: `${pct * 100}%`, height: '100%', background: theme.expGreen, transition: 'width 1s linear' }} />
       </div>
     </div>

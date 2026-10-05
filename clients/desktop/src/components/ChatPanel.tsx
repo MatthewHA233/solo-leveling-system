@@ -1,36 +1,100 @@
 // ══════════════════════════════════════════════
-// Chat Panel — AI 对话面板
+// Chat Panel — 与 Fairy 的对话（钛合金机体：通讯模块）
+//
+// 视觉：
+//   · 左侧一条机体侧脊：竖排铭文 + LED 灯柱，灯柱跟 Fairy 状态走
+//     （待命常亮一格 / 思考逐格追光 / 在听随你的音量涨落 / 说话整柱呼吸）
+//   · 头部是一条全息玻璃带：呼号 + 状态行 + 上下文段码条（满了会压缩旧对话）
+//   · Fairy 的话直接落在钛板上；主人的话在下沉的黑玻璃槽里；语音波形是 LED 点阵柱
+//   · 冷色只在「系统时刻」出现：按住右 Alt 时的 LISTENING
 // ══════════════════════════════════════════════
 
 import { useCallback, useMemo, useRef, useEffect, useState } from 'react'
-import { Send, MessageSquare, Camera, Cpu, Eye, Volume2, VolumeX, Bug, Radio, History, X } from 'lucide-react'
+import { MessageSquare, Camera, Eye, Volume2, VolumeX, Bug, Radio, History, X, Play, Pause } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
-import { theme } from '../theme'
+import { listen } from '@tauri-apps/api/event'
+import { createPortal } from 'react-dom'
+import { theme, ti } from '../theme'
 import type { ChatMessage, OmniDebugInfo } from '../App'
 import type { ApiRequestSnapshot } from '../lib/llm/api'
 import type { ModelCallLog, ModelDef, ModelFreeQuota } from '../lib/local-api'
 import { MODEL_SELECT_POPUP_WIDTH, modelSelectOption } from '../lib/model-display'
 import { getFeatureModel, listModelFreeQuotas, setFeatureModel } from '../lib/model-audit'
+import type { FairyState } from './FairyHUD'
 import DebugRequestModal from './DebugRequestModal'
 import OmniDebugModal from './OmniDebugModal'
-import { HudFrame } from './hud'
 import Tooltip from './Tooltip'
 import HudSelect from './HudSelect'
 import ModelUsageBadge from './ModelUsageBadge'
+import IconButton from './ui/IconButton'
+import LedSegments from './ui/LedSegments'
 
-// 输入框 / 按钮通用 4px 八角切角
-const clip4 = `polygon(
-  4px 0, calc(100% - 4px) 0,
-  100% 4px, 100% calc(100% - 4px),
-  calc(100% - 4px) 100%, 4px 100%,
-  0 calc(100% - 4px), 0 4px
-)`
+// ── 可调旋钮 ──
+const TEXT_SIZE = 13.5
+const SPINE_WIDTH = 24
+const SPINE_LEDS = 8
+const LED_ROW = 3            // 点阵柱每格高度（2px 灯 + 1px 缝）
+const WAVEFORM_BARS = 24
+const LISTEN_BARS = 28
+
+const STATE_LABEL: Record<FairyState, string> = {
+  idle: '待命',
+  thinking: '思考中',
+  listening: '在听',
+  speaking: '说话中',
+}
+const STATE_DOT: Record<FairyState, string> = {
+  idle: 'ti-dot ti-dot-ok',
+  thinking: 'ti-dot ti-dot-led',
+  listening: 'ti-dot ti-dot-sys',
+  speaking: 'ti-dot ti-dot-sys',
+}
+
+/** 纯 ASCII 的呼号用大写科技字（FAIRY），中文呼号原样显示 */
+function displayCallsign(name: string): string {
+  return /^[\x20-\x7E]+$/.test(name) ? name.toUpperCase() : name
+}
+
+/** 音量 0–1 → 点阵柱高度（按 3px 一格取整，灯格对齐才像 LED） */
+function ledHeight(v: number, maxRows: number): number {
+  return Math.max(1, Math.round(Math.min(1, Math.max(0, v)) * maxRows)) * LED_ROW
+}
+
+function ledColumn(color: string): string {
+  return `repeating-linear-gradient(0deg, ${color} 0 2px, transparent 2px ${LED_ROW}px)`
+}
+
+/** Rust 录音的实时音量（voice://level）；只在 active 时订阅 */
+function useVoiceLevels(active: boolean, keep: number): number[] {
+  const [levels, setLevels] = useState<number[]>(() => Array(keep).fill(0))
+  useEffect(() => {
+    if (!active) {
+      setLevels(Array(keep).fill(0))
+      return
+    }
+    let disposed = false
+    let unlisten: (() => void) | null = null
+    listen<{ level: number }>('voice://level', ({ payload }) => {
+      // 与 Fairy 悬浮窗同一套映射：先减底噪再放大
+      const v = Math.min(1, Math.max(0, payload.level - 0.012) * 6)
+      setLevels((prev) => [...prev.slice(1), v])
+    }).then((u) => {
+      if (disposed) u()
+      else unlisten = u
+    }).catch(() => {})
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [active, keep])
+  return levels
+}
 
 interface Props {
   readonly messages: readonly ChatMessage[]
   readonly isProcessing: boolean
   readonly onSend: (text: string) => void
-  /** 传输日志表头呼号：来自 AI 人设配置（名称 / 称呼用户为），不硬编码 */
+  /** 呼号来自 AI 人设配置（名称 / 称呼用户为），不硬编码 */
   readonly agentName?: string
   readonly userCallsign?: string
   /** 主人在洪流域锁定的卡片（Fairy 正注视的目标），显示注视提示条 */
@@ -45,9 +109,15 @@ interface Props {
   readonly onToggleTts?: () => void
   readonly onOpenSessions?: () => void
   readonly sessionsOpen?: boolean
+  /** 当前会话标题（AI 起名 / 手动重命名后更新） */
+  readonly sessionTitle?: string
+  /** Fairy 此刻的状态：驱动侧脊灯柱、状态行、底部 LISTENING */
+  readonly fairyState?: FairyState
+  /** 上下文占用 0–1（历史字符数 / 压缩高水位） */
+  readonly contextRatio?: number
 }
 
-export default function ChatPanel({ messages, isProcessing, onSend, agentName = 'Fairy', userCallsign = '主人', gazeTarget = null, aiMode = 'regular', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen }: Props) {
+export default function ChatPanel({ messages, isProcessing, onSend, agentName = 'Fairy', userCallsign = '主人', gazeTarget = null, aiMode = 'regular', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen, sessionTitle, fairyState = 'idle', contextRatio = 0 }: Props) {
   const [input, setInput] = useState('')
   const [models, setModels] = useState<ModelDef[]>([])
   const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
@@ -60,11 +130,12 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
   const [activeDebugSnaps, setActiveDebugSnaps] = useState<ApiRequestSnapshot[] | null>(null)
   const [activeOmniDebug, setActiveOmniDebug] = useState<OmniDebugInfo | null>(null)
   const isOmniMode = aiMode === 'omni'
+  const listening = fairyState === 'listening'
 
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [messages.length, messages[messages.length - 1]?.content])
+  }, [messages.length, messages[messages.length - 1]?.content, messages[messages.length - 1]?.transcript])
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -153,314 +224,245 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
     }
   }
 
+  const canSend = input.trim().length > 0 && !isProcessing
+  const ctxPct = Math.round(Math.min(1, contextRatio) * 100)
+
   return (
     <div style={{
-      display: 'flex', flexDirection: 'column',
+      display: 'flex',
       height: '100%', fontFamily: theme.fontBody,
       position: 'relative',
-      padding: '4px 4px',
+      overflow: 'hidden',
     }}>
-      {/* 外层 HUD 装饰（断续边线 + 顶/底握手 + 侧接口 + 异形四角） */}
-      <HudFrame
-        color={theme.electricBlue}
-        accent={theme.warningOrange}
-        topLabel="CHAT · SHADOW"
-        bottomLabel="INPUT"
-        showNotchTop
-        showNotchBottom
-        notchWidth={60}
-        notchDepth={7}
-        cornerSize={16}
-      />
       <style>{`
-        .chat-textarea::placeholder { color: ${theme.textMuted}; font-family: ${theme.fontMono}; letter-spacing: 0.5px; font-size: 12px; }
+        .chat-textarea::placeholder { color: ${ti.textMuted}; }
         .chat-textarea:focus { outline: none; }
-        .send-btn:hover:not(:disabled) {
-          background: radial-gradient(circle at 35% 35%, ${theme.electricBlue}88 0%, ${theme.electricBlue}33 70%) !important;
-          color: #001820 !important;
-          border-color: ${theme.electricBlue} !important;
-          box-shadow: 0 0 12px ${theme.electricBlue}AA, inset 0 0 6px rgba(255,255,255,0.25) !important;
-          transform: scale(1.06);
-        }
         .chat-input-wrap:focus-within {
-          border-color: ${theme.electricBlue}66 !important;
-          box-shadow: inset 0 0 16px ${theme.electricBlue}14, 0 0 0 1px ${theme.electricBlue}22 !important;
+          box-shadow: inset 0 1px 4px rgba(0,0,0,0.95), 0 1px 0 rgba(255,255,255,0.06), 0 0 0 1px rgba(255,138,76,0.35) !important;
         }
-        .hud-icon-btn:hover { border-color: ${theme.electricBlue}66 !important; background: ${theme.electricBlue}14 !important; }
-        .hud-icon-btn:hover .hud-icon-inner { color: ${theme.electricBlue} !important; }
-        @keyframes audioPulse {
-          0%,100% { transform: scale(1);   opacity: 0.7; }
-          50%      { transform: scale(1.18); opacity: 0.3; }
-        }
-        @keyframes camPresent {
-          0%,100% { opacity: 1;   box-shadow: 0 0 0 2px #4ADE8066, 0 0 6px #4ADE80; }
-          50%      { opacity: 0.5; box-shadow: 0 0 0 4px #4ADE8022, 0 0 10px #4ADE80; }
-        }
-        @keyframes camReady {
-          0%,100% { opacity: 0.4; }
-          50%      { opacity: 0.2; }
-        }
-        /* 历史会话搜索命中片段跳转后的高亮闪烁（外层 div data-msg-ts） */
+        /* 历史会话搜索命中片段跳转后的高亮（外层 div data-msg-ts） */
         @keyframes msgJumpFlash {
-          0%,100% { box-shadow: 0 0 0 0 ${theme.warningOrange}00; }
-          25%     { box-shadow: 0 0 0 3px ${theme.warningOrange}66, 0 0 18px ${theme.warningOrange}88; }
-          75%     { box-shadow: 0 0 0 3px ${theme.warningOrange}33, 0 0 12px ${theme.warningOrange}44; }
+          0%,100% { background: transparent; }
+          30%     { background: rgba(255,138,76,0.12); }
         }
-        .msg-jump-flash {
-          animation: msgJumpFlash 1.6s ease-in-out;
-          border-radius: 4px;
+        .msg-jump-flash { animation: msgJumpFlash 1.6s ease-in-out; border-radius: 6px; }
+        .chat-session-strip { transition: box-shadow 0.15s; }
+        .chat-session-strip:hover,
+        .chat-session-strip[data-open="1"] {
+          box-shadow: inset 0 1px 4px rgba(0,0,0,0.95), 0 1px 0 rgba(255,255,255,0.06), 0 0 0 1px rgba(255,138,76,0.55);
         }
       `}</style>
 
-      {/* ── Header ── */}
-      <div style={{
-        padding: '14px 18px 10px',
-        borderBottom: `1px solid ${theme.hudFrameSoft}`,
-        display: 'flex', alignItems: 'center', gap: 8,
-        position: 'relative',   // CameraPreview 定位锚点
-        background: `linear-gradient(90deg, ${theme.electricBlue}08 0%, transparent 100%)`,
-      }}>
-        {/* 历史会话开关：科幻电源按钮（LED 指示 + 接线） */}
-        {onOpenSessions && (
-          <HistoryToggle on={!!sessionsOpen} onClick={onOpenSessions} />
-        )}
-        {/* 标题组绝对居中（不受左右两组宽度影响） */}
-        <div style={{
-          position: 'absolute',
-          left: 0, right: 0, top: 0, bottom: 0,
-          paddingTop: 2, // 补偿头部上下 padding 差（14/10）
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 8,
-          pointerEvents: 'none',
+      <Spine state={fairyState} />
+
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        {/* ── Header：呼号 + 状态行 / CTX 段码条 / 实体键 ── */}
+        <div className="ti-holo-band" style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          height: 58, padding: '0 12px 0 14px',
+          position: 'relative',   // CameraPreview 定位锚点
+          flexShrink: 0,
         }}>
-          <span style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            height: 16,
-            fontSize: 12.5, fontWeight: 800,
-            lineHeight: '16px',
-            fontFamily: "'Microsoft YaHei UI', 'Noto Sans SC', sans-serif",
-            color: theme.electricBlue, letterSpacing: 2.5,
-            textShadow: `0 0 10px ${theme.electricBlue}AA, 0 0 20px ${theme.electricBlue}44`,
-            transform: 'translateY(-1px)',
-          }}>
-            暗影系统
-          </span>
-          {/* 状态徽章：ONLINE（切角） */}
-          <span style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            height: 17,
-            fontSize: 8.5, fontWeight: 700,
-            lineHeight: 1,
-            letterSpacing: 1.6,
-            color: theme.expGreen,
-            padding: '0 7px',
-            border: `1px solid ${theme.expGreen}55`,
-            clipPath: clip4,
-            background: `${theme.expGreen}14`,
-            fontFamily: theme.fontMono,
-            textShadow: `0 0 6px ${theme.expGreen}88`,
-          }}>
-            ONLINE
-          </span>
+          <div data-chassis-tab style={{ minWidth: 0, flex: '1 1 auto' }}>
+            <div style={{
+              fontSize: 19, fontWeight: 900, fontStyle: 'italic', letterSpacing: '0.06em', lineHeight: 1.1,
+              color: theme.paper,
+              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            }}>
+              {agentName}
+            </div>
+            {/* 状态 + 上下文占用放在名字下面一行，头部让给名字和按键 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5, fontSize: 11, color: theme.paperMuted, whiteSpace: 'nowrap' }}>
+              <span className={STATE_DOT[fairyState]} aria-hidden style={{ width: 5, height: 5 }} />
+              {STATE_LABEL[fairyState]}
+              <span style={{ color: '#55514C' }}>·</span>
+              <Tooltip content={`上下文占用 ${ctxPct}%（满了会自动压缩较早的对话）`}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                  上下文
+                  <LedSegments value={contextRatio} count={8} thickness={2.5} length={8} gap={1.5} />
+                </span>
+              </Tooltip>
+            </div>
+          </div>
+          <div data-chassis-tower style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {onToggleTts && (
+              <IconButton tip={ttsEnabled ? '打字时也朗读：开' : '打字时也朗读：关（语音提问总会语音回答）'} active={ttsEnabled} onClick={onToggleTts} size={30}>
+                {ttsEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
+              </IconButton>
+            )}
+            {onToggleCamera && (
+              <IconButton
+                tip={cameraWindowOpen ? '关闭摄像头预览' : cameraPresent ? '摄像头：已检测到你' : '打开摄像头预览'}
+                active={cameraWindowOpen}
+                dim={!cameraReady}
+                onClick={onToggleCamera}
+                size={30}
+              >
+                <Camera size={15} />
+              </IconButton>
+            )}
+          </div>
         </div>
-        {/* 右侧按钮组 */}
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
-          {/* TTS 开关 */}
-          {onToggleTts && (
-            <HudIconBtn
-              onClick={onToggleTts}
-              title={ttsEnabled ? '关闭语音朗读' : '开启语音朗读'}
-              active={ttsEnabled}
-              activeColor={theme.expGreen}
-            >
-              {ttsEnabled ? <Volume2 size={11} /> : <VolumeX size={11} />}
-            </HudIconBtn>
-          )}
-          {onToggleCamera && (
-            <HudIconBtn
-              onClick={onToggleCamera}
-              title={cameraWindowOpen ? '关闭预览' : cameraPresent ? '已检测人脸' : '打开预览'}
-              active={cameraWindowOpen}
-              activeColor={theme.expGreen}
-              dim={!cameraReady}
-            >
-              <Camera size={11} />
-            </HudIconBtn>
-          )}
-          <div style={{
-            width: 5, height: 5, borderRadius: '50%',
-            background: theme.expGreen,
-            boxShadow: `0 0 5px ${theme.expGreen}`,
-            animation: 'glowPulse 2s ease-in-out infinite',
-          }} />
-        </div>
-      </div>
 
-      {/* ── Messages ── */}
-      <div
-        ref={scrollRef}
-        style={{
-          flex: 1, overflowY: 'auto',
-          padding: '14px 14px',
-          display: 'flex', flexDirection: 'column', gap: 17, // 条目间留足气口，两侧消息不纠缠
-
-        }}
-      >
-        {messages.length === 0 && (
-          <div style={{
-            display: 'flex', flexDirection: 'column',
-            alignItems: 'center', justifyContent: 'center',
-            height: '100%', gap: 12, padding: '0 20px',
-          }}>
-            <MessageSquare size={28} style={{
-              color: theme.electricBlue,
-              filter: `drop-shadow(0 0 8px ${theme.electricBlue}60)`,
-              opacity: 0.5,
-            }} />
-            <div style={{
-              fontSize: 9.5, fontFamily: theme.fontMono, fontWeight: 700,
-              letterSpacing: 2.5,
-              color: theme.electricBlue, opacity: 0.65,
-              textShadow: `0 0 6px ${theme.electricBlue}99`,
-            }}>
-              ─ STAND BY FOR INPUT ─
-            </div>
-            <div style={{
-              fontSize: 12, color: theme.textSecondary,
-              textAlign: 'center', lineHeight: 1.7,
-            }}>
-              对暗影系统说点什么
-            </div>
-            <div style={{
-              fontSize: 11, color: theme.textMuted,
-              textAlign: 'center', lineHeight: 1.6,
-            }}>
-              帮你分析今日活动<br />整理目标与进展
-            </div>
+        {/* ── 会话条：历史键贴着左边缘（抽屉就从这一侧抽出来），右边是当前会话标题 ── */}
+        {onOpenSessions && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px 10px 14px', flexShrink: 0 }}>
+            <IconButton tip={sessionsOpen ? '收起历史会话' : '历史会话'} active={sessionsOpen} onClick={onOpenSessions} size={28}>
+              <History size={14} />
+            </IconButton>
+            <Tooltip content={sessionsOpen ? '收起历史会话' : '打开历史会话'} wrapStyle={{ flex: 1, minWidth: 0 }}>
+              <button
+                type="button"
+                className="ti-well chat-session-strip"
+                data-open={sessionsOpen ? '1' : undefined}
+                onClick={onOpenSessions}
+                style={{
+                  width: '100%', height: 28,
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '0 10px',
+                  border: 'none', borderRadius: 5, cursor: 'pointer',
+                  textAlign: 'left', fontFamily: theme.fontBody,
+                }}
+              >
+                <span style={{ fontSize: 10.5, color: ti.textFaint, letterSpacing: '0.12em', flexShrink: 0 }}>会话</span>
+                <span style={{
+                  flex: 1, minWidth: 0,
+                  fontSize: 12.5, fontWeight: 700, color: theme.paper,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {sessionTitle?.trim() || '新会话'}
+                </span>
+              </button>
+            </Tooltip>
           </div>
         )}
 
-        {messages.map((msg) => (
-          <Bubble
-            key={msg.id}
-            message={msg}
-            agentName={agentName}
-            userCallsign={userCallsign}
-            onDebug={msg.debugSnapshots ? () => setActiveDebugSnaps(msg.debugSnapshots!) : undefined}
-            onOmniDebug={msg.omniDebugInfo ? () => setActiveOmniDebug(msg.omniDebugInfo!) : undefined}
-          />
-        ))}
+        <div className="ti-groove-h" />
 
-        {isProcessing && messages[messages.length - 1]?.role !== 'agent' && (
-          <TypingDots />
+        {/* ── Messages ── */}
+        <div
+          ref={scrollRef}
+          style={{
+            flex: 1, overflowY: 'auto',
+            padding: '16px 14px 12px',
+            display: 'flex', flexDirection: 'column', gap: 16,
+          }}
+        >
+          {messages.length === 0 && (
+            <div style={{
+              display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center',
+              height: '100%', gap: 10, padding: '0 24px', textAlign: 'center',
+            }}>
+              <div style={{ fontSize: 14, color: theme.paperDim }}>
+                想到什么，就跟 {agentName} 说
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: theme.paperMuted }}>
+                打字，或按住 <span className="ti-keycap">右 Alt</span> 说话
+              </div>
+            </div>
+          )}
+
+          {messages.map((msg) => (
+            <Bubble
+              key={msg.id}
+              message={msg}
+              agentName={agentName}
+              userCallsign={userCallsign}
+              onDebug={msg.debugSnapshots ? () => setActiveDebugSnaps(msg.debugSnapshots!) : undefined}
+              onOmniDebug={msg.omniDebugInfo ? () => setActiveOmniDebug(msg.omniDebugInfo!) : undefined}
+            />
+          ))}
+
+          {isProcessing && messages[messages.length - 1]?.role !== 'agent' && (
+            <TypingLeds />
+          )}
+        </div>
+
+        {/* ── Debug Modals ── */}
+        {activeDebugSnaps && createPortal(
+          <DebugRequestModal
+            snapshots={activeDebugSnaps}
+            onClose={() => setActiveDebugSnaps(null)}
+          />,
+          document.body,
         )}
-      </div>
+        {activeOmniDebug && createPortal(
+          <OmniDebugModal
+            info={activeOmniDebug}
+            onClose={() => setActiveOmniDebug(null)}
+          />,
+          document.body,
+        )}
 
-      {/* ── Debug Modals ── */}
-      {activeDebugSnaps && (
-        <DebugRequestModal
-          snapshots={activeDebugSnaps}
-          onClose={() => setActiveDebugSnaps(null)}
-        />
-      )}
-      {activeOmniDebug && (
-        <OmniDebugModal
-          info={activeOmniDebug}
-          onClose={() => setActiveOmniDebug(null)}
-        />
-      )}
-
-      {/* ── 注视提示条：Fairy 正注视主人锁定的卡片 ── */}
-      {gazeTarget && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 7,
-          padding: '5px 18px',
-          borderTop: `1px solid ${theme.hudFrameSoft}`,
-          background: `linear-gradient(90deg, ${theme.electricBlue}0A, transparent)`,
-          fontFamily: theme.fontMono,
-          fontSize: 9.5,
-          letterSpacing: 1,
-          color: HEADER_COLOR,
-          flexShrink: 0,
-        }}>
-          <Eye size={11} style={{ color: theme.electricBlue, flexShrink: 0, animation: 'glowPulse 2.4s ease-in-out infinite' }} />
-          <span style={{ color: HEADER_NAME_COLOR, fontWeight: 700, flexShrink: 0 }}>注视中</span>
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
-            {gazeTarget.kind === 'thought' ? '想法卡' : `B站语境《${gazeTarget.title ?? '未命名'}》`} · {gazeTarget.text.slice(0, 42)}
-          </span>
-          <Tooltip content="取消注视">
-            <button
+        {/* ── 注视提示条：Fairy 正注视主人锁定的卡片 ── */}
+        {gazeTarget && (
+          <div className="ti-well" style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            margin: '0 12px 8px 14px',
+            padding: '5px 6px 5px 10px',
+            fontSize: 12,
+            color: theme.paperMuted,
+            flexShrink: 0,
+            borderRadius: 5,
+          }}>
+            <Eye size={13} style={{ color: ti.ledHi, flexShrink: 0 }} />
+            <span style={{ flexShrink: 0, color: ti.ledHi }}>注视</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
+              {gazeTarget.kind === 'thought' ? '想法卡' : `B站《${gazeTarget.title ?? '未命名'}》`} · {gazeTarget.text.slice(0, 42)}
+            </span>
+            <IconButton
+              tip="取消注视"
+              size={22}
               onClick={() => {
                 // 广播 clear：App 清注视状态，洪流域 FlomoMain 熄灭锁定框
                 window.dispatchEvent(new CustomEvent('solevup:card-focus', { detail: { clear: true } }))
               }}
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: HEADER_COLOR, padding: 1,
-                display: 'flex', alignItems: 'center', flexShrink: 0,
-                transition: 'color 0.15s',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = theme.dangerRed)}
-              onMouseLeave={(e) => (e.currentTarget.style.color = HEADER_COLOR)}
             >
-              <X size={11} />
-            </button>
-          </Tooltip>
-        </div>
-      )}
+              <X size={12} />
+            </IconButton>
+          </div>
+        )}
 
-      {/* ── Input ── */}
-      <div style={{
-        padding: '10px 18px 14px',
-        borderTop: `1px solid ${theme.hudFrameSoft}`,
-        position: 'relative',
-        background: `linear-gradient(180deg, transparent 0%, ${theme.electricBlue}06 100%)`,
-      }}>
-        <div className="chat-input-wrap" style={{
-          position: 'relative',
-          background: 'rgba(0,12,28,0.6)',
-          border: `1px solid ${theme.hudFrameSoft}`,
-          clipPath: clip4,
-          padding: '10px 12px',
-          transition: 'border-color 0.2s, box-shadow 0.2s',
-          boxShadow: `inset 0 0 12px rgba(0,229,255,0.04)`,
+        {/* ── 正在听（系统时刻：唯一用冷色的地方）── */}
+        {listening && <ListeningBar />}
+
+        {/* ── 输入坞：下沉输入槽 + 模型 / 模式 / 发送 ── */}
+        <div style={{
+          flexShrink: 0,
+          padding: '12px 12px 12px 14px',
+          borderTop: '1px solid rgba(0,0,0,0.75)',
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)',
         }}>
-          <textarea
-            ref={inputRef}
-            className="chat-textarea"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="输入消息..."
-            rows={3}
-            style={{
-              width: '100%', background: 'transparent', border: 'none',
-              color: theme.textPrimary,
-              fontFamily: theme.fontBody,
-              fontSize: 13, outline: 'none', resize: 'none',
-              lineHeight: 1.5, minHeight: 64, maxHeight: 200, overflowY: 'auto',
-              paddingRight: 2, paddingBottom: 2,
-            }}
-          />
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              marginTop: 8,
-              minHeight: 26,
-              width: '100%',
-              boxSizing: 'border-box',
-            }}
-          >
+          <div className="ti-well chat-input-wrap" style={{ padding: '9px 11px 6px', borderRadius: 5, transition: 'box-shadow 0.15s' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
+              <span className="ti-led" aria-hidden style={{ fontSize: 15, lineHeight: '22px' }}>&gt;</span>
+              <textarea
+                ref={inputRef}
+                className="chat-textarea"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="说点什么……"
+                rows={2}
+                style={{
+                  flex: 1, minWidth: 0, background: 'transparent', border: 'none',
+                  color: theme.paper,
+                  fontFamily: theme.fontBody,
+                  fontSize: TEXT_SIZE, outline: 'none', resize: 'none',
+                  lineHeight: 1.6, minHeight: 44, maxHeight: 200, overflowY: 'auto',
+                }}
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 6, fontSize: 11, color: ti.textMuted }}>
+              按住 <span className="ti-keycap">右 Alt</span> 说话
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10 }}>
             <Tooltip
               content={isOmniMode ? 'Fairy 实时语音模型（实验，只管语音）' : 'Fairy 聊天模型（打字和语音共用）'}
               display="flex"
-              wrapStyle={{ flex: '1 1 auto', minWidth: 0, maxWidth: 224 }}
+              wrapStyle={{ flex: '1 1 auto', minWidth: 0, maxWidth: 220 }}
             >
               <div style={{ width: '100%', minWidth: 0 }}>
                 <HudSelect
@@ -472,59 +474,34 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
                 />
               </div>
             </Tooltip>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
-            <Tooltip content={isOmniMode ? '当前：实时语音（实验）——说话交给独立的小模型，打字仍走常规模型。点击切回级联语音' : '当前：级联语音（推荐）——说话和打字都是同一个 Fairy。点击切换实时语音（实验）'}>
-              <button
+            <span style={{ flex: 1 }} />
+            {onToggleAiMode && (
+              <IconButton
+                tip={isOmniMode
+                  ? '当前：实时语音（实验）——说话交给独立的小模型，打字仍走常规模型。点击切回级联语音'
+                  : '当前：级联语音（推荐）——说话和打字都是同一个 Fairy。点击切换实时语音（实验）'}
+                active={isOmniMode}
+                disabled={isProcessing}
                 onClick={onToggleAiMode}
-                disabled={!onToggleAiMode || isProcessing}
-                style={{
-                  background: isOmniMode ? `${theme.shadowPurple}18` : `${theme.electricBlue}12`,
-                  border: `1px solid ${isOmniMode ? theme.shadowPurple + '88' : theme.electricBlue + '66'}`,
-                  padding: 0,
-                  width: 24, height: 24,
-                  color: isOmniMode ? '#C9A8FF' : theme.electricBlue,
-                  boxShadow: isOmniMode
-                    ? `0 0 8px ${theme.shadowPurple}66, inset 0 0 4px ${theme.shadowPurple}33`
-                    : `0 0 8px ${theme.electricBlue}44, inset 0 0 4px ${theme.electricBlue}22`,
-                  opacity: isProcessing ? 0.45 : 1,
-                  cursor: !onToggleAiMode || isProcessing ? 'not-allowed' : 'pointer',
-                  transition: 'all 0.15s ease',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  clipPath: clip4,
-                  WebkitClipPath: clip4,
-                }}
+                size={28}
               >
-                {isOmniMode ? <Radio size={12} /> : <MessageSquare size={12} />}
-              </button>
-            </Tooltip>
-            <Tooltip content="发送 (Enter)">
+                {isOmniMode ? <Radio size={13} /> : <MessageSquare size={13} />}
+              </IconButton>
+            )}
+            <Tooltip content="发送（Enter）">
               <button
-                className="send-btn"
+                type="button"
+                className="ti-key ti-key-primary"
                 onClick={handleSend}
-                disabled={!input.trim() || isProcessing}
+                disabled={!canSend}
                 style={{
-                  background: input.trim() && !isProcessing
-                    ? `radial-gradient(circle at 35% 35%, ${theme.electricBlue}55 0%, ${theme.electricBlue}1A 70%)`
-                    : 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${input.trim() && !isProcessing ? theme.electricBlue + '88' : theme.hudFrameSoft}`,
-                  borderRadius: '50%',
-                  padding: 0,
-                  width: 24, height: 24,
-                  color: input.trim() && !isProcessing ? theme.electricBlue : theme.textMuted,
-                  boxShadow: input.trim() && !isProcessing
-                    ? `0 0 8px ${theme.electricBlue}55, inset 0 0 4px ${theme.electricBlue}33`
-                    : undefined,
-                  opacity: input.trim() && !isProcessing ? 1 : 0.55,
-                  cursor: input.trim() && !isProcessing ? 'pointer' : 'default',
-                  transition: 'all 0.15s ease',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  flex: '0 0 auto',
+                  height: 32, padding: '0 18px',
+                  fontSize: 13, letterSpacing: '0.3em',
                 }}
               >
-                <Send size={11} style={{ marginLeft: -1 }} />
+                发送
               </button>
             </Tooltip>
-            </div>
           </div>
         </div>
       </div>
@@ -532,127 +509,84 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
   )
 }
 
-// ── HUD Icon Button（切角 + 边框 + hover cyan） ──
+// ── 侧脊：竖排铭文 + LED 灯柱（跟 Fairy 状态走）──
 
-// 历史会话开关：断裂 HUD 边框（四角 L 标 + 上下刻度段 + 右侧插头尖），点亮时整体发光 + 拉出信号线
-function HistoryToggle({ on, onClick }: { on: boolean; onClick: () => void }) {
-  const c = theme.electricBlue
-  const dim = on ? 1 : 0.5
+function Spine({ state }: { state: FairyState }) {
+  const levels = useVoiceLevels(state === 'listening', 4)
+  const level = Math.max(...levels)
+  const listenLit = Math.max(1, Math.ceil(level * SPINE_LEDS))
   return (
-    <Tooltip content={on ? '收起历史会话' : '打开历史会话'}>
-    <button
-      className="hud-history-toggle"
-      data-on={on ? '1' : '0'}
-      onClick={onClick}
+    <div
+      className="ti-hatch"
+      aria-hidden
       style={{
-        position: 'relative',
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '5px 14px 5px 10px',
-        background: on
-          ? `linear-gradient(90deg, ${c}22 0%, ${c}08 100%)`
-          : 'transparent',
-        border: 'none',
-        color: on ? c : theme.textSecondary,
-        fontSize: 10.5, fontFamily: theme.fontMono,
-        fontWeight: 700, letterSpacing: 1.6,
-        cursor: 'pointer',
-        textShadow: on ? `0 0 5px ${c}` : undefined,
-        transition: 'color 0.15s, background 0.15s',
-        lineHeight: 1,
+        width: SPINE_WIDTH, flexShrink: 0,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between',
+        padding: '14px 0',
+        backgroundColor: '#121110',
+        borderRight: '1px solid rgba(0,0,0,0.9)',
+        boxShadow: '1px 0 0 rgba(255,255,255,0.1)',
+        userSelect: 'none',
       }}
     >
-      {/* HUD 式断裂边框：4 角 L + 上下刻度段 + 右侧三角插头 */}
-      <svg
-        width="100%" height="100%"
-        preserveAspectRatio="none"
-        style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none',
-          overflow: 'visible',
-          filter: on ? `drop-shadow(0 0 4px ${c}BB)` : undefined,
-        }}
-        viewBox="0 0 100 100"
-      >
-        {/* 4 角 L */}
-        <polyline points="0,14 0,0 14,0"   stroke={c} strokeWidth="2" fill="none" opacity={dim} />
-        <polyline points="86,0 100,0 100,14" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
-        <polyline points="100,86 100,100 86,100" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
-        <polyline points="14,100 0,100 0,86" stroke={c} strokeWidth="2" fill="none" opacity={dim} />
-        {/* 上下边中段短线（刻度）*/}
-        <line x1="35" y1="0" x2="65" y2="0"     stroke={c} strokeWidth="1" opacity={dim * 0.6} />
-        <line x1="35" y1="100" x2="65" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.6} />
-        {/* 上下边细刻度 tick */}
-        <line x1="25" y1="0" x2="25" y2="4"   stroke={c} strokeWidth="1" opacity={dim * 0.8} />
-        <line x1="75" y1="0" x2="75" y2="4"   stroke={c} strokeWidth="1" opacity={dim * 0.8} />
-        <line x1="25" y1="96" x2="25" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.8} />
-        <line x1="75" y1="96" x2="75" y2="100" stroke={c} strokeWidth="1" opacity={dim * 0.8} />
-      </svg>
-
-      <History size={11} style={{ position: 'relative' }} />
-      <span style={{ position: 'relative' }}>历史</span>
-
-      {/* 点亮时的信号线：从按钮右端延伸，与面板视觉相连 */}
-      {on && (
-        <span style={{
-          position: 'absolute',
-          right: -7, top: 'calc(50% - 0.5px)',
-          width: 7, height: 1,
-          background: c,
-          boxShadow: `0 0 4px ${c}, 0 0 8px ${c}88`,
-          pointerEvents: 'none',
-        }} />
-      )}
-    </button>
-    </Tooltip>
+      <span style={{ writingMode: 'vertical-rl', fontSize: 10, letterSpacing: '0.6em', color: ti.textFaint }}>
+        通讯频道
+      </span>
+      <div style={{ display: 'flex', flexDirection: 'column-reverse', gap: 3 }}>
+        {Array.from({ length: SPINE_LEDS }, (_, i) => {
+          const base: React.CSSProperties = { width: 8, height: 3, borderRadius: 1, background: ti.ledOff }
+          if (state === 'thinking') {
+            return <span key={i} style={{ ...base, animation: `tiChase 1.2s ease-in-out ${i * 0.12}s infinite` }} />
+          }
+          if (state === 'listening') {
+            const on = i < listenLit
+            return <span key={i} style={{ ...base, background: on ? ti.sys : ti.ledOff, boxShadow: on ? '0 0 5px rgba(150,215,245,0.9)' : 'none', transition: 'background 90ms, box-shadow 90ms' }} />
+          }
+          if (state === 'speaking') {
+            return <span key={i} style={{ ...base, background: ti.sys, boxShadow: '0 0 5px rgba(150,215,245,0.8)', animation: `tiBreath 1.4s ease-in-out ${i * 0.08}s infinite` }} />
+          }
+          // 待命：最底一格常亮
+          return <span key={i} style={i === 0 ? { ...base, background: ti.led, boxShadow: '0 0 5px rgba(255,120,60,0.9)' } : base} />
+        })}
+      </div>
+    </div>
   )
 }
 
-function HudIconBtn({
-  onClick, title, active, activeColor, dim, children,
-}: {
-  onClick: () => void
-  title: string
-  active?: boolean
-  activeColor?: string
-  dim?: boolean
-  children: React.ReactNode
-}) {
-  const base = active
-    ? (activeColor ?? theme.electricBlue)
-    : dim ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.45)'
+// ── 正在听：随主人声音跳动的冷色 LED 点阵（音量来自 Rust 录音 voice://level）──
+
+function ListeningBar() {
+  const levels = useVoiceLevels(true, LISTEN_BARS)
   return (
-    <Tooltip content={title}>
-      <button
-        className="hud-icon-btn"
-        onClick={onClick}
-        style={{
-          background: active ? `${activeColor ?? theme.electricBlue}14` : 'rgba(0,229,255,0.03)',
-          border: `1px solid ${active ? (activeColor ?? theme.electricBlue) + '66' : theme.hudFrameSoft}`,
-          clipPath: clip4,
-          padding: '4px 5px',
-          cursor: 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          transition: 'background 0.15s, border-color 0.15s',
-        }}
-      >
-        <span className="hud-icon-inner" style={{
-          color: base,
-          display: 'flex', alignItems: 'center',
-          textShadow: active ? `0 0 6px ${activeColor ?? theme.electricBlue}` : undefined,
-          transition: 'color 0.15s',
-        }}>
-          {children}
-        </span>
-      </button>
-    </Tooltip>
+    <div className="ti-well" style={{
+      display: 'flex', alignItems: 'center', gap: 10,
+      margin: '0 12px 8px 14px',
+      padding: '7px 10px',
+      borderRadius: 5,
+      flexShrink: 0,
+      animation: 'fadeSlideIn 0.15s ease',
+    }}>
+      <span className="ti-dot ti-dot-sys" aria-hidden />
+      <span style={{ fontSize: 12, color: ti.sys, flexShrink: 0 }}>
+        正在听
+      </span>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', gap: 2, height: 18 }}>
+        {levels.map((v, i) => (
+          <span key={i} style={{
+            flex: 1,
+            height: ledHeight(v, 6),
+            backgroundImage: ledColumn(ti.sys),
+            opacity: 0.45 + v * 0.55,
+            transition: 'height 90ms linear',
+          }} />
+        ))}
+      </div>
+      <span style={{ flexShrink: 0, color: theme.paperMuted, fontSize: 11 }}>松开发送</span>
+    </div>
   )
 }
 
-// ── Audio Bubble（Telegram 风格）──
-
-const WAVEFORM_BARS = 40
-const BTN = 42
-const RING_R = 18
-const RING_CIRC = 2 * Math.PI * RING_R
+// ── 语音条：橙色播放键 + LED 点阵波形 + 点阵时长 ──
 
 function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: number }) {
   const [playing, setPlaying]   = useState(false)
@@ -724,190 +658,77 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
 
   const bars       = waveform.length > 0 ? waveform : Array.from({ length: WAVEFORM_BARS }, () => 0.3)
   const playedBars = Math.round(progress * WAVEFORM_BARS)
-  const ringFilled = progress * RING_CIRC
 
-  // 音频块：中性语言（细边低填充），主人侧切角随外层、Fairy 侧嵌在帧内
   return (
-    <div style={{
-      position: 'relative',
-      display: 'flex', alignItems: 'center', gap: 10,
-      padding: '10px 14px',
-      minWidth: 230, maxWidth: 290,
-      background: 'rgba(0,229,255,0.07)',
-      border: '1px solid rgba(0,229,255,0.12)',
-    }}>
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
       <audio
         ref={audioRef}
         src={audioUrl}
         onLoadedMetadata={handleMeta}
         onEnded={() => { setPlaying(false); setProgress(0) }}
       />
-
-      {/* ── 圆形按钮 + SVG 进度环 ── */}
-      <div style={{ position: 'relative', width: BTN, height: BTN, flexShrink: 0 }}>
-        {/* pulse 光晕（播放中） */}
-        {playing && (
-          <div style={{
-            position: 'absolute', inset: -4,
-            borderRadius: '50%',
-            background: `${theme.electricBlue}1E`,
-            animation: 'audioPulse 1.4s ease-in-out infinite',
+      <button
+        type="button"
+        className="ti-key ti-key-primary"
+        onClick={toggle}
+        aria-label={playing ? '暂停' : '播放'}
+        style={{ width: 24, height: 24, borderRadius: 4 }}
+      >
+        {playing ? <Pause size={11} fill="currentColor" /> : <Play size={11} fill="currentColor" style={{ marginLeft: 1 }} />}
+      </button>
+      <div aria-hidden style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 18 }}>
+        {bars.map((amp, i) => (
+          <span key={i} style={{
+            width: 3,
+            height: ledHeight(Math.sqrt(amp), 6),
+            backgroundImage: ledColumn(i < playedBars ? ti.ledHi : 'rgba(255,154,92,0.32)'),
           }} />
-        )}
-
-        {/* SVG 进度环（无 CSS transition，rAF 直接驱动已够丝滑） */}
-        <svg
-          width={BTN} height={BTN}
-          style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
-        >
-          <circle cx={BTN/2} cy={BTN/2} r={RING_R}
-            fill="none" stroke={`${theme.electricBlue}30`} strokeWidth="2" />
-          <circle cx={BTN/2} cy={BTN/2} r={RING_R}
-            fill="none" stroke={theme.electricBlue} strokeWidth="2"
-            strokeLinecap="butt"
-            strokeDasharray={`${ringFilled} ${RING_CIRC}`}
-            transform={`rotate(-90 ${BTN/2} ${BTN/2})`}
-          />
-        </svg>
-
-        {/* 按钮主体 */}
-        <button
-          onClick={toggle}
-          style={{
-            position: 'absolute', inset: 4,
-            borderRadius: '50%',
-            background: `${theme.electricBlue}14`,
-            border: 'none', color: theme.electricBlue, cursor: 'pointer',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 12, paddingLeft: playing ? 0 : 2,
-            textShadow: `0 0 6px ${theme.electricBlue}88`,
-          }}
-        >
-          {playing ? '⏸' : '▶'}
-        </button>
+        ))}
       </div>
-
-      {/* ── 波形 + 时间 ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 32 }}>
-          {bars.map((amp, i) => {
-            const played  = i < playedBars
-            const current = i === playedBars && playing
-            return (
-              <div key={i} style={{
-                flex: 1,
-                height: `${Math.max(14, amp * 100)}%`,
-                background: played ? theme.electricBlue : `${theme.electricBlue}3D`,
-                boxShadow: played ? `0 0 4px ${theme.electricBlue}66` : undefined,
-                transform: current ? 'scaleY(1.2)' : 'scaleY(1)',
-                transformOrigin: 'bottom',
-              }} />
-            )
-          })}
-        </div>
-
-        <div style={{
-          fontSize: 9.5, fontWeight: 600,
-          color: HEADER_COLOR,
-          fontFamily: theme.fontMono, letterSpacing: 1,
-        }}>
-          {playing ? fmtSec(progress * duration) : fmtSec(duration)}
-        </div>
-      </div>
+      <span className="ti-led-dim" style={{ fontSize: 13, fontWeight: 900, color: theme.paperDim, flexShrink: 0 }}>
+        {playing ? fmtSec(progress * duration) : fmtSec(duration)}
+      </span>
     </div>
   )
 }
 
-// ══════════════════════════════════════════════
-// 传输日志视觉系统 — 废弃"聊天气泡"隐喻
-//   右栏是一块通讯终端，不是聊天软件：
-//   · AI（暗影系统）= 终端自身的输出：不装盒子，文字直接印在面板上
-//   · 主人 = 发出的数据包：低填充矩形舱单 + 对角角标（与洪流域锁定框同语法）
-//   · 思考 = 推演通道遥测：内凹井 + 暗青 mono 流式 + 块光标
-//   · 系统/工具 = 日志行：mono 左对齐 :: 前缀，错误染警示色
-// ══════════════════════════════════════════════
-
-// ── 可调旋钮 ──
-const HEADER_FONT_SIZE = 10                      // 表头字号
-const HEADER_COLOR = 'rgba(126,190,228,0.62)'    // 表头辅助信息色（时间戳等）
-const HEADER_NAME_COLOR = '#BFE9FF'              // 呼号名字色（要醒目）
-const FRAME_BORDER = 'rgba(0,229,255,0.16)'      // Fairy 科幻帧细边
-const FRAME_BG = 'rgba(3,10,22,0.52)'            // Fairy 帧底色
-const FRAME_TICK = 11                            // Fairy 帧角括号边长
-const FRAME_TICK_W = 1.5                         // Fairy 帧角括号线宽
-const PACKET_BG = 'rgba(0,229,255,0.12)'         // 主人消息底色
-const PACKET_TEXT = '#E8F8FF'                    // 主人消息文字
-const PACKET_CHAMFER = 10                        // 主人消息右上切角
-const WELL_BG = 'rgba(2,9,20,0.72)'              // 推演井底色
-const WELL_TEXT = 'rgba(168,196,216,0.92)'       // 推演文字
-const LOG_COLOR = 'rgba(110,142,168,0.66)'       // 系统日志行
-
-// 主人消息：右上单切角（与 Fairy 的角括号帧形成明确的两种剪影）
-const packetClip = `polygon(0 0, calc(100% - ${PACKET_CHAMFER}px) 0, 100% ${PACKET_CHAMFER}px, 100% 100%, 0 100%)`
+// ── 消息元信息：呼号 · 点阵时刻 ──
 
 function fmtClock(iso: string): string {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return ''
   const p = (n: number) => String(n).padStart(2, '0')
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-/** Fairy 科幻帧的四角括号（AI 专属语法：锁定框/HUD 帧）*/
-function frameTick(pos: 'tl' | 'tr' | 'bl' | 'br'): React.CSSProperties {
-  const base: React.CSSProperties = {
-    position: 'absolute',
-    width: FRAME_TICK, height: FRAME_TICK,
-    borderColor: `${theme.electricBlue}AA`,
-    borderStyle: 'solid', borderWidth: 0,
-    pointerEvents: 'none',
-  }
-  switch (pos) {
-    case 'tl': return { ...base, top: -1, left: -1, borderTopWidth: FRAME_TICK_W, borderLeftWidth: FRAME_TICK_W }
-    case 'tr': return { ...base, top: -1, right: -1, borderTopWidth: FRAME_TICK_W, borderRightWidth: FRAME_TICK_W }
-    case 'bl': return { ...base, bottom: -1, left: -1, borderBottomWidth: FRAME_TICK_W, borderLeftWidth: FRAME_TICK_W }
-    case 'br': return { ...base, bottom: -1, right: -1, borderBottomWidth: FRAME_TICK_W, borderRightWidth: FRAME_TICK_W }
-  }
-}
-
-/** 呼号行：名字 + 时刻（呼号来自 AI 人设配置，不硬编码；无横贯引线）*/
-function MsgMeta({ side, label, ts, actions }: {
-  side: 'in' | 'out'
+function MsgMeta({ label, ts, align, fairy = false, actions }: {
   label: string
   ts: string
+  align: 'left' | 'right'
+  fairy?: boolean
   actions?: React.ReactNode
 }) {
-  const name = (
-    <span style={{ color: HEADER_NAME_COLOR, fontWeight: 700, textShadow: `0 0 7px ${theme.electricBlue}55` }}>
-      {label}
-    </span>
-  )
-  const base: React.CSSProperties = {
-    display: 'flex', alignItems: 'center', gap: 7,
-    fontFamily: theme.fontMono,
-    fontSize: HEADER_FONT_SIZE,
-    letterSpacing: 1.3,
-    color: HEADER_COLOR,
-    userSelect: 'none',
-  }
-  return side === 'in' ? (
-    <div style={{ ...base, marginBottom: 4 }}>
-      <span style={{ color: theme.electricBlue }}>◂</span>
-      {name}
-      <span>{fmtClock(ts)}</span>
-      <span style={{ flex: 1 }} />
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      justifyContent: align === 'right' ? 'flex-end' : 'flex-start',
+      marginBottom: 6, userSelect: 'none',
+    }}>
+      {fairy ? (
+        <span className="ti-tech" style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.18em', color: ti.ledHi }}>
+          {displayCallsign(label)}
+        </span>
+      ) : (
+        <span style={{ fontSize: 11, color: theme.paperDim }}>{label}</span>
+      )}
+      <span className="ti-led-dim" style={{ fontSize: 11 }}>{fmtClock(ts)}</span>
       {actions}
-    </div>
-  ) : (
-    <div style={{ ...base, justifyContent: 'flex-end', marginBottom: 4 }}>
-      <span>{fmtClock(ts)}</span>
-      {name}
-      <span style={{ color: theme.electricBlue }}>▸</span>
     </div>
   )
 }
 
-/** 表头里的小动作按钮（debug 等）：融进表头而不是挂在气泡边上 */
-function HeaderIconBtn({ tip, onClick, children }: {
+/** 元信息行里的小动作按钮（debug 等） */
+function MetaIconBtn({ tip, onClick, children }: {
   tip: string
   onClick: () => void
   children: React.ReactNode
@@ -915,15 +736,14 @@ function HeaderIconBtn({ tip, onClick, children }: {
   return (
     <Tooltip content={tip}>
       <button
+        type="button"
+        className="ui-icon-btn"
         onClick={onClick}
         style={{
           background: 'none', border: 'none', cursor: 'pointer',
-          color: HEADER_COLOR, padding: '0 1px',
+          color: theme.paperMuted, padding: '1px 2px', borderRadius: 4,
           display: 'flex', alignItems: 'center', flexShrink: 0,
-          transition: 'color 0.15s',
         }}
-        onMouseEnter={(e) => (e.currentTarget.style.color = theme.electricBlue)}
-        onMouseLeave={(e) => (e.currentTarget.style.color = HEADER_COLOR)}
       >
         {children}
       </button>
@@ -931,8 +751,8 @@ function HeaderIconBtn({ tip, onClick, children }: {
   )
 }
 
-// ── 推演通道（思考模型的推理流）──
-// 流式期间自动展开、贴底滚动（终端 tail）；正文开始后自动折叠成一行遥测读数，可手动展开回看
+// ── 思考过程（思考模型的推理流）──
+// 流式期间自动展开、贴底滚动；正文开始后自动折叠成一行，可手动展开回看
 
 function ReasoningBlock({ text, answered }: { text: string; answered: boolean }) {
   const [userToggle, setUserToggle] = useState<boolean | null>(null)
@@ -953,61 +773,40 @@ function ReasoningBlock({ text, answered }: { text: string; answered: boolean })
         type="button"
         onClick={() => setUserToggle(!expanded)}
         style={{
-          display: 'inline-flex', alignItems: 'center', gap: 6,
+          display: 'inline-flex', alignItems: 'center', gap: 7,
           background: 'transparent', border: 'none', padding: 0,
-          color: 'rgba(168,216,244,0.95)',
-          fontSize: 10.5, fontFamily: theme.fontMono,
-          fontWeight: 700,
-          letterSpacing: 1.4, cursor: 'pointer',
-          textShadow: `0 0 6px ${theme.electricBlue}44`,
+          color: theme.paperMuted, fontSize: 12, cursor: 'pointer',
         }}
       >
-        <Cpu
-          size={12}
-          style={{
-            color: theme.electricBlue,
-            ...(answered ? {} : { animation: 'glowPulse 1.2s ease-in-out infinite' }),
-          }}
-        />
-        {answered ? (
-          <>推演通道 · {charLabel} 字 {expanded ? '▾' : '▸'}</>
-        ) : (
-          <>
-            推演通道 · 接收中
-            <span style={{ color: theme.electricBlue, animation: 'glowPulse 1s ease-in-out infinite' }}>▌</span>
-          </>
-        )}
+        {answered
+          ? <>思考过程 · {charLabel} 字 {expanded ? '▾' : '▸'}</>
+          : <>正在思考<span style={{ animation: 'glowPulse 1s ease-in-out infinite' }}>…</span></>}
       </button>
       {expanded && (
         <div
           ref={scrollRef}
+          className="ti-well"
           style={{
-            marginTop: 4,
+            marginTop: 6,
             maxHeight: 170,
             overflowY: 'auto',
-            padding: '6px 10px',
-            background: WELL_BG,
-            borderTop: '1px solid rgba(0,229,255,0.10)',
-            borderBottom: '1px solid rgba(0,229,255,0.10)',
-            fontFamily: theme.fontMono,
-            fontSize: 11,
-            lineHeight: 1.62,
-            color: WELL_TEXT,
+            padding: '8px 12px',
+            borderRadius: 5,
+            fontSize: 12,
+            lineHeight: 1.7,
+            color: theme.paperMuted,
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
           }}
         >
           {text}
-          {!answered && (
-            <span style={{ color: theme.electricBlue, animation: 'glowPulse 1s ease-in-out infinite' }}>▌</span>
-          )}
         </div>
       )}
     </div>
   )
 }
 
-// ── 日志条目（原 Bubble）──
+// ── 单条消息 ──
 
 function Bubble({ message, agentName, userCallsign, onDebug, onOmniDebug }: {
   message: ChatMessage
@@ -1016,69 +815,63 @@ function Bubble({ message, agentName, userCallsign, onDebug, onOmniDebug }: {
   onDebug?: () => void
   onOmniDebug?: () => void
 }) {
-  // 系统/工具消息 → 终端日志行
+  // 系统 / 工具消息：一行等宽小字，不抢眼
   if (message.role === 'system') {
     const isErr = message.content.startsWith('错误')
     return (
       <div style={{
-        display: 'flex', gap: 6,
-        padding: '1px 0 1px 2px',
         fontFamily: theme.fontMono,
-        fontSize: 10,
+        fontSize: 11,
         lineHeight: 1.6,
-        color: isErr ? `${theme.dangerRed}BB` : LOG_COLOR,
+        color: isErr ? theme.dangerRed : theme.paperMuted,
         whiteSpace: 'pre-wrap',
         wordBreak: 'break-word',
+        opacity: isErr ? 1 : 0.85,
       }}>
-        <span aria-hidden style={{ flexShrink: 0, opacity: 0.55 }}>::</span>
-        <span>{message.content}</span>
+        {message.content}
       </div>
     )
   }
 
   const isUser = message.role === 'user'
 
-  // 主人语音 → 呼号行 + 音频波形 + 转写
+  // 主人语音：一个下沉槽里装语音条 + 转写
   if (isUser && message.audioUrl) {
     return (
       <div data-msg-ts={message.timestamp} style={{ animation: 'fadeSlideIn 0.2s ease' }}>
-        <MsgMeta side="out" label={userCallsign} ts={message.timestamp} />
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5 }}>
-          <AudioBubble audioUrl={message.audioUrl} durationMs={message.durationMs} />
-          {message.transcript && (
-            <div style={{
-              maxWidth: 290,
-              fontSize: 11.5,
-              color: theme.textSecondary,
-              padding: '0 2px',
-              fontFamily: theme.fontBody,
-              lineHeight: 1.5,
-              textAlign: 'right',
-              fontStyle: 'italic',
-            }}>
-              {message.transcript}
-            </div>
-          )}
+        <MsgMeta label={userCallsign} ts={message.timestamp} align="right" />
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <div className="ti-well" style={{ maxWidth: '88%', padding: '8px 12px 9px' }}>
+            <AudioBubble audioUrl={message.audioUrl} durationMs={message.durationMs} />
+            {message.transcript && (
+              <div style={{
+                marginTop: 7,
+                fontSize: TEXT_SIZE - 0.5,
+                color: theme.paperDim,
+                lineHeight: 1.65,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}>
+                {message.transcript}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     )
   }
 
-  // 主人文字 → 右上切角实底块（与 Fairy 的角括号帧形成两种明确剪影）
+  // 主人文字（含边说边出的中间结果）：右侧下沉槽
   if (isUser) {
     return (
       <div data-msg-ts={message.timestamp} style={{ animation: 'fadeSlideIn 0.2s ease' }}>
-        <MsgMeta side="out" label={userCallsign} ts={message.timestamp} />
+        <MsgMeta label={userCallsign} ts={message.timestamp} align="right" />
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <div style={{
-            maxWidth: '86%',
-            padding: '8px 12px',
-            background: PACKET_BG,
-            clipPath: packetClip,
-            WebkitClipPath: packetClip,
-            color: PACKET_TEXT,
-            fontSize: 13,
-            fontFamily: theme.fontBody,
+          <div className="ti-well" style={{
+            maxWidth: '88%',
+            padding: '8px 12px 9px',
+            color: theme.paper,
+            fontSize: TEXT_SIZE,
             lineHeight: 1.65,
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
@@ -1090,92 +883,66 @@ function Bubble({ message, agentName, userCallsign, onDebug, onOmniDebug }: {
     )
   }
 
-  // Fairy → 呼号行在帧外，科幻帧（细边 + 四角括号，AI 专属语法）只包内容
+  // Fairy：文字直接落在钛板上
   return (
     <div data-msg-ts={message.timestamp} style={{ animation: 'fadeSlideIn 0.2s ease' }}>
       <MsgMeta
-        side="in"
         label={agentName}
         ts={message.timestamp}
+        align="left"
+        fairy
         actions={
           <>
             {onDebug && (
-              <HeaderIconBtn tip="查看本轮 AI 请求" onClick={onDebug}>
-                <Bug size={10} />
-              </HeaderIconBtn>
+              <MetaIconBtn tip="查看本轮 AI 请求" onClick={onDebug}>
+                <Bug size={11} />
+              </MetaIconBtn>
             )}
             {onOmniDebug && (
-              <HeaderIconBtn tip="查看本轮 Omni 上下文" onClick={onOmniDebug}>
-                <Radio size={10} />
-              </HeaderIconBtn>
+              <MetaIconBtn tip="查看本轮 Omni 上下文" onClick={onOmniDebug}>
+                <Radio size={11} />
+              </MetaIconBtn>
             )}
           </>
         }
       />
+      {message.reasoning && (
+        <ReasoningBlock text={message.reasoning} answered={message.content.length > 0} />
+      )}
       <div style={{
-        position: 'relative',
-        border: `1px solid ${FRAME_BORDER}`,
-        background: FRAME_BG,
-        padding: '9px 12px',
+        fontSize: TEXT_SIZE,
+        lineHeight: 1.78,
+        color: theme.paper,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
       }}>
-        <span aria-hidden style={frameTick('tl')} />
-        <span aria-hidden style={frameTick('tr')} />
-        <span aria-hidden style={frameTick('bl')} />
-        <span aria-hidden style={frameTick('br')} />
-        {message.reasoning && (
-          <ReasoningBlock text={message.reasoning} answered={message.content.length > 0} />
-        )}
-        <div style={{
-          fontSize: 13,
-          fontFamily: theme.fontBody,
-          lineHeight: 1.7,
-          color: theme.textPrimary,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-        }}>
-          {message.content}
-          {message.usage && <ModelUsageBadge call={message.usage} minimal />}
-        </div>
-        {message.audioUrl && (
-          <div style={{ marginTop: 6 }}>
-            <AudioBubble audioUrl={message.audioUrl} />
-          </div>
-        )}
+        {message.content}
+        {message.usage && <ModelUsageBadge call={message.usage} minimal />}
       </div>
+      {message.audioUrl && (
+        <div className="ti-well" style={{ display: 'inline-block', marginTop: 8, padding: '7px 12px 7px 8px' }}>
+          <AudioBubble audioUrl={message.audioUrl} />
+        </div>
+      )}
     </div>
   )
 }
 
-// ── Typing Dots（日志行风格：与传输日志同语言，不再装盒）──
+// ── 正在回复：三颗逐个亮起的 LED ──
 
-function TypingDots() {
+function TypingLeds() {
   return (
-    <div style={{
-      display: 'inline-flex', gap: 6, padding: '2px 0 2px 2px',
-      alignItems: 'center',
-      alignSelf: 'flex-start',
-      fontFamily: theme.fontMono,
-      fontSize: 9,
-      letterSpacing: 1.8,
-      fontWeight: 700,
-      color: theme.electricBlue,
-      textShadow: `0 0 5px ${theme.electricBlue}99`,
-    }}>
-      <span style={{ opacity: 0.7 }}>RECV</span>
-      <span style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            style={{
-              width: 5, height: 5,
-              background: theme.electricBlue,
-              boxShadow: `0 0 6px ${theme.electricBlue}`,
-              animation: `typingPulse 1s ease-in-out ${i * 0.18}s infinite`,
-              transform: 'rotate(45deg)',
-            }}
-          />
-        ))}
-      </span>
+    <div aria-label="正在回复" style={{ display: 'inline-flex', gap: 4, alignItems: 'center', alignSelf: 'flex-start', padding: '4px 2px' }}>
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          style={{
+            width: 6, height: 6, borderRadius: 1,
+            background: ti.ledOff,
+            animation: `tiChase 1.1s ease-in-out ${i * 0.18}s infinite`,
+          }}
+        />
+      ))}
     </div>
   )
 }

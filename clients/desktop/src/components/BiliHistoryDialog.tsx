@@ -6,7 +6,7 @@
 // ══════════════════════════════════════════════
 
 import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties } from 'react'
-import { X, RefreshCw, LogIn, ChevronDown, ChevronLeft, ChevronRight, Settings, FolderOpen, Telescope, Sparkles, Search, Check, CheckSquare, ListChecks, Star, Download, ScanText } from 'lucide-react'
+import { X, RefreshCw, LogIn, ChevronDown, ChevronLeft, ChevronRight, Settings, FolderOpen, Telescope, Search, Check, CheckSquare, ListChecks, Star, Download, ScanText } from 'lucide-react'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -23,7 +23,7 @@ import type { BiliSpan, DbBiliItem } from '../lib/local-api'
 import type { BiliCursor, ScanProgress, ScanPageEvent, ScanFeedItem } from '../lib/bilibili/useHistory'
 import { loadConfig, updateConfig } from '../lib/agent/agent-config'
 import type { AgentConfig } from '../lib/agent/agent-config'
-import { theme, hud } from '../theme'
+import { theme, hud, tiSurface, tiTitle, ti, tiKey } from '../theme'
 import Tooltip from './Tooltip'
 
 // 转录主题色：橙（取代紫——紫和 ✨ 一样是 AI 视觉重灾区，见 memory feedback-no-sparkles-icon 同类偏好）
@@ -43,15 +43,22 @@ const MAX_COLS = 4             // 一行最多 4 张卡片
 const SEARCH_PAGE = 40         // 搜索结果一页条数（下滑追加下一页）
 const GAP_DASHED_MIN = 60      // ≥1h 主轴虚线警示
 
+// 图标键按下态（搜索 / 设置展开时）：整块橙 + 黑色图标
+const activeIconKey: CSSProperties = {
+  color: '#140A04',
+  background: 'linear-gradient(180deg, #FFA66E, #EC6E32)',
+  boxShadow: '0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.45), 0 3px 6px rgba(0,0,0,0.55)',
+}
+
 // 头部计数 chip 样式：active=true 时背景/边框由调用处填色
 function countChipStyle(active: boolean): CSSProperties {
   return {
-    fontFamily: theme.fontMono, fontSize: 11, fontWeight: 700,
+    fontFamily: theme.fontMono, fontSize: 11.5, fontWeight: 800,
     letterSpacing: 0.5, lineHeight: 1.2,
-    padding: '2px 6px',
+    padding: '4px 8px',
     margin: '0 2px',
-    border: '1px solid transparent',
-    borderRadius: 3,
+    border: 'none',
+    borderRadius: 4,
     cursor: 'pointer',
     transition: 'background 0.12s ease, border-color 0.12s ease',
     outline: active ? undefined : 'none',
@@ -664,7 +671,7 @@ export default function BiliHistoryDialog({
         }
         .bhd-scan-card {
           position: relative;
-          background: rgba(8, 14, 28, 0.92);
+          background: rgba(20,19,17,0.92);
           overflow: hidden;
           contain: layout paint;
           animation: bhd-card-drop 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -680,39 +687,43 @@ export default function BiliHistoryDialog({
           filter: saturate(0.35) brightness(0.9);
         }
         .bhd-icon-btn {
-          background: rgba(0,229,255,0.05);
-          border: 1px solid ${theme.hudFrameSoft};
-          color: ${theme.textSecondary};
-          width: 24px; height: 24px;
+          border: none;
+          border-radius: 5px;
+          background: linear-gradient(180deg, #3A3733, #26241F);
+          box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -2px 0 rgba(0,0,0,0.35), 0 3px 5px rgba(0,0,0,0.55);
+          color: ${theme.textPrimary};
+          width: 26px; height: 26px;
           box-sizing: border-box;
           display: inline-flex; align-items: center; justify-content: center;
           cursor: pointer;
-          clip-path: ${hud.chamfer8};
-          -webkit-clip-path: ${hud.chamfer8};
-          transition: all 0.15s ease;
+          transition: box-shadow 0.12s ease, background 0.12s ease;
         }
-        .bhd-icon-btn:hover:not(:disabled) { color: ${theme.electricBlue}; border-color: ${theme.electricBlue}; box-shadow: 0 0 8px ${theme.electricBlue}55; }
-        .bhd-icon-btn:disabled { opacity: 0.32; cursor: not-allowed; filter: grayscale(0.7); }
+        .bhd-icon-btn:hover:not(:disabled) {
+          background: linear-gradient(180deg, #46423D, #2D2A26);
+          box-shadow: 0 0 0 1px ${ti.led}, inset 0 1px 0 rgba(255,255,255,0.2), 0 3px 8px rgba(0,0,0,0.55);
+        }
+        .bhd-icon-btn:disabled { opacity: 0.32; cursor: not-allowed; }
         .bhd-date-trigger {
-          display: inline-flex; align-items: center; gap: 6px;
-          padding: 3px 10px;
-          background: rgba(0,229,255,0.08);
-          border: 1px solid ${theme.electricBlue}66;
-          color: ${theme.electricBlue};
+          display: inline-flex; align-items: center; gap: 7px;
+          padding: 0 10px;
+          background: ${tiSurface.well};
+          border: none;
+          border-radius: 5px;
+          box-shadow: ${tiSurface.wellShadow};
+          color: ${ti.ledHi};
           cursor: pointer;
-          clip-path: ${hud.chamfer8};
-          -webkit-clip-path: ${hud.chamfer8};
-          font-family: ${theme.fontMono};
-          font-size: 12px; font-weight: 700; letter-spacing: 0.6px;
-          text-shadow: 0 0 6px ${theme.electricBlue}AA;
-          height: 24px;
+          font-family: 'Doto', ${theme.fontMono};
+          font-size: 14px; font-weight: 900; letter-spacing: 0.04em;
+          height: 28px;
           box-sizing: border-box;
         }
-        .bhd-date-trigger:hover { background: rgba(0,229,255,0.16); }
+        .bhd-date-trigger:hover { box-shadow: ${tiSurface.wellShadow}, 0 0 0 1px ${ti.led}88; }
         .bhd-card {
           position: absolute;
-          background: rgba(8, 14, 28, 0.96);
-          border: 1px solid ${theme.hudFrameSoft};
+          background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(0,0,0,0.12)), #1F1D1A;
+          border: 1px solid #080807;
+          border-radius: 5px;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 3px 8px rgba(0,0,0,0.5);
           cursor: pointer;
           overflow: hidden;
           color: ${theme.textPrimary};
@@ -720,7 +731,7 @@ export default function BiliHistoryDialog({
           transform: translateZ(0);
         }
         .bhd-card:hover {
-          border-color: ${theme.electricBlue};
+          border-color: ${ti.led};
           z-index: 5;
         }
         .bhd-card-ops { opacity: 0; transition: opacity .14s; }
@@ -750,7 +761,7 @@ export default function BiliHistoryDialog({
         onClick={() => { if (detailSpan) setDetailSpan(null); else onClose() }}
         style={{
           position: 'fixed', inset: 0, zIndex: 900,
-          background: 'rgba(2, 6, 16, 0.84)',
+          background: 'rgba(12,11,9,0.84)',
           animation: 'bhd-overlay-in 0.16s ease-out',
         }}
       />
@@ -765,10 +776,10 @@ export default function BiliHistoryDialog({
           height: 'min(820px, 88vh)',
           zIndex: 901,
           display: 'flex', flexDirection: 'column',
-          background: theme.hudFill,
-          border: `1px solid ${theme.hudFrame}`,
+          background: tiSurface.plate,
+          border: 'none',
           clipPath: hud.chamfer12, WebkitClipPath: hud.chamfer12,
-          boxShadow: `0 24px 80px rgba(0,0,0,0.8), 0 0 60px ${theme.hudHalo}, inset 0 1px 0 rgba(255,255,255,0.04)`,
+          boxShadow: tiSurface.plateShadow,
           overflow: 'hidden',
           animation: 'bhd-pop 0.18s ease-out',
         }}
@@ -780,14 +791,10 @@ export default function BiliHistoryDialog({
           padding: '7px 16px',
           borderBottom: `1px solid ${theme.hudFrameSoft}`,
           flexShrink: 0,
-          background: 'linear-gradient(180deg, rgba(0,229,255,0.05) 0%, transparent 100%)',
+          background: 'linear-gradient(180deg, rgba(255,138,76,0.05) 0%, transparent 100%)',
         }}>
-          <BiliIcon size={16} style={{ color: theme.electricBlue, filter: `drop-shadow(0 0 6px ${theme.electricBlue}AA)` }} />
-          <span style={{
-            fontFamily: theme.fontDisplay, fontSize: 13, fontWeight: 700,
-            letterSpacing: 1.6, color: theme.electricBlue,
-            textShadow: `0 0 8px ${theme.electricBlue}88`,
-          }}>
+          <BiliIcon size={16} style={{ color: theme.electricBlue }} />
+          <span style={tiTitle}>
             B站历史浏览记录
           </span>
 
@@ -811,7 +818,7 @@ export default function BiliHistoryDialog({
               onClick={() => setDatePickerOpen((v) => !v)}
             >
               <span>{dateLabel}</span>
-              <span style={{ color: theme.textSecondary, fontWeight: 500 }}>周{weekday}</span>
+              <span style={{ color: theme.textSecondary, fontWeight: 700, fontFamily: theme.fontBody, fontSize: 12 }}>周{weekday}</span>
               <ChevronDown size={12} />
             </button>
             <Tooltip content={nextHasData ? '后一天' : '后一天无数据'}>
@@ -843,10 +850,9 @@ export default function BiliHistoryDialog({
                   onClick={() => setFilter('all')}
                   style={{
                     ...countChipStyle(filter === 'all'),
-                    color: theme.electricBlue,
-                    textShadow: `0 0 6px ${theme.electricBlue}66`,
-                    borderColor: filter === 'all' ? `${theme.electricBlue}99` : 'transparent',
-                    background: filter === 'all' ? `${theme.electricBlue}1A` : 'transparent',
+                    color: ti.ledHi,
+                    background: filter === 'all' ? tiSurface.well : 'transparent',
+                    boxShadow: filter === 'all' ? tiSurface.wellShadow : 'none',
                   }}
                 >
                   {totalCount} 条
@@ -863,9 +869,8 @@ export default function BiliHistoryDialog({
                     style={{
                       ...countChipStyle(filter === 'favorite'),
                       color: '#ffcf4a',
-                      textShadow: '0 0 6px #ffcf4a88',
-                      borderColor: filter === 'favorite' ? '#ffcf4a99' : 'transparent',
-                      background: filter === 'favorite' ? '#ffcf4a1A' : 'transparent',
+                      background: filter === 'favorite' ? tiSurface.well : 'transparent',
+                      boxShadow: filter === 'favorite' ? `${tiSurface.wellShadow}, inset 0 0 0 1px #ffcf4a66` : 'none',
                     }}
                   >
                     {favoriteCount} 收藏
@@ -883,9 +888,8 @@ export default function BiliHistoryDialog({
                     style={{
                       ...countChipStyle(filter === 'downloaded'),
                       color: theme.expGreen,
-                      textShadow: `0 0 6px ${theme.expGreen}88`,
-                      borderColor: filter === 'downloaded' ? `${theme.expGreen}99` : 'transparent',
-                      background: filter === 'downloaded' ? `${theme.expGreen}1A` : 'transparent',
+                      background: filter === 'downloaded' ? tiSurface.well : 'transparent',
+                      boxShadow: filter === 'downloaded' ? `${tiSurface.wellShadow}, inset 0 0 0 1px ${theme.expGreen}66` : 'none',
                     }}
                   >
                     {downloadedCount} 已下载
@@ -903,9 +907,8 @@ export default function BiliHistoryDialog({
                     style={{
                       ...countChipStyle(filter === 'transcribed'),
                       color: TRANSCRIBE_COLOR,
-                      textShadow: `0 0 6px ${TRANSCRIBE_COLOR}AA`,
-                      borderColor: filter === 'transcribed' ? `${TRANSCRIBE_COLOR}99` : 'transparent',
-                      background: filter === 'transcribed' ? `${TRANSCRIBE_COLOR}1A` : 'transparent',
+                      background: filter === 'transcribed' ? tiSurface.well : 'transparent',
+                      boxShadow: filter === 'transcribed' ? `${tiSurface.wellShadow}, inset 0 0 0 1px ${TRANSCRIBE_COLOR}66` : 'none',
                     }}
                   >
                     {transcribedCount} 已转录
@@ -929,7 +932,8 @@ export default function BiliHistoryDialog({
                   return next
                 })
               }}
-              style={{ color: searchOpen ? theme.electricBlue : undefined }}
+              data-active={searchOpen ? '1' : undefined}
+              style={searchOpen ? activeIconKey : undefined}
             >
               <Search size={12} />
             </button>
@@ -939,7 +943,8 @@ export default function BiliHistoryDialog({
               ref={settingsAnchorRef}
               className="bhd-icon-btn"
               onClick={() => setSettingsOpen((v) => !v)}
-              style={{ color: settingsOpen ? theme.electricBlue : undefined }}
+              data-active={settingsOpen ? '1' : undefined}
+              style={settingsOpen ? activeIconKey : undefined}
             >
               <Settings size={12} />
             </button>
@@ -955,20 +960,20 @@ export default function BiliHistoryDialog({
         <div style={{
           position: 'relative',
           display: 'flex', alignItems: 'center', gap: 8,
-          padding: '4px 16px',
-          borderBottom: `1px solid ${theme.hudFrameSoft}`,
+          padding: '7px 16px',
+          borderBottom: '1px solid rgba(0,0,0,0.88)',
+          boxShadow: '0 1px 0 rgba(255,255,255,0.1)',
           flexShrink: 0,
         }}>
           <button
             disabled={isOpening}
             onClick={handleOpenLogin}
+            className={!biliUname && !loginError ? 'ti-key ti-key-primary' : 'ti-key'}
             style={{
-              display: 'flex', alignItems: 'center', gap: 5,
-              background: !biliUname ? `${theme.electricBlue}18` : 'rgba(255,255,255,0.04)',
-              border: `1px solid ${loginError ? theme.dangerRed : !biliUname ? theme.electricBlue : theme.glassBorder}`,
-              borderRadius: 3, padding: '3px 10px', height: 24, boxSizing: 'border-box',
-              color: loginError ? theme.dangerRed : !biliUname ? theme.electricBlue : theme.textSecondary,
-              cursor: 'pointer', fontSize: 11, fontFamily: theme.fontBody,
+              gap: 5,
+              padding: '0 11px', height: 26, boxSizing: 'border-box',
+              ...(loginError ? { color: theme.dangerRed } : biliUname ? { color: theme.textSecondary } : null),
+              fontSize: 11.5, fontFamily: theme.fontBody,
               opacity: isOpening ? 0.6 : 1,
             }}
           >
@@ -981,8 +986,8 @@ export default function BiliHistoryDialog({
           </button>
           <span style={{ fontSize: 11, color: loginError ? theme.dangerRed : theme.textSecondary, display: 'flex', alignItems: 'center', gap: 6 }}>
             {scanActive ? (
-              <span style={{ color: theme.electricBlue, fontFamily: theme.fontMono, textShadow: `0 0 6px ${theme.electricBlue}88` }}>
-                <Sparkles size={11} style={{ display: 'inline-block', verticalAlign: -1, marginRight: 4 }} />
+              <span style={{ color: ti.led, fontFamily: theme.fontMono }}>
+                <Telescope size={11} style={{ display: 'inline-block', verticalAlign: -1, marginRight: 4 }} />
                 深度扫描 · {scanProgress!.pages} 页 · {scanProgress!.fetched} 条
               </span>
             ) : (loginError ?? error ?? fetchErr) ? (
@@ -1030,9 +1035,7 @@ export default function BiliHistoryDialog({
               onClick={onFullScan}
               disabled={scanActive}
               style={scanActive ? {
-                color: theme.electricBlue,
-                borderColor: theme.electricBlue,
-                boxShadow: `0 0 8px ${theme.electricBlue}88`,
+                ...activeIconKey,
                 animation: 'bhd-scan-pulse 1.4s ease-in-out infinite',
               } : undefined}
             >
@@ -1055,11 +1058,11 @@ export default function BiliHistoryDialog({
               disabled={selected.size === 0}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 4,
-                padding: '3px 9px', fontSize: 11, fontWeight: 600, fontFamily: theme.fontBody,
+                height: 26, padding: '0 10px', fontSize: 11.5, fontWeight: 700, fontFamily: theme.fontBody,
+                ...tiKey,
                 color: selected.size ? color : theme.textMuted,
-                background: selected.size ? `${color}1A` : 'transparent',
-                border: `1px solid ${selected.size ? `${color}88` : theme.hudFrameSoft}`,
-                borderRadius: 4, cursor: selected.size ? 'pointer' : 'default', whiteSpace: 'nowrap',
+                opacity: selected.size ? 1 : 0.45,
+                cursor: selected.size ? 'pointer' : 'default', whiteSpace: 'nowrap',
               }}
             >
               <Icon size={12} /> {label}{selected.size ? ` ${selected.size}` : ''}
@@ -1093,9 +1096,9 @@ export default function BiliHistoryDialog({
                 <span style={{
                   position: 'absolute', top: -5, right: -5, minWidth: 14, height: 14, padding: '0 3px',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  borderRadius: 7, background: theme.electricBlue, color: '#02121a',
+                  borderRadius: 7, background: theme.electricBlue, color: '#141311',
                   fontSize: 9, fontWeight: 800, fontFamily: theme.fontMono,
-                  pointerEvents: 'none', boxShadow: '0 0 5px rgba(0,229,255,0.7)', zIndex: 3,
+                  pointerEvents: 'none', boxShadow: '0 0 5px rgba(255,138,76,0.7)', zIndex: 3,
                 }}>{jobsActive}</span>
               )}
             </span>
@@ -1113,11 +1116,11 @@ export default function BiliHistoryDialog({
               width: 420,
               maxHeight: 480,
               display: 'flex', flexDirection: 'column',
-              background: '#0a0f1c',
-              border: `1px solid ${theme.hudFrame}`,
+              background: '#151412',
+              border: 'none',
               clipPath: hud.chamfer8,
               WebkitClipPath: hud.chamfer8,
-              boxShadow: `0 8px 28px rgba(0,0,0,0.7), 0 0 24px ${theme.hudHalo}`,
+              boxShadow: tiSurface.plateShadow,
               padding: 0,
               fontFamily: theme.fontBody,
               overflow: 'hidden',
@@ -1215,10 +1218,10 @@ export default function BiliHistoryDialog({
               right: 12,
               zIndex: 50,
               width: 320,
-              background: '#0a0f1c',
-              border: `1px solid ${theme.hudFrame}`,
+              background: '#151412',
+              border: 'none',
               borderRadius: 4,
-              boxShadow: `0 8px 28px rgba(0,0,0,0.7), 0 0 24px ${theme.hudHalo}`,
+              boxShadow: tiSurface.plateShadow,
               padding: '12px 14px',
               fontFamily: theme.fontBody,
             }}
@@ -1497,8 +1500,8 @@ function FishboneRail({
               strokeLinejoin="round"
               strokeOpacity={isHi ? 1 : 0.55}
             />
-            <circle cx={cardTopMid} cy={dropY - 1} r={isHi ? 3.4 : 2.5} fill={color} stroke="#02060e" strokeWidth={1} />
-            <circle cx={RAIL_X} cy={p.nodeY} r={5} fill="#02060e" stroke={theme.electricBlue} strokeWidth={1.6} />
+            <circle cx={cardTopMid} cy={dropY - 1} r={isHi ? 3.4 : 2.5} fill={color} stroke="#0C0B09" strokeWidth={1} />
+            <circle cx={RAIL_X} cy={p.nodeY} r={5} fill="#0C0B09" stroke={theme.electricBlue} strokeWidth={1.6} />
             <circle cx={RAIL_X} cy={p.nodeY} r={2} fill={isHi ? color : theme.electricBlue} />
           </g>
         )
@@ -1539,15 +1542,14 @@ function TimeLabels({
               justifyContent: 'center',
               gap: 3,
               padding: '0 4px',
-              background: 'rgba(2,6,14,0.95)',
-              border: `1px solid ${accent}${isHi ? 'CC' : '55'}`,
-              borderRadius: 3,
-              fontFamily: theme.fontMono,
-              fontSize: 11.5,
-              fontWeight: 700,
+              background: tiSurface.well,
+              boxShadow: isHi ? `${tiSurface.wellShadow}, 0 0 0 1px ${accent}` : tiSurface.wellShadow,
+              borderRadius: 4,
+              fontFamily: "'Doto', " + theme.fontMono,
+              fontSize: 13,
+              fontWeight: 900,
               color: accent,
               letterSpacing: 0.4,
-              textShadow: isHi ? `0 0 6px ${accent}AA` : undefined,
               pointerEvents: 'none',
               zIndex: 7,
               transform: 'translateZ(0)',
@@ -1731,7 +1733,7 @@ function Card({
   const cardOpBtn: CSSProperties = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
     width: 26, height: 26, padding: 0,
-    background: 'rgba(2,6,14,0.82)', border: '1px solid rgba(255,255,255,0.25)',
+    background: 'rgba(12,11,9,0.82)', border: '1px solid rgba(255,255,255,0.25)',
     borderRadius: 5, cursor: 'pointer', color: '#e8f6ff', boxShadow: '0 1px 4px rgba(0,0,0,0.5)',
   }
 
@@ -1758,9 +1760,9 @@ function Card({
           position: 'absolute', top: 6, left: 6, zIndex: 3,
           width: 18, height: 18, borderRadius: 4,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: selected ? theme.electricBlue : 'rgba(2,6,14,0.82)',
+          background: selected ? theme.electricBlue : 'rgba(12,11,9,0.82)',
           border: `1.5px solid ${selected ? theme.electricBlue : 'rgba(255,255,255,0.6)'}`,
-          color: '#02121a', boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
+          color: '#141311', boxShadow: '0 1px 3px rgba(0,0,0,0.6)',
         }}>
           {selected && <Check size={13} strokeWidth={3} />}
         </span>
@@ -1801,7 +1803,7 @@ function Card({
             padding: '2px 7px',
             fontFamily: theme.fontBody,
             fontSize: 10, fontWeight: 700, letterSpacing: 0.5,
-            background: 'rgba(2,6,14,0.88)',
+            background: 'rgba(12,11,9,0.88)',
             border: `1px solid ${theme.expGreen}`,
             color: theme.expGreen,
             textShadow: '0 0 2px #000, 0 0 2px #000, 0 0 4px rgba(0,0,0,0.9)',
@@ -1816,7 +1818,7 @@ function Card({
             padding: '2px 7px',
             fontFamily: theme.fontBody,
             fontSize: 10, fontWeight: 700, letterSpacing: 0.5,
-            background: 'rgba(2,6,14,0.88)',
+            background: 'rgba(12,11,9,0.88)',
             border: `1px solid ${TRANSCRIBED_COLOR}`,
             color: TRANSCRIBE_COLOR,
             textShadow: '0 0 2px #000, 0 0 2px #000, 0 0 4px rgba(0,0,0,0.9)',
@@ -1956,13 +1958,13 @@ function ScanWaterfall({
         position: 'absolute',
         left: 12, right: 12, top: 84, bottom: 32,
         zIndex: 9,
-        background: 'rgba(2, 6, 14, 0.94)',
+        background: 'rgba(12,11,9,0.94)',
         border: `1px solid ${theme.electricBlue}55`,
         clipPath: hud.chamfer12,
         WebkitClipPath: hud.chamfer12,
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
-        boxShadow: `0 0 32px ${theme.electricBlue}33, inset 0 0 60px rgba(0,229,255,0.04)`,
+        boxShadow: `0 0 32px ${theme.electricBlue}33, inset 0 0 60px rgba(255,138,76,0.04)`,
         animation: done
           ? 'bhd-overlay-fade 1.0s ease-out 0.6s forwards'
           : 'bhd-overlay-in 0.18s ease-out',
@@ -1983,7 +1985,7 @@ function ScanWaterfall({
           letterSpacing: 2.5, color: theme.electricBlue,
           textShadow: `0 0 8px ${theme.electricBlue}AA`,
         }}>
-          <Sparkles size={12} />
+          <Telescope size={12} />
           DATA STREAM · DEEP SCAN
         </span>
         <span style={{
@@ -2191,7 +2193,7 @@ function ScanReportOverlay({
         onClick={onClose}
         style={{
           position: 'absolute', inset: 0, zIndex: 12,
-          background: 'rgba(2, 6, 16, 0.78)',
+          background: 'rgba(12,11,9,0.78)',
           animation: 'bhd-overlay-in 0.16s ease-out',
         }}
       />
@@ -2225,7 +2227,7 @@ function ScanReportOverlay({
             letterSpacing: 1.6, color: theme.expGreen,
             textShadow: `0 0 8px ${theme.expGreen}88`,
           }}>
-            <Sparkles size={13} />
+            <Telescope size={13} />
             深度扫描完成 · 共 {total} 条增量
           </span>
           <button className="bhd-icon-btn" onClick={onClose}><X size={12} /></button>
@@ -2400,7 +2402,7 @@ function DetailOverlay({
         onClick={onClose}
         style={{
           position: 'absolute', inset: 0, zIndex: 10,
-          background: 'rgba(2, 6, 16, 0.78)',
+          background: 'rgba(12,11,9,0.78)',
           animation: 'bhd-overlay-in 0.14s ease-out',
         }}
       />

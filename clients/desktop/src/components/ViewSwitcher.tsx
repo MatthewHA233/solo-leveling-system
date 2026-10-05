@@ -1,13 +1,12 @@
 // ══════════════════════════════════════════════
-// ViewSwitcher — VSCode 风格主舞台 tab
-//   · 矮窄单行（~26px 高），字号 12，padding 紧凑，节省垂直空间
+// ViewSwitcher — 主舞台视图切换（粗斜体斜切块，样式 .ti-tab）
 //   · 左右拖拽换序（HTML5 native drag），顺序持久化到 localStorage
-//   · 不可关闭（无 × 按钮）— 今日/当日协议、昼夜表、洪流域三个固定视图
-//   · active 视觉：底部 1px 白色 underline + 文字加粗
+//   · 每个 tab 前有两位编号（01 02…）；当前视图 = 整块橙色 + 黑色粗斜体，一眼知道在哪
+//   · 「静态示范」两个开发用页面默认隐藏：在 tab 栏上右键切换显示
 // ══════════════════════════════════════════════
 
 import { useEffect, useRef, useState } from 'react'
-import { theme } from '../theme'
+import { ti } from '../theme'
 
 export type MainViewMode = 'motivation' | 'motivation_static' | 'daynight' | 'torrent' | 'torrent_static' | 'focus'
 
@@ -31,6 +30,12 @@ const DEFAULT_ORDER: ReadonlyArray<MainViewMode> = ['motivation', 'motivation_st
 const ORDER_STORAGE_KEY = 'slu.viewSwitcher.order.v6'
 
 const ALL_MODES: ReadonlyArray<MainViewMode> = ['motivation', 'motivation_static', 'daynight', 'torrent', 'torrent_static', 'focus']
+const DEMO_MODES: ReadonlyArray<MainViewMode> = ['motivation_static', 'torrent_static']
+const DEMO_STORAGE_KEY = 'slu.viewSwitcher.showDemos'
+
+function loadShowDemos(): boolean {
+  try { return localStorage.getItem(DEMO_STORAGE_KEY) === '1' } catch { return false }
+}
 
 function loadOrder(): MainViewMode[] {
   try {
@@ -48,12 +53,17 @@ function loadOrder(): MainViewMode[] {
 
 export default function ViewSwitcher({ viewMode, onChange, protocolLabel }: Props) {
   const [order, setOrder] = useState<MainViewMode[]>(loadOrder)
+  const [showDemos, setShowDemos] = useState<boolean>(loadShowDemos)
   const dragIdxRef = useRef<number | null>(null)
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null)
 
   useEffect(() => {
     try { localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(order)) } catch {}
   }, [order])
+
+  useEffect(() => {
+    try { localStorage.setItem(DEMO_STORAGE_KEY, showDemos ? '1' : '0') } catch {}
+  }, [showDemos])
 
   const swap = (from: number, to: number) => {
     if (from === to) return
@@ -65,14 +75,21 @@ export default function ViewSwitcher({ viewMode, onChange, protocolLabel }: Prop
     })
   }
 
+  // 编号按"可见 tab"顺序数，隐藏的示范页不占号
+  let visibleNo = 0
+
   return (
-    <div style={{
-      display: 'inline-flex',
-      alignItems: 'stretch',
-      // 紧贴下方面板 frame 顶边 — 不留底部 padding
-    }}>
+    <div
+      title="右键：显示 / 隐藏示范页"
+      onContextMenu={(e) => { e.preventDefault(); setShowDemos((v) => !v) }}
+      style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '0 12px 0 14px' }}
+    >
       {order.map((id, idx) => {
         const active = id === viewMode
+        // 示范页默认隐藏；正在看的那页照常显示，免得切过去后 tab 消失
+        if (!showDemos && !active && DEMO_MODES.includes(id)) return null
+        visibleNo += 1
+        const no = String(visibleNo).padStart(2, '0')
         const isDragOver = dragOverIdx === idx
         const label = id === 'motivation' ? protocolLabel : LABELS[id]
         return (
@@ -106,60 +123,23 @@ export default function ViewSwitcher({ viewMode, onChange, protocolLabel }: Prop
               setDragOverIdx(null)
             }}
             onClick={() => onChange(id)}
-            style={{
-              position: 'relative',
-              padding: '0 12px',
-              height: 20,
-              minWidth: 0,
-              background: active
-                ? 'rgba(255,255,255,0.04)'
-                : isDragOver ? 'rgba(255,255,255,0.06)' : 'transparent',
-              border: 'none',
-              borderRight: `1px solid ${theme.hudFrameSoft}`,
-              borderLeft: idx === 0 ? `1px solid ${theme.hudFrameSoft}` : 'none',
-              color: active ? theme.textPrimary : theme.textMuted,
-              cursor: 'pointer',
-              fontFamily: theme.fontBody,
-              fontSize: 11,
-              fontWeight: active ? 700 : 500,
-              letterSpacing: 0.3,
-              lineHeight: 1,
-              transition: 'background 0.12s, color 0.12s',
-              outline: 'none',
-              display: 'inline-flex',
-              alignItems: 'center',
-            }}
-            onMouseEnter={(e) => {
-              if (!active) (e.currentTarget as HTMLButtonElement).style.color = theme.textPrimary
-            }}
-            onMouseLeave={(e) => {
-              if (!active) (e.currentTarget as HTMLButtonElement).style.color = theme.textMuted
-            }}
+            className="ti-tab"
+            data-active={active ? '1' : undefined}
+            aria-pressed={active}
           >
-            {label}
-            {/* active 底部 1px 白色 underline */}
-            {active && (
-              <span
-                aria-hidden
-                style={{
-                  position: 'absolute',
-                  left: 0, right: 0, bottom: -1,
-                  height: 1,
-                  background: theme.textPrimary,
-                  boxShadow: `0 0 4px ${theme.textPrimary}88`,
-                }}
-              />
-            )}
+            <span className="ti-tab-inner">
+              <span className="ti-tab-no">{no}</span>
+              <span className="ti-tab-label">{label}</span>
+            </span>
             {/* drag-over 时左侧 insert 指示线 */}
             {isDragOver && dragIdxRef.current !== idx && (
               <span
                 aria-hidden
                 style={{
                   position: 'absolute',
-                  left: -1, top: 0, bottom: 0,
+                  left: -5, top: 2, bottom: 2,
                   width: 2,
-                  background: theme.warningOrange,
-                  boxShadow: `0 0 4px ${theme.warningOrange}AA`,
+                  background: ti.led,
                 }}
               />
             )}

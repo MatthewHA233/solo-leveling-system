@@ -8,7 +8,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { Download, Check, AlertTriangle, Loader2, FolderOpen, ScanText, Trash2, Star } from 'lucide-react'
 import type { BiliSpan } from '../lib/local-api'
-import { theme } from '../theme'
+import { theme, tiKey, tiSurface } from '../theme'
 import { loadConfig } from '../lib/agent/agent-config'
 import Tooltip from './Tooltip'
 import HudSelect from './HudSelect'
@@ -317,7 +317,7 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
             style={{
               width: '100%', display: 'block',
               aspectRatio: '16/9', objectFit: 'cover',
-              background: 'rgba(20,20,30,0.5)',
+              background: 'rgba(27,26,24,0.5)',
             }}
             onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
           />
@@ -477,7 +477,7 @@ export default function BiliVideoPanel({ span, transcribeOpen, onToggleTranscrib
 
       <ConfirmDialog
         open={confirmDelete}
-        title="DELETE DOWNLOAD"
+        title="删除下载"
         titleColor={theme.dangerRed}
         question="删除该视频的全部本地内容？"
         details={[
@@ -556,16 +556,15 @@ function TranscribeButton({ active, onClick }: { active: boolean; onClick: () =>
       <button
         onClick={onClick}
         style={{
-          display: 'inline-flex', alignItems: 'center', gap: 4,
-          padding: '4px 9px',
-          fontFamily: theme.fontBody, fontSize: 11,
-          fontWeight: active ? 600 : 500,
+          ...tiKey,
+          display: 'inline-flex', alignItems: 'center', gap: 5,
+          height: 28, padding: '0 11px',
+          fontFamily: theme.fontBody, fontSize: 12,
+          fontWeight: 800,
           color: C,
-          background: active ? `${C}1f` : 'transparent',
-          border: `1px solid ${active ? C : `${C}55`}`,
-          borderRadius: 4,
+          // 面板开着 = 键按下：青色细环
+          boxShadow: active ? `0 0 0 1.5px ${C}, inset 0 2px 3px rgba(0,0,0,0.5)` : tiKey.boxShadow,
           cursor: 'pointer',
-          transition: 'background 0.14s, border-color 0.14s',
         }}
       >
         <ScanText size={12} />
@@ -589,13 +588,14 @@ function DeleteChip({ size, disabled, onClick }: {
       <style>{`
         .bvp-del {
           display: inline-flex; align-items: center; gap: 4px;
-          padding: 4px 9px;
-          font-family: ${theme.fontMono}; font-size: 10.5px; font-weight: 600;
+          height: 28px; padding: 0 10px;
+          font-family: ${theme.fontMono}; font-size: 11px; font-weight: 700;
           letter-spacing: 0.3px;
           color: ${green};
-          background: transparent;
-          border: 1px solid ${green}40;
-          border-radius: 4px;
+          background: ${tiSurface.well};
+          border: none;
+          box-shadow: ${tiSurface.wellShadow};
+          border-radius: 5px;
           cursor: pointer;
           transition: color .14s, border-color .14s, background .14s;
         }
@@ -604,8 +604,7 @@ function DeleteChip({ size, disabled, onClick }: {
         .bvp-del .bvp-del-ok { display: inline-flex; align-items: center; gap: 4px; }
         .bvp-del:not([disabled]):hover {
           color: ${red};
-          border-color: ${red}66;
-          background: ${red}12;
+          box-shadow: ${tiSurface.wellShadow}, inset 0 0 0 1px ${red}88;
         }
         .bvp-del:not([disabled]):hover .bvp-del-x  { display: inline-flex; align-items: center; gap: 4px; }
         .bvp-del:not([disabled]):hover .bvp-del-ok { display: none; }
@@ -624,22 +623,22 @@ function DeleteChip({ size, disabled, onClick }: {
 
 function primaryBtnStyle(color: string): React.CSSProperties {
   return {
-    display: 'inline-flex', alignItems: 'center', gap: 4,
-    padding: '4px 11px', fontSize: 11, fontWeight: 600,
+    ...tiKey,
+    display: 'inline-flex', alignItems: 'center', gap: 5,
+    height: 28, padding: '0 12px', fontSize: 12, fontWeight: 800,
     fontFamily: theme.fontBody,
-    color, background: `${color}1a`,
-    border: `1px solid ${color}`, borderRadius: 4,
+    color,
     cursor: 'pointer', letterSpacing: 0.3,
   }
 }
 
 function ghostBtnStyle(): React.CSSProperties {
   return {
-    display: 'inline-flex', alignItems: 'center', gap: 4,
-    padding: '4px 9px', fontSize: 11, fontWeight: 500,
+    ...tiKey,
+    display: 'inline-flex', alignItems: 'center', gap: 5,
+    height: 28, padding: '0 11px', fontSize: 12, fontWeight: 600,
     fontFamily: theme.fontBody,
-    color: theme.textSecondary, background: 'transparent',
-    border: `1px solid ${theme.divider}`, borderRadius: 4,
+    color: theme.textPrimary,
     cursor: 'pointer', letterSpacing: 0.3,
   }
 }

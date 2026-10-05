@@ -20,13 +20,13 @@ export default function DebugPrepWindow() {
   return (
     <div style={{
       minHeight: '100vh',
-      background: '#050810',
+      background: '#0E0D0B',
       color: '#cfd6e4',
       fontFamily: '"JetBrains Mono", monospace',
       padding: 24,
       display: 'flex', flexDirection: 'column', gap: 16,
     }}>
-      <div style={{ fontSize: 13, letterSpacing: 2, color: '#7DF9FF' }}>
+      <div style={{ fontSize: 13, letterSpacing: 2, color: '#FFB98A' }}>
         DEBUG · PrepOverlay 沙箱
       </div>
 
@@ -60,8 +60,8 @@ export default function DebugPrepWindow() {
         width, aspectRatio: '16 / 9',
         position: 'relative',
         background: '#000',
-        border: '1px solid rgba(125,249,255,0.25)',
-        boxShadow: '0 0 30px rgba(125,249,255,0.08)',
+        border: '1px solid rgba(255,185,138,0.25)',
+        boxShadow: '0 0 30px rgba(255,185,138,0.08)',
       }}>
         <PrepOverlay phase={phase} encoder={encoder} />
       </div>
@@ -82,9 +82,9 @@ function DebugBtn({ active, onClick, children }: {
       fontSize: 11,
       fontFamily: 'inherit',
       letterSpacing: 1,
-      background: active ? 'rgba(125,249,255,0.18)' : 'rgba(125,249,255,0.04)',
-      color: active ? '#7DF9FF' : '#8a93a3',
-      border: `1px solid ${active ? '#7DF9FFAA' : 'rgba(125,249,255,0.2)'}`,
+      background: active ? 'rgba(255,185,138,0.18)' : 'rgba(255,185,138,0.04)',
+      color: active ? '#FFB98A' : '#8a93a3',
+      border: `1px solid ${active ? '#7DF9FFAA' : 'rgba(255,185,138,0.2)'}`,
       cursor: 'pointer',
       borderRadius: 2,
     }}>

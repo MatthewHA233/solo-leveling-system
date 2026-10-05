@@ -1038,7 +1038,7 @@ export default function AnchorFieldMap({ cards, bindingsByCard, onJumpToCard }: 
                     fontSize={8}
                     fontFamily={theme.fontBody}
                     pointerEvents="none"
-                    style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.85)', strokeWidth: 2.5 }}
+                    style={{ paintOrder: 'stroke', stroke: 'rgba(12,11,9,0.85)', strokeWidth: 2.5 }}
                   >
                     {ln.text}
                   </text>
@@ -1064,7 +1064,7 @@ export default function AnchorFieldMap({ cards, bindingsByCard, onJumpToCard }: 
                   fontSize={11.5}
                   fontWeight={600}
                   fontFamily={theme.fontBody}
-                  style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.88)', strokeWidth: 3 }}
+                  style={{ paintOrder: 'stroke', stroke: 'rgba(12,11,9,0.88)', strokeWidth: 3 }}
                 >
                   {line}
                 </text>
@@ -1099,7 +1099,7 @@ export default function AnchorFieldMap({ cards, bindingsByCard, onJumpToCard }: 
                   fill="#f4d896"
                   fontSize={8}
                   fontFamily={theme.fontBody}
-                  style={{ paintOrder: 'stroke', stroke: 'rgba(0,6,16,0.85)', strokeWidth: 2.5 }}
+                  style={{ paintOrder: 'stroke', stroke: 'rgba(12,11,9,0.85)', strokeWidth: 2.5 }}
                 >
                   {ln.text}
                 </text>
@@ -1136,12 +1136,12 @@ export default function AnchorFieldMap({ cards, bindingsByCard, onJumpToCard }: 
                 d={mountainPath(s)}
                 fill={hot ? 'url(#af-peak-hot)' : 'url(#af-peak)'}
                 fillOpacity={hot ? MOUNTAIN_FILL_OPACITY_HOT : MOUNTAIN_FILL_OPACITY}
-                stroke="rgba(6,14,26,0.9)"
+                stroke="rgba(19,18,16,0.9)"
                 strokeWidth={0.8}
                 strokeLinejoin="round"
               />
               {/* 右侧暗面，给山体一点体积感 */}
-              <path d={`M ${s * 0.32},${-h} L ${s},0 L 0,0 Z`} fill="rgba(10,24,40,0.30)" />
+              <path d={`M ${s * 0.32},${-h} L ${s},0 L 0,0 Z`} fill="rgba(28,27,25,0.30)" />
             </g>
           )
         })}
@@ -1150,11 +1150,11 @@ export default function AnchorFieldMap({ cards, bindingsByCard, onJumpToCard }: 
       {/* 左上统计 */}
       {stats && (
         <div style={styles.stats}>
-          <div>ANCHORS {stats.anchors}</div>
-          <div>BINDINGS {stats.bindings}</div>
-          <div>TOPICS {clusters.length}</div>
-          <div>DAYS {stats.days}</div>
-          <div>SINCE {stats.since}</div>
+          <div>锚点 {stats.anchors}</div>
+          <div>绑定 {stats.bindings}</div>
+          <div>主题 {clusters.length}</div>
+          <div>天数 {stats.days}</div>
+          <div>始于 {stats.since}</div>
           {!semantic.usingEmbedding && <div style={{ color: theme.warningOrange }}>语义定位待嵌入</div>}
         </div>
       )}
@@ -1568,7 +1568,7 @@ const styles: Record<string, CSSProperties> = {
     flexDirection: 'column',
     gap: 2,
     padding: '6px 6px',
-    background: 'rgba(4, 12, 25, 0.72)',
+    background: 'rgba(18,17,15,0.72)',
     border: `1px solid ${theme.hudFrameSoft}`,
     borderRadius: 5,
     backdropFilter: 'blur(4px)',
@@ -1598,7 +1598,7 @@ const styles: Record<string, CSSProperties> = {
     textAlign: 'left',
   },
   regionItemActive: {
-    background: 'rgba(0,229,255,0.10)',
+    background: 'rgba(255,138,76,0.10)',
     color: theme.textPrimary,
   },
   regionDot: {
@@ -1629,7 +1629,7 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'center',
     gap: 4,
     padding: '4px 8px',
-    background: 'rgba(4, 12, 25, 0.78)',
+    background: 'rgba(18,17,15,0.78)',
     border: `1px solid ${theme.hudFrameSoft}`,
     borderRadius: 5,
     backdropFilter: 'blur(4px)',
@@ -1670,7 +1670,7 @@ const styles: Record<string, CSSProperties> = {
     flexDirection: 'column',
     gap: 7,
     padding: '10px 14px',
-    background: 'rgba(4, 12, 25, 0.88)',
+    background: 'rgba(18,17,15,0.88)',
     border: `1px solid ${theme.hudFrameSoft}`,
     borderRadius: 6,
     backdropFilter: 'blur(6px)',

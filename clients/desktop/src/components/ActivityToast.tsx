@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { useEffect, useRef, useState } from 'react'
-import { theme } from '../theme'
+import { theme, tiSurface } from '../theme'
 
 interface Props {
   toast: {
@@ -68,9 +68,10 @@ export default function ActivityToast({ toast, onDismiss, rightPanelWidth = 340 
         zIndex: 9000,
         display: 'flex', alignItems: 'center', gap: 12,
         padding: '10px 18px',
-        background: 'rgba(4,10,20,0.94)',
-        border: `1px solid ${toast.color}AA`,
-        boxShadow: `0 6px 24px rgba(0,0,0,0.55), 0 0 24px ${toast.color}33`,
+        background: tiSurface.plate,
+        borderRadius: 7,
+        // 钛板浮条：左侧一道活动色刻条标出是哪个标签
+        boxShadow: `${tiSurface.popShadow}, inset 3px 0 0 ${toast.color}`,
         fontFamily: theme.fontBody,
         color: theme.textPrimary,
         backdropFilter: 'blur(6px)',
@@ -78,7 +79,7 @@ export default function ActivityToast({ toast, onDismiss, rightPanelWidth = 340 
       }}
     >
       <span style={{
-        width: 10, height: 10,
+        width: 10, height: 10, borderRadius: 2,
         background: isErase ? 'transparent' : toast.color,
         border: `2px solid ${toast.color}`,
         flexShrink: 0,

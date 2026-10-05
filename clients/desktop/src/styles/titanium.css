@@ -1,0 +1,402 @@
+/* ══════════════════════════════════════════════
+   钛合金机体 —— 材质系统（2026-09-30 定向）
+   面板是"物"：拉丝钛板、下沉黑玻璃凹槽、凸起实体键、刻槽、自发光 LED。
+   光只从"灯"里来（LED 读数、指示灯、灯条），普通文字不发光。
+   不用四角直角括号当装饰。
+   ══════════════════════════════════════════════ */
+
+:root {
+  --ti-plate: #1A1917;
+  --ti-well: #070706;
+  --ti-text: #E4E0DA;
+  --ti-text-dim: #CBC6BF;
+  --ti-text-muted: #A8A39C;
+  --ti-text-faint: #8E8982;
+  --ti-led: #FF8A4C;
+  --ti-led-hi: #FF9A5C;
+  --ti-led-glow: rgba(255, 130, 60, 0.75);
+  --ti-ok: #9BF0A8;
+  --ti-sys: #9ED8F2;
+  --ti-font-tech: 'Chakra Petch', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
+  --ti-font-led: 'Doto', 'JetBrains Mono', monospace;
+  --ti-font-mono: 'JetBrains Mono', 'Cascadia Mono', 'Consolas', monospace;
+  /* 拉丝：1px 亮线 + 1px 暗线交错，宽度不等才像金属而不像条纹 */
+  --ti-brushed: repeating-linear-gradient(90deg,
+    rgba(255, 255, 255, 0.014) 0 1px, transparent 1px 2px,
+    rgba(0, 0, 0, 0.035) 2px 3px, transparent 3px 5px);
+}
+
+/* ── 钛板：面板的底材（上沿受光、下沿压暗、投影托起） ── */
+.ti-plate {
+  background-color: var(--ti-plate);
+  background-image: var(--ti-brushed), linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(0, 0, 0, 0.14));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.17),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.85),
+    0 12px 28px rgba(0, 0, 0, 0.55);
+  border-radius: 8px;
+}
+
+/* ── 凹槽：下沉的黑玻璃（输入框、读数、主人的消息） ── */
+.ti-well {
+  background: var(--ti-well);
+  /* 槽底压暗 + 一圈暗沿 + 下唇受光：凹下去的边界要一眼看出来 */
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.95), inset 0 0 0 1px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.11);
+  border-radius: 6px;
+}
+
+/* ── 实体键：一眼就看得出能点 ──
+   更亮的键体 + 一圈深色描边（按钮的轮廓）+ 上沿高光 + 下沿压暗（有厚度）；图标 / 字接近纯白
+   悬停亮一圈橙色描边；按下下沉；开着的开关 = 整块橙色 + 黑色图标 */
+.ti-key {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border: none; padding: 0; cursor: pointer;
+  color: var(--ti-text);
+  font-weight: 700;
+  background: linear-gradient(180deg, #3A3733, #26241F);
+  box-shadow:
+    0 0 0 1px #080807,
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.35),
+    0 3px 5px rgba(0, 0, 0, 0.55);
+  border-radius: 5px;
+  transition: color 0.12s, background 0.12s, box-shadow 0.12s, transform 0.06s;
+  flex-shrink: 0;
+}
+.ti-key:hover:not(:disabled) {
+  background: linear-gradient(180deg, #46423D, #2D2A26);
+  box-shadow:
+    0 0 0 1px var(--ti-led),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.35),
+    0 3px 8px rgba(0, 0, 0, 0.55),
+    0 0 10px rgba(255, 120, 60, 0.25);
+}
+.ti-key:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: 0 0 0 1px #080807, inset 0 2px 3px rgba(0, 0, 0, 0.6);
+}
+.ti-key[data-active="1"] {
+  color: #140A04;
+  background: linear-gradient(180deg, #FFA66E, #EC6E32);
+  box-shadow:
+    0 0 0 1px #080807,
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.2),
+    0 3px 6px rgba(0, 0, 0, 0.55),
+    0 0 12px rgba(255, 120, 60, 0.3);
+}
+.ti-key[data-active="1"]:hover:not(:disabled) { background: linear-gradient(180deg, #FFB585, #F27A3E); }
+.ti-key:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* 主操作：实色橙 + 黑色粗体字（记录 / 发送 / 回今天） */
+.ti-key-primary {
+  color: #140A04;
+  font-weight: 900;
+  background: linear-gradient(180deg, #FFA66E, #EC6E32);
+  box-shadow:
+    0 0 0 1px #080807,
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.22),
+    0 0 16px rgba(255, 120, 60, 0.3),
+    0 3px 7px rgba(0, 0, 0, 0.6);
+}
+.ti-key-primary:hover:not(:disabled) {
+  color: #140A04;
+  background: linear-gradient(180deg, #FFBA8E, #F47A3E);
+  box-shadow:
+    0 0 0 1px #080807,
+    0 0 0 3px rgba(255, 138, 76, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 3px 8px rgba(0, 0, 0, 0.6);
+}
+.ti-key-primary:disabled {
+  opacity: 1; color: var(--ti-text-faint); cursor: default;
+  background: linear-gradient(180deg, #2C2A27, #1F1D1B);
+  box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* ── 视图键位：粗斜体斜切块；选中 = 整块橙色 + 黑色粗斜体 ── */
+.ti-tab {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 32px; padding: 0 16px;
+  transform: skewX(-14deg);
+  border: none; border-radius: 3px; cursor: pointer;
+  color: var(--ti-text-dim);
+  background: linear-gradient(180deg, #34312D, #24221F);
+  box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 2px 4px rgba(0, 0, 0, 0.5);
+  transition: background 0.12s, color 0.12s, box-shadow 0.12s;
+  outline: none;
+}
+.ti-tab > .ti-tab-inner { transform: skewX(14deg); display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.ti-tab:not([data-active="1"]):hover {
+  color: var(--ti-text);
+  background: linear-gradient(180deg, #403C37, #2A2825);
+  box-shadow: 0 0 0 1px var(--ti-led), inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+.ti-tab[data-active="1"] {
+  color: #140A04;
+  background: linear-gradient(180deg, #FFA66E, #EC6E32);
+  box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 0 14px rgba(255, 120, 60, 0.3), 0 2px 5px rgba(0, 0, 0, 0.5);
+}
+.ti-tab-label { font-weight: 900; font-style: italic; font-size: 14px; letter-spacing: 0.04em; }
+.ti-tab-no { font-family: var(--ti-font-mono); font-size: 9px; opacity: 0.65; }
+
+/* ── 刻槽：暗线 + 亮线 = 刻进金属的一道缝 ── */
+.ti-groove-h {
+  height: 2px; flex-shrink: 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.9);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.11);
+}
+.ti-groove-v {
+  width: 2px; flex-shrink: 0; align-self: stretch;
+  border-left: 1px solid rgba(0, 0, 0, 0.9);
+  border-right: 1px solid rgba(255, 255, 255, 0.11);
+}
+
+/* ── 纹理 ── */
+.ti-hatch { background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.075) 0 1px, transparent 1px 5px); }
+.ti-stripe { background-image: repeating-linear-gradient(135deg, var(--ti-led) 0 4px, #141311 4px 8px); }
+
+/* ── 字：铭文小标 / 科技字 / 点阵 LED 读数 ── */
+.ti-label {
+  font-family: var(--ti-font-mono);
+  font-size: 8.5px; letter-spacing: 0.22em;
+  color: var(--ti-text-faint);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.ti-tech { font-family: var(--ti-font-tech); }
+.ti-led {
+  font-family: var(--ti-font-led);
+  font-weight: 900;
+  color: var(--ti-led-hi);
+  text-shadow: 0 0 8px var(--ti-led-glow);
+  white-space: nowrap;
+}
+.ti-led-dim { font-family: var(--ti-font-led); font-weight: 700; color: #8E8982; white-space: nowrap; }
+
+/* ── 指示灯 ── */
+.ti-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.ti-dot-ok { background: var(--ti-ok); box-shadow: 0 0 7px rgba(130, 240, 150, 0.9); }
+.ti-dot-led { background: var(--ti-led); box-shadow: 0 0 6px rgba(255, 120, 60, 0.95); }
+.ti-dot-sys { background: var(--ti-sys); box-shadow: 0 0 7px rgba(150, 215, 245, 0.95); }
+.ti-dot-off { background: #3A3733; }
+
+/* ── 键帽提示（R-ALT） ── */
+.ti-keycap {
+  display: inline-block;
+  padding: 2px 6px 3px;
+  border-radius: 3px;
+  font-family: var(--ti-font-mono);
+  font-size: 9.5px; letter-spacing: 0.06em; line-height: 1.2;
+  color: #D9D4CD;
+  background: linear-gradient(180deg, #302E2A, #1F1E1B);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.13), 0 2px 0 #060606, 0 3px 5px rgba(0, 0, 0, 0.55);
+  white-space: nowrap;
+}
+
+/* ── 主舞台屏幕：嵌在钛框里的黑玻璃（内阴影 + 一道斜光） ── */
+.ti-screen {
+  position: relative;
+  background-color: #050505;
+  /* 切角屏：和机体板同一种 45° 语法，不用圆角 */
+  clip-path: polygon(8px 0, calc(100% - 8px) 0, 100% 8px, 100% calc(100% - 8px), calc(100% - 8px) 100%, 8px 100%, 0 calc(100% - 8px), 0 8px);
+  overflow: hidden;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.95), 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+.ti-screen::after {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  border-radius: inherit;
+  box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.4);
+  background: linear-gradient(115deg, rgba(255, 255, 255, 0.035) 0%, transparent 24%, transparent 76%, rgba(255, 255, 255, 0.015) 100%);
+}
+
+/* ── 全局颗粒：让所有面板有"物"的质地（一张 180px 噪声瓦片平铺，静态、不重绘） ── */
+.ti-grain {
+  position: fixed; inset: 0;
+  pointer-events: none;
+  z-index: 9000;
+  opacity: 0.1;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.1' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+}
+
+/* ── LED 动画 ── */
+/* 思考中：灯柱逐格追光 */
+@keyframes tiChase {
+  0%, 100% { background: #2B2926; box-shadow: none; }
+  30%      { background: var(--ti-led); box-shadow: 0 0 5px rgba(255, 120, 60, 0.9); }
+}
+/* 说话中：整柱呼吸 */
+@keyframes tiBreath {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 1; }
+}
+
+/* ── 顶栏视图键位：悬停提亮 ── */
+
+
+/* ══════════════════════════════════════════════
+   冷光全息层 —— 金属是骨，全息是光
+   大面板描一圈虹彩边（冰蓝 → 无 → 信号橙）；屏幕是冷光投影面（顶沿冰蓝光 + 刻度 + 蜂巢微纹）；
+   冰蓝只做"光"，不做字色主调（字仍是钛白，强调仍是信号橙）
+   ══════════════════════════════════════════════ */
+:root {
+  --ti-ice: #9ED8F2;
+  --ti-ice-hi: #C8ECFC;
+  /* 蜂巢微纹：14×24.25 的尖顶六边形瓦片 */
+  --ti-hex: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='24.25'%3E%3Cpath d='M7 0L14 4.04L14 12.12L7 16.17L0 12.12L0 4.04ZM7 16.17L7 24.25' fill='none' stroke='%239ED8F2' stroke-opacity='0.06' stroke-width='0.6'/%3E%3C/svg%3E");
+}
+
+/* 冷光投影屏：和 .ti-screen 叠用 */
+.ti-holo-screen {
+  background-color: #04070A;
+  box-shadow:
+    inset 0 2px 8px rgba(0, 0, 0, 0.95),
+    inset 0 0 0 1px rgba(158, 216, 242, 0.16);
+}
+
+/* 屏幕唇边：屏幕嵌进钛板的那一圈切削面——上沿背光发黑、下沿受光发亮，屏幕因此"陷"进去 */
+.ti-screen-rim {
+  padding: 2px;
+  clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px), 0 9px);
+  background: linear-gradient(180deg, #000 0%, #0B0A09 45%, #2A2724 80%, #4A4540 100%);
+}
+.ti-holo-screen::before {
+  /* 顶沿刻度：短刻 10px 一格、长刻 50px 一格（不画渐变光线） */
+  content: '';
+  position: absolute; left: 10px; right: 10px; top: 0; height: 6px;
+  z-index: 51; pointer-events: none;
+  background:
+    repeating-linear-gradient(90deg, rgba(158, 216, 242, 0.42) 0 1px, transparent 1px 10px) 0 0 / 100% 3px no-repeat,
+    repeating-linear-gradient(90deg, rgba(158, 216, 242, 0.8) 0 1px, transparent 1px 50px) 0 0 / 100% 7px no-repeat;
+}
+.ti-holo-screen::after {
+  background:
+    radial-gradient(ellipse 80% 45% at 50% 0%, rgba(110, 180, 225, 0.08), transparent 70%),
+    linear-gradient(115deg, rgba(200, 236, 252, 0.035) 0%, transparent 24%, transparent 76%, rgba(200, 236, 252, 0.015) 100%),
+    var(--ti-hex);
+  background-size: auto, auto, 14px 24.25px;
+}
+
+/* 全息玻璃带（聊天栏头部等）：冷光渐层 + 蜂巢微纹 + 顶沿冷高光 */
+.ti-holo-band {
+  background:
+    linear-gradient(180deg, rgba(158, 216, 242, 0.075), rgba(158, 216, 242, 0.012)),
+    var(--ti-hex);
+  background-size: auto, 14px 24.25px;
+  box-shadow: inset 0 1px 0 rgba(200, 236, 252, 0.12);
+}
+
+/* 散热格栅：一组刻进钛板的短槽（纯机体细节）
+   每条槽 = 2px 深黑槽底 + 1px 受光的槽口唇边，槽与槽之间露钛板；对比要够，暗环境里也要看得出是格栅 */
+.ti-vents {
+  display: inline-block; flex-shrink: 0;
+  height: 12px;
+  border-radius: 2px;
+  background-image: repeating-linear-gradient(90deg,
+    #020202 0 2px, rgba(255, 255, 255, 0.3) 2px 3px, transparent 3px 5px);
+  box-shadow: 0 -1px 0 rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+/* 冰蓝菱形灯：全息对象的标记 */
+.ti-diamond {
+  display: inline-block; flex-shrink: 0;
+  width: 6px; height: 6px;
+  transform: rotate(45deg);
+  background: var(--ti-ice-hi);
+  box-shadow: 0 0 6px rgba(150, 215, 245, 0.95);
+}
+
+/* 段选里未选中的格：平时透明，悬停提亮 */
+.dn-seg:hover { color: var(--ti-text) !important; background: rgba(255, 255, 255, 0.07) !important; box-shadow: inset 0 0 0 1px rgba(255, 138, 76, 0.55); }
+
+/* ══════════════════════════════════════════════
+   历史抽屉 + 联结卡扣（components/ui/DockCoupler.tsx）
+   打开：抽屉从通讯栏背后滑出（外壳 overflow 裁在接缝上）→ 锁栓推出越过接缝 → 指示灯亮 + 栓头一闪
+   收起：先退栓灭灯，再把抽屉收回去
+   ══════════════════════════════════════════════ */
+@keyframes dockDrawerIn  { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes dockDrawerOut { from { transform: translateX(0); }    to { transform: translateX(100%); } }
+.session-picker-root { animation: dockDrawerIn 300ms cubic-bezier(.2, .8, .2, 1) both; }
+.session-picker-root[data-phase="closing"] { animation: dockDrawerOut 230ms cubic-bezier(.6, 0, .8, .4) 120ms both; }
+
+.dock-latch > span { position: absolute; display: block; }
+
+/* 锁槽：抽屉边上一道下沉的黑玻璃口 */
+.dock-latch-slot {
+  width: 14px; height: 10px;
+  border-radius: 2px 0 0 2px;
+  background: #040403;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 1), inset 1px 0 0 rgba(0, 0, 0, 0.9), 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* 栓座：骑在侧脊上的一小块钛，两颗螺丝 */
+.dock-latch-housing {
+  width: 20px; height: 32px;
+  border-radius: 2px 4px 4px 2px;
+  background:
+    var(--ti-brushed),
+    linear-gradient(180deg, #3D3A36, #24221F 55%, #1B1A18);
+  box-shadow:
+    0 0 0 1px #080807,
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.6),
+    0 3px 6px rgba(0, 0, 0, 0.6);
+}
+.dock-latch-screw {
+  position: absolute;
+  width: 4px; height: 4px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #6A655E, #1E1C1A 70%);
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.9), 0 0.5px 0 rgba(255, 255, 255, 0.12);
+}
+/* 指示灯：栓座右侧一粒，锁上才亮 */
+.dock-latch-led {
+  position: absolute; right: 2px; top: 13px;
+  width: 3px; height: 6px; border-radius: 1px;
+  background: var(--ti-led-off, #3E3A36);
+}
+
+/* 栓舌：阳极氧化橙 */
+.dock-latch-bolt {
+  width: 14px; height: 6px;
+  border-radius: 1px 2px 2px 1px;
+  background: linear-gradient(180deg, #FFB27E, #F07A3C 45%, #A9471E);
+  box-shadow: 0 0 0 1px rgba(40, 14, 4, 0.85), inset 0 1px 0 rgba(255, 230, 210, 0.5);
+  overflow: hidden;
+}
+.dock-latch-flash {
+  position: absolute; inset: 0;
+  background: #FFE2CC;
+  opacity: 0;
+}
+
+/* ── 打开：栓座先冒出来，抽屉到位后推栓 → 亮灯 + 一闪（第二颗晚 50ms） ── */
+@keyframes latchHousingIn  { from { opacity: 0; transform: scaleY(0.3); } to { opacity: 1; transform: none; } }
+@keyframes latchHousingOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: scaleY(0.3); } }
+@keyframes latchFade       { from { opacity: 0; } to { opacity: 1; } }
+@keyframes latchFadeOut    { from { opacity: 1; } to { opacity: 0; } }
+@keyframes latchBoltIn     { from { transform: translateX(0); } 70% { transform: translateX(-14px); } to { transform: translateX(-13px); } }
+@keyframes latchBoltOut    { from { transform: translateX(-13px); } to { transform: translateX(0); } }
+@keyframes latchLedOn      { from { background: #3E3A36; box-shadow: none; } to { background: var(--ti-led); box-shadow: 0 0 6px rgba(255, 120, 60, 0.95); } }
+@keyframes latchLedOff     { from { background: var(--ti-led); box-shadow: 0 0 6px rgba(255, 120, 60, 0.95); } to { background: #3E3A36; box-shadow: none; } }
+@keyframes latchFlash      { 0% { opacity: 0; } 25% { opacity: 0.95; } 100% { opacity: 0; } }
+
+.dock-coupler .dock-latch-housing { animation: latchHousingIn 160ms ease-out calc(var(--latch-i) * 50ms) both; }
+.dock-coupler .dock-latch-slot    { animation: latchFade 160ms ease-out 120ms both; }
+.dock-coupler .dock-latch-bolt    { animation: latchBoltIn 180ms cubic-bezier(.3, 1.3, .5, 1) calc(280ms + var(--latch-i) * 50ms) both; }
+.dock-coupler .dock-latch-led     { animation: latchLedOn 120ms ease-out calc(430ms + var(--latch-i) * 50ms) both; }
+.dock-coupler .dock-latch-flash   { animation: latchFlash 280ms ease-out calc(430ms + var(--latch-i) * 50ms) both; }
+
+/* ── 收起：退栓灭灯 → 栓座缩回 ── */
+.dock-coupler[data-phase="closing"] .dock-latch-bolt    { animation: latchBoltOut 110ms ease-in calc(var(--latch-i) * 30ms) both; }
+.dock-coupler[data-phase="closing"] .dock-latch-led     { animation: latchLedOff 80ms linear both; }
+.dock-coupler[data-phase="closing"] .dock-latch-flash   { animation: none; opacity: 0; }
+.dock-coupler[data-phase="closing"] .dock-latch-slot    { animation: latchFadeOut 120ms ease-in 200ms both; }
+.dock-coupler[data-phase="closing"] .dock-latch-housing { animation: latchHousingOut 140ms ease-in 230ms both; }

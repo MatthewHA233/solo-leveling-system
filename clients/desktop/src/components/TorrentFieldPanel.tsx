@@ -2,8 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { Hash, Image as ImageIcon, Type, List, ListOrdered, AtSign, Send, Check, ChevronDown, ChevronUp, Pencil, Plus, Unlink } from 'lucide-react'
-import { hud, theme } from '../theme'
-import { HudFrameSkeleton, HudTabButton, CornerArt, ChartHeaderFrame } from './hud'
+import { theme, ti, tiSurface } from '../theme'
+import Segmented from './ui/Segmented'
 import type { ContextFeedItem, AnchorBinding, AnchorRef, AnchorCategory } from '../lib/local-api'
 import { fetchContextFeed, addContextCard, deleteContextCard, updateContextCard, fetchAllBindings, groupBindingsByCard, deleteBinding, addBinding, updateAnchor, addAnchorToBinding } from '../lib/local-api'
 import AnchorTextRenderer, { AnchorChip, ANCHOR_CAT_COLOR, ANCHOR_CAT_SHORT } from './AnchorTextRenderer'
@@ -211,90 +211,22 @@ export default function TorrentFieldPanel() {
   return (
     <BindingsContext.Provider value={bindingsByCard}>
     <div style={styles.root}>
-      <div style={styles.backdrop} />
-      <div style={styles.grid} />
-
-      {/* tabs 行：跟 DayNightChart 同结构 — 面板标题 + 视图切换，紧贴顶部，与 ChartHeaderFrame 凹陷条同坐标 */}
+      {/* 视图切换：钛合金段选（面板标题「洪流域」已在主面板凸台上，这里不重复） */}
       <div style={styles.tabsRow}>
-        <span style={styles.tabsTitle}>洪流域</span>
         <span style={styles.tabsLabel}>视图</span>
-        <HudTabButton
-          label="想法卡片"
-          active={subview === 'cards'}
-          color={theme.flameTeal}
-          width={96}
-          height={24}
-          onClick={() => setSubview('cards')}
+        <Segmented<'cards' | 'context' | 'anchors'>
+          value={subview}
+          onChange={setSubview}
+          options={[
+            { value: 'cards', label: '想法卡片', led: ti.ok, tip: '随手记下的想法' },
+            { value: 'context', label: '语境库', led: ti.sys, tip: '转录过的视频语境' },
+            { value: 'anchors', label: '锚点域', led: '#C9A6F0', tip: '锚点认知地图' },
+          ]}
         />
-        <HudTabButton
-          label="语境库"
-          active={subview === 'context'}
-          color={theme.electricBlue}
-          width={82}
-          height={24}
-          onClick={() => setSubview('context')}
-        />
-        <HudTabButton
-          label="锚点域"
-          active={subview === 'anchors'}
-          color={theme.shadowPurple}
-          width={82}
-          height={24}
-          onClick={() => setSubview('anchors')}
-        />
+        <div className="ti-groove-h" style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }} />
       </div>
 
-      {/* 框架照搬 DayNightChart：HudFrameSkeleton + 4 CornerArt + 3 切角遮罩 + ChartHeaderFrame */}
       <div style={styles.frameWrap}>
-        <HudFrameSkeleton />
-        <CornerArt position="tl" />
-        <CornerArt position="tr" />
-        <CornerArt position="bl" />
-        <CornerArt position="br" />
-
-        {/* 右上 frame 切角遮罩（18×18） */}
-        <div style={{
-          position: 'absolute',
-          right: 0, top: 0, width: 18, height: 18,
-          background: theme.background,
-          clipPath: 'polygon(100% 0, 100% 100%, 0 0)',
-          WebkitClipPath: 'polygon(100% 0, 100% 100%, 0 0)',
-          zIndex: 65,
-          pointerEvents: 'none',
-        }} />
-        {/* 右下 frame 切角遮罩 */}
-        <div style={{
-          position: 'absolute',
-          right: 0, bottom: 0, width: 18, height: 18,
-          background: theme.background,
-          clipPath: 'polygon(0 100%, 100% 0, 100% 100%)',
-          WebkitClipPath: 'polygon(0 100%, 100% 0, 100% 100%)',
-          zIndex: 65,
-          pointerEvents: 'none',
-        }} />
-        {/* 左下 frame 切角遮罩 */}
-        <div style={{
-          position: 'absolute',
-          left: 0, bottom: 0, width: 18, height: 18,
-          background: theme.background,
-          clipPath: 'polygon(0 0, 100% 100%, 0 100%)',
-          WebkitClipPath: 'polygon(0 0, 100% 100%, 0 100%)',
-          zIndex: 65,
-          pointerEvents: 'none',
-        }} />
-
-        {/* 顶部 HUD 装饰带：凹陷凸塔（参考 DayNightChart 同款参数） */}
-        <ChartHeaderFrame
-          mainHeight={30}
-          rightOffset={24}
-          paddingRightFull={24.5}
-          topOffsetLeft={24}
-          topOffsetRight={24}
-          slopeLen={14}
-          rightSegLen={90}
-          notchWidth={150}
-        />
-
         <main style={styles.content}>
           {subview === 'cards' ? (
             <ThoughtDock
@@ -341,7 +273,7 @@ export default function TorrentFieldPanel() {
 
       <ConfirmDialog
         open={pendingDelete !== null}
-        title="DELETE CARD"
+        title="删除想法卡"
         danger
         question="删除这张想法卡？"
         details={pendingDelete ? [
@@ -512,11 +444,11 @@ function FlomoMain({
           transition: background 0.15s, border-color 0.15s;
         }
         .torrent-sentence-row:hover {
-          background: ${theme.electricBlue}0D;
+          background: rgba(255,255,255,0.05);
         }
         .torrent-sentence-row.is-active {
-          border-left-color: ${theme.electricBlue};
-          background: ${theme.electricBlue}10;
+          border-left-color: ${theme.flameTeal};
+          background: ${theme.flameTeal}14;
         }
       `}</style>
       {showCompose && (
@@ -524,7 +456,7 @@ function FlomoMain({
           style={{
             ...styles.composer,
             minHeight: expanded ? 160 : 64,
-            borderColor: expanded ? `${theme.flameTeal}88` : theme.hudFrameSoft,
+            borderColor: expanded ? `${theme.flameTeal}88` : 'transparent',
           }}
         >
           <textarea
@@ -578,7 +510,7 @@ function FlomoMain({
             <section key={group.key} style={styles.daySection}>
               <div style={styles.dayHeader}>
                 <span style={styles.dayHeaderTitle}>{formatDayHeading(group.date)}</span>
-                <span style={styles.dayHeaderCount}>{group.cards.length} CARD</span>
+                <span style={styles.dayHeaderCount}>{group.cards.length} 张</span>
               </div>
               <div style={styles.dayMemoStack}>
                 {group.cards.map((card) => (
@@ -712,12 +644,12 @@ function LinkToVideoModal({ thought, anchors, onClose, onDone }: {
 
   return createPortal(
     <>
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 99990, background: 'rgba(2,6,16,0.78)' }} />
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 99990, background: 'rgba(12,11,9,0.78)' }} />
       <div onClick={(e) => e.stopPropagation()} style={{
         position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
         width: 'min(580px, 92vw)', maxHeight: '82vh', zIndex: 99991,
         background: theme.hudFill, border: `1px solid ${theme.hudFrame}`,
-        boxShadow: `0 18px 60px rgba(0,0,0,0.7), 0 0 40px ${theme.hudHalo}`,
+        boxShadow: tiSurface.plateShadow,
         padding: '20px 22px 18px', fontFamily: theme.fontBody,
         display: 'flex', flexDirection: 'column', gap: 12,
       }}>
@@ -747,7 +679,7 @@ function LinkToVideoModal({ thought, anchors, onClose, onDone }: {
               onChange={(e) => setQuery(e.target.value)}
               placeholder="搜索转录句子（按关键词快速定位）…"
               style={{
-                background: 'rgba(0,12,28,0.5)', border: `1px solid ${theme.hudFrameSoft}`,
+                background: 'rgba(17,16,14,0.5)', border: `1px solid ${theme.hudFrameSoft}`,
                 color: theme.textPrimary, padding: '6px 10px', fontFamily: theme.fontBody, fontSize: 12, outline: 'none',
               }}
             />
@@ -1025,7 +957,7 @@ function EditableAnchorChip({ value, onCycleCategory, onKeywordChange }: {
           onClick={onCycleCategory}
           style={{
             display: 'flex', alignItems: 'center',
-            background: c, color: '#051018',
+            background: c, color: '#141311',
             fontWeight: 700, padding: '1px 5px', letterSpacing: '0.08em',
             flexShrink: 0, border: 'none', cursor: 'pointer',
             fontFamily: theme.fontMono, fontSize: 10.5,
@@ -1264,64 +1196,27 @@ const styles: Record<string, CSSProperties> = {
     overflow: 'hidden',
     display: 'flex',
     flexDirection: 'column',
-    // 左 20，右 30（让 ChartHeaderFrame 长竖线显示，rightOffset 24 + paddingRightFull 24.5 + 余量）
-    paddingLeft: 20,
-    paddingRight: 30,
-    paddingTop: 0,
-    paddingBottom: 20,
+    // 外框交给主面板（机体板 + 冷光屏），这里不再自带深底 / 网格 / 手绘框
     color: theme.textPrimary,
     fontFamily: theme.fontBody,
-    background: theme.background,
+    background: 'transparent',
   },
   tabsRow: {
     display: 'flex',
-    alignItems: 'flex-end',
-    gap: 0,
+    alignItems: 'center',
+    gap: 10,
     height: 30,
     flexShrink: 0,
-    padding: '0 24px 0 12px',
+    padding: '0 12px',
     position: 'relative',
     zIndex: 2,
-  },
-  tabsTitle: {
-    alignSelf: 'center',
-    fontFamily: theme.fontBody,
-    fontSize: 12,
-    fontWeight: 600,
-    color: theme.textPrimary,
-    letterSpacing: 0.4,
-    paddingLeft: 12,
-    paddingRight: 10,
-    marginRight: 4,
-    marginTop: 6,
+    background: 'linear-gradient(180deg, rgba(158,216,242,0.055), rgba(158,216,242,0))',
   },
   tabsLabel: {
-    alignSelf: 'center',
-    fontFamily: theme.fontBody,
-    fontSize: 10,
-    fontWeight: 500,
-    letterSpacing: 0.2,
+    fontSize: 11,
     color: theme.textMuted,
-    paddingRight: 6,
-    marginRight: 2,
-    marginTop: 6,
-  },
-  // 安静深底（flomo 式）：不抢内容的戏，只留极淡的顶部冷光
-  backdrop: {
-    position: 'absolute',
-    inset: 0,
-    background: `
-      radial-gradient(ellipse at 50% -10%, rgba(90,160,210,0.05), transparent 55%),
-      linear-gradient(180deg, rgba(4,9,20,0.96), rgba(1,3,8,0.98))
-    `,
-    pointerEvents: 'none',
-  },
-  grid: {
-    position: 'absolute',
-    inset: 0,
-    background: `${hud.grid}, ${hud.scanlines}`,
-    opacity: 0.72,
-    pointerEvents: 'none',
+    letterSpacing: '0.2em',
+    whiteSpace: 'nowrap',
   },
   frameWrap: {
     position: 'relative',
@@ -1375,36 +1270,39 @@ const styles: Record<string, CSSProperties> = {
     gap: 2,
   },
   statValue: {
-    fontFamily: theme.fontDisplay,
-    fontSize: 20,
-    fontWeight: 700,
+    fontFamily: "'Doto', " + theme.fontMono,
+    fontSize: 24,
+    fontWeight: 900,
     color: theme.textPrimary,
     lineHeight: 1,
-    letterSpacing: '0.04em',
+    letterSpacing: '0.02em',
   },
   statLabel: {
-    fontSize: 10,
+    fontSize: 11,
+    fontWeight: 700,
     color: theme.textMuted,
-    letterSpacing: '0.18em',
+    letterSpacing: '0.12em',
   },
   navItemActive: {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
     padding: '8px 10px',
-    border: `1px solid ${theme.flameTeal}55`,
-    background: 'rgba(0,255,224,0.08)',
+    border: 'none',
+    borderRadius: 5,
+    background: tiSurface.well,
+    boxShadow: `${tiSurface.wellShadow}, inset 3px 0 0 ${theme.flameTeal}`,
     color: theme.textPrimary,
     fontFamily: theme.fontBody,
-    fontSize: 12,
-    letterSpacing: '0.15em',
+    fontSize: 12.5,
+    fontWeight: 700,
+    letterSpacing: '0.1em',
     cursor: 'pointer',
     textAlign: 'left',
   },
   navDot: {
-    width: 6, height: 6,
+    width: 6, height: 6, borderRadius: 2,
     background: theme.flameTeal,
-    boxShadow: `0 0 6px ${theme.flameTeal}`,
   },
   // 右侧主栏
   flomoMain: {
@@ -1416,8 +1314,12 @@ const styles: Record<string, CSSProperties> = {
   },
   composer: {
     flexShrink: 0,
-    border: `1px solid ${theme.hudFrameSoft}`,
-    background: 'rgba(0,0,0,0.34)',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'transparent',
+    borderRadius: 7,
+    background: tiSurface.well,
+    boxShadow: tiSurface.wellShadow,
     display: 'flex',
     flexDirection: 'column',
     padding: '10px 12px 8px',
@@ -1441,7 +1343,7 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'center',
     gap: 6,
     paddingTop: 8,
-    borderTop: `1px solid ${theme.hudFrameSoft}`,
+    borderTop: '1px solid rgba(255,255,255,0.06)',
     marginTop: 6,
   },
   toolbarIcon: {
@@ -1500,8 +1402,8 @@ const styles: Record<string, CSSProperties> = {
     padding: '0 8px 10px 8px',
     borderLeftWidth: 1,
     borderLeftStyle: 'solid',
-    borderLeftColor: 'rgba(0,229,255,0.16)',
-    background: 'linear-gradient(90deg, rgba(0,229,255,0.035), rgba(0,0,0,0))',
+    borderLeftColor: 'rgba(0,0,0,0.6)',
+    boxShadow: 'inset 1px 0 0 rgba(255,255,255,0.1)',
   },
   dayHeader: {
     position: 'sticky',
@@ -1514,24 +1416,24 @@ const styles: Record<string, CSSProperties> = {
     padding: '0 4px 0 8px',
     marginBottom: 6,
     // 近实底 + 毛玻璃：之前 0.78 透明度会让滚过的卡片文字从表头底下透出来（"标题有缝"观感）
-    background: 'linear-gradient(180deg, rgba(3,10,22,0.99), rgba(3,10,22,0.92))',
+    background: 'linear-gradient(180deg, rgba(16,15,13,0.99), rgba(16,15,13,0.92))',
     backdropFilter: 'blur(5px)',
     WebkitBackdropFilter: 'blur(5px)',
-    borderBottom: `1px solid ${theme.hudFrameSoft}`,
+    borderBottom: '1px solid rgba(0,0,0,0.88)',
+    boxShadow: '0 1px 0 rgba(255,255,255,0.1)',
   },
   dayHeaderTitle: {
     fontFamily: theme.fontMono,
     color: theme.flameTeal,
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: 800,
-    letterSpacing: '0.18em',
-    textShadow: `0 0 8px ${theme.flameTeal}77`,
+    letterSpacing: '0.12em',
   },
   dayHeaderCount: {
-    fontFamily: theme.fontMono,
+    fontFamily: theme.fontBody,
     color: theme.textMuted,
-    fontSize: 9,
-    letterSpacing: '0.18em',
+    fontSize: 11,
+    letterSpacing: '0.06em',
   },
   dayMemoStack: {
     display: 'flex',
@@ -1546,7 +1448,7 @@ const styles: Record<string, CSSProperties> = {
     borderWidth: 1,
     borderStyle: 'solid',
     borderColor: 'rgba(120,170,220,0.14)',
-    background: 'linear-gradient(180deg, rgba(14,24,40,0.92), rgba(9,16,28,0.90))',
+    background: 'linear-gradient(180deg, rgba(29,28,26,0.92), rgba(22,21,19,0.90))',
     borderRadius: 10,
     boxShadow: '0 2px 12px rgba(0,0,0,0.35)',
     display: 'flex',
@@ -1646,12 +1548,12 @@ const styles: Record<string, CSSProperties> = {
     gap: 3,
     flexShrink: 0,
     color: '#ff6b6b',
-    background: 'rgba(255,107,107,0.12)',
-    border: '1px solid rgba(255,107,107,0.42)',
+    background: tiSurface.well,
+    boxShadow: `${tiSurface.wellShadow}, inset 0 0 0 1px rgba(255,107,107,0.45)`,
     borderRadius: 3,
-    padding: '0 5px',
-    height: 15,
-    fontSize: 9.5,
+    padding: '0 6px',
+    height: 17,
+    fontSize: 10.5,
     fontFamily: theme.fontMono,
     letterSpacing: '0.06em',
     cursor: 'pointer',
@@ -1678,7 +1580,7 @@ const styles: Record<string, CSSProperties> = {
   biliCard: {
     padding: '12px 16px 13px',
     border: `1px solid ${theme.electricBlue}30`,
-    background: 'linear-gradient(180deg, rgba(8,28,40,0.90), rgba(7,15,27,0.90))',
+    background: 'linear-gradient(180deg, rgba(30,29,27,0.90), rgba(20,19,17,0.90))',
     borderRadius: 10,
     boxShadow: '0 2px 12px rgba(0,0,0,0.35)',
     display: 'flex',
@@ -1774,7 +1676,7 @@ const styles: Record<string, CSSProperties> = {
     marginTop: 8,
     border: `1px solid ${theme.electricBlue}55`,
     borderRadius: 999,
-    background: 'rgba(7,15,27,0.93)',
+    background: 'rgba(20,19,17,0.93)',
     boxShadow: `0 4px 14px rgba(0,0,0,0.55), 0 0 10px ${theme.electricBlue}26`,
     color: theme.electricBlue,
     fontFamily: theme.fontMono,

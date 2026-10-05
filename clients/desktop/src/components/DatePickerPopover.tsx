@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
-import { theme, hud } from '../theme'
+import { theme, tiSurface, ti } from '../theme'
 import { fetchActivityBlocks, fetchActivityPalette, fetchBiliDayCounts } from '../lib/local-api'
 import type { BiliDayCount } from '../lib/local-api'
 import type { ActivityPalette } from '../types'
@@ -308,27 +308,31 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose,
         .dpp-cell.muted { color: ${theme.textMuted}; opacity: 0.32; }
         .dpp-cell.muted:hover { opacity: 0.7; }
         .dpp-cell.today {
-          color: ${theme.electricBlue};
-          text-shadow: 0 0 6px ${theme.electricBlue}AA;
+          color: ${ti.led};
+          font-weight: 900;
         }
         .dpp-cell.selected {
-          background: rgba(0,229,255,0.18);
-          border-color: ${theme.electricBlue};
-          color: ${theme.electricBlue};
-          text-shadow: 0 0 8px ${theme.electricBlue}AA;
-          box-shadow: 0 0 10px ${theme.electricBlue}55, inset 0 0 6px rgba(0,229,255,0.18);
+          background: rgba(255,138,76,0.14);
+          border-color: ${ti.led};
+          color: ${theme.textPrimary};
+          font-weight: 900;
         }
         .dpp-nav {
           display: flex; align-items: center; justify-content: center;
-          width: 22px; height: 22px;
-          background: transparent;
-          border: 1px solid ${theme.glassBorder};
-          color: ${theme.textSecondary};
+          width: 26px; height: 26px;
+          border: none;
+          border-radius: 5px;
+          background: linear-gradient(180deg, #3A3733, #26241F);
+          box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -2px 0 rgba(0,0,0,0.35), 0 3px 5px rgba(0,0,0,0.55);
+          color: ${theme.textPrimary};
+          font-weight: 800;
           cursor: pointer;
-          border-radius: 3px;
-          transition: all 0.12s ease;
+          transition: box-shadow 0.12s ease, background 0.12s ease;
         }
-        .dpp-nav:hover { color: ${theme.electricBlue}; border-color: ${theme.hudFrame}; box-shadow: 0 0 6px ${theme.electricBlue}55; }
+        .dpp-nav:hover {
+          background: linear-gradient(180deg, #46423D, #2D2A26);
+          box-shadow: 0 0 0 1px ${ti.led}, inset 0 1px 0 rgba(255,255,255,0.2), 0 3px 8px rgba(0,0,0,0.55);
+        }
       `}</style>
       <div
         ref={popRef}
@@ -340,22 +344,14 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose,
           zIndex: 1000,
           width: 260,
           padding: 12,
-          background: theme.hudFill,
-          border: `1px solid ${theme.hudFrame}`,
-          backdropFilter: 'blur(8px)',
-          WebkitBackdropFilter: 'blur(8px)',
-          clipPath: hud.chamfer8,
-          boxShadow: `0 8px 32px rgba(0,0,0,0.6), 0 0 24px ${theme.hudHalo}, inset 0 1px 0 rgba(255,255,255,0.04)`,
+          background: tiSurface.plate,
+          border: 'none',
+          borderRadius: 8,
+          boxShadow: tiSurface.plateShadow,
           animation: 'dpp-pop 0.14s ease-out',
           color: theme.textPrimary,
         }}
       >
-        {/* 扫描线叠加 */}
-        <div style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none',
-          background: hud.scanlines, opacity: 0.6, clipPath: hud.chamfer8,
-        }} />
-
         {/* Header: 年月 + 导航 */}
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <div style={{ display: 'flex', gap: 4 }}>
@@ -366,13 +362,10 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose,
             </button>
             </Tooltip>
           </div>
-          <div style={{
-            fontFamily: theme.fontDisplay,
-            fontSize: 12, fontWeight: 700, letterSpacing: 2,
-            color: theme.electricBlue,
-            textShadow: `0 0 8px ${theme.electricBlue}88`,
-          }}>
-            {viewMonth.y} · {String(viewMonth.m + 1).padStart(2, '0')}
+          <div className="ti-well" style={{ padding: '3px 10px', borderRadius: 5 }}>
+            <span className="ti-led" style={{ fontSize: 14, letterSpacing: 1 }}>
+              {viewMonth.y}·{String(viewMonth.m + 1).padStart(2, '0')}
+            </span>
           </div>
           <div style={{ display: 'flex', gap: 4 }}>
             <Tooltip content="下个月">
@@ -464,42 +457,27 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose,
           })}
         </div>
 
-        {/* Footer: TODAY 快捷 */}
+        {/* 页脚：回今天 */}
         <div style={{
           position: 'relative',
           marginTop: 10, paddingTop: 8,
-          borderTop: `1px solid ${theme.glassBorder}`,
+          borderTop: '1px solid rgba(0,0,0,0.88)',
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)',
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
           <span style={{
-            fontFamily: theme.fontMono, fontSize: 9.5,
-            color: theme.textMuted, letterSpacing: 0.5,
+            fontFamily: theme.fontMono, fontSize: 10.5,
+            color: theme.textSecondary, letterSpacing: 0.5,
           }}>
             {today.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })}
           </span>
           <button
+            type="button"
             onClick={goToday}
-            style={{
-              fontFamily: theme.fontDisplay,
-              fontSize: 10, fontWeight: 700, letterSpacing: 1.8,
-              color: theme.electricBlue,
-              background: `${theme.electricBlue}10`,
-              border: `1px solid ${theme.electricBlue}55`,
-              padding: '4px 10px',
-              cursor: 'pointer',
-              textShadow: `0 0 6px ${theme.electricBlue}AA`,
-              transition: 'all 0.15s ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = `${theme.electricBlue}22`
-              e.currentTarget.style.boxShadow = `0 0 10px ${theme.electricBlue}77`
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = `${theme.electricBlue}10`
-              e.currentTarget.style.boxShadow = 'none'
-            }}
+            className="ti-key ti-key-primary"
+            style={{ height: 26, padding: '0 14px', fontSize: 12, fontFamily: theme.fontBody }}
           >
-            TODAY
+            回今天
           </button>
         </div>
       </div>

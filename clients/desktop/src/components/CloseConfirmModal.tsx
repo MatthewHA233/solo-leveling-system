@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
-import { theme } from '../theme'
+import { theme, tiSurface, ti, tiTitle } from '../theme'
 
 const PREF_KEY = 'close-action-pref'
 const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000
@@ -64,27 +64,19 @@ export function CloseConfirmModal() {
       onClick={e => { if (e.target === e.currentTarget) setVisible(false) }}
     >
       <div style={{
-        background: theme.hudFillDeep,
-        border: `1px solid ${theme.hudFrame}`,
-        boxShadow: `0 0 32px ${theme.hudHalo}, inset 0 0 16px rgba(0,0,0,0.4)`,
-        borderRadius: 2,
+        background: tiSurface.plate,
+        border: 'none',
+        boxShadow: tiSurface.plateShadow,
+        borderRadius: 8,
         padding: '28px 32px 24px',
         minWidth: 340,
-        fontFamily: theme.fontMono,
+        fontFamily: theme.fontBody,
         color: theme.textPrimary,
-        clipPath: 'polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px))',
       }}>
         {/* title */}
-        <div style={{
-          fontFamily: theme.fontDisplay,
-          fontSize: 12,
-          letterSpacing: '0.12em',
-          color: theme.electricBlue,
-          textShadow: `0 0 8px ${theme.electricBlue}`,
-          marginBottom: 16,
-          textTransform: 'uppercase',
-        }}>
-          CLOSE WINDOW
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+          <span className="ti-diamond" aria-hidden />
+          <span style={{ ...tiTitle, fontSize: 14 }}>关闭窗口</span>
         </div>
 
         <div style={{ fontSize: 13, color: theme.textSecondary, marginBottom: 24, lineHeight: 1.6 }}>
@@ -93,10 +85,10 @@ export function CloseConfirmModal() {
 
         {/* buttons */}
         <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
-          <button onClick={() => confirm('minimize')} style={btnStyle(theme.electricBlue)}>
+          <button type="button" className="ti-key ti-key-primary" onClick={() => confirm('minimize')} style={btnStyle(null)}>
             最小化到托盘
           </button>
-          <button onClick={() => confirm('exit')} style={btnStyle(theme.dangerRed)}>
+          <button type="button" className="ti-key" onClick={() => confirm('exit')} style={btnStyle(theme.dangerRed)}>
             退出程序
           </button>
         </div>
@@ -107,7 +99,7 @@ export function CloseConfirmModal() {
             type="checkbox"
             checked={remember}
             onChange={e => setRemember(e.target.checked)}
-            style={{ accentColor: theme.electricBlue, width: 13, height: 13 }}
+            style={{ accentColor: ti.led, width: 13, height: 13 }}
           />
           一个月内不再提示
         </label>
@@ -116,18 +108,14 @@ export function CloseConfirmModal() {
   )
 }
 
-function btnStyle(color: string): React.CSSProperties {
+/** 实体键尺寸；color 给了就是语义色字（退出 = 红），null 交给主键样式 */
+function btnStyle(color: string | null): React.CSSProperties {
   return {
     flex: 1,
-    padding: '9px 0',
-    background: 'transparent',
-    border: `1px solid ${color}`,
-    borderRadius: 2,
-    color,
+    height: 36,
+    ...(color ? { color } : null),
     fontFamily: 'inherit',
-    fontSize: 12,
+    fontSize: 13,
     letterSpacing: '0.06em',
-    cursor: 'pointer',
-    transition: 'background 0.15s',
   }
 }

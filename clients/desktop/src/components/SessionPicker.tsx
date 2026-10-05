@@ -1,16 +1,16 @@
 // ══════════════════════════════════════════════
 // Session Picker — 历史会话侧栏（docked，不遮挡聊天面板）
 // 停靠在聊天面板左侧，点击切换不关闭，可删除旧会话
-// 使用 HudFrame 保持与其它 HUD 面板一致的视觉语言
+// 钛板侧抽屉：和其它弹层同一套材质
 // ══════════════════════════════════════════════
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { MessageSquare, Pencil, Plus, Search, Sparkles, X, Trash2 } from 'lucide-react'
+import { MessageSquare, Pencil, Plus, RefreshCw, Search, X, Trash2 } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
-import { theme } from '../theme'
-import { HudFrame } from './hud'
+import { theme, tiSurface, ti, tiInput, tiTitle } from '../theme'
 import Tooltip from './Tooltip'
+import DockCoupler, { useDockAnchor, type DockPhase } from './ui/DockCoupler'
 import type { ChatSessionInfo, SessionSearchHit } from '../lib/agent/agent-memory'
 import { searchChatSessions, fetchSessionMessages, patchSession } from '../lib/agent/agent-memory'
 import { generateSessionTitle } from '../lib/ai/session-title'
@@ -30,14 +30,24 @@ interface Props {
   readonly onDelete: (id: string) => void
   readonly onClose: () => void
   /** 重命名/重新生成标题后让父级重拉会话列表 */
-  readonly onRefresh?: () => void
+  readonly onRefresh?: (changedSessionId?: string) => void
+  /** 抽屉动画阶段：open = 滑出并上锁；closing = 退锁并缩回（父级播完再卸载） */
+  readonly phase?: DockPhase
 }
 
-const clip4 = `polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px)`
+/** 抽屉宽度：比通讯栏窄一档（历史列表不需要那么宽） */
+const DRAWER_W = 272
+/** 只切左边两个角：右边是接缝，贴着通讯栏 */
+const DRAWER_CLIP = 'polygon(12px 0, 100% 0, 100% 100%, 12px 100%, 0 calc(100% - 12px), 0 12px)'
+/** 宿主：右侧通讯栏那块钛板（带 data-chassis 的才是板本身，抽屉自己也挂着 right-panel-hud 借滚动条样式） */
+const HOST_SELECTOR = '[data-chassis].right-panel-hud'
+
 
 export default function SessionPicker({
   sessions, currentSessionId, dockRight = 340, onSelect, onNewSession, onDelete, onClose, onRefresh,
+  phase = 'open',
 }: Props) {
+  const anchor = useDockAnchor(HOST_SELECTOR)
   const [query, setQuery] = useState('')
   const [confirmId, setConfirmId] = useState<string | null>(null)
   // 右键菜单 + 行内重命名 + 重新起标题进行中（Set：多个会话可并发重新起标题，互不顶掉状态）
@@ -165,7 +175,7 @@ export default function SessionPicker({
     if (!title) return
     try {
       await patchSession(id, { title })
-      onRefresh?.()
+      onRefresh?.(id)
     } catch (e) {
       console.error('[SessionPicker] 重命名失败', e)
     }
@@ -187,7 +197,7 @@ export default function SessionPicker({
       const title = await generateSessionTitle(msgs, loadConfig())
       if (title) {
         await patchSession(s.id, { title })
-        onRefresh?.()
+        onRefresh?.(s.id)
       }
     } catch (e) {
       console.error('[SessionPicker] 重新生成标题失败', e)
@@ -200,121 +210,73 @@ export default function SessionPicker({
     }
   }, [onRefresh])
 
-  const accent = theme.electricBlue
+  // 抽屉贴在通讯栏左边缘上；量不到宿主时退回旧的停靠参数
+  const dock: React.CSSProperties = anchor
+    ? { left: anchor.seamX - DRAWER_W, top: anchor.top, height: anchor.height }
+    : { right: dockRight, top: 52, bottom: 0 }
 
   return (
+    <>
+    {/* 外壳：右边缘就是接缝，overflow 裁掉越过接缝的部分 → 抽屉看起来是从通讯栏背后抽出来的 */}
+    <div style={{
+      position: 'fixed',
+      ...dock,
+      width: DRAWER_W,
+      overflow: 'hidden',
+      zIndex: 100,
+      pointerEvents: phase === 'closing' ? 'none' : undefined,
+      filter: 'drop-shadow(-10px 0 18px rgba(0,0,0,0.55))',
+    }}>
     <div
       // right-panel-hud：借用右栏注入的 HUD 滚动条样式（同色细滚动条）
       className="session-picker-root right-panel-hud"
+      data-phase={phase}
       style={{
-        position: 'fixed',
-        top: 52, // 与右侧暗影系统面板顶边对齐（顶栏高 52）
-        right: dockRight,
-        bottom: 0,
-        width: 272, // 比暗影系统窄一档（历史列表不需要那么宽）
+        position: 'relative',
+        height: '100%',
         display: 'flex', flexDirection: 'column',
-        background: `
-          linear-gradient(180deg, rgba(4,10,26,0.96) 0%, rgba(2,6,14,0.98) 100%)
-        `,
-        borderLeft: `1px solid ${accent}22`,
-        boxShadow: `-8px 0 30px rgba(0,0,0,0.55), inset 0 0 40px ${accent}08`,
+        background: tiSurface.plate,
+        clipPath: DRAWER_CLIP,
+        // 右沿压一道阴影：通讯栏的板压在抽屉上面
+        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), inset -12px 0 14px -10px rgba(0,0,0,0.85)',
         fontFamily: theme.fontBody,
-        zIndex: 100,
         overflow: 'hidden',
       }}
     >
-      <div className="hud-scanlines" style={{ opacity: 0.35 }} />
-      {/* 开灯瞬间的纵向亮闪，从左侧边切入 */}
-      <div className="session-picker-edge-flash" />
 
-      {/* 与其它 HUD 面板一致的装饰框（top label 对仗 ChatPanel 的 CHAT · SHADOW） */}
-      <HudFrame
-        color={accent}
-        accent={theme.warningOrange}
-        topLabel="SESSION · LOG"
-        bottomLabel="ARCHIVE"
-        showNotchTop
-        showNotchBottom
-        showConnectors
-        notchWidth={72}
-        notchDepth={7}
-        cornerSize={14}
-      />
-
-      {/* Header：版式对齐暗影系统头部（同 padding/底线/渐变 + 发光标题 + 徽章） */}
+      {/* Header：菱形 + 粗斜体标题 + 点阵计数 + 收起键 */}
       <div style={{
         position: 'relative', zIndex: 1,
-        padding: '18px 18px 10px', // 比 ChatPanel 多 4px：补齐其根容器的 4px 内距，标题行视觉平齐
-        borderBottom: `1px solid ${theme.hudFrameSoft}`,
+        padding: '14px 14px 10px',
         display: 'flex', alignItems: 'center', gap: 8,
-        background: `linear-gradient(90deg, ${accent}08 0%, transparent 100%)`,
         flexShrink: 0,
       }}>
-        {/* 左占位 = 右侧 X 宽度，让标题组真正水平居中 */}
-        <span style={{ width: 24, flexShrink: 0 }} />
-        <div style={{ flex: 1, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-          <span style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            height: 16,
-            fontSize: 12.5, fontWeight: 800,
-            lineHeight: '16px',
-            fontFamily: "'Microsoft YaHei UI', 'Noto Sans SC', sans-serif",
-            color: accent, letterSpacing: 2.5,
-            textShadow: `0 0 10px ${accent}AA, 0 0 20px ${accent}44`,
-            transform: 'translateY(-1px)',
-          }}>
-            历史会话
-          </span>
-          {/* 计数徽章：对仗 ONLINE 徽章的几何 */}
-          <span style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            height: 17,
-            fontSize: 8.5, fontWeight: 700,
-            lineHeight: 1,
-            letterSpacing: 1.6,
-            color: accent,
-            padding: '0 7px',
-            border: `1px solid ${accent}55`,
-            clipPath: clip4, WebkitClipPath: clip4,
-            background: `${accent}14`,
-            fontFamily: theme.fontMono,
-            textShadow: `0 0 6px ${accent}88`,
-          }}>
+        <span className="ti-diamond" aria-hidden />
+        <span style={{ ...tiTitle, fontSize: 14 }}>历史会话</span>
+        <span className="ti-well" style={{ padding: '2px 7px', borderRadius: 4 }}>
+          <span className="ti-led" style={{ fontSize: 11 }}>
             {searching ? '···' : `${filtered.length}/${sessions.length}`}
           </span>
-        </div>
+        </span>
+        <span style={{ flex: 1 }} />
         <Tooltip content="收起 (Esc)">
-        <button
-          onClick={onClose}
-          style={{
-            background: `${accent}12`,
-            border: `1px solid ${accent}55`,
-            clipPath: clip4, WebkitClipPath: clip4,
-            cursor: 'pointer',
-            color: accent, padding: '4px 5px',
-            display: 'flex', alignItems: 'center',
-            flexShrink: 0,
-          }}
-        >
-          <X size={12} />
-        </button>
+          <button type="button" className="ti-key" onClick={onClose} aria-label="收起" style={{ width: 26, height: 26, padding: 0 }}>
+            <X size={13} />
+          </button>
         </Tooltip>
       </div>
+      <div className="ti-groove-h" style={{ margin: '0 14px 10px', flexShrink: 0 }} />
 
       {/* Search */}
       <div style={{
         position: 'relative', zIndex: 1,
         display: 'flex', alignItems: 'center', gap: 6,
         margin: '0 14px',
-        padding: '5px 10px',
-        border: `1px solid ${theme.hudFrameSoft}`,
-        background: 'rgba(0,229,255,0.03)',
-        clipPath: clip4, WebkitClipPath: clip4,
+        padding: '6px 10px',
+        ...tiInput,
         flexShrink: 0,
       }}>
-        <Search size={11} style={{ color: theme.textPrimary, flexShrink: 0 }} />
+        <Search size={12} style={{ color: theme.textMuted, flexShrink: 0 }} />
         <input
           ref={inputRef}
           value={query}
@@ -367,12 +329,7 @@ export default function SessionPicker({
         gap: 5,
         flexShrink: 0,
       }}>
-        <div style={{
-          color: theme.textMuted,
-          fontFamily: theme.fontMono,
-          fontSize: 9.5,
-          letterSpacing: 0.8,
-        }}>
+        <div className="ti-label" style={{ fontSize: 10.5 }}>
           会话总结模型
         </div>
         <div style={{ display: 'flex', alignItems: 'stretch', gap: 6 }}>
@@ -385,25 +342,12 @@ export default function SessionPicker({
             />
           </div>
           <button
-            className="hud-new-session-btn"
+            type="button"
+            className="ti-key ti-key-primary"
             onClick={onNewSession}
-            style={{
-              flexShrink: 0,
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-              padding: '0 10px',
-              background: `linear-gradient(90deg, ${accent}20 0%, ${theme.shadowPurple}10 100%)`,
-              border: `1px solid ${accent}66`,
-              clipPath: clip4, WebkitClipPath: clip4,
-              color: accent,
-              fontSize: 11, fontFamily: theme.fontBody,
-              fontWeight: 700, letterSpacing: 1.0,
-              textShadow: `0 0 6px ${accent}AA`,
-              cursor: 'pointer',
-              transition: 'background 0.15s, box-shadow 0.15s',
-              whiteSpace: 'nowrap',
-            }}
+            style={{ flexShrink: 0, gap: 5, padding: '0 12px', fontSize: 12, whiteSpace: 'nowrap' }}
           >
-            <Plus size={12} />
+            <Plus size={13} strokeWidth={2.6} />
             新建会话
           </button>
         </div>
@@ -461,11 +405,9 @@ export default function SessionPicker({
             zIndex: 3000,
             minWidth: 152,
             padding: 4,
-            background: 'rgba(4,10,26,0.97)',
-            border: `1px solid ${accent}55`,
-            clipPath: clip4,
-            WebkitClipPath: clip4,
-            boxShadow: `0 10px 28px rgba(0,0,0,0.6), inset 0 0 24px ${accent}08`,
+            background: tiSurface.plate,
+            borderRadius: 6,
+            boxShadow: tiSurface.popShadow,
             fontFamily: theme.fontBody,
           }}
           onClick={(e) => e.stopPropagation()}
@@ -476,11 +418,11 @@ export default function SessionPicker({
             onClick={() => { setEditingId(menu.session.id); setMenu(null) }}
           />
           <ContextMenuItem
-            icon={<Sparkles size={12} />}
+            icon={<RefreshCw size={12} />}
             label="重新生成标题"
             onClick={() => { void regenTitle(menu.session) }}
           />
-          <div style={{ height: 1, margin: '3px 6px', background: theme.hudFrameSoft }} />
+          <div className="ti-groove-h" style={{ margin: '4px 6px' }} />
           <ContextMenuItem
             icon={<Trash2 size={12} />}
             label="删除"
@@ -491,6 +433,9 @@ export default function SessionPicker({
         document.body,
       )}
     </div>
+    </div>
+    {anchor && <DockCoupler anchor={anchor} phase={phase} />}
+    </>
   )
 }
 
@@ -520,7 +465,7 @@ function ContextMenuItem({ icon, label, danger, onClick }: {
         transition: 'background 0.12s',
       }}
       onMouseEnter={(e) => {
-        e.currentTarget.style.background = danger ? `${theme.dangerRed}1E` : `${theme.electricBlue}18`
+        e.currentTarget.style.background = danger ? `${theme.dangerRed}1E` : 'rgba(255,255,255,0.07)'
       }}
       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
     >
@@ -573,43 +518,30 @@ function SessionRow({
       onContextMenu={onContextMenu}
       style={{
         position: 'relative',
-        padding: '8px 14px',
-        borderBottom: `1px solid ${theme.hudFrameSoft}`,
+        padding: '9px 14px 9px 12px',
+        borderBottom: '1px solid rgba(0,0,0,0.88)',
+        boxShadow: '0 1px 0 rgba(255,255,255,0.1)',
         cursor: confirming ? 'default' : 'pointer',
-        background: active
-          ? `linear-gradient(90deg, ${theme.electricBlue}1E 0%, ${theme.electricBlue}05 100%)`
-          : undefined,
-        borderLeft: active ? `2px solid ${theme.electricBlue}` : '2px solid transparent',
+        background: active ? 'rgba(255,255,255,0.06)' : undefined,
+        borderLeft: active ? `3px solid ${ti.led}` : '3px solid transparent',
       }}
     >
       {confirming ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ flex: 1, fontSize: 11, color: theme.dangerRed, fontFamily: theme.fontMono, letterSpacing: 0.5 }}>
+          <span style={{ flex: 1, fontSize: 11.5, color: theme.dangerRed, fontWeight: 700 }}>
             删除 "{title.slice(0, 12)}"?
           </span>
           <button
+            type="button"
+            className="ti-key"
             onClick={(e) => { e.stopPropagation(); onConfirmDelete() }}
-            style={{
-              padding: '3px 8px',
-              fontSize: 10, fontFamily: theme.fontMono, fontWeight: 700, letterSpacing: 1,
-              background: `${theme.dangerRed}22`,
-              border: `1px solid ${theme.dangerRed}88`,
-              color: theme.dangerRed,
-              cursor: 'pointer',
-              clipPath: clip4, WebkitClipPath: clip4,
-            }}
+            style={{ height: 24, padding: '0 10px', fontSize: 11.5, color: theme.dangerRed }}
           >删除</button>
           <button
+            type="button"
+            className="ti-key"
             onClick={(e) => { e.stopPropagation(); onCancelDelete() }}
-            style={{
-              padding: '3px 8px',
-              fontSize: 10, fontFamily: theme.fontMono, letterSpacing: 1,
-              background: 'transparent',
-              border: `1px solid ${theme.hudFrameSoft}`,
-              color: theme.textPrimary,
-              cursor: 'pointer',
-              clipPath: clip4, WebkitClipPath: clip4,
-            }}
+            style={{ height: 24, padding: '0 10px', fontSize: 11.5 }}
           >取消</button>
         </div>
       ) : (
@@ -632,19 +564,17 @@ function SessionRow({
                 style={{
                   flex: 1, minWidth: 0,
                   fontSize: 12, fontWeight: 600,
-                  color: theme.textPrimary,
                   fontFamily: theme.fontBody,
-                  background: 'rgba(0,229,255,0.07)',
-                  border: `1px solid ${theme.electricBlue}66`,
-                  padding: '1px 5px',
-                  outline: 'none',
+                  ...tiInput,
+                  boxShadow: `${tiSurface.wellShadow}, 0 0 0 1px ${ti.led}88`,
+                  padding: '2px 6px',
                 }}
               />
             ) : (
               <div style={{
                 flex: 1, minWidth: 0,
                 fontSize: 12, fontWeight: 600,
-                color: active ? theme.electricBlue : theme.textPrimary,
+                color: theme.textPrimary,
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 opacity: regenerating ? 0.45 : 1,
               }}>
@@ -654,7 +584,7 @@ function SessionRow({
               </div>
             )}
             <div style={{
-              fontSize: 11, color: theme.textPrimary,
+              fontSize: 11, color: theme.textMuted,
               fontFamily: theme.fontMono, flexShrink: 0,
             }}>
               {updated}
@@ -693,9 +623,10 @@ function SessionRow({
                     style={{
                       appearance: 'none',
                       textAlign: 'left',
-                      background: 'rgba(0,229,255,0.04)',
-                      border: `1px solid ${theme.hudFrameSoft}`,
-                      borderLeft: `2px solid ${snip.role === 'user' ? theme.electricBlue : theme.shadowPurple}`,
+                      background: tiSurface.well,
+                      border: 'none',
+                      borderRadius: 4,
+                      boxShadow: `${tiSurface.wellShadow}, inset 2px 0 0 ${snip.role === 'user' ? ti.led : ti.sys}`,
                       color: theme.textPrimary,
                       padding: '4px 6px',
                       fontSize: 10.5,
@@ -744,8 +675,8 @@ function Highlight({ text, keyword }: { text: string; keyword: string }) {
       <mark
         key={`m-${n++}`}
         style={{
-          background: `${theme.warningOrange}40`,
-          color: theme.warningOrange,
+          background: ti.led,
+          color: '#0B0A09',
           padding: '0 1px',
           borderRadius: 2,
           fontWeight: 700,

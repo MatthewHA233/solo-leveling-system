@@ -37,8 +37,7 @@ import {
   setLocalSyncAlias,
 } from '../lib/local-api'
 import type { LinkedDevice, SyncHello, SyncPeer } from '../lib/local-api'
-import { theme } from '../theme'
-import { HudFrame } from './hud'
+import { theme, tiInput, tiSurface, tiTitle, tiKey, hud } from '../theme'
 import Tooltip from './Tooltip'
 
 export interface SyncLogEntry {
@@ -353,32 +352,27 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
         position: 'fixed',
         width: 460,
         maxHeight: 'calc(100vh - 80px)',
-        background: theme.hudFillDeep,
+        background: tiSurface.plate,
         color: theme.textPrimary,
         fontFamily: theme.fontBody,
-        boxShadow: `0 10px 28px rgba(0,0,0,0.55), 0 0 24px ${theme.electricBlue}26`,
+        boxShadow: tiSurface.popShadow,
+        clipPath: hud.chamfer12,
         zIndex: 1200,
         padding: 16,
         overflow: 'auto',
         ...position,
       }}
     >
-      <HudFrame
-        topLabel="SYNC LINK · 局域网同步"
-        showNotchTop
-        notchWidth={150}
-        notchDepth={8}
-        cornerSize={16}
-      />
+      <div style={{ ...tiTitle, fontSize: 14, marginBottom: 10 }}>局域网同步</div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 6 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {/* 本机 + 操作 */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
           <div style={{
             flex: 1,
             minWidth: 0,
             border: `1px solid ${theme.hudFrameSoft}`,
-            background: 'rgba(0,229,255,0.04)',
+            background: 'rgba(255,138,76,0.04)',
             padding: '8px 10px',
             display: 'grid',
             gap: 4,
@@ -396,7 +390,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
                 color: theme.expGreen,
                 letterSpacing: 1.4,
               }}>
-                ONLINE
+                在线
               </span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
@@ -408,7 +402,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
                 alignItems: 'center',
                 justifyContent: 'center',
                 border: `1px solid ${theme.electricBlue}66`,
-                background: 'rgba(0,229,255,0.08)',
+                background: 'rgba(255,138,76,0.08)',
                 color: theme.electricBlue,
               }}>
                 <LocalIcon size={15} />
@@ -473,7 +467,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
               onClick={() => setLogOpen((v) => !v)}
               style={{
                 ...iconButtonStyle(logOpen ? theme.electricBlue : theme.textSecondary, false),
-                background: logOpen ? `${theme.electricBlue}1A` : 'rgba(0,229,255,0.04)',
+                background: logOpen ? `${theme.electricBlue}1A` : 'rgba(255,138,76,0.04)',
                 position: 'relative',
               }}
             >
@@ -507,14 +501,14 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
         {logOpen && (
           <div style={{
             border: `1px solid ${theme.hudFrameSoft}`,
-            background: 'rgba(0,229,255,0.03)',
+            background: 'rgba(255,138,76,0.03)',
             padding: '7px 10px',
             display: 'flex', flexDirection: 'column', gap: 4,
             maxHeight: 200, overflow: 'auto',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
               <ScrollText size={11} color={theme.electricBlue} />
-              <span style={sectionTitleStyle}>SYNC LOG · 最近 {Math.min(syncLog?.length ?? 0, 20)} 条</span>
+              <span style={sectionTitleStyle}>同步日志 · 最近 {Math.min(syncLog?.length ?? 0, 20)} 条</span>
             </div>
             {(syncLog?.length ?? 0) === 0 ? (
               <span style={{ fontSize: 11, color: theme.textMuted, padding: '4px 2px' }}>
@@ -549,7 +543,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
             <Link2 size={12} color={theme.expGreen} />
-            <span style={{ ...sectionTitleStyle, color: theme.expGreen }}>LINKED</span>
+            <span style={{ ...sectionTitleStyle, color: theme.expGreen }}>已链接</span>
             <span style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted }}>
               · {links.length} 台
             </span>
@@ -613,7 +607,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
             <Wifi size={12} color={theme.electricBlue} />
-            <span style={sectionTitleStyle}>NEARBY</span>
+            <span style={sectionTitleStyle}>附近</span>
             <span style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted }}>
               · {unlinkedPeers.length} 台未链接
             </span>
@@ -644,7 +638,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
         {/* 折叠：手动输入 IP（直接建立链接） */}
         <div style={{
           border: `1px solid ${manualOpen ? theme.hudFrameSoft : theme.glassBorder}`,
-          background: manualOpen ? 'rgba(0,229,255,0.04)' : 'transparent',
+          background: manualOpen ? 'rgba(255,138,76,0.04)' : 'transparent',
         }}>
           <button
             type="button"
@@ -813,13 +807,13 @@ function UnlinkedCard({
       gap: 8,
       padding: '8px 10px',
       border: `1px solid ${theme.hudFrameSoft}`,
-      background: 'rgba(0,229,255,0.03)',
+      background: 'rgba(255,138,76,0.03)',
     }}>
       <div style={{
         width: 28, height: 28, flexShrink: 0,
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         border: `1px solid ${theme.hudFrameSoft}`,
-        background: 'rgba(0,229,255,0.06)',
+        background: 'rgba(255,138,76,0.06)',
         color: theme.textPrimary,
       }}>
         <Icon size={14} />
@@ -883,26 +877,22 @@ const sectionTitleStyle: CSSProperties = {
 }
 
 const inputStyle: CSSProperties = {
+  ...tiInput,
   flex: 1,
   minWidth: 0,
-  background: 'rgba(0,0,0,0.4)',
-  border: `1px solid ${theme.glassBorder}`,
-  color: theme.textPrimary,
   padding: '5px 8px',
   fontSize: 11.5,
   fontFamily: theme.fontMono,
-  outline: 'none',
 }
 
 function iconButtonStyle(color: string, disabled: boolean): CSSProperties {
   return {
-    width: 26,
-    height: 26,
+    ...tiKey,
+    width: 28,
+    height: 28,
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    border: `1px solid ${theme.hudFrameSoft}`,
-    background: 'rgba(0,229,255,0.04)',
     color,
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.45 : 1,

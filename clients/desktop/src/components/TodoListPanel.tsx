@@ -1,10 +1,9 @@
 import { useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Check, Circle, DatabaseZap, FolderSearch, GitBranch, ListTodo, Plus, Search, Target, Trash2, X } from 'lucide-react'
+import { Check, Circle, FolderSearch, GitBranch, ListTodo, Plus, Search, Target, Trash2, X } from 'lucide-react'
 import type { ActivityPalette, ActivityTag, PlanNode } from '../types'
 import { addPlanNode, deletePlanNode, updatePlanNode } from '../lib/local-api'
-import { hud, theme } from '../theme'
-import { HudFrame } from './hud'
+import { theme, ti, tiInput, tiSurface, tiTitle } from '../theme'
 import Tooltip from './Tooltip'
 
 interface Props {
@@ -248,28 +247,15 @@ export default function TodoListPanel({
 
   return (
     <div style={styles.root}>
-      <HudFrame
-        color={theme.warningOrange}
-        accent={theme.electricBlue}
-        topLabel="PLAN · 计划安排"
-        showNotchTop
-        showNotchBottom={false}
-        notchWidth={86}
-        notchDepth={7}
-        cornerSize={14}
-        intensity="soft"
-      />
-
       <div style={styles.inner}>
         <header style={styles.header}>
-          <div>
-            <div style={styles.kicker}>DAY PLAN DOCK</div>
-            <div style={styles.titleRow}>
-              <DatabaseZap size={17} color={theme.warningOrange} />
-              <h2 style={styles.title}>计划安排</h2>
-            </div>
+          <div style={styles.titleRow}>
+            <span className="ti-diamond" aria-hidden />
+            <h2 style={styles.title}>计划安排</h2>
           </div>
-          <div style={styles.dateBadge}>{dateKey}</div>
+          <div className="ti-well" style={styles.dateBadge}>
+            <span className="ti-led" style={{ fontSize: 11 }}>{dateKey}</span>
+          </div>
         </header>
 
         <div style={styles.statsRow}>
@@ -280,13 +266,13 @@ export default function TodoListPanel({
 
         <section style={styles.projectBox}>
           <div style={styles.projectLabel}>当前项目</div>
-          <button type="button" onClick={() => setProjectSearchOpen((v) => !v)} style={styles.projectChip}>
+          <button type="button" onClick={() => setProjectSearchOpen((v) => !v)} className="ti-key" style={styles.projectChip}>
             <FolderSearch size={13} />
             <span style={styles.projectChipText}>{selectedProject?.fullPath ?? '选择一个项目标签'}</span>
             {projectSearchOpen ? <X size={12} /> : <Search size={12} />}
           </button>
           {draft.trim() && targetProject && targetProject.id !== selectedProject?.id && (
-            <button type="button" onClick={() => selectProject(targetProject.id)} style={styles.recommendButton}>
+            <button type="button" onClick={() => selectProject(targetProject.id)} className="ti-key" style={styles.recommendButton}>
               推荐绑定：{targetProject.fullPath}
             </button>
           )}
@@ -302,7 +288,7 @@ export default function TodoListPanel({
                 {searchResults.length === 0 ? (
                   <div style={styles.emptyLine}>没有匹配项目标签</div>
                 ) : searchResults.map((tag) => (
-                  <button key={tag.id} type="button" onClick={() => selectProject(tag.id)} style={styles.searchItem}>
+                  <button key={tag.id} type="button" onClick={() => selectProject(tag.id)} className="ti-key" style={styles.searchItem}>
                     <Target size={12} color={tag.id === selectedProjectTagId ? theme.warningOrange : theme.textMuted} />
                     <span>{tag.fullPath}</span>
                   </button>
@@ -317,7 +303,7 @@ export default function TodoListPanel({
             <div style={styles.subtaskBar}>
               <GitBranch size={12} />
               <span>作为子任务添加到：{subtaskParent.title}</span>
-              <button type="button" onClick={() => setSubtaskParentId(null)} style={styles.clearSubtaskButton}>
+              <button type="button" onClick={() => setSubtaskParentId(null)} className="ti-key" style={styles.clearSubtaskButton}>
                 <X size={11} />
               </button>
             </div>
@@ -337,11 +323,8 @@ export default function TodoListPanel({
               <ListTodo size={12} />
               <span>{targetProject ? `将写入：${targetProject.fullPath}` : '还没有可绑定的项目标签'}</span>
             </div>
-            <button type="button" onClick={createNode} disabled={!draft.trim() || !targetProject || busy} style={{
-              ...styles.addButton,
-              opacity: !draft.trim() || !targetProject || busy ? 0.55 : 1,
-            }}>
-              <Plus size={13} />
+            <button type="button" className="ti-key ti-key-primary" onClick={createNode} disabled={!draft.trim() || !targetProject || busy} style={styles.addButton}>
+              <Plus size={13} strokeWidth={2.6} />
               新增
             </button>
           </div>
@@ -413,8 +396,9 @@ function PlanNodeCard({
         ...styles.card,
         marginLeft: Math.min(depth, 4) * 12,
         opacity: completed ? 0.62 : 1,
-        borderColor: selected ? theme.electricBlue : `${color}66`,
-        boxShadow: selected ? `0 0 12px ${theme.electricBlue}44` : 'none',
+        boxShadow: selected
+          ? `${styles.card.boxShadow}, 0 0 0 1.5px ${ti.led}`
+          : styles.card.boxShadow,
       }}
     >
       <Tooltip content={completed ? '标记为待安排' : '标记为完成'}>
@@ -422,7 +406,7 @@ function PlanNodeCard({
           type="button"
           disabled={disabled}
           onClick={(e) => { e.stopPropagation(); onToggleDone() }}
-          style={styles.doneButton}
+          className="ti-key" style={styles.doneButton}
         >
           {completed ? <Check size={13} /> : <Circle size={13} />}
         </button>
@@ -435,7 +419,7 @@ function PlanNodeCard({
           {node.title}
         </div>
         <div style={styles.cardMeta}>
-          <span style={{ ...styles.statusPill, color, borderColor: `${color}66` }}>
+          <span style={{ ...styles.statusPill, color, boxShadow: `inset 0 0 0 1px ${color}55` }}>
             {STATUS_LABELS[node.status]}
           </span>
           {node.parentId != null && (
@@ -448,7 +432,7 @@ function PlanNodeCard({
             type="button"
             disabled={disabled}
             onClick={(e) => { e.stopPropagation(); onAddChild() }}
-            style={styles.inlineButton}
+            className="ti-key" style={styles.inlineButton}
           >
             + 子任务
           </button>
@@ -459,7 +443,7 @@ function PlanNodeCard({
           type="button"
           disabled={disabled}
           onClick={(e) => { e.stopPropagation(); onDelete() }}
-          style={styles.deleteButton}
+          className="ti-key" style={styles.deleteButton}
         >
           <Trash2 size={12} />
         </button>
@@ -470,9 +454,9 @@ function PlanNodeCard({
 
 function Stat({ label, value }: { readonly label: string; readonly value: string }) {
   return (
-    <div style={styles.stat}>
+    <div className="ti-well" style={styles.stat}>
       <span style={styles.statLabel}>{label}</span>
-      <span style={styles.statValue}>{value}</span>
+      <span className="ti-led" style={styles.statValue}>{value}</span>
     </div>
   )
 }
@@ -496,37 +480,26 @@ const styles: Record<string, CSSProperties> = {
   },
   header: {
     display: 'flex',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
+    // 右上角留给外层面板的关闭键
+    paddingRight: 34,
     flexShrink: 0,
-  },
-  kicker: {
-    fontFamily: theme.fontMono,
-    fontSize: 9,
-    letterSpacing: 1.8,
-    color: theme.textMuted,
-    marginBottom: 5,
   },
   titleRow: {
     display: 'flex',
     alignItems: 'center',
-    gap: 7,
+    gap: 8,
   },
   title: {
+    ...tiTitle,
     margin: 0,
-    fontSize: 16,
-    letterSpacing: 0.5,
-    color: theme.textPrimary,
+    fontSize: 15,
   },
   dateBadge: {
-    fontFamily: theme.fontMono,
-    fontSize: 10,
-    color: theme.warningOrange,
-    border: `1px solid ${theme.warningOrange}66`,
-    padding: '3px 7px',
-    background: `${theme.warningOrange}10`,
-    clipPath: hud.chamfer8,
+    padding: '3px 8px',
+    borderRadius: 4,
   },
   statsRow: {
     display: 'grid',
@@ -535,53 +508,40 @@ const styles: Record<string, CSSProperties> = {
     flexShrink: 0,
   },
   stat: {
-    border: `1px solid ${theme.hudFrameSoft}`,
-    background: 'rgba(0,0,0,0.22)',
-    padding: '7px 8px',
-    clipPath: hud.chamfer8,
+    padding: '6px 9px 7px',
+    borderRadius: 5,
   },
   statLabel: {
     display: 'block',
-    fontSize: 10,
+    fontSize: 10.5,
     color: theme.textMuted,
     marginBottom: 3,
   },
   statValue: {
     display: 'block',
-    fontFamily: theme.fontMono,
-    fontSize: 14,
-    color: theme.textPrimary,
-    fontWeight: 800,
+    fontSize: 16,
   },
   projectBox: {
     flexShrink: 0,
-    border: `1px solid ${theme.hudFrameSoft}`,
-    background: 'rgba(0,0,0,0.18)',
-    padding: 8,
-    clipPath: hud.chamfer8,
   },
   projectLabel: {
-    fontFamily: theme.fontMono,
-    fontSize: 9,
+    fontSize: 10.5,
+    fontWeight: 700,
     color: theme.textMuted,
-    letterSpacing: 1.2,
+    letterSpacing: 1,
     marginBottom: 5,
   },
   projectChip: {
     width: '100%',
-    minHeight: 28,
+    minHeight: 30,
     display: 'grid',
     gridTemplateColumns: '16px 1fr 16px',
     alignItems: 'center',
     gap: 6,
-    border: `1px solid ${theme.warningOrange}66`,
-    background: `${theme.warningOrange}10`,
     color: theme.textPrimary,
-    fontSize: 11,
+    fontSize: 11.5,
     textAlign: 'left',
-    cursor: 'pointer',
-    padding: '5px 7px',
-    clipPath: hud.chamfer8,
+    padding: '5px 8px',
   },
   projectChipText: {
     overflow: 'hidden',
@@ -591,32 +551,26 @@ const styles: Record<string, CSSProperties> = {
   recommendButton: {
     width: '100%',
     marginTop: 7,
-    border: `1px solid ${theme.electricBlue}66`,
-    background: `${theme.electricBlue}10`,
-    color: theme.electricBlue,
-    fontSize: 11,
+    justifyContent: 'flex-start',
+    color: ti.led,
+    fontSize: 11.5,
     textAlign: 'left',
-    cursor: 'pointer',
-    padding: '5px 7px',
-    clipPath: hud.chamfer8,
+    padding: '6px 8px',
   },
   searchPanel: {
     marginTop: 8,
-    border: `1px solid ${theme.hudFrameSoft}`,
-    background: 'rgba(2,6,14,0.86)',
+    background: tiSurface.plate,
+    boxShadow: tiSurface.popShadow,
+    borderRadius: 6,
     padding: 7,
-    clipPath: hud.chamfer8,
   },
   searchInput: {
+    ...tiInput,
     width: '100%',
     boxSizing: 'border-box',
-    height: 26,
-    background: 'rgba(0,0,0,0.32)',
-    border: `1px solid ${theme.hudFrameSoft}`,
-    color: theme.textPrimary,
-    outline: 'none',
-    fontSize: 11,
-    padding: '0 7px',
+    height: 28,
+    fontSize: 11.5,
+    padding: '0 8px',
   },
   searchResults: {
     marginTop: 6,
@@ -625,67 +579,53 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: 4,
+    padding: 2,
   },
   searchItem: {
-    minHeight: 24,
+    minHeight: 26,
     display: 'grid',
     gridTemplateColumns: '16px 1fr',
     alignItems: 'center',
+    justifyContent: 'stretch',
     gap: 5,
-    border: `1px solid ${theme.hudFrameSoft}`,
-    background: 'rgba(255,255,255,0.025)',
     color: theme.textSecondary,
-    fontSize: 11,
+    fontSize: 11.5,
     textAlign: 'left',
-    cursor: 'pointer',
-    padding: '3px 6px',
+    padding: '3px 7px',
   },
   composer: {
     flexShrink: 0,
-    border: `1px solid ${theme.warningOrange}44`,
-    background: 'rgba(255,153,51,0.045)',
-    padding: 9,
-    clipPath: hud.chamfer8,
   },
   subtaskBar: {
     display: 'grid',
-    gridTemplateColumns: '14px 1fr 20px',
+    gridTemplateColumns: '14px 1fr 22px',
     alignItems: 'center',
     gap: 5,
     marginBottom: 7,
-    color: theme.electricBlue,
-    fontSize: 11,
+    color: ti.led,
+    fontSize: 11.5,
   },
   clearSubtaskButton: {
-    width: 18,
-    height: 18,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: 'transparent',
+    width: 22,
+    height: 22,
     color: theme.textMuted,
-    border: `1px solid ${theme.hudFrameSoft}`,
-    cursor: 'pointer',
     padding: 0,
   },
   textarea: {
+    ...tiInput,
     width: '100%',
     resize: 'none',
     boxSizing: 'border-box',
-    background: 'rgba(0,0,0,0.32)',
-    border: `1px solid ${theme.hudFrameSoft}`,
-    color: theme.textPrimary,
-    outline: 'none',
     fontFamily: theme.fontBody,
-    fontSize: 12,
-    lineHeight: 1.45,
-    padding: '8px 9px',
+    fontSize: 12.5,
+    lineHeight: 1.5,
+    padding: '8px 10px',
   },
   composerBar: {
     marginTop: 8,
     display: 'grid',
-    gridTemplateColumns: '1fr 72px',
-    gap: 7,
+    gridTemplateColumns: '1fr auto',
+    gap: 8,
     alignItems: 'center',
   },
   targetHint: {
@@ -694,24 +634,16 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'center',
     gap: 5,
     color: theme.textMuted,
-    fontSize: 10,
+    fontSize: 10.5,
     overflow: 'hidden',
     whiteSpace: 'nowrap',
     textOverflow: 'ellipsis',
   },
   addButton: {
-    height: 24,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
+    height: 28,
     gap: 4,
-    background: theme.warningOrange,
-    color: theme.background,
-    border: `1px solid ${theme.warningOrange}`,
-    fontWeight: 900,
-    fontSize: 12,
-    cursor: 'pointer',
-    clipPath: hud.chamfer8,
+    padding: '0 14px',
+    fontSize: 12.5,
   },
   errorLine: {
     marginTop: 7,
@@ -725,7 +657,7 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: 12,
-    paddingRight: 2,
+    padding: '2px 2px 4px',
   },
   group: {
     display: 'flex',
@@ -736,43 +668,38 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    fontFamily: theme.fontMono,
-    fontSize: 10,
-    letterSpacing: 1.2,
-    color: theme.textMuted,
-    borderBottom: `1px solid ${theme.hudFrameSoft}`,
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: 1,
+    color: theme.textSecondary,
+    borderBottom: '1px solid rgba(0,0,0,0.88)',
+    boxShadow: '0 1px 0 rgba(255,255,255,0.1)',
     paddingBottom: 5,
   },
   groupCount: {
-    color: theme.warningOrange,
+    fontFamily: theme.fontMono,
+    color: ti.led,
   },
   emptyLine: {
     fontSize: 11,
     color: theme.textMuted,
-    opacity: 0.68,
     padding: '4px 0 7px',
   },
   card: {
     display: 'grid',
-    gridTemplateColumns: '22px 1fr 22px',
+    gridTemplateColumns: '24px 1fr 24px',
     gap: 8,
     alignItems: 'start',
-    border: '1px solid',
-    background: 'linear-gradient(180deg, rgba(4,10,26,0.65), rgba(0,0,0,0.28))',
+    background: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(0,0,0,0.12)), #1F1D1A',
+    borderRadius: 6,
+    boxShadow: '0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.08), 0 2px 5px rgba(0,0,0,0.5)',
     padding: '9px 8px',
-    clipPath: hud.chamfer8,
     cursor: 'pointer',
   },
   doneButton: {
-    width: 20,
-    height: 20,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 24,
+    height: 24,
     color: theme.expGreen,
-    background: 'transparent',
-    border: `1px solid ${theme.expGreen}66`,
-    cursor: 'pointer',
     padding: 0,
   },
   cardBody: {
@@ -795,41 +722,34 @@ const styles: Record<string, CSSProperties> = {
   statusPill: {
     display: 'inline-flex',
     alignItems: 'center',
-    height: 18,
-    padding: '0 5px',
-    border: '1px solid',
-    fontSize: 10,
+    height: 20,
+    padding: '0 6px',
+    borderRadius: 3,
+    background: tiSurface.well,
+    fontSize: 10.5,
     fontWeight: 800,
   },
   branchPill: {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 3,
-    height: 18,
-    padding: '0 5px',
-    border: `1px solid ${theme.hudFrameSoft}`,
+    height: 20,
+    padding: '0 6px',
+    borderRadius: 3,
+    background: tiSurface.well,
     color: theme.textMuted,
-    fontSize: 10,
+    fontSize: 10.5,
   },
   inlineButton: {
-    height: 18,
-    padding: '0 6px',
-    background: 'transparent',
-    color: theme.electricBlue,
-    border: `1px solid ${theme.electricBlue}66`,
-    fontSize: 10,
-    cursor: 'pointer',
+    height: 22,
+    padding: '0 8px',
+    color: theme.textPrimary,
+    fontSize: 10.5,
   },
   deleteButton: {
-    width: 20,
-    height: 20,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 24,
+    height: 24,
     color: theme.textMuted,
-    background: 'transparent',
-    border: `1px solid ${theme.hudFrameSoft}`,
-    cursor: 'pointer',
     padding: 0,
   },
 }

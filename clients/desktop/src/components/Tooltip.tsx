@@ -77,7 +77,7 @@ export default function Tooltip({
             ['--tt-from' as any]: pos.placement === 'top' ? '-92%' : '8%',
             ['--tt-to'   as any]: pos.placement === 'top' ? '-100%' : '0%',
             transform: pos.placement === 'top' ? 'translate(-50%, -100%)' : 'translate(-50%, 0)',
-            background: 'rgba(8, 16, 32, 0.96)',
+            background: 'rgba(22,21,19,0.96)',
             border: `1px solid ${theme.electricBlue}55`,
             color: theme.textPrimary,
             fontSize: 11,
@@ -115,8 +115,8 @@ export default function Tooltip({
             width: 0, height: 0,
             borderStyle: 'solid',
             ...(pos.placement === 'top'
-              ? { top: 'calc(100% - 1px)', borderWidth: '5px 5px 0 5px', borderColor: 'rgba(8, 16, 32, 0.96) transparent transparent transparent' }
-              : { bottom: 'calc(100% - 1px)', borderWidth: '0 5px 5px 5px', borderColor: 'transparent transparent rgba(8, 16, 32, 0.96) transparent' }),
+              ? { top: 'calc(100% - 1px)', borderWidth: '5px 5px 0 5px', borderColor: 'rgba(22,21,19,0.96) transparent transparent transparent' }
+              : { bottom: 'calc(100% - 1px)', borderWidth: '0 5px 5px 5px', borderColor: 'transparent transparent rgba(22,21,19,0.96) transparent' }),
           }} />
         </div>,
         document.body

@@ -7,7 +7,7 @@ import { useState, useEffect } from 'react'
 import { EyeOff, Check } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import type { PerceptionSpan } from '../lib/local-api'
-import { theme } from '../theme'
+import { theme, tiTitle, tiSurface } from '../theme'
 import ConfirmDialog from './ConfirmDialog'
 import Tooltip from './Tooltip'
 
@@ -179,7 +179,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
               style={{ width: 20, height: 20, imageRendering: 'pixelated' }}
             />
           ) : (
-            <span style={{ fontSize: 12, fontWeight: 700, color: '#001018' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#12110F' }}>
               {displayName.charAt(0).toUpperCase()}
             </span>
           )}
@@ -265,7 +265,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
       <div style={{
         marginBottom: 10,
         padding: '8px 10px',
-        background: `linear-gradient(180deg, ${hexToRgba(color, 0.08)} 0%, rgba(0,12,28,0.55) 100%)`,
+        background: `linear-gradient(180deg, ${hexToRgba(color, 0.08)} 0%, rgba(17,16,14,0.55) 100%)`,
         border: `1px solid ${hexToRgba(color, 0.32)}`,
         clipPath: clip3, WebkitClipPath: clip3,
         display: 'flex', alignItems: 'flex-start', gap: 8,
@@ -349,7 +349,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
 
       <ConfirmDialog
         open={confirmOpen}
-        title="IGNORE WINDOW"
+        title="忽略窗口"
         titleColor="#ff8a8a"
         question={titleArg
           ? `确定要忽略窗口 "${titleArg}"？`
@@ -382,63 +382,33 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
 }
 
 function SectionHeader({ label, color }: { label: string; color: string }) {
+  // 菱形 + 粗斜体钛白字（和各面板标题一致），分类色只落在一颗小方点上；尾巴是一道凹槽线
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 8,
-      marginBottom: 10,
-      fontSize: 12, fontFamily: theme.fontBody, fontWeight: 700,
-      letterSpacing: 2,
-      color,
-    }}>
-      <span style={{ textShadow: `0 0 5px ${hexToRgba(color, 0.7)}` }}>
-        ▸ {label}
-      </span>
-      <span style={{
-        flex: 1, height: 1,
-        background: `linear-gradient(90deg, ${hexToRgba(color, 0.45)} 0%, transparent 100%)`,
-      }} />
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+      <span className="ti-diamond" aria-hidden />
+      <span style={{ ...tiTitle, fontSize: 13.5 }}>{label}</span>
+      <span style={{ width: 7, height: 7, borderRadius: 2, background: color, flexShrink: 0 }} />
+      <span className="ti-groove-h" style={{ flex: 1 }} />
     </div>
   )
 }
 
 function ScreenshotFrame({ src, color, onError }: { src: string; color: string; onError: () => void }) {
+  // 截图嵌在下沉的黑玻璃槽里，上沿一道分类色细刻条标出归属
   return (
     <div style={{
       position: 'relative',
-      padding: 3,
-      background: `linear-gradient(135deg, ${hexToRgba(color, 0.22)} 0%, ${hexToRgba(color, 0.05)} 100%)`,
-      clipPath: clip4, WebkitClipPath: clip4,
-      boxShadow: `0 0 10px ${hexToRgba(color, 0.25)}`,
+      padding: 4,
+      borderRadius: 6,
+      background: tiSurface.well,
+      boxShadow: `${tiSurface.wellShadow}, inset 0 2px 0 ${hexToRgba(color, 0.85)}`,
     }}>
       <img
         src={src}
         alt="screenshot"
         onError={onError}
-        style={{
-          width: '100%', display: 'block',
-          clipPath: clip3, WebkitClipPath: clip3,
-        }}
+        style={{ width: '100%', display: 'block', borderRadius: 3 }}
       />
-      {/* 四角 L 标：视觉 HUD 收口 */}
-      <Corner pos="tl" color={color} />
-      <Corner pos="tr" color={color} />
-      <Corner pos="bl" color={color} />
-      <Corner pos="br" color={color} />
     </div>
   )
-}
-
-function Corner({ pos, color }: { pos: 'tl' | 'tr' | 'bl' | 'br'; color: string }) {
-  const sz = 7
-  const style: React.CSSProperties = {
-    position: 'absolute', width: sz, height: sz,
-    pointerEvents: 'none',
-    borderColor: color,
-    filter: `drop-shadow(0 0 3px ${hexToRgba(color, 0.7)})`,
-  }
-  if (pos === 'tl') { style.left = -1;  style.top = -1;    style.borderTop = `1.5px solid`;    style.borderLeft  = `1.5px solid` }
-  if (pos === 'tr') { style.right = -1; style.top = -1;    style.borderTop = `1.5px solid`;    style.borderRight = `1.5px solid` }
-  if (pos === 'bl') { style.left = -1;  style.bottom = -1; style.borderBottom = `1.5px solid`; style.borderLeft  = `1.5px solid` }
-  if (pos === 'br') { style.right = -1; style.bottom = -1; style.borderBottom = `1.5px solid`; style.borderRight = `1.5px solid` }
-  return <span style={style} />
 }

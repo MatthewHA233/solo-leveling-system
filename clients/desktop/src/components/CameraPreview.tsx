@@ -124,7 +124,7 @@ export default function CameraPreview({ videoRef, faces, onClose }: Props) {
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '4px 8px',
-          background: 'rgba(4,8,18,0.92)',
+          background: 'rgba(14,13,11,0.92)',
           borderBottom: '1px solid rgba(74,222,128,0.15)',
           cursor: dragRef.current ? 'grabbing' : 'grab',
         }}
@@ -151,7 +151,7 @@ export default function CameraPreview({ videoRef, faces, onClose }: Props) {
       {/* 底部状态 */}
       <div style={{
         padding: '3px 8px',
-        background: 'rgba(4,8,18,0.85)',
+        background: 'rgba(14,13,11,0.85)',
         fontSize: 9, fontFamily: theme.fontDisplay,
         color: faces.length > 0 ? 'rgba(74,222,128,0.8)' : 'rgba(255,255,255,0.25)',
         letterSpacing: 1,
@@ -168,7 +168,7 @@ export default function CameraPreview({ videoRef, faces, onClose }: Props) {
               {`video ${videoRef.current?.videoWidth ?? '?'}×${videoRef.current?.videoHeight ?? '?'}`}
             </div>
           </>
-        ) : 'NO FACE DETECTED'}
+        ) : '未检测到人脸'}
       </div>
     </div>
   )

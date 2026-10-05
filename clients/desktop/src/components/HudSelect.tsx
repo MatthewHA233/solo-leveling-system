@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════
-// HudSelect — Neon Brutalism 风格下拉选择
-// 替代原生 <select>，统一深色主题 + cyan 高亮
+// HudSelect — 钛合金机体风格下拉选择
+// 替代原生 <select>：触发器是下沉的黑玻璃槽，弹层是一块钛板；选中/悬停用信号橙
 // 支持：
 //   - inline=true 时按内容自适应宽度（与按钮同行场景）
 //   - 弹出层智能翻转：下方放不下就翻到上方
@@ -10,7 +10,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Check } from 'lucide-react'
-import { theme } from '../theme'
+import { theme, ti } from '../theme'
 import Tooltip from './Tooltip'
 
 export interface HudSelectOption<T extends string> {
@@ -148,9 +148,9 @@ export default function HudSelect<T extends string>({
     }
   }, [open])
 
-  const borderColor = open || hover
-    ? 'rgba(0,229,255,0.55)'
-    : 'rgba(0,229,255,0.18)'
+  const ringColor = open || hover
+    ? 'rgba(255,138,76,0.45)'
+    : 'rgba(255,255,255,0.0)'
 
   return (
     <>
@@ -169,10 +169,8 @@ export default function HudSelect<T extends string>({
           justifyContent: 'space-between',
           gap: 6,
           padding: '6px 8px',
-          background: open
-            ? 'rgba(0,229,255,0.08)'
-            : 'rgba(255,255,255,0.03)',
-          border: `1px solid ${borderColor}`,
+          background: ti.well,
+          border: 'none',
           borderRadius: 4,
           color: current ? theme.textPrimary : theme.textMuted,
           fontFamily: theme.fontBody,
@@ -182,8 +180,8 @@ export default function HudSelect<T extends string>({
           opacity: disabled ? 0.4 : 1,
           outline: 'none',
           whiteSpace: 'nowrap',
-          transition: 'border-color 0.12s ease, background 0.12s ease',
-          boxShadow: open ? 'inset 0 0 8px rgba(0,229,255,0.15)' : undefined,
+          transition: 'box-shadow 0.12s ease',
+          boxShadow: `inset 0 1px 4px rgba(0,0,0,0.95), 0 1px 0 rgba(255,255,255,0.06), 0 0 0 1px ${ringColor}`,
         }}
       >
         <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
@@ -192,7 +190,7 @@ export default function HudSelect<T extends string>({
         <ChevronDown
           size={13}
           style={{
-            color: open || hover ? theme.electricBlue : theme.textSecondary,
+            color: open || hover ? ti.ledHi : theme.textSecondary,
             transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
             transition: 'transform 0.15s ease, color 0.15s ease',
             flexShrink: 0,
@@ -216,10 +214,11 @@ export default function HudSelect<T extends string>({
             maxWidth: pos.width,
             maxHeight: pos.maxHeight,
             zIndex: popupZIndex,
-            background: theme.panelDeep,
-            border: `1px solid rgba(0,229,255,0.45)`,
-            borderRadius: 4,
-            boxShadow: '0 6px 20px rgba(0,0,0,0.55), 0 0 14px rgba(0,229,255,0.25)',
+            backgroundColor: '#1C1B19',
+            backgroundImage: 'var(--ti-brushed), linear-gradient(180deg, rgba(255,255,255,0.04), rgba(0,0,0,0.12))',
+            border: 'none',
+            borderRadius: 6,
+            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1), inset 0 -1px 0 rgba(0,0,0,0.7), 0 12px 30px rgba(0,0,0,0.7)',
             padding: 4,
             overflowY: 'auto',
             overflowX: 'hidden',
@@ -282,11 +281,11 @@ function HudSelectRow({
         borderRadius: 3,
         cursor: 'pointer',
         background: hover
-          ? 'rgba(0,229,255,0.12)'
+          ? 'rgba(255,255,255,0.07)'
           : selected
-          ? 'rgba(0,229,255,0.06)'
+          ? 'rgba(255,138,76,0.08)'
           : 'transparent',
-        color: active ? theme.electricBlue : theme.textPrimary,
+        color: active ? ti.ledHi : theme.textPrimary,
         fontFamily: theme.fontBody,
         fontSize: 12,
         whiteSpace: 'nowrap',
@@ -298,7 +297,7 @@ function HudSelectRow({
         width: 12, display: 'inline-flex',
         alignItems: 'center', justifyContent: 'center',
       }}>
-        {selected ? <Check size={11} style={{ color: theme.electricBlue }} /> : null}
+        {selected ? <Check size={11} style={{ color: ti.ledHi }} /> : null}
       </span>
       <span style={{
         minWidth: 0,

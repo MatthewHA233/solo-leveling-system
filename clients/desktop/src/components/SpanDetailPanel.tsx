@@ -3,7 +3,7 @@
 // ══════════════════════════════════════════════
 
 import type { PerceptionSpan } from '../lib/local-api'
-import { theme } from '../theme'
+import { theme, tiTitle } from '../theme'
 
 interface Props {
   span: PerceptionSpan
@@ -187,7 +187,7 @@ export default function SpanDetailPanel({ span }: Props) {
       {/* 时间轴：起点 ── 时长 ── 终点 */}
       <div style={{
         padding: '10px 14px',
-        background: 'rgba(0,12,28,0.4)',
+        background: 'rgba(17,16,14,0.4)',
         border: `1px solid ${theme.hudFrameSoft}`,
         clipPath: clip4, WebkitClipPath: clip4,
       }}>
@@ -203,21 +203,13 @@ export default function SpanDetailPanel({ span }: Props) {
 }
 
 function SectionHeader({ label, color }: { label: string; color: string }) {
+  // 菱形 + 粗斜体钛白字（和各面板标题一致），分类色只落在一颗小方点上；尾巴是一道凹槽线
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 8,
-      marginBottom: 10,
-      fontSize: 12, fontFamily: theme.fontBody, fontWeight: 700,
-      letterSpacing: 2,
-      color,
-    }}>
-      <span style={{ textShadow: `0 0 5px ${hexToRgba(color, 0.7)}` }}>
-        ▸ {label}
-      </span>
-      <span style={{
-        flex: 1, height: 1,
-        background: `linear-gradient(90deg, ${hexToRgba(color, 0.45)} 0%, transparent 100%)`,
-      }} />
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+      <span className="ti-diamond" aria-hidden />
+      <span style={{ ...tiTitle, fontSize: 13.5 }}>{label}</span>
+      <span style={{ width: 7, height: 7, borderRadius: 2, background: color, flexShrink: 0 }} />
+      <span className="ti-groove-h" style={{ flex: 1 }} />
     </div>
   )
 }
@@ -284,7 +276,7 @@ function Track({ duration, color }: { duration: string; color: string }) {
         padding: '2px 9px',
         fontSize: 12, fontWeight: 700,
         color,
-        background: 'rgba(0,12,28,0.95)',
+        background: 'rgba(17,16,14,0.95)',
         border: `1px solid ${hexToRgba(color, 0.55)}`,
         borderRadius: 3,
         letterSpacing: 0.5,

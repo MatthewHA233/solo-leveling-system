@@ -17,9 +17,9 @@ import {
   addActivityCategory, deleteActivityCategory, updateActivityCategory,
   addActivityTag, deleteActivityTag, renameActivityPath,
 } from '../lib/local-api'
-import { theme } from '../theme'
+import { theme, tiInput, ti, tiKey, tiSurface } from '../theme'
 import Tooltip from './Tooltip'
-import { HudFrame } from './hud'
+import PanelTitle from './ui/PanelTitle'
 
 interface Props {
   palette: ActivityPalette
@@ -315,27 +315,21 @@ export default function ActivityTagPalette({
     <div style={{
       height: '100%',
       position: 'relative',
-      padding: '4px 4px',
+      padding: '8px 4px 4px',
       fontFamily: theme.fontBody,
+      display: 'flex',
+      flexDirection: 'column',
     }}>
-      <HudFrame
-        color={theme.expGreen}
-        accent={theme.warningOrange}
-        topLabel="ACTIVITY · 活动标签"
-        showNotchTop
-        showNotchBottom={false}
-        notchWidth={112}
-        notchDepth={7}
-        cornerSize={16}
-      />
+      <PanelTitle>活动标签</PanelTitle>
 
       <div style={{
-        height: '100%',
+        flex: 1,
+        minHeight: 0,
         overflow: 'auto',
         display: 'flex',
         flexDirection: 'column',
-        padding: '24px 8px 8px 8px',
-        gap: 6,
+        padding: '2px 8px 8px 8px',
+        gap: 7,
       }}>
         {/* 搜索栏 + "+" 按钮（左侧）= 新建模式入口；同一个输入框两种用途 */}
         <div style={{ display: 'flex', alignItems: 'stretch', gap: 4 }}>
@@ -343,16 +337,11 @@ export default function ActivityTagPalette({
             <button
               type="button"
               onClick={addMode ? exitAddMode : enterAddMode}
-              style={{
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                width: 28, flexShrink: 0,
-                background: addMode ? `${theme.electricBlue}1A` : 'rgba(0,229,255,0.045)',
-                border: `1px solid ${addMode ? theme.electricBlue + '88' : theme.hudFrameSoft}`,
-                color: addMode ? theme.electricBlue : theme.textPrimary,
-                cursor: 'pointer',
-              }}
+              className="ti-key"
+              data-active={addMode ? '1' : undefined}
+              style={{ width: 30, flexShrink: 0 }}
             >
-              {addMode ? <X size={12} /> : <Plus size={12} />}
+              {addMode ? <X size={13} /> : <Plus size={14} strokeWidth={2.6} />}
             </button>
           </Tooltip>
           <SearchBox
@@ -385,9 +374,9 @@ export default function ActivityTagPalette({
               onClick={() => setCategoryFilter(null)}
               style={{
                 marginLeft: 'auto',
-                fontFamily: theme.fontMono,
-                fontSize: 9.5,
-                color: theme.textMuted,
+                fontFamily: theme.fontBody,
+                fontSize: 10.5,
+                color: theme.textSecondary,
                 background: 'transparent', border: 'none',
                 cursor: 'pointer',
                 padding: '2px 4px',
@@ -421,15 +410,14 @@ export default function ActivityTagPalette({
         <div style={{
           display: 'flex', alignItems: 'center', gap: 6,
           padding: '4px 2px 2px',
-          color: theme.textMuted,
-          fontFamily: theme.fontMono,
-          fontSize: 9.5,
-          letterSpacing: 1.5,
-          fontWeight: 700,
+          color: theme.textSecondary,
+          fontSize: 10.5,
+          letterSpacing: 1,
+          fontWeight: 800,
         }}>
-          <TagIcon size={10} />
-          <span>TAGS · {visibleTags.length}</span>
-          <span style={{ opacity: 0.6 }}>· 最近用的在上</span>
+          <TagIcon size={11} />
+          <span>标签 <span style={{ fontFamily: theme.fontMono, color: ti.led }}>{visibleTags.length}</span></span>
+          <span style={{ color: theme.textMuted, fontWeight: 500 }}>· 最近用的在上</span>
         </div>
 
         {visibleTags.length === 0 ? (
@@ -507,17 +495,13 @@ function SearchBox({
     <div style={{
       flex: 1,
       display: 'flex', alignItems: 'center', gap: 6,
-      padding: '5px 9px',
-      border: addMode
-        ? `1px dashed ${theme.electricBlue}88`
-        : `1px solid ${theme.hudFrameSoft}`,
-      background: addMode
-        ? 'rgba(0,229,255,0.07)'
-        : 'rgba(0,229,255,0.045)',
+      padding: '6px 9px',
+      ...tiInput,
+      boxShadow: addMode ? `${tiSurface.wellShadow}, 0 0 0 1px ${ti.led}AA` : tiSurface.wellShadow,
     }}>
       {addMode
-        ? <Plus size={11} style={{ color: theme.electricBlue, flexShrink: 0 }} />
-        : <Search size={11} style={{ color: theme.textPrimary, flexShrink: 0 }} />}
+        ? <Plus size={12} style={{ color: ti.led, flexShrink: 0 }} />
+        : <Search size={12} style={{ color: theme.textMuted, flexShrink: 0 }} />}
       <input
         // 切到 addMode 时让输入框自动 focus
         key={addMode ? 'add' : 'search'}
@@ -579,13 +563,13 @@ function CategoryChip({ cat, active, onToggle, onEdit }: {
         onContextMenu={(e) => { e.preventDefault(); onEdit() }}
         style={{
           ...chipBaseStyle(cat.color),
-          opacity: active ? 1 : 0.78,
-          boxShadow: active ? `0 0 6px ${cat.color}55, inset 0 0 6px ${cat.color}22` : undefined,
-          outline: active ? `1px solid ${cat.color}` : 'none',
+          boxShadow: active
+            ? `0 0 0 1.5px ${cat.color}, inset 0 1px 0 rgba(255,255,255,0.14)`
+            : tiKey.boxShadow,
         }}
       >
         <span style={{
-          width: 7, height: 7, background: cat.color, flexShrink: 0,
+          width: 7, height: 7, borderRadius: 2, background: cat.color, flexShrink: 0,
         }} />
         <span style={{
           fontSize: 10.5, color: theme.textPrimary, whiteSpace: 'nowrap',
@@ -612,9 +596,10 @@ function CategoryEditor({
   const currentUsedBy = usedColorBy?.(color)
   return (
     <div style={{
-      border: `1px solid ${color}55`,
-      background: `${color}10`,
-      padding: '6px 8px',
+      background: tiSurface.well,
+      boxShadow: `${tiSurface.wellShadow}, inset 3px 0 0 ${color}`,
+      borderRadius: 5,
+      padding: '7px 8px 7px 11px',
       display: 'flex', flexDirection: 'column', gap: 6,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -697,14 +682,14 @@ function TagRow({
       style={{
         display: 'flex', alignItems: 'center', gap: 6,
         padding: '4px 6px',
-        background: selected ? `${color}22` : (hover ? 'rgba(255,255,255,0.03)' : 'transparent'),
-        border: `1px solid ${selected ? color : 'transparent'}`,
-        boxShadow: selected ? `0 0 6px ${color}55, inset 0 0 6px ${color}22` : undefined,
+        borderRadius: 4,
+        background: selected ? `${color}24` : (hover ? 'rgba(255,255,255,0.05)' : 'transparent'),
+        boxShadow: selected ? `inset 0 0 0 1px ${color}, inset 3px 0 0 ${color}` : undefined,
         cursor: editing ? 'default' : 'pointer',
       }}
     >
       <span style={{
-        width: 8, height: 8, flexShrink: 0,
+        width: 8, height: 8, borderRadius: 2, flexShrink: 0,
         background: color,
       }} />
       {editing ? (
@@ -797,9 +782,9 @@ function TagContextMenu({
         left: pos.x, top: pos.y,
         zIndex: 9999,
         minWidth: 156,
-        background: 'rgba(8,14,24,0.96)',
-        border: `1px solid ${theme.hudFrameSoft}`,
-        boxShadow: '0 6px 22px rgba(0,0,0,0.55)',
+        background: tiSurface.plate,
+        borderRadius: 6,
+        boxShadow: tiSurface.popShadow,
         padding: 4,
         fontFamily: theme.fontBody,
         fontSize: 11.5,
@@ -826,7 +811,8 @@ function TagContextMenu({
           <div style={{
             display: 'flex', alignItems: 'center', gap: 6,
             padding: '4px 6px 6px',
-            borderBottom: `1px solid ${theme.hudFrameSoft}`,
+            borderBottom: '1px solid rgba(0,0,0,0.88)',
+            boxShadow: '0 1px 0 rgba(255,255,255,0.1)',
             marginBottom: 4,
             color: theme.textMuted,
             fontSize: 10,
@@ -882,7 +868,7 @@ function MenuItem({
         display: 'flex', alignItems: 'center', gap: 8,
         width: '100%',
         padding: '6px 8px',
-        background: hover ? (danger ? 'rgba(255,68,68,0.12)' : `${theme.electricBlue}14`) : 'transparent',
+        background: hover ? (danger ? 'rgba(255,68,68,0.12)' : 'rgba(255,255,255,0.07)') : 'transparent',
         border: 'none',
         color: danger ? theme.dangerRed : theme.textPrimary,
         cursor: 'pointer',
@@ -909,8 +895,8 @@ function Highlight({ text, keyword }: { text: string; keyword: string }) {
     if (idx > cursor) out.push(text.slice(cursor, idx))
     out.push(
       <mark key={`m-${k++}`} style={{
-        background: `${theme.electricBlue}40`, color: theme.electricBlue,
-        padding: 0, fontWeight: 800,
+        background: ti.led, color: '#0B0A09',
+        padding: '0 1px', borderRadius: 2, fontWeight: 800,
       }}>
         {text.slice(idx, idx + keyword.length)}
       </mark>
@@ -957,10 +943,10 @@ function EmptyHint({
         </div>
         <SeedDefaultsButton onClick={onSeed} disabled={seeding} />
         <div>
-          也可以从其他电脑端 / 手机端 <strong style={{ color: theme.electricBlue }}>局域网同步</strong> 过来
+          也可以从其他电脑端 / 手机端 <strong style={{ color: ti.led }}>局域网同步</strong> 过来
         </div>
         <div>
-          或点 <InlinePlusButton onClick={onEnterAddMode} /> 自己输入 <strong style={{ color: theme.electricBlue }}>分类,标签</strong> 新建
+          或点 <InlinePlusButton onClick={onEnterAddMode} /> 自己输入 <strong style={{ color: ti.led }}>分类,标签</strong> 新建
         </div>
       </div>
     )
@@ -975,20 +961,15 @@ function SeedDefaultsButton({ onClick, disabled }: { onClick: () => void; disabl
       type="button"
       onClick={onClick}
       disabled={disabled}
+      className="ti-key ti-key-primary"
       style={{
-        display: 'inline-flex',
-        alignItems: 'center',
         gap: 8,
-        padding: '8px 16px',
-        background: disabled ? 'rgba(0,229,255,0.18)' : theme.electricBlue,
-        border: `1px solid ${theme.electricBlue}`,
-        color: disabled ? theme.textSecondary : '#001018',
+        height: 34,
+        padding: '0 18px',
         fontFamily: theme.fontBody,
-        fontWeight: 700,
         fontSize: 12.5,
         letterSpacing: 0.6,
         cursor: disabled ? 'wait' : 'pointer',
-        boxShadow: disabled ? 'none' : `0 0 12px ${theme.electricBlue}55`,
       }}
     >
       <Zap size={13} strokeWidth={2.4} />
@@ -1018,14 +999,11 @@ function InlinePlusButton({ onClick }: { onClick: () => void }) {
       onClick={onClick}
       style={{
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        width: 22, height: 18,
-        verticalAlign: '-4px',
-        background: 'rgba(0,229,255,0.045)',
-        border: `1px solid ${theme.hudFrameSoft}`,
-        color: theme.textPrimary,
-        cursor: 'pointer',
+        width: 24, height: 20,
+        verticalAlign: '-5px',
         margin: '0 3px',
       }}
+      className="ti-key"
     >
       <Plus size={11} />
     </button>
@@ -1035,22 +1013,20 @@ function InlinePlusButton({ onClick }: { onClick: () => void }) {
 // ── 样式常量 ──
 
 const inputStyle: CSSProperties = {
+  ...tiInput,
   flex: 1, minWidth: 0,
-  background: 'rgba(0,0,0,0.4)',
-  border: `1px solid ${theme.glassBorder}`,
-  color: theme.textPrimary,
   padding: '3px 6px',
   fontSize: 11.5,
   fontFamily: theme.fontBody,
-  outline: 'none',
 }
 
 const iconBtnSmall: CSSProperties = {
+  ...tiKey,
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-  background: 'transparent', border: 'none',
+  width: 22, height: 22,
   color: theme.textSecondary,
   cursor: 'pointer',
-  padding: 2, flexShrink: 0,
+  padding: 0, flexShrink: 0,
 }
 
 const tinyIconBtn: CSSProperties = {
@@ -1064,12 +1040,13 @@ const tinyIconBtn: CSSProperties = {
   flexShrink: 0,
 }
 
-function chipBaseStyle(color: string): CSSProperties {
+function chipBaseStyle(_color: string): CSSProperties {
   return {
     display: 'inline-flex', alignItems: 'center', gap: 4,
-    padding: '2px 6px',
-    background: `${color}1A`,
-    border: `1px solid ${color}66`,
+    height: 22,
+    padding: '0 7px',
+    ...tiKey,
+    borderRadius: 4,
     color: theme.textPrimary,
     fontFamily: theme.fontBody,
     fontSize: 10.5,

@@ -138,7 +138,7 @@ export default function CameraWindow() {
       <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '4px 8px', height: 22, flexShrink: 0,
-          background: 'rgba(4,8,18,0.95)',
+          background: 'rgba(14,13,11,0.95)',
           borderBottom: '1px solid rgba(74,222,128,0.15)',
         }}
       >
@@ -178,7 +178,7 @@ export default function CameraWindow() {
       {/* 底部状态 */}
       <div style={{
         padding: '3px 8px', flexShrink: 0,
-        background: 'rgba(4,8,18,0.85)',
+        background: 'rgba(14,13,11,0.85)',
         fontSize: 9, fontFamily: theme.fontDisplay,
         color: faces.length > 0 ? 'rgba(74,222,128,0.8)' : 'rgba(255,255,255,0.25)',
         letterSpacing: 1,
@@ -186,7 +186,7 @@ export default function CameraWindow() {
       }}>
         {faces.length > 0
           ? `DETECTED · ${(faces[0].score * 100).toFixed(0)}%`
-          : 'NO FACE DETECTED'}
+          : '未检测到人脸'}
       </div>
     </div>
     </>

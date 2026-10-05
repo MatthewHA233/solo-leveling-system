@@ -25,7 +25,7 @@ import {
   Video,
   X,
 } from 'lucide-react'
-import { theme, hud } from '../theme'
+import { theme, hud, ti, tiSurface, tiInput, tiTitle, tiKey } from '../theme'
 import HudSelect from './HudSelect'
 import Tooltip from './Tooltip'
 import type {
@@ -111,6 +111,8 @@ const FEATURE_SPECS: readonly FeatureSpec[] = [
 ]
 
 const FEATURE_LABEL = new Map(FEATURE_SPECS.map((f) => [f.feature, f.label]))
+/** 模态的中文名（库里存英文键） */
+const MODALITY_ZH: Record<string, string> = { text: '文本', image: '图像', video: '视频', audio: '音频', embedding: '向量' }
 
 const MODEL_ICON_URL = 'https://img.alicdn.com/imgextra/i3/O1CN01Kmx9dR1wcHOaMMXAk_!!6000000006328-55-tps-28-28.svg'
 
@@ -721,68 +723,54 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
         @keyframes model-dialog-pop { from { opacity: 0; transform: translate(-50%, -50%) scale(0.98); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
         @keyframes model-dialog-spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }
         .model-dialog-icon-btn {
-          background: rgba(0,229,255,0.05);
-          border: 1px solid ${theme.hudFrameSoft};
-          color: ${theme.textSecondary};
-          width: 24px; height: 24px;
+          border: none;
+          border-radius: 5px;
+          background: linear-gradient(180deg, #3A3733, #26241F);
+          box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -2px 0 rgba(0,0,0,0.35), 0 3px 5px rgba(0,0,0,0.55);
+          color: ${theme.textPrimary};
+          width: 28px; height: 28px;
           box-sizing: border-box;
           display: inline-flex; align-items: center; justify-content: center;
           cursor: pointer;
-          clip-path: ${hud.chamfer8};
-          -webkit-clip-path: ${hud.chamfer8};
-          transition: all 0.15s ease;
+          transition: box-shadow 0.12s ease, background 0.12s ease;
         }
-        .model-dialog-icon-btn:hover:not(:disabled) { color: ${theme.electricBlue}; border-color: ${theme.electricBlue}; box-shadow: 0 0 8px ${theme.electricBlue}55; }
-        .model-dialog-icon-btn:disabled { opacity: 0.32; cursor: not-allowed; filter: grayscale(0.7); }
+        .model-dialog-icon-btn:hover:not(:disabled) {
+          background: linear-gradient(180deg, #46423D, #2D2A26);
+          box-shadow: 0 0 0 1px ${ti.led}, inset 0 1px 0 rgba(255,255,255,0.2), 0 3px 8px rgba(0,0,0,0.55);
+        }
+        .model-dialog-icon-btn:disabled { opacity: 0.32; cursor: not-allowed; }
         .model-input::placeholder { color: ${theme.textMuted}; }
 
-        /* ── HUD 卡片体系 ── */
+        /* ── 卡片体系：凸起的小钛片，左侧一道语义色刻条 ── */
         .hud-card {
           position: relative;
-          background:
-            linear-gradient(180deg, rgba(4,12,26,0.82) 0%, rgba(2,8,20,0.74) 100%);
-          border: 1px solid rgba(0,229,255,0.18);
-          padding: 12px 14px 12px 16px;
-          clip-path: ${hud.chamfer8};
-          -webkit-clip-path: ${hud.chamfer8};
-          transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+          background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(0,0,0,0.12)), #1F1D1A;
+          border-radius: 6px;
+          box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.08), 0 2px 6px rgba(0,0,0,0.5);
+          padding: 12px 14px 12px 17px;
+          transition: box-shadow 0.15s ease;
           overflow: hidden;
         }
-        .hud-card::after {
-          /* 微弱扫描线纹理（不抢戏） */
-          content: '';
-          position: absolute; inset: 0;
-          background-image: repeating-linear-gradient(
-            0deg, transparent 0 2px, rgba(0,229,255,0.025) 2px 3px
-          );
-          pointer-events: none;
-          opacity: 0.55;
-        }
         .hud-card:hover {
-          border-color: rgba(0,229,255,0.45);
-          box-shadow: 0 0 14px rgba(0,229,255,0.22), 0 0 28px rgba(0,229,255,0.08);
-          background: linear-gradient(180deg, rgba(6,16,32,0.86) 0%, rgba(2,10,22,0.78) 100%);
+          box-shadow: 0 0 0 1px rgba(255,138,76,0.55), inset 0 1px 0 rgba(255,255,255,0.1), 0 2px 8px rgba(0,0,0,0.55);
         }
         .hud-card-stripe {
           position: absolute;
-          left: 0; top: 8px; bottom: 8px;
-          width: 2px;
-          background: var(--accent, ${theme.electricBlue});
-          box-shadow: 0 0 6px var(--accent, ${theme.electricBlue}), 0 0 12px var(--accent, ${theme.electricBlue});
-          opacity: 0.6;
-          transition: opacity 0.15s ease;
+          left: 0; top: 0; bottom: 0;
+          width: 3px;
+          background: var(--accent, ${ti.led});
           z-index: 1;
         }
-        .hud-card:hover .hud-card-stripe { opacity: 1; }
         .hud-card > * { position: relative; z-index: 2; }
 
         /* 卡片内"价格层"分组：去掉边框，用左侧色条 + 半透明深底 */
         .hud-tier {
           position: relative;
           padding: 8px 10px 8px 12px;
-          background: rgba(0,4,12,0.4);
-          border-left: 2px solid rgba(0,229,255,0.4);
-          border-top: 1px solid rgba(255,255,255,0.04);
+          background: ${tiSurface.well};
+          border-radius: 4px;
+          border-left: 3px solid rgba(255,138,76,0.5);
+          box-shadow: ${tiSurface.wellShadow};
         }
 
         /* 价格小标签：彩色图标 + 数值，无边框 */
@@ -797,10 +785,9 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
 
         /* 数值发光（用于卡片大数字） */
         .hud-num {
-          font-family: ${theme.fontMono};
-          font-weight: 800;
+          font-family: 'Doto', ${theme.fontMono};
+          font-weight: 900;
           letter-spacing: 0.02em;
-          text-shadow: 0 0 8px var(--accent-soft, rgba(0,229,255,0.35));
         }
       `}</style>
 
@@ -810,7 +797,7 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
           position: 'fixed',
           inset: 0,
           zIndex: 900,
-          background: 'rgba(2, 6, 16, 0.84)',
+          background: 'rgba(12,11,9,0.84)',
           animation: 'model-dialog-in 0.16s ease-out',
         }}
       />
@@ -827,18 +814,18 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
           zIndex: 901,
           display: 'flex',
           flexDirection: 'column',
-          background: theme.hudFill,
-          border: `1px solid ${theme.hudFrame}`,
+          background: tiSurface.plate,
+          border: 'none',
           clipPath: hud.chamfer12,
           WebkitClipPath: hud.chamfer12,
-          boxShadow: `0 24px 80px rgba(0,0,0,0.8), 0 0 60px ${theme.hudHalo}, inset 0 1px 0 rgba(255,255,255,0.04)`,
+          boxShadow: tiSurface.plateShadow,
           animation: 'model-dialog-pop 0.18s ease-out',
           overflow: 'hidden',
         }}
       >
         <header style={headerStyle}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-            <Boxes size={16} color={theme.electricBlue} style={{ filter: `drop-shadow(0 0 6px ${theme.electricBlue}AA)` }} />
+            <Boxes size={16} color={theme.electricBlue} />
             <span style={titleStyle}>模型调用与审计</span>
           </div>
 
@@ -1007,28 +994,18 @@ function ConfirmDeleteApiKey({
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: theme.hudFillDeep,
-          border: `1px solid ${theme.dangerRed}66`,
-          boxShadow: `0 0 32px ${theme.dangerRed}44, inset 0 0 16px rgba(0,0,0,0.4)`,
-          borderRadius: 2,
+          background: tiSurface.plate,
+          boxShadow: `${tiSurface.plateShadow}, inset 0 3px 0 ${theme.dangerRed}`,
+          borderRadius: 8,
           padding: '24px 28px 22px',
           minWidth: 380,
           maxWidth: 460,
-          fontFamily: theme.fontMono,
+          fontFamily: theme.fontBody,
           color: theme.textPrimary,
-          clipPath: 'polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px))',
         }}
       >
-        <div style={{
-          fontFamily: theme.fontDisplay,
-          fontSize: 12,
-          letterSpacing: '0.12em',
-          color: theme.dangerRed,
-          textShadow: `0 0 8px ${theme.dangerRed}`,
-          marginBottom: 14,
-          textTransform: 'uppercase',
-        }}>
-          DELETE API KEY
+        <div style={{ ...tiTitle, fontSize: 14, color: theme.dangerRed, marginBottom: 14 }}>
+          删除 API Key
         </div>
 
         <div style={{ fontSize: 13, color: theme.textPrimary, marginBottom: 8, lineHeight: 1.6 }}>
@@ -1039,7 +1016,7 @@ function ConfirmDeleteApiKey({
         </div>
 
         <div style={{ display: 'flex', gap: 12 }}>
-          <button onClick={onCancel} style={confirmBtnStyle(theme.electricBlue)}>取消</button>
+          <button onClick={onCancel} style={confirmBtnStyle(theme.textPrimary)}>取消</button>
           <button onClick={onConfirm} style={confirmBtnStyle(theme.dangerRed)}>确定删除</button>
         </div>
       </div>
@@ -1049,17 +1026,15 @@ function ConfirmDeleteApiKey({
 
 function confirmBtnStyle(color: string): CSSProperties {
   return {
+    ...tiKey,
     flex: 1,
-    padding: '9px 0',
-    background: 'transparent',
-    border: `1px solid ${color}`,
-    borderRadius: 2,
+    height: 34,
     color,
     fontFamily: 'inherit',
-    fontSize: 12,
+    fontSize: 12.5,
+    fontWeight: 800,
     letterSpacing: '0.06em',
     cursor: 'pointer',
-    transition: 'background 0.15s',
   }
 }
 
@@ -1108,7 +1083,7 @@ function BailianQuotaScanPanel({
           gap: 14,
           padding: 16,
           border: `1px solid ${theme.hudFrame}`,
-          background: 'rgba(6,13,22,0.98)',
+          background: 'rgba(18,17,15,0.98)',
           boxShadow: `0 0 0 1px ${theme.glassBorder}, 0 24px 80px rgba(0,0,0,0.55)`,
         }}
       >
@@ -1473,52 +1448,51 @@ function UsageCalendar({ viewMode, anchorDate, onSelect }: {
       <style>{`
         .ucal-arrow {
           display:flex; align-items:center; justify-content:center;
-          width:26px; height:26px;
-          background:transparent;
-          border:1px solid ${theme.glassBorder};
-          color:${theme.textSecondary};
-          cursor:pointer; border-radius:3px;
-          transition:all 0.12s ease;
+          width:28px; height:28px;
+          border:none; border-radius:5px; background:linear-gradient(180deg, #3A3733, #26241F); box-shadow:0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -2px 0 rgba(0,0,0,0.35), 0 3px 5px rgba(0,0,0,0.55);
+          color:${theme.textPrimary};
+          cursor:pointer;
+          transition:box-shadow 0.12s ease, background 0.12s ease;
         }
-        .ucal-arrow:hover { color:${theme.electricBlue}; border-color:${theme.hudFrame}; box-shadow:0 0 6px ${theme.electricBlue}55; }
+        .ucal-arrow:hover { background:linear-gradient(180deg, #46423D, #2D2A26); box-shadow:0 0 0 1px ${ti.led}, inset 0 1px 0 rgba(255,255,255,0.2), 0 3px 8px rgba(0,0,0,0.55); }
         .ucal-trigger {
-          display:inline-flex; align-items:center; gap:5px;
-          padding:4px 12px; min-width:140px; justify-content:center;
-          background:${theme.glass}; border:1px solid ${theme.glassBorder};
-          color:${theme.electricBlue};
-          font-family:${theme.fontMono}; font-size:12px; font-weight:700; letter-spacing:0.08em;
-          cursor:pointer; border-radius:3px;
-          transition:all 0.12s ease;
-          text-shadow:0 0 6px ${theme.electricBlue}66;
+          display:inline-flex; align-items:center; gap:6px;
+          height:28px; padding:0 12px; min-width:140px; justify-content:center;
+          background:${tiSurface.well}; border:none; border-radius:5px;
+          box-shadow:${tiSurface.wellShadow};
+          color:${ti.ledHi};
+          font-family:'Doto', ${theme.fontMono}; font-size:13px; font-weight:900; letter-spacing:0.06em;
+          cursor:pointer;
+          transition:box-shadow 0.12s ease;
         }
-        .ucal-trigger:hover { background:${theme.glassHover}; border-color:${theme.hudFrame}; box-shadow:0 0 8px ${theme.electricBlue}33; }
+        .ucal-trigger:hover { box-shadow:${tiSurface.wellShadow}, 0 0 0 1px ${ti.led}88; }
         .ucal-cell {
           position:relative; height:36px;
           display:flex; flex-direction:column; align-items:center; justify-content:center;
           padding-top:2px; gap:1px;
           font-family:${theme.fontMono}; font-size:11px; font-weight:600;
-          background:transparent; border:1px solid transparent;
+          background:transparent; border:none;
           color:${theme.textPrimary}; cursor:pointer;
-          transition:background 0.1s, border-color 0.1s;
-          border-radius:3px;
+          transition:background 0.1s;
+          border-radius:4px;
         }
-        .ucal-cell:hover { background:${theme.glassHover}; border-color:${theme.glassBorder}; }
+        .ucal-cell:hover { background:rgba(255,255,255,0.07); }
         .ucal-cell.muted { color:${theme.textMuted}; }
-        .ucal-cell.today { color:${theme.electricBlue}; text-shadow:0 0 6px ${theme.electricBlue}AA; }
+        .ucal-cell.today { color:${ti.led}; font-weight:800; }
         .ucal-cell.selected {
-          background:rgba(0,229,255,0.15); border-color:${theme.electricBlue};
-          color:${theme.electricBlue}; text-shadow:0 0 8px ${theme.electricBlue}AA;
-          box-shadow:0 0 10px ${theme.electricBlue}44, inset 0 0 6px rgba(0,229,255,0.1);
+          background:linear-gradient(180deg, rgba(255,255,255,0.38), rgba(255,255,255,0) 65%), ${ti.led};
+          color:#140A04; font-weight:900;
         }
+        .ucal-cell.selected .ucal-cost { color:#140A04; }
         .ucal-cost { font-size:8px; color:${theme.dangerRed}; font-weight:700; letter-spacing:0; line-height:1; }
         .ucal-nav {
           display:flex; align-items:center; justify-content:center;
-          width:22px; height:22px;
-          background:transparent; border:1px solid ${theme.glassBorder};
-          color:${theme.textSecondary}; cursor:pointer; border-radius:3px;
-          transition:all 0.12s ease;
+          width:24px; height:24px;
+          border:none; border-radius:5px; background:linear-gradient(180deg, #3A3733, #26241F); box-shadow:0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -2px 0 rgba(0,0,0,0.35), 0 3px 5px rgba(0,0,0,0.55);
+          color:${theme.textPrimary}; cursor:pointer;
+          transition:box-shadow 0.12s ease, background 0.12s ease;
         }
-        .ucal-nav:hover { color:${theme.electricBlue}; border-color:${theme.hudFrame}; box-shadow:0 0 6px ${theme.electricBlue}55; }
+        .ucal-nav:hover { background:linear-gradient(180deg, #46423D, #2D2A26); box-shadow:0 0 0 1px ${ti.led}, inset 0 1px 0 rgba(255,255,255,0.2), 0 3px 8px rgba(0,0,0,0.55); }
         @keyframes ucal-pop {
           from { opacity:0; transform:translate(-50%, -4px) scale(0.97); }
           to   { opacity:1; transform:translate(-50%, 0) scale(1); }
@@ -1543,23 +1517,20 @@ function UsageCalendar({ viewMode, anchorDate, onSelect }: {
           zIndex: 1200,
           width: viewMode === 'month' ? 200 : 268,
           padding: 12,
-          background: theme.hudFill,
-          border: `1px solid ${theme.hudFrame}`,
+          background: tiSurface.plate,
+          border: 'none',
           backdropFilter: 'blur(6px)',
           WebkitBackdropFilter: 'blur(6px)',
           clipPath: hud.chamfer8,
-          boxShadow: `0 8px 32px rgba(0,0,0,0.7), 0 0 24px ${theme.hudHalo}, inset 0 1px 0 rgba(255,255,255,0.04)`,
+          boxShadow: tiSurface.plateShadow,
           animation: 'ucal-pop 0.14s ease-out',
         }}>
-          {/* 扫描线 */}
-          <div style={{ position:'absolute', inset:0, pointerEvents:'none', background: hud.scanlines, opacity:0.5, clipPath: hud.chamfer8 }} />
-
           {/* 月份导航 */}
           <div style={{ position:'relative', display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
             <button className="ucal-nav" onClick={() => setCalMonth(({ y, m }) => m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 })}>
               <ChevronLeft size={12} />
             </button>
-            <span style={{ fontFamily: theme.fontDisplay, fontSize: 12, fontWeight: 700, letterSpacing: 2, color: theme.electricBlue, textShadow: `0 0 8px ${theme.electricBlue}88` }}>
+            <span className="ti-led" style={{ fontSize: 14, letterSpacing: 1 }}>
               {calMonth.y} · {String(calMonth.m + 1).padStart(2, '0')}
             </span>
             <button className="ucal-nav" onClick={() => setCalMonth(({ y, m }) => m === 11 ? { y: y + 1, m: 0 } : { y, m: m + 1 })}>
@@ -1631,8 +1602,8 @@ type BarMetric = 'cost' | 'tokens' | 'calls'
 type BarGroup = 'feature' | 'model'
 
 const BAR_PALETTE = [
-  '#00E5FF', '#FF9933', '#00FF88', '#FF4444', '#7DF9FF',
-  '#7000FF', '#FFD700', '#FF69B4', '#00CED1', '#FFA500',
+  '#FF8A4C', '#FF9933', '#8FD9A0', '#FF4444', '#FFB98A',
+  '#A8A29A', '#FFD700', '#FF69B4', '#00CED1', '#FFA500',
 ]
 
 function StackedBarChart({ calls, viewMode, anchorDate }: {
@@ -2109,7 +2080,7 @@ function ModelCard({
           alt=""
           width={32}
           height={32}
-          style={{ flexShrink: 0, filter: `drop-shadow(0 0 6px ${accent}99)` }}
+          style={{ flexShrink: 0 }}
         />
         <div style={{ minWidth: 0, flex: 1 }}>
           <Tooltip content="打开百炼模型详情">
@@ -2132,7 +2103,6 @@ function ModelCard({
                 textAlign: 'left',
                 whiteSpace: 'normal',
                 wordBreak: 'break-all',
-                textShadow: `0 0 6px ${accent}33`,
               }}
             >
               {displayName}
@@ -2148,18 +2118,15 @@ function ModelCard({
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
           {modalities.map((m) => (
             <span key={m} style={{
-              border: `1px solid ${accent}55`,
               color: accent,
-              background: `${accent}18`,
+              background: tiSurface.well,
+              boxShadow: tiSurface.wellShadow,
+              borderRadius: 3,
               padding: '2px 7px',
-              fontSize: 10,
-              fontFamily: theme.fontMono,
-              fontWeight: 600,
+              fontSize: 10.5,
+              fontWeight: 700,
               letterSpacing: 0.4,
-              textShadow: `0 0 4px ${accent}55`,
-              clipPath: 'polygon(3px 0, 100% 0, calc(100% - 3px) 100%, 0 100%)',
-              WebkitClipPath: 'polygon(3px 0, 100% 0, calc(100% - 3px) 100%, 0 100%)',
-            }}>{m}</span>
+            }}>{MODALITY_ZH[m] ?? m}</span>
           ))}
         </div>
       )}
@@ -2181,14 +2148,14 @@ function ModelCard({
               fontWeight: 800,
             }}>
               {quota.error_message
-                ? 'ERR'
+                ? '查询失败'
                 : quota.total_tokens > 0
                   ? `${formatTokens(quota.remaining_tokens)} / ${formatTokens(quota.total_tokens)}`
                   : quota.not_supported ? '不支持' : '0 / 0'}
             </span>
           </div>
           {quota.total_tokens > 0 && (
-            <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+            <div style={{ height: 5, borderRadius: 3, background: tiSurface.well, boxShadow: tiSurface.wellShadow, overflow: 'hidden' }}>
               <div style={{
                 width: `${Math.max(0, Math.min(100, (quota.remaining_tokens / quota.total_tokens) * 100))}%`,
                 height: '100%',
@@ -2197,7 +2164,7 @@ function ModelCard({
             </div>
           )}
           <div style={{ color: theme.textPrimary, opacity: 0.7, fontFamily: theme.fontMono, fontSize: 10 }}>
-            {quota.expire_date ? `expires ${quota.expire_date}` : new Date(quota.scanned_at).toLocaleString('zh-CN')}
+            {quota.expire_date ? `到期 ${quota.expire_date}` : new Date(quota.scanned_at).toLocaleString('zh-CN')}
           </div>
         </div>
       )}
@@ -2217,28 +2184,25 @@ function ModelCard({
           return (
             <div key={idx} className="hud-tier" style={{ borderLeftColor: `${accent}66` }}>
               <div style={{
-                color: theme.textPrimary,
-                opacity: 0.85,
-                fontFamily: theme.fontDisplay,
-                fontSize: 10,
+                color: theme.textSecondary,
+                fontFamily: theme.fontMono,
+                fontSize: 10.5,
                 fontWeight: 700,
                 marginBottom: 6,
-                letterSpacing: '0.14em',
-                textTransform: 'uppercase',
               }}>
-                {tierLabel(tier)}
+                {tierLabel(tier)} tokens
               </div>
               {inputs.length > 0 && (
                 <div style={priceGroupStyle}>
-                  <span style={priceGroupLabelStyle(theme.electricBlue)}>IN</span>
+                  <span style={priceGroupLabelStyle(theme.textSecondary)}>输入</span>
                   <div style={priceListStyle}>
-                    {inputs.map((p) => <PriceTag key={p.label} label={p.label} value={p.value} color={theme.electricBlue} />)}
+                    {inputs.map((p) => <PriceTag key={p.label} label={p.label} value={p.value} color={ti.led} />)}
                   </div>
                 </div>
               )}
               {outputs.length > 0 && (
                 <div style={priceGroupStyle}>
-                  <span style={priceGroupLabelStyle(theme.warningOrange)}>OUT</span>
+                  <span style={priceGroupLabelStyle(theme.textSecondary)}>输出</span>
                   <div style={priceListStyle}>
                     {outputs.map((p) => <PriceTag key={p.label} label={p.label} value={p.value} color={theme.warningOrange} />)}
                   </div>
@@ -2253,7 +2217,7 @@ function ModelCard({
       </div>
 
       <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-        <button type="button" onClick={onEdit} style={cardBtnStyle(theme.electricBlue)}>
+        <button type="button" onClick={onEdit} style={cardBtnStyle(theme.textPrimary)}>
           修改
         </button>
         <button type="button" onClick={onDelete} style={cardBtnStyle(theme.dangerRed)}>
@@ -2269,7 +2233,7 @@ function modalityIcon(label: string, color: string): React.ReactNode {
     size: 12,
     color,
     strokeWidth: 2.2,
-    style: { filter: `drop-shadow(0 0 3px ${color}88)`, flexShrink: 0 },
+    style: { flexShrink: 0 },
   } as const
   switch (label) {
     case '文本': return <TypeIcon {...props} />
@@ -2285,7 +2249,7 @@ function PriceTag({ label, value, color }: { label: string; value: number | null
     <Tooltip content={label}>
       <span className="hud-pricetag" style={{ ['--tone' as never]: color }}>
         {modalityIcon(label, color)}
-        <span style={{ color: theme.textPrimary, fontWeight: 700, textShadow: `0 0 4px ${color}66`, fontSize: 11 }}>
+        <span style={{ color: theme.textPrimary, fontWeight: 700, fontSize: 11.5 }}>
           ¥{value}
         </span>
       </span>
@@ -2354,30 +2318,21 @@ function ModelEditor({
         onClick={(e) => e.stopPropagation()}
         className="model-dialog-scroll"
         style={{
-          background: theme.hudFillDeep,
-          border: `1px solid ${theme.hudFrame}`,
-          boxShadow: `0 0 32px ${theme.hudHalo}, inset 0 0 16px rgba(0,0,0,0.4)`,
-          borderRadius: 2,
+          background: tiSurface.plate,
+          border: 'none',
           padding: '22px 26px 18px',
           width: 'min(640px, 92vw)',
           maxHeight: '88vh',
           overflow: 'auto',
           fontFamily: theme.fontMono,
           color: theme.textPrimary,
-          clipPath: hud.chamfer12,
-          WebkitClipPath: hud.chamfer12,
+          borderRadius: 8,
+          boxShadow: tiSurface.plateShadow,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
           <img src={MODEL_ICON_URL} alt="" width={24} height={24} />
-          <div style={{
-            fontFamily: theme.fontDisplay,
-            fontSize: 14,
-            fontWeight: 800,
-            letterSpacing: '0.06em',
-            color: theme.electricBlue,
-            textShadow: `0 0 6px ${theme.electricBlue}88`,
-          }}>
+          <div style={{ ...tiTitle, fontSize: 14 }}>
             {isNew ? '新增模型' : `修改模型 · ${initial.display_name || initial.id}`}
           </div>
         </div>
@@ -2565,10 +2520,12 @@ function BindingsTab({
             : options[0]?.value ?? boundValue ?? ''
           return (
             <div key={spec.feature} style={bindingRowStyle}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ color: theme.textPrimary, fontWeight: 700, fontSize: 13 }}>{spec.label}</div>
-                <div style={mutedStyle}>{spec.hint}</div>
-                <div style={{ ...mutedStyle, fontFamily: theme.fontMono, marginTop: 4 }}>{spec.feature}</div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ color: theme.textPrimary, fontWeight: 800, fontSize: 13 }}>{spec.label}</span>
+                  <span style={{ color: theme.textMuted, fontFamily: theme.fontMono, fontSize: 10 }}>{spec.feature}</span>
+                </div>
+                <div style={{ ...mutedStyle, marginTop: 4, lineHeight: 1.5 }}>{spec.hint}</div>
               </div>
               <HudSelect
                 value={value}
@@ -2864,7 +2821,7 @@ const CallRow = React.memo(function CallRow({ call, apiKeyLabel, pricing }: { ca
           {featureLabel}
         </span>
         {!call.success && <StatusBadge color={theme.dangerRed} label="ERR" />}
-        {saved > 0 && <StatusBadge color={theme.expGreen} label="FREE" />}
+        {saved > 0 && <StatusBadge color={theme.expGreen} label="免费" />}
         <span style={{ flex: 1 }} />
         <span className="hud-num" style={{
           color: cost > 0 ? theme.dangerRed : theme.expGreen,
@@ -2967,7 +2924,7 @@ function Metric({ label, value, accent, note }: { label: string; value: string; 
     <div className="hud-card" style={{ '--accent': stripeColor, '--accent-soft': `${stripeColor}5C` } as CSSProperties}>
       <span className="hud-card-stripe" />
       <div style={metricLabelStyle}>{label}</div>
-      <div className="hud-num" style={{ color: stripeColor, fontSize: 20, marginTop: 4 }}>{value}</div>
+      <div className="hud-num" style={{ color: stripeColor, fontSize: 24, marginTop: 4 }}>{value}</div>
       {note && <div style={{ color: theme.expGreen, fontFamily: theme.fontMono, fontSize: 10, marginTop: 6, letterSpacing: 0.3 }}>{note}</div>}
     </div>
   )
@@ -2990,7 +2947,7 @@ function MetricBreakdown({
       <span className="hud-card-stripe" />
       <div style={metricLabelStyle}>{label}</div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 4 }}>
-        <span className="hud-num" style={{ color: stripeColor, fontSize: 20 }}>
+        <span className="hud-num" style={{ color: stripeColor, fontSize: 24 }}>
           {formatTokens(total)}
         </span>
         {hasCost && totalCost > 0 && (
@@ -3032,9 +2989,9 @@ function MiniMetric({
     <div className="hud-tier" style={{ borderLeftColor: accentColor, padding: '6px 8px 6px 10px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 6 }}>
         <span style={{
-          color: theme.textPrimary, opacity: 0.82,
-          fontFamily: theme.fontDisplay, fontSize: 9, fontWeight: 700,
-          letterSpacing: '0.14em', textTransform: 'uppercase',
+          color: theme.textSecondary,
+          fontFamily: theme.fontBody, fontSize: 10.5, fontWeight: 700,
+          letterSpacing: '0.06em',
         }}>
           {label}
         </span>
@@ -3090,8 +3047,8 @@ function Empty({ text, tall }: { text: string; tall?: boolean }) {
       alignItems: 'center',
       justifyContent: 'center',
       color: theme.textMuted,
-      border: `1px dashed ${theme.hudFrameSoft}`,
-      background: 'rgba(255,255,255,0.018)',
+      borderRadius: 5,
+      background: 'rgba(0,0,0,0.16)',
       fontSize: 12,
     }}>
       {text}
@@ -3101,25 +3058,29 @@ function Empty({ text, tall }: { text: string; tall?: boolean }) {
 
 function Segmented({ value, options, onChange }: { value: string; options: { value: string; label: string }[]; onChange: (v: string) => void }) {
   return (
-    <div style={{ display: 'inline-flex', border: `1px solid ${theme.hudFrameSoft}`, background: 'rgba(255,255,255,0.025)' }}>
+    <div className="ti-well" style={{ display: 'inline-flex', gap: 2, padding: 2, borderRadius: 5 }}>
       {options.map((opt) => {
         const active = value === opt.value
         return (
           <button
             key={opt.value}
             type="button"
+            className="dn-seg"
+            aria-pressed={active}
             onClick={() => onChange(opt.value)}
             style={{
+              height: 24,
+              padding: '0 12px',
               border: 'none',
-              borderRight: `1px solid ${theme.hudFrameSoft}`,
-              background: active ? `${theme.electricBlue}14` : 'transparent',
-              color: active ? theme.electricBlue : theme.textSecondary,
-              padding: '6px 10px',
+              borderRadius: 4,
+              background: active
+                ? `linear-gradient(180deg, rgba(255,255,255,0.38), rgba(255,255,255,0) 65%), ${ti.led}`
+                : 'transparent',
+              color: active ? '#140A04' : theme.textSecondary,
               cursor: 'pointer',
-              fontFamily: theme.fontMono,
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: 0,
+              fontFamily: theme.fontBody,
+              fontSize: 12,
+              fontWeight: active ? 900 : 600,
             }}
           >
             {opt.label}
@@ -3135,23 +3096,18 @@ function TabButton({ active, icon, label, onClick }: { active: boolean; icon: Re
     <button
       type="button"
       onClick={onClick}
+      className="ti-key"
+      data-active={active ? '1' : undefined}
+      aria-pressed={active}
       style={{
-        display: 'inline-flex',
-        alignItems: 'center',
         gap: 6,
-        border: `1px solid ${active ? theme.electricBlue + '66' : theme.hudFrameSoft}`,
-        background: active ? `${theme.electricBlue}12` : 'rgba(255,255,255,0.025)',
-        color: active ? theme.electricBlue : theme.textSecondary,
-        padding: '3px 10px',
-        height: 24,
+        padding: '0 12px',
+        height: 28,
         boxSizing: 'border-box',
         lineHeight: 1,
-        cursor: 'pointer',
-        fontFamily: theme.fontMono,
-        fontSize: 12,
+        fontFamily: theme.fontBody,
+        fontSize: 12.5,
         fontWeight: 800,
-        clipPath: hud.chamfer8,
-        WebkitClipPath: hud.chamfer8,
       }}
     >
       {icon}
@@ -3166,32 +3122,27 @@ const headerStyle: CSSProperties = {
   alignItems: 'center',
   justifyContent: 'space-between',
   gap: 12,
-  padding: '7px 16px',
+  padding: '10px 16px 8px',
   flexShrink: 0,
-  borderBottom: `1px solid ${theme.hudFrameSoft}`,
-  background: 'linear-gradient(180deg, rgba(0,229,255,0.05) 0%, transparent 100%)',
+  borderBottom: '1px solid rgba(0,0,0,0.88)',
+  boxShadow: '0 1px 0 rgba(255,255,255,0.1)',
 }
 
-const titleStyle: CSSProperties = {
-  color: theme.electricBlue,
-  fontFamily: theme.fontDisplay,
-  fontSize: 13,
-  fontWeight: 700,
-  letterSpacing: 1.6,
-  textShadow: `0 0 8px ${theme.electricBlue}88`,
-}
+const titleStyle: CSSProperties = { ...tiTitle }
 
 const tabBarStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: 8,
-  padding: '4px 16px',
-  borderBottom: `1px solid ${theme.hudFrameSoft}`,
+  padding: '8px 16px',
+  borderBottom: '1px solid rgba(0,0,0,0.88)',
+  boxShadow: '0 1px 0 rgba(255,255,255,0.1)',
 }
 
 const panelStyle: CSSProperties = {
-  border: `1px solid ${theme.hudFrameSoft}`,
-  background: 'rgba(2, 8, 18, 0.72)',
+  background: 'rgba(0,0,0,0.2)',
+  borderRadius: 7,
+  boxShadow: 'inset 0 1px 4px rgba(0,0,0,0.85), inset 0 0 0 1px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.1)',
   padding: 12,
   minWidth: 0,
   minHeight: 0,
@@ -3231,37 +3182,29 @@ const cardLabelStyle: CSSProperties = {
 
 
 const inputStyle: CSSProperties = {
-  border: `1px solid ${theme.hudFrameSoft}`,
-  background: 'rgba(0,0,0,0.25)',
-  color: theme.textPrimary,
-  outline: 'none',
+  ...tiInput,
   padding: '6px 8px',
   fontFamily: theme.fontMono,
   fontSize: 12,
-  borderRadius: 2,
 }
 
 function smallBtnStyle(color: string): CSSProperties {
   return {
-    border: `1px solid ${color}55`,
-    background: `${color}12`,
+    ...tiKey,
     color,
     cursor: 'pointer',
     padding: 6,
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    minWidth: 28,
-    height: 28,
-    clipPath: hud.chamfer8,
-    WebkitClipPath: hud.chamfer8,
+    minWidth: 30,
+    height: 30,
   }
 }
 
 function textActionBtnStyle(color: string): CSSProperties {
   return {
-    border: `1px solid ${color}55`,
-    background: `${color}12`,
+    ...tiKey,
     color,
     cursor: 'pointer',
     padding: '0 10px',
@@ -3271,8 +3214,6 @@ function textActionBtnStyle(color: string): CSSProperties {
     gap: 6,
     height: 28,
     minWidth: 0,
-    clipPath: hud.chamfer8,
-    WebkitClipPath: hud.chamfer8,
     fontFamily: theme.fontBody,
     fontSize: 11,
     fontWeight: 700,
@@ -3293,13 +3234,11 @@ function statusStyle(color: string): CSSProperties {
 }
 
 const metricLabelStyle: CSSProperties = {
-  color: theme.textPrimary,
-  opacity: 0.82,
-  fontSize: 10,
-  fontFamily: theme.fontDisplay,
+  color: theme.textSecondary,
+  fontSize: 11,
+  fontFamily: theme.fontBody,
   fontWeight: 700,
-  letterSpacing: '0.16em',
-  textTransform: 'uppercase',
+  letterSpacing: '0.08em',
 }
 
 const priceGroupStyle: CSSProperties = {
@@ -3334,28 +3273,27 @@ const priceListStyle: CSSProperties = {
 
 function cardBtnStyle(color: string): CSSProperties {
   return {
-    padding: '5px 12px',
-    background: `${color}0C`,
-    border: `1px solid ${color}55`,
+    ...tiKey,
+    height: 26,
+    padding: '0 14px',
     color,
-    fontFamily: theme.fontMono,
-    fontSize: 11,
+    fontFamily: theme.fontBody,
+    fontSize: 12,
+    fontWeight: 700,
     letterSpacing: 0.5,
     cursor: 'pointer',
-    clipPath: hud.chamfer8,
-    WebkitClipPath: hud.chamfer8,
-    transition: 'all 0.15s ease',
   }
 }
 
+// 功能绑定卡：凸起小钛片，标题说明在上、模型下拉在底（窄列里不再挤成一条）
 const bindingRowStyle: CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'minmax(0, 1fr) 220px',
-  gap: 12,
-  alignItems: 'center',
-  border: `1px solid ${theme.hudFrameSoft}`,
-  background: 'rgba(255,255,255,0.025)',
-  padding: 12,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 10,
+  background: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(0,0,0,0.12)), #1F1D1A',
+  borderRadius: 6,
+  boxShadow: '0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.08), 0 2px 6px rgba(0,0,0,0.5)',
+  padding: '12px 12px 12px',
 }
 
 const apiKeyPopoverStyle: CSSProperties = {
@@ -3365,9 +3303,9 @@ const apiKeyPopoverStyle: CSSProperties = {
   width: 430,
   zIndex: 930,
   padding: 12,
-  border: `1px solid ${theme.hudFrame}`,
-  background: 'rgba(3, 10, 22, 0.98)',
-  boxShadow: `0 18px 48px rgba(0,0,0,0.72), 0 0 30px ${theme.hudHalo}`,
+  border: 'none',
+  background: tiSurface.plate,
+  boxShadow: tiSurface.plateShadow,
   clipPath: hud.chamfer12,
   WebkitClipPath: hud.chamfer12,
 }

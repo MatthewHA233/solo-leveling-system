@@ -8,7 +8,7 @@ import { createPortal } from 'react-dom'
 import { X, ChevronRight, ChevronUp, ChevronDown, Mic, Lock, Database, Bot, Eye, EyeOff, Copy, Check, Cpu, Camera, FolderOpen, RefreshCw, Trash2, Settings as SettingsIcon, Ban, Activity } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { theme, hud } from '../theme'
+import { theme, hud, tiSurface, tiInput, tiTitle, ti } from '../theme'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import type { GpuPrefStatus } from '../lib/local-api'
 import { MagneticButton } from './NeonUI'
@@ -317,28 +317,25 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
         @keyframes settings-dialog-in { from { opacity: 0 } to { opacity: 1 } }
         @keyframes settings-dialog-pop { from { opacity: 0; transform: translate(-50%, -50%) scale(0.98); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
         .settings-dialog-icon-btn {
-          background: rgba(0,229,255,0.05);
-          border: 1px solid ${theme.hudFrameSoft};
-          color: ${theme.textSecondary};
-          width: 24px; height: 24px;
+          border: none;
+          border-radius: 5px;
+          background: linear-gradient(180deg, #3A3733, #26241F);
+          box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -2px 0 rgba(0,0,0,0.35), 0 3px 5px rgba(0,0,0,0.55);
+          color: ${theme.textPrimary};
+          width: 28px; height: 28px;
           box-sizing: border-box;
           display: inline-flex; align-items: center; justify-content: center;
           cursor: pointer;
-          clip-path: ${hud.chamfer8};
-          -webkit-clip-path: ${hud.chamfer8};
-          transition: all 0.15s ease;
+          transition: box-shadow 0.12s ease, background 0.12s ease;
         }
         .settings-dialog-icon-btn:hover:not(:disabled) {
-          color: ${theme.electricBlue};
-          border-color: ${theme.electricBlue};
-          box-shadow: 0 0 8px ${theme.electricBlue}55;
+          background: linear-gradient(180deg, #46423D, #2D2A26);
+          box-shadow: 0 0 0 1px ${ti.led}, inset 0 1px 0 rgba(255,255,255,0.2), 0 3px 8px rgba(0,0,0,0.55);
         }
+        .settings-nav-btn:not([data-active="1"]):hover { background: rgba(255,255,255,0.06) !important; color: ${theme.textPrimary} !important; }
         .settings-dialog-scroll::-webkit-scrollbar { width: 8px; }
-        .settings-dialog-scroll::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); }
-        .settings-dialog-scroll::-webkit-scrollbar-thumb {
-          background: rgba(0,229,255,0.24);
-          border: 1px solid rgba(0,229,255,0.18);
-        }
+        .settings-dialog-scroll::-webkit-scrollbar-track { background: transparent; }
+        .settings-dialog-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 4px; }
       `}</style>
 
       <div
@@ -347,7 +344,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
           position: 'fixed',
           inset: 0,
           zIndex: 900,
-          background: 'rgba(2, 6, 16, 0.84)',
+          background: 'rgba(12,11,9,0.84)',
           animation: 'settings-dialog-in 0.16s ease-out',
         }}
       />
@@ -364,11 +361,11 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
           zIndex: 901,
           display: 'flex',
           flexDirection: 'column',
-          background: theme.hudFill,
-          border: `1px solid ${theme.hudFrame}`,
+          background: tiSurface.plate,
+          border: 'none',
           clipPath: hud.chamfer12,
           WebkitClipPath: hud.chamfer12,
-          boxShadow: `0 24px 80px rgba(0,0,0,0.8), 0 0 60px ${theme.hudHalo}, inset 0 1px 0 rgba(255,255,255,0.04)`,
+          boxShadow: tiSurface.plateShadow,
           overflow: 'hidden',
           animation: 'settings-dialog-pop 0.18s ease-out',
         }}
@@ -377,20 +374,14 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '7px 16px',
-        borderBottom: `1px solid ${theme.hudFrameSoft}`,
-        background: 'linear-gradient(180deg, rgba(0,229,255,0.05) 0%, transparent 100%)',
+        borderBottom: '1px solid rgba(0,0,0,0.88)',
+        boxShadow: '0 1px 0 rgba(255,255,255,0.1)',
+        background: 'linear-gradient(180deg, rgba(255,138,76,0.05) 0%, transparent 100%)',
         flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-          <SettingsIcon size={16} color={theme.electricBlue} style={{ filter: `drop-shadow(0 0 6px ${theme.electricBlue}AA)` }} />
-          <span style={{
-            fontFamily: theme.fontDisplay,
-            fontSize: 13,
-            fontWeight: 700,
-            color: theme.electricBlue,
-            letterSpacing: 1.6,
-            textShadow: `0 0 8px ${theme.electricBlue}88`,
-          }}>
+          <SettingsIcon size={16} color={theme.electricBlue} />
+          <span style={tiTitle}>
             设置
           </span>
         </div>
@@ -407,8 +398,9 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
         <div style={{
           width: 156,
           flexShrink: 0,
-          borderRight: `1px solid ${theme.hudFrameSoft}`,
-          background: 'rgba(0,12,28,0.45)',
+          borderRight: '1px solid rgba(0,0,0,0.88)',
+          boxShadow: '1px 0 0 rgba(255,255,255,0.1)',
+          background: 'rgba(17,16,14,0.45)',
           padding: '10px 6px',
           overflowY: 'auto',
           display: 'flex', flexDirection: 'column', gap: 2,
@@ -484,19 +476,14 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
             </HudCheckbox>
 
             <div style={{
-              background: 'rgba(255,255,255,0.03)',
-              border: `1px solid ${theme.glassBorder}`,
-              borderRadius: 4,
+              background: 'rgba(0,0,0,0.2)',
+              boxShadow: 'inset 0 1px 4px rgba(0,0,0,0.85), inset 0 0 0 1px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.1)',
+              borderRadius: 6,
               padding: '10px 12px',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
                 <label style={{ ...labelStyle, marginBottom: 0 }}>窗口大小</label>
-                <span style={{
-                  fontFamily: theme.fontMono,
-                  fontSize: 12,
-                  color: theme.electricBlue,
-                  textShadow: `0 0 8px ${theme.electricBlue}66`,
-                }}>
+                <span className="ti-led" style={{ fontSize: 14 }}>
                   {Math.round(draft.fairyWindowScale * 100)}%
                 </span>
               </div>
@@ -509,7 +496,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
                 onChange={(e) => update('fairyWindowScale', Number(e.target.value) / 100)}
                 style={{
                   width: '100%',
-                  accentColor: theme.electricBlue,
+                  accentColor: ti.led,
                   cursor: 'pointer',
                 }}
               />
@@ -519,17 +506,13 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
                     key={pct}
                     type="button"
                     onClick={() => update('fairyWindowScale', pct / 100)}
+                    className="ti-key"
+                    data-active={Math.round(draft.fairyWindowScale * 100) === pct ? '1' : undefined}
                     style={{
-                      padding: '4px 9px',
-                      background: Math.round(draft.fairyWindowScale * 100) === pct
-                        ? 'rgba(0,229,255,0.14)'
-                        : 'rgba(255,255,255,0.035)',
-                      border: `1px solid ${Math.round(draft.fairyWindowScale * 100) === pct ? theme.electricBlue : theme.glassBorder}`,
-                      color: Math.round(draft.fairyWindowScale * 100) === pct ? theme.electricBlue : theme.textSecondary,
-                      borderRadius: 3,
-                      cursor: 'pointer',
+                      height: 26,
+                      padding: '0 11px',
                       fontFamily: theme.fontMono,
-                      fontSize: 11,
+                      fontSize: 11.5,
                     }}
                   >
                     {pct}%
@@ -780,9 +763,9 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
               </div>
 
               <div style={{
-                background: 'rgba(255,255,255,0.03)',
-                border: `1px solid ${theme.glassBorder}`,
-                borderRadius: 4,
+                background: 'rgba(0,0,0,0.2)',
+                boxShadow: 'inset 0 1px 4px rgba(0,0,0,0.85), inset 0 0 0 1px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.1)',
+                borderRadius: 6,
                 padding: '8px 12px',
                 display: 'grid',
                 gap: 4,
@@ -793,7 +776,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
                 </div>
                 <div style={{
                   fontSize: 11, color: theme.textPrimary,
-                  fontFamily: "'Exo 2', sans-serif",
+                  fontFamily: theme.fontBody,
                   wordBreak: 'break-all',
                 }}>
                   {screenshotInfo?.path ?? screenshotDraft.saveDir}
@@ -924,7 +907,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
 
           {gpuPref && (
             <div style={{
-              fontSize: 11, fontFamily: "'Exo 2', sans-serif",
+              fontSize: 11, fontFamily: theme.fontBody,
               background: 'rgba(255,255,255,0.025)',
               border: `1px solid ${theme.glassBorder}`,
               borderRadius: 4, padding: '8px 12px',
@@ -957,9 +940,9 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
 
           {dbInfo && (
             <div style={{
-              background: 'rgba(255,255,255,0.03)',
-              border: `1px solid ${theme.glassBorder}`,
-              borderRadius: 4, padding: '8px 12px',
+              background: 'rgba(0,0,0,0.2)',
+              boxShadow: 'inset 0 1px 4px rgba(0,0,0,0.85), inset 0 0 0 1px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.1)',
+              borderRadius: 6, padding: '8px 12px',
               marginBottom: 8,
             }}>
               <div style={{ fontSize: 12, color: theme.textSecondary }}>
@@ -967,7 +950,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
               </div>
               <div style={{
                 fontSize: 11, color: theme.textPrimary,
-                fontFamily: "'Exo 2', sans-serif",
+                fontFamily: theme.fontBody,
                 marginTop: 4,
                 wordBreak: 'break-all',
               }}>
@@ -1026,21 +1009,25 @@ function SectionNavBtn({
     <button
       type="button"
       onClick={onClick}
+      className="settings-nav-btn"
+      data-active={active ? '1' : undefined}
+      aria-pressed={active}
       style={{
         display: 'flex', alignItems: 'center', gap: 8,
-        padding: '7px 10px',
-        background: active ? `${theme.electricBlue}1A` : 'transparent',
-        border: `1px solid ${active ? `${theme.electricBlue}66` : 'transparent'}`,
-        borderLeft: `3px solid ${active ? theme.electricBlue : 'transparent'}`,
-        color: active ? theme.electricBlue : theme.textSecondary,
+        height: 32,
+        padding: '0 12px',
+        border: 'none',
+        borderRadius: 5,
+        background: active ? 'linear-gradient(180deg, #FFA66E, #EC6E32)' : 'transparent',
+        boxShadow: active ? '0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.45), 0 3px 6px rgba(0,0,0,0.5)' : 'none',
+        color: active ? '#140A04' : theme.textSecondary,
         fontFamily: theme.fontBody,
         fontSize: 12.5,
-        fontWeight: active ? 700 : 500,
+        fontWeight: active ? 900 : 600,
         letterSpacing: 0.4,
         cursor: 'pointer',
         textAlign: 'left',
-        textShadow: active ? `0 0 6px ${theme.electricBlue}88` : undefined,
-        transition: 'background 0.12s, color 0.12s, border-color 0.12s',
+        transition: 'background 0.12s, color 0.12s',
       }}
     >
       <Icon size={13} style={{ flexShrink: 0 }} />
@@ -1071,9 +1058,12 @@ function HudCheckbox({
         alignItems: 'center',
         gap: 10,
         padding: '10px 12px',
-        background: checked ? 'rgba(0,229,255,0.07)' : 'rgba(255,255,255,0.03)',
-        border: `1px solid ${checked ? 'rgba(0,229,255,0.42)' : theme.glassBorder}`,
-        borderRadius: 4,
+        background: 'rgba(0,0,0,0.2)',
+        border: 'none',
+        boxShadow: checked
+          ? 'inset 0 1px 3px rgba(0,0,0,0.7), inset 0 0 0 1px rgba(255,138,76,0.5)'
+          : 'inset 0 1px 4px rgba(0,0,0,0.85), inset 0 0 0 1px rgba(0,0,0,0.45), 0 1px 0 rgba(255,255,255,0.1)',
+        borderRadius: 6,
         color: theme.textPrimary,
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.5 : 1,
@@ -1089,11 +1079,11 @@ function HudCheckbox({
         alignItems: 'center',
         justifyContent: 'center',
         flexShrink: 0,
-        background: checked ? theme.electricBlue : 'rgba(255,255,255,0.035)',
-        border: `1px solid ${checked ? theme.electricBlue : 'rgba(0,229,255,0.24)'}`,
-        boxShadow: checked ? `0 0 10px ${theme.electricBlue}55` : undefined,
+        background: checked ? 'linear-gradient(180deg, #FFA66E, #EC6E32)' : tiSurface.well,
+        border: 'none',
+        boxShadow: checked ? '0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.45)' : tiSurface.wellShadow,
       }}>
-        {checked ? <Check size={12} color="#071216" strokeWidth={3} /> : null}
+        {checked ? <Check size={12} color="#151412" strokeWidth={3} /> : null}
       </span>
       <span style={{ flex: 1, minWidth: 0 }}>
         <span style={{ display: 'block', fontSize: 13, color: theme.textPrimary }}>{label}</span>
@@ -1215,7 +1205,7 @@ function StepperButton({
         padding: 0,
         border: 'none',
         borderRadius: 2,
-        background: 'rgba(0,229,255,0.09)',
+        background: 'rgba(255,138,76,0.09)',
         color: theme.textSecondary,
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.35 : 1,
@@ -1280,7 +1270,7 @@ function Section({
           display: 'flex', alignItems: 'center', gap: 6,
           background: 'transparent', border: 'none',
           color: theme.textPrimary, cursor: 'pointer',
-          fontFamily: "'Exo 2', sans-serif",
+          fontFamily: theme.fontBody,
           fontSize: 11, fontWeight: 'bold',
           padding: '4px 0', width: '100%', textAlign: 'left',
         }}
@@ -1428,17 +1418,15 @@ function IconBtn({
 const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: 11, color: theme.textSecondary,
-  fontFamily: "'Exo 2', sans-serif",
+  fontFamily: theme.fontBody,
   marginBottom: 3, letterSpacing: 0.5,
 }
 
 const inputStyle: React.CSSProperties = {
+  ...tiInput,
   width: '100%', boxSizing: 'border-box',
-  background: 'rgba(255,255,255,0.03)',
-  border: `1px solid ${theme.glassBorder}`,
-  borderRadius: 4, padding: '6px 8px',
-  color: theme.textPrimary,
-  fontFamily: "'Exo 2', sans-serif",
+  padding: '8px 10px',
+  fontFamily: theme.fontBody,
   fontSize: 12, outline: 'none',
 }
 

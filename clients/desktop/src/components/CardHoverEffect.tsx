@@ -74,9 +74,9 @@ export default function CardHoverEffect({
               inset: 0,
               display: 'block',
               borderRadius: FRAME_RADIUS,
-              background: 'linear-gradient(180deg, rgba(0,229,255,0.085), rgba(0,229,255,0.025))',
-              border: '1px solid rgba(0,229,255,0.20)',
-              boxShadow: '0 0 16px rgba(0,229,255,0.10), inset 0 0 22px rgba(0,229,255,0.05)',
+              background: 'linear-gradient(180deg, rgba(255,138,76,0.085), rgba(255,138,76,0.025))',
+              border: '1px solid rgba(255,138,76,0.20)',
+              boxShadow: '0 0 16px rgba(255,138,76,0.10), inset 0 0 22px rgba(255,138,76,0.05)',
             }}
           >
             <span style={cornerStyle('tl')} />

@@ -11,7 +11,7 @@ import {
   Square, Copy, Check, AlertTriangle, Loader2, RotateCcw, X, Play, Cpu,
   ScanText, Sparkles,
 } from 'lucide-react'
-import { theme, hud } from '../theme'
+import { theme, hud, tiKey } from '../theme'
 import { getDashScopeApiKey, loadConfig, updateConfig } from '../lib/agent/agent-config'
 import { stitchOcrToSegments } from '../lib/ocr-stitch'
 import { logModelUsage } from '../lib/model-audit'
@@ -71,7 +71,7 @@ const TRACE = '#00d7e8'
 const TRACE_BRIGHT = '#7df9ff'
 const SIGNAL = '#00ffe0'
 const AMBER = '#ffb454'
-const SURFACE = 'rgba(1, 8, 13, 0.96)'
+const SURFACE = 'rgba(13,12,10,0.96)'
 const PANEL_LINE = 'rgba(0, 215, 232, 0.42)'
 const PANEL_LINE_SOFT = 'rgba(0, 215, 232, 0.16)'
 const PAPER = '#d9f8ff'
@@ -558,10 +558,10 @@ export default function BiliTranscribePanel({
         maxWidth: 720,
         transition: 'right 320ms cubic-bezier(.2,.8,.2,1)',
         zIndex: 11,
-        background: `linear-gradient(180deg, ${SURFACE} 0%, rgba(0, 5, 9, 0.97) 100%)`,
+        background: `linear-gradient(180deg, ${SURFACE} 0%, rgba(10,9,7,0.97) 100%)`,
         border: `1px solid ${PANEL_LINE}`,
         clipPath: hud.chamfer12, WebkitClipPath: hud.chamfer12,
-        boxShadow: `0 18px 54px rgba(0,0,0,0.78), 0 0 18px rgba(0,215,232,0.22), inset 0 0 0 1px rgba(125,249,255,0.05)`,
+        boxShadow: `0 18px 54px rgba(0,0,0,0.78), 0 0 18px rgba(0,215,232,0.22), inset 0 0 0 1px rgba(255,185,138,0.05)`,
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
       }}
@@ -630,7 +630,7 @@ export default function BiliTranscribePanel({
         <span style={{
           fontFamily: theme.fontDisplay, fontSize: 11, fontWeight: 700,
           letterSpacing: 2.4, color: PAPER,
-          textShadow: `0 0 8px rgba(125,249,255,0.5)`,
+          textShadow: `0 0 8px rgba(255,185,138,0.5)`,
         }}>
           转录
         </span>
@@ -673,7 +673,7 @@ export default function BiliTranscribePanel({
         display: 'flex', alignItems: 'center', gap: 6,
         padding: '7px 12px',
         borderBottom: `1px solid ${PANEL_LINE_SOFT}`,
-        background: 'rgba(2, 12, 17, 0.58)',
+        background: 'rgba(16,15,13,0.58)',
         flexShrink: 0,
       }}>
         {ocrMode ? (
@@ -1048,7 +1048,7 @@ function SegmentList({
               borderLeft: `2px solid ${active ? AMBER : PANEL_LINE}`,
               background: active
                 ? 'linear-gradient(90deg, rgba(255,180,84,0.12), rgba(0,215,232,0.035))'
-                : 'rgba(2, 14, 18, 0.34)',
+                : 'rgba(17,16,14,0.34)',
               cursor: seekable ? 'pointer' : 'default',
               transition: 'background 0.18s ease, border-color 0.18s ease, transform 0.18s ease',
             }}
@@ -1060,7 +1060,7 @@ function SegmentList({
             }}
             onMouseLeave={(e) => {
               if (seekable && !active) {
-                e.currentTarget.style.background = 'rgba(2, 14, 18, 0.34)'
+                e.currentTarget.style.background = 'rgba(17,16,14,0.34)'
                 e.currentTarget.style.transform = 'translateX(0)'
               }
             }}
@@ -1118,7 +1118,6 @@ function displaySpeaker(speaker: string | null | undefined): string | null {
 }
 
 function EmptyState({ onStart }: { onStart: () => void }) {
-  const [hover, setHover] = useState(false)
   // 三层黑色描边，把文字"压"出粒子背景
   const ts = '0 0 12px rgba(0,0,0,1), 0 0 6px rgba(0,0,0,1), 0 0 3px rgba(0,0,0,1), 0 1px 2px rgba(0,0,0,1)'
 
@@ -1134,9 +1133,10 @@ function EmptyState({ onStart }: { onStart: () => void }) {
         {/* 顶部状态码 */}
         <div style={{
           fontFamily: theme.fontMono, fontSize: 9.5, fontWeight: 700, letterSpacing: 3,
-          color: '#7DF9FF', textShadow: `0 0 6px #7DF9FF, ${ts}`,
+          color: '#FFB98A', textShadow: ts,
+          display: 'inline-flex', alignItems: 'center', gap: 6,
         }}>
-          ▶ SYS · STANDBY
+          <span className="ti-dot ti-dot-led" /> 待命
         </div>
 
         {/* HUD 取景框 + 主标题 */}
@@ -1145,69 +1145,41 @@ function EmptyState({ onStart }: { onStart: () => void }) {
           padding: '14px 38px 12px',
           marginTop: 4,
         }}>
-          <Corner pos="tl" /><Corner pos="tr" />
-          <Corner pos="bl" /><Corner pos="br" />
-
           <div style={{
             fontFamily: theme.fontDisplay, fontSize: 17, fontWeight: 700,
             letterSpacing: 9, color: PAPER,
-            textShadow: `0 0 10px rgba(125,249,255,0.45), ${ts}`,
+            textShadow: `0 0 10px rgba(255,185,138,0.45), ${ts}`,
           }}>
             录音文件识别
-          </div>
-          <div style={{
-            fontFamily: theme.fontMono, fontSize: 10, fontWeight: 700, letterSpacing: 4,
-            color: '#fff', textShadow: ts,
-            marginTop: 6, textAlign: 'center',
-          }}>
-            AWAITING · TRIGGER
           </div>
         </div>
 
         {/* 元信息 */}
         <div style={{
           fontFamily: theme.fontMono, fontSize: 10.5, fontWeight: 700, letterSpacing: 2,
-          color: TRACE_BRIGHT, textShadow: `0 0 8px rgba(125,249,255,0.45), ${ts}`,
+          color: TRACE_BRIGHT, textShadow: `0 0 8px rgba(255,185,138,0.45), ${ts}`,
           marginTop: 8,
         }}>
-          [ AUDIO_ASR · JSONL_TIMECODE ]
+          语音识别 · 带时间戳的段落
         </div>
 
         {/* 渐变分隔 */}
-        <div style={{
-          width: 120, height: 1,
-          background: `linear-gradient(90deg, transparent, ${TRACE_BRIGHT}, transparent)`,
-          marginTop: 10, marginBottom: 10,
-          boxShadow: `0 0 8px rgba(125,249,255,0.45)`,
-        }} />
+        <div className="ti-groove-h" style={{ width: 140, marginTop: 10, marginBottom: 12 }} />
 
         {/* 启动按钮 */}
         <button
+          type="button"
           onClick={onStart}
-          onMouseEnter={() => setHover(true)}
-          onMouseLeave={() => setHover(false)}
+          className="ti-key ti-key-primary"
           style={{
             pointerEvents: 'auto',
-            display: 'inline-flex', alignItems: 'center', gap: 10,
-            padding: '10px 30px',
-            fontFamily: theme.fontDisplay, fontSize: 13, fontWeight: 700, letterSpacing: 6,
-            color: hover ? '#061015' : AMBER,
-            background: hover
-              ? `linear-gradient(135deg, ${AMBER}, #ffd28a)`
-              : `linear-gradient(135deg, rgba(255,180,84,0.16), rgba(0,215,232,0.05))`,
-            border: `1px solid ${AMBER}`,
-            borderRadius: 0,
-            clipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)',
-            WebkitClipPath: 'polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)',
-            cursor: 'pointer',
-            boxShadow: hover
-              ? `inset 0 0 12px rgba(255,255,255,0.28), 0 0 18px rgba(255,180,84,0.38)`
-              : `inset 0 0 8px rgba(255,180,84,0.26), 0 0 10px rgba(255,180,84,0.24)`,
-            textShadow: hover ? 'none' : `0 0 8px rgba(255,180,84,0.55), ${ts}`,
-            transition: 'all 0.18s ease',
+            height: 40,
+            padding: '0 32px',
+            gap: 10,
+            fontFamily: theme.fontBody, fontSize: 14, letterSpacing: 6,
           }}
         >
-          <span style={{ fontSize: 14, letterSpacing: 0 }}>▶</span>
+          <span style={{ fontSize: 13, letterSpacing: 0 }}>▶</span>
           <span>启动</span>
         </button>
         <div style={{
@@ -1215,7 +1187,7 @@ function EmptyState({ onStart }: { onStart: () => void }) {
           color: '#d4d8e5', textShadow: ts,
           marginTop: 6,
         }}>
-          INVOKE · 提取音轨并提交识别
+          提取音轨并提交识别
         </div>
 
         {/* 终端输出说明 */}
@@ -1225,41 +1197,25 @@ function EmptyState({ onStart }: { onStart: () => void }) {
           marginTop: 16, lineHeight: 1.7,
           textAlign: 'left', minWidth: 240,
         }}>
-          <div><span style={{ color: TRACE_BRIGHT }}>&gt;</span> OUT::JSONL · 时间戳段落</div>
-          <div><span style={{ color: TRACE_BRIGHT }}>&gt;</span> SOURCE::主音轨</div>
+          <div><span style={{ color: TRACE_BRIGHT }}>&gt;</span> 输出：时间戳段落</div>
+          <div><span style={{ color: TRACE_BRIGHT }}>&gt;</span> 来源：主音轨</div>
         </div>
       </div>
     </div>
   )
 }
 
-function Corner({ pos }: { pos: 'tl' | 'tr' | 'bl' | 'br' }) {
-  const c = TRACE_BRIGHT
-  const sz = 12
-  const common: React.CSSProperties = {
-    position: 'absolute',
-    width: sz, height: sz,
-    pointerEvents: 'none',
-  }
-  switch (pos) {
-    case 'tl': return <span style={{ ...common, top: 0, left: 0, borderTop: `1px solid ${c}`, borderLeft: `1px solid ${c}`, boxShadow: `-1px -1px 4px ${c}55` }} />
-    case 'tr': return <span style={{ ...common, top: 0, right: 0, borderTop: `1px solid ${c}`, borderRight: `1px solid ${c}`, boxShadow: `1px -1px 4px ${c}55` }} />
-    case 'bl': return <span style={{ ...common, bottom: 0, left: 0, borderBottom: `1px solid ${c}`, borderLeft: `1px solid ${c}`, boxShadow: `-1px 1px 4px ${c}55` }} />
-    case 'br': return <span style={{ ...common, bottom: 0, right: 0, borderBottom: `1px solid ${c}`, borderRight: `1px solid ${c}`, boxShadow: `1px 1px 4px ${c}55` }} />
-  }
-}
-
 function techBtn(color: string, primary: boolean): React.CSSProperties {
   return {
     display: 'inline-flex', alignItems: 'center', gap: 5,
-    padding: '4px 12px',
-    fontFamily: theme.fontMono, fontSize: 10, fontWeight: 700,
-    letterSpacing: 1,
-    color, background: primary ? `${color}1A` : 'rgba(0,0,0,0.3)',
-    border: `1px solid ${color}`, borderRadius: 0,
-    clipPath: 'polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px)',
+    ...tiKey,
+    height: 26,
+    padding: '0 12px',
+    fontFamily: theme.fontBody, fontSize: 11.5, fontWeight: primary ? 900 : 700,
+    letterSpacing: 0.5,
+    color,
+    // 主操作：键面一道语义色细环
+    boxShadow: primary ? `0 0 0 1.5px ${color}, inset 0 1px 0 rgba(255,255,255,0.18), 0 3px 5px rgba(0,0,0,0.55)` : tiKey.boxShadow,
     cursor: 'pointer',
-    boxShadow: primary ? `inset 0 0 8px ${color}22, 0 0 8px ${color}33` : 'none',
-    transition: 'all 0.15s ease',
   }
 }

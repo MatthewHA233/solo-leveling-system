@@ -129,22 +129,23 @@ export function MagneticButton({
   disabled?: boolean
   style?: CSSProperties
 }) {
+  // 钛合金实体键：确认 / 保存这类正向操作是橙色主键；危险操作红字；其余普通键
+  const primary = color === theme.electricBlue || color === theme.expGreen || color === theme.accent
+  const danger = color === theme.dangerRed
   return (
     <button
+      type="button"
       onClick={onClick}
       disabled={disabled}
+      className={primary ? 'ti-key ti-key-primary' : 'ti-key'}
       style={{
-        background: 'transparent',
-        border: `1px solid ${color}4D`,
-        color: disabled ? theme.textSecondary : color,
+        height: 28,
+        padding: '0 14px',
         fontFamily: theme.fontBody,
-        fontSize: 11,
-        padding: '4px 12px',
-        cursor: disabled ? 'default' : 'pointer',
-        borderRadius: 3,
-        letterSpacing: 1,
-        opacity: disabled ? 0.5 : 1,
-        transition: 'all 0.2s ease',
+        fontSize: 12.5,
+        letterSpacing: '0.06em',
+        ...(danger && !disabled ? { color: theme.dangerRed } : null),
+        ...(!primary && !danger && !disabled ? { color: theme.paper } : null),
         ...extraStyle,
       }}
     >
