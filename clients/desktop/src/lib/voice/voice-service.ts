@@ -128,6 +128,18 @@ export function createVoiceService(
     unlistenPartial = null
   }
 
+  // Omni 用户转写：监听在服务创建时就挂好，转给当前等转写的那条语音。
+  // 实时模型边说边转写，commit 后「转写完成」几乎立刻就到；等 commit 返回再挂监听会错过它
+  // ——语音不入库、不出字、起标题也数不到用户消息（2026-10-05 的事故根因）
+  let omniPending: { msgId: string; got: boolean } | null = null
+  void listen<{ text: string }>('omni://user_transcript', ({ payload }) => {
+    const pending = omniPending
+    const text = payload.text.trim()
+    if (!pending || pending.got || !text) return
+    pending.got = true
+    callbacks.onTranscript?.(text, pending.msgId)
+  })
+
   // 音量（给 getAudioLevel）；录音超过 90 秒 Rust 自动停止 → 按松手处理
   void listen<{ session: number; level: number }>('voice://level', ({ payload }) => {
     if (payload.session === cascadeSession) lastLevel = payload.level
@@ -353,30 +365,27 @@ export function createVoiceService(
     }
     omniPcmChunks = []
 
+    // commit 之前就登记好"这条语音在等转写"，转写一到就能对上
+    const pending = { msgId: sessionMsgId, got: false }
+    omniPending = pending
     try {
       await invoke('omni_commit')
     } catch (err) {
+      if (omniPending === pending) omniPending = null
       if (mySeq !== sessionSeq) return
       callbacks.onError(`Omni commit 失败: ${errorText(err)}`)
       setPhase('idle')
       return
     }
 
-    // 监听本次 session 的用户转写，更新已有气泡（一次性，audio_done 后自动解除）
-    // 放在对象里：闭包内赋值的 let 会被 TS 收窄成 null
-    const transcript: { unlisten: (() => void) | null; disposed: boolean } = { unlisten: null, disposed: false }
-    listen<{ text: string }>('omni://user_transcript', ({ payload }) => {
-      if (mySeq === sessionSeq && payload.text.trim() && callbacks.onTranscript) {
-        callbacks.onTranscript(payload.text.trim(), sessionMsgId)
-      }
-    }).then((u) => {
-      if (transcript.disposed) { u(); return }
-      transcript.unlisten = u
-    })
     // idle 由 App.tsx 的 omni://status 处理器在音频真正播完后统一发出
     await waitOmniAudioDone(30_000)
-    transcript.disposed = true
-    transcript.unlisten?.()
+    if (omniPending === pending) omniPending = null
+    // 兜底：一轮结束仍没收到转写（服务端没给 / 识别为空），也要把这段录音存进会话，只是没有文字
+    if (!pending.got) {
+      pending.got = true
+      callbacks.onTranscript?.('', sessionMsgId)
+    }
   }
 
   // ── 对外接口 ──
