@@ -11,6 +11,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "Solevup",
         "width": 1280,
         "height": 800,

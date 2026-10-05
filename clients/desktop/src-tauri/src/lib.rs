@@ -67,6 +67,38 @@ fn sanitize_fairy_cursor_radius(radius: f64) -> f64 {
 
 // ── Tauri 命令 ──
 
+/// 开发构建给所有 WebView 带上远程调试端口，chrome-devtools MCP 连得上（端口默认 9222，可用 SLU_DEVTOOLS_PORT 改）。
+/// 本机 UAC 关闭、进程都是提权的，WebView2 会忽略 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 环境变量，只认代码里传的参数；
+/// 同一个 WebView2 环境里所有窗口的参数必须一致，否则建窗失败——所以 Rust 和前端建窗都从这里取。
+/// 传了自定义参数会覆盖 wry 默认的 --disable-features，这里原样带上。正式包返回 None，行为不变。
+fn dev_browser_args() -> Option<String> {
+    if !tauri::is_dev() {
+        return None;
+    }
+    let port = std::env::var("SLU_DEVTOOLS_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(9222);
+    Some(format!(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port}"
+    ))
+}
+
+fn with_dev_browser_args<'a, R: tauri::Runtime, M: tauri::Manager<R>>(
+    builder: tauri::WebviewWindowBuilder<'a, R, M>,
+) -> tauri::WebviewWindowBuilder<'a, R, M> {
+    match dev_browser_args() {
+        Some(args) => builder.additional_browser_args(&args),
+        None => builder,
+    }
+}
+
+/// 前端建窗（Fairy、摄像头预览）用：拿到和 Rust 建窗同一份浏览器参数
+#[tauri::command]
+fn webview_browser_args() -> Option<String> {
+    dev_browser_args()
+}
+
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
@@ -148,13 +180,13 @@ async fn open_bili_login(app: tauri::AppHandle) -> Result<(), String> {
         win.set_focus().map_err(|e| e.to_string())?;
     } else {
         // 极少数情况（窗口被关掉了），重新创建并显示
-        tauri::WebviewWindowBuilder::new(
+        with_dev_browser_args(tauri::WebviewWindowBuilder::new(
             &app,
             "bili-login",
             tauri::WebviewUrl::External(
                 "https://www.bilibili.com".parse().map_err(|e: url::ParseError| e.to_string())?
             ),
-        )
+        ))
         .title("B站 — 登录后可关闭此窗口")
         .inner_size(1200.0, 800.0)
         .resizable(true)
@@ -340,13 +372,13 @@ async fn open_bailian_login(app: tauri::AppHandle) -> Result<(), String> {
         win.eval(&format!("window.location.href = {:?};", url))
             .map_err(|e| e.to_string())?;
     } else {
-        tauri::WebviewWindowBuilder::new(
+        with_dev_browser_args(tauri::WebviewWindowBuilder::new(
             &app,
             "bailian-login",
             tauri::WebviewUrl::External(
                 url.parse().map_err(|e: url::ParseError| e.to_string())?
             ),
-        )
+        ))
         .title("Bailian - login and quota scanner")
         .inner_size(1280.0, 860.0)
         .resizable(true)
@@ -374,13 +406,13 @@ async fn open_bailian_model_detail(app: tauri::AppHandle, model_code: String) ->
         win.eval(&format!("window.location.href = {:?};", url))
             .map_err(|e| e.to_string())?;
     } else {
-        tauri::WebviewWindowBuilder::new(
+        with_dev_browser_args(tauri::WebviewWindowBuilder::new(
             &app,
             "bailian-login",
             tauri::WebviewUrl::External(
                 url.parse().map_err(|e: url::ParseError| e.to_string())?
             ),
-        )
+        ))
         .title("Bailian - model quota detail")
         .inner_size(1280.0, 860.0)
         .resizable(true)
@@ -1710,6 +1742,18 @@ pub fn run() {
         .manage(focus_lock_state)
         .manage(voice::VoiceState::default())
         .setup(move |app| {
+            // 主窗口在配置里 create: false，这里按配置创建，才能带上开发构建的浏览器参数
+            // （原本 Tauri 在 setup 之前建配置窗口，所以放在 setup 最前面，顺序不变）
+            let main_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == "main")
+                .cloned()
+                .ok_or("tauri.conf.json 缺少 main 窗口配置")?;
+            with_dev_browser_args(tauri::WebviewWindowBuilder::from_config(app, &main_config)?).build()?;
+
             // 注册专注锁 Native Messaging host（幂等；失败只降级，不阻断启动）
             focus_lock::register_native_host();
             // 启动扩展掉线阶梯惩罚监控（常驻；无活跃网站组时近乎零开销）
@@ -1779,13 +1823,13 @@ pub fn run() {
             }
             // 启动时在后台静默创建 bilibili WebView（隐藏窗口）
             // WebView2 会复用之前的登录 session（cookies 持久化在用户 profile 目录）
-            let bili_win = tauri::WebviewWindowBuilder::new(
+            let bili_win = with_dev_browser_args(tauri::WebviewWindowBuilder::new(
                 app,
                 "bili-login",
                 tauri::WebviewUrl::External(
                     "https://www.bilibili.com".parse().expect("valid url")
                 ),
-            )
+            ))
             .title("B站 — 登录后可关闭此窗口")
             .inner_size(1200.0, 800.0)
             .visible(false)
@@ -1857,6 +1901,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             exit_app,
+            webview_browser_args,
             open_url_in_browser,
             fish_tts_connect,
             fish_tts_send_text,
