@@ -36,7 +36,15 @@ export interface PlanNode {
   sortOrder: number
   createdAt: string
   updatedAt: string
+  /** 截止日期 'YYYY-MM-DD'（协议志清单） */
+  dueDate: string | null
+  /** 0 无 / 1 低 / 2 中 / 3 高 */
+  priority: PlanPriority
+  note: string | null
+  completedAt: string | null
 }
+
+export type PlanPriority = 0 | 1 | 2 | 3
 
 export interface PlannedBlock {
   date: string

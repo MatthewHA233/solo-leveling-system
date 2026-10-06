@@ -83,7 +83,8 @@ import { pcm16ChunksToWavBlob } from './lib/voice/voice-recorder'
 
 // UI
 import DayNightChart from './components/DayNightChart'
-import MotiveCloud from './components/motive-cloud/MotiveCloud'
+import ProtocolView from './components/protocol/ProtocolView'
+import { PLAN_NODES_CHANGED } from './components/protocol/checklist/use-checklist'
 import ProtocolDemoPanel from './components/ProtocolDemoPanel'
 import TorrentFieldPanel from './components/TorrentFieldPanel'
 import TorrentFieldDemoPanel from './components/TorrentFieldDemoPanel'
@@ -3085,8 +3086,12 @@ export default function App() {
           </div>
           <div style={{ ...mainPanelStyle('motivation'), display: 'flex' }}>
             <ScreenBezel view="motivation">
-              {/* 协议志 · 动机云（取代旧的动机仪表盘 MotivationDashboard —— scoreboard 方向已废弃） */}
-              <MotiveCloud />
+              {/* 协议志：清单（滴答清单式任务树，和昼夜表计划层同一份数据）/ 动机云 */}
+              <ProtocolView
+                palette={activityPalette}
+                onPaletteChange={refreshActivityPalette}
+                onPlanNodesChange={() => refreshPlanNodes()}
+              />
             </ScreenBezel>
           </div>
           <div style={{ ...mainPanelStyle('motivation_static'), display: 'flex' }}>
@@ -3249,7 +3254,11 @@ export default function App() {
                       selectedPlanNodeId={selectedPlanNodeId}
                       onSelectProject={(id) => { setSelectedProjectTagId(id); setSelectedPlanNodeId(null) }}
                       onSelectNode={setSelectedPlanNodeId}
-                      onNodesChange={refreshPlanNodes}
+                      onNodesChange={(projectTagId) => {
+                        refreshPlanNodes(projectTagId)
+                        // 协议志清单是同一份数据，让它也跟着刷新
+                        window.dispatchEvent(new CustomEvent(PLAN_NODES_CHANGED))
+                      }}
                       onPlanBlocksMayChange={() => {
                         // AUDIT-022: 计划节点删除后端 cascade 软删 planned_blocks
                         // 刷当日计划块 + 清 undo/redo 栈防止旧快照恢复死节点

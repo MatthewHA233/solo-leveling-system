@@ -82,6 +82,37 @@ pub struct PlanNode {
     pub sort_order: i32,
     pub created_at: String,
     pub updated_at: String,
+    /// 截止日期 YYYY-MM-DD（协议志清单）
+    #[serde(default)]
+    pub due_date: Option<String>,
+    /// 0 无 / 1 低 / 2 中 / 3 高
+    #[serde(default)]
+    pub priority: i32,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+/// plan_nodes 查询统一的列顺序（和 map_plan_node 对应）
+const PLAN_NODE_COLUMNS: &str =
+    "id, project_tag_id, parent_id, title, status, sort_order, created_at, updated_at, due_date, priority, note, completed_at";
+
+fn map_plan_node(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlanNode> {
+    Ok(PlanNode {
+        id: row.get(0)?,
+        project_tag_id: row.get(1)?,
+        parent_id: row.get(2)?,
+        title: row.get(3)?,
+        status: row.get(4)?,
+        sort_order: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        due_date: row.get(8)?,
+        priority: row.get::<_, Option<i32>>(9)?.unwrap_or(0),
+        note: row.get(10)?,
+        completed_at: row.get(11)?,
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -312,13 +343,38 @@ pub struct AddPlanNodeRequest {
     pub project_tag_id: i64,
     pub parent_id: Option<i64>,
     pub title: String,
+    /// 协议志「今天」视图里新建的任务直接带上日期
+    #[serde(default)]
+    pub due_date: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdatePlanNodeRequest {
+    #[serde(default)]
     pub id: i64,
     pub title: Option<String>,
     pub status: Option<String>,
+    /// 传空字符串 = 清除日期
+    #[serde(default)]
+    pub due_date: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i32>,
+    /// 传空字符串 = 清除备注
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// 移动任务：换清单 / 换父节点 / 在兄弟里换位置（缩进、反缩进、上下移都走这里）
+#[derive(Debug, Deserialize)]
+pub struct MovePlanNodeRequest {
+    #[serde(default)]
+    pub id: i64,
+    pub project_tag_id: i64,
+    pub parent_id: Option<i64>,
+    /// 插到新兄弟列表里的第几个（越界就放末尾）
+    pub index: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -856,6 +912,12 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN reasoning TEXT");
         let _ = conn.execute_batch("ALTER TABLE context_anchor_bindings ADD COLUMN source_card_id TEXT");
         let _ = conn.execute_batch("ALTER TABLE context_cards ADD COLUMN source_card_id TEXT");
+        // 协议志清单：计划节点 = 任务，补上日期 / 优先级 / 备注 / 完成时间（旧库缺列时追加；同步只更新它自己的列，不会冲掉这些）
+        let _ = conn.execute_batch("ALTER TABLE plan_nodes ADD COLUMN due_date TEXT");
+        let _ = conn.execute_batch("ALTER TABLE plan_nodes ADD COLUMN priority INTEGER NOT NULL DEFAULT 0");
+        let _ = conn.execute_batch("ALTER TABLE plan_nodes ADD COLUMN note TEXT");
+        let _ = conn.execute_batch("ALTER TABLE plan_nodes ADD COLUMN completed_at TEXT");
+        let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_plan_nodes_due ON plan_nodes(due_date)");
 
         // 渐进式迁移：bili_video_assets 转录字段（旧数据库无此列时自动追加）
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN visual_transcript TEXT");
@@ -1677,24 +1739,26 @@ impl Database {
     // ── Planned Timeline Blocks ──
     pub async fn get_plan_nodes_by_project(&self, project_tag_id: i64) -> Result<Vec<PlanNode>, String> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
-            "SELECT id, project_tag_id, parent_id, title, status, sort_order, created_at, updated_at
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {PLAN_NODE_COLUMNS}
              FROM plan_nodes
              WHERE project_tag_id = ? AND deleted_at IS NULL
              ORDER BY COALESCE(parent_id, 0), sort_order ASC, id ASC"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(params![project_tag_id], |row| {
-            Ok(PlanNode {
-                id: row.get(0)?,
-                project_tag_id: row.get(1)?,
-                parent_id: row.get(2)?,
-                title: row.get(3)?,
-                status: row.get(4)?,
-                sort_order: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-            })
-        }).map_err(|e| e.to_string())?;
+        )).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![project_tag_id], map_plan_node).map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 全部任务（协议志清单的「今天 / 最近 7 天 / 全部」这类跨清单视图）
+    pub async fn get_all_plan_nodes(&self) -> Result<Vec<PlanNode>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {PLAN_NODE_COLUMNS}
+             FROM plan_nodes
+             WHERE deleted_at IS NULL
+             ORDER BY project_tag_id, COALESCE(parent_id, 0), sort_order ASC, id ASC"
+        )).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], map_plan_node).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -1731,10 +1795,12 @@ impl Database {
             |row| row.get(0),
         ).unwrap_or(0);
 
+        let due_date = normalize_due_date(req.due_date.as_deref())?;
+        let priority = req.priority.unwrap_or(0).clamp(0, 3);
         conn.execute(
-            "INSERT INTO plan_nodes (sync_id, project_tag_id, parent_id, title, status, sort_order, created_at, updated_at)
-             VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
-            params![Uuid::new_v4().to_string(), req.project_tag_id, req.parent_id, title, sort_order, &now, &now],
+            "INSERT INTO plan_nodes (sync_id, project_tag_id, parent_id, title, status, sort_order, created_at, updated_at, due_date, priority)
+             VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
+            params![Uuid::new_v4().to_string(), req.project_tag_id, req.parent_id, title, sort_order, &now, &now, &due_date, priority],
         ).map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         Ok(PlanNode {
@@ -1746,6 +1812,10 @@ impl Database {
             sort_order,
             created_at: now.clone(),
             updated_at: now,
+            due_date,
+            priority,
+            note: None,
+            completed_at: None,
         })
     }
 
@@ -1766,9 +1836,115 @@ impl Database {
             if !matches!(status.as_str(), "active" | "done" | "archived") {
                 return Err("计划状态不合法".to_string());
             }
+            // 勾掉记下完成时间；重新打开清掉（已经是 done 的再次 done 不改原时间）
             conn.execute(
-                "UPDATE plan_nodes SET status = ?, updated_at = ? WHERE id = ?",
+                "UPDATE plan_nodes
+                 SET completed_at = CASE
+                       WHEN ?1 = 'done' THEN COALESCE(CASE WHEN status = 'done' THEN completed_at END, ?2)
+                       WHEN ?1 = 'active' THEN NULL
+                       ELSE completed_at END,
+                     status = ?1, updated_at = ?2
+                 WHERE id = ?3",
                 params![status, &now, req.id],
+            ).map_err(|e| e.to_string())?;
+        }
+        if let Some(due) = req.due_date {
+            let due = normalize_due_date(Some(&due))?;
+            conn.execute(
+                "UPDATE plan_nodes SET due_date = ?, updated_at = ? WHERE id = ?",
+                params![due, &now, req.id],
+            ).map_err(|e| e.to_string())?;
+        }
+        if let Some(priority) = req.priority {
+            conn.execute(
+                "UPDATE plan_nodes SET priority = ?, updated_at = ? WHERE id = ?",
+                params![priority.clamp(0, 3), &now, req.id],
+            ).map_err(|e| e.to_string())?;
+        }
+        if let Some(note) = req.note {
+            let note = note.trim();
+            let note = if note.is_empty() { None } else { Some(note.to_string()) };
+            conn.execute(
+                "UPDATE plan_nodes SET note = ?, updated_at = ? WHERE id = ?",
+                params![note, &now, req.id],
+            ).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// 移动任务：整棵子树跟着走（换清单时子孙的 project_tag_id 一起改），新兄弟列表重排 sort_order。
+    /// 不允许挂到自己或自己的子孙下面。
+    pub async fn move_plan_node(&self, req: MovePlanNodeRequest) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        let now = local_now_string();
+
+        conn.query_row(
+            "SELECT id FROM plan_nodes WHERE id = ? AND deleted_at IS NULL",
+            params![req.id],
+            |row| row.get::<_, i64>(0),
+        ).map_err(|_| "计划节点不存在".to_string())?;
+        conn.query_row(
+            "SELECT id FROM activity_tags WHERE id = ?",
+            params![req.project_tag_id],
+            |row| row.get::<_, i64>(0),
+        ).map_err(|_| "项目标签不存在".to_string())?;
+
+        // 子树（含自己）
+        let subtree: Vec<i64> = {
+            let mut stmt = conn.prepare(
+                "WITH RECURSIVE subtree(id) AS (
+                    SELECT id FROM plan_nodes WHERE id = ?
+                    UNION ALL
+                    SELECT n.id FROM plan_nodes n JOIN subtree s ON n.parent_id = s.id
+                 )
+                 SELECT id FROM subtree",
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map(params![req.id], |row| row.get::<_, i64>(0)).map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        if let Some(parent_id) = req.parent_id {
+            if subtree.contains(&parent_id) {
+                return Err("不能把任务挂到它自己或它的子任务下面".to_string());
+            }
+            let parent_project: i64 = conn.query_row(
+                "SELECT project_tag_id FROM plan_nodes WHERE id = ? AND deleted_at IS NULL",
+                params![parent_id],
+                |row| row.get(0),
+            ).map_err(|_| "父计划节点不存在".to_string())?;
+            if parent_project != req.project_tag_id {
+                return Err("父计划节点不属于目标清单".to_string());
+            }
+        }
+
+        // 新兄弟（不含自己），按现有顺序；把自己插进 index
+        let mut siblings: Vec<i64> = {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM plan_nodes
+                 WHERE project_tag_id = ? AND parent_id IS ? AND id != ? AND deleted_at IS NULL
+                 ORDER BY sort_order ASC, id ASC",
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map(params![req.project_tag_id, req.parent_id, req.id], |row| row.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        let at = (req.index.max(0) as usize).min(siblings.len());
+        siblings.insert(at, req.id);
+
+        conn.execute(
+            "UPDATE plan_nodes SET parent_id = ?, updated_at = ? WHERE id = ?",
+            params![req.parent_id, &now, req.id],
+        ).map_err(|e| e.to_string())?;
+        for node_id in &subtree {
+            conn.execute(
+                "UPDATE plan_nodes SET project_tag_id = ?, updated_at = ? WHERE id = ? AND project_tag_id != ?",
+                params![req.project_tag_id, &now, node_id, req.project_tag_id],
+            ).map_err(|e| e.to_string())?;
+        }
+        for (order, node_id) in siblings.iter().enumerate() {
+            conn.execute(
+                "UPDATE plan_nodes SET sort_order = ?, updated_at = ? WHERE id = ? AND sort_order != ?",
+                params![order as i32, &now, node_id, order as i32],
             ).map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -5939,4 +6115,14 @@ impl Database {
         })).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
+}
+
+/// 截止日期：空 = 清除；否则必须是 YYYY-MM-DD
+fn normalize_due_date(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+        .map(|d| Some(d.format("%Y-%m-%d").to_string()))
+        .map_err(|_| format!("日期格式不对：{raw}（要 YYYY-MM-DD）"))
 }

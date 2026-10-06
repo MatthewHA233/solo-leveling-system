@@ -24,7 +24,7 @@ use crate::db::{
     ActivityCategory, ActivityTag, ActivityBlock, ActivityPalette, PlanNode, PlannedBlock,
     ContextFeedItem, BindingRow, AnchorRef, AnchorEmbeddingRow,
     AddCategoryRequest, AddTagRequest, PaintBlocksRequest, EraseBlocksRequest,
-    AddPlanNodeRequest, UpdatePlanNodeRequest, PaintPlannedBlocksRequest,
+    AddPlanNodeRequest, UpdatePlanNodeRequest, MovePlanNodeRequest, PaintPlannedBlocksRequest,
     UpdateCategoryRequest, RenamePathRequest, PerceptionSpan, SyncExport, SyncImportResult,
     LinkedDevice,
 };
@@ -455,6 +455,29 @@ async fn get_plan_nodes(
 ) -> Json<ApiResponse<Vec<PlanNode>>> {
     match state.db.get_plan_nodes_by_project(query.project_tag_id).await {
         Ok(nodes) => Json(ApiResponse::ok(nodes)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// GET /api/plans/nodes/all — 全部任务（协议志清单跨清单视图）
+async fn get_all_plan_nodes(
+    State(state): State<ApiState>,
+) -> Json<ApiResponse<Vec<PlanNode>>> {
+    match state.db.get_all_plan_nodes().await {
+        Ok(nodes) => Json(ApiResponse::ok(nodes)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/plans/nodes/{id}/move — 换清单 / 换父节点 / 换位置
+async fn move_plan_node(
+    State(state): State<ApiState>,
+    Path(id): Path<i64>,
+    Json(mut body): Json<MovePlanNodeRequest>,
+) -> Json<ApiResponse<()>> {
+    body.id = id;
+    match state.db.move_plan_node(body).await {
+        Ok(()) => Json(ApiResponse::ok(())),
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -1691,7 +1714,9 @@ pub fn create_router(
         .route("/api/activities/blocks/paint", post(paint_activity_blocks))
         .route("/api/activities/blocks/erase", post(erase_activity_blocks))
         .route("/api/plans/nodes", get(get_plan_nodes).post(add_plan_node))
+        .route("/api/plans/nodes/all", get(get_all_plan_nodes))
         .route("/api/plans/nodes/{id}", patch(update_plan_node).delete(delete_plan_node))
+        .route("/api/plans/nodes/{id}/move", post(move_plan_node))
         .route("/api/plans/blocks", get(get_planned_blocks))
         .route("/api/plans/blocks/paint", post(paint_planned_blocks))
         .route("/api/plans/blocks/erase", post(erase_planned_blocks))

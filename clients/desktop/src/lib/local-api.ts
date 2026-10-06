@@ -62,6 +62,10 @@ interface RawPlanNode {
   sort_order: number
   created_at: string
   updated_at: string
+  due_date?: string | null
+  priority?: number | null
+  note?: string | null
+  completed_at?: string | null
 }
 
 interface RawPlannedBlock {
@@ -115,6 +119,10 @@ function mapPlanNode(r: RawPlanNode): PlanNode {
     sortOrder: r.sort_order,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    dueDate: r.due_date ?? null,
+    priority: Math.max(0, Math.min(3, r.priority ?? 0)) as PlanNode['priority'],
+    note: r.note ?? null,
+    completedAt: r.completed_at ?? null,
   }
 }
 
@@ -246,15 +254,30 @@ export async function fetchPlanNodes(projectTagId: number): Promise<PlanNode[]> 
   return json.data.map(mapPlanNode)
 }
 
+/** 全部任务（协议志清单的跨清单视图：今天 / 最近 7 天 / 全部 / 已完成） */
+export async function fetchAllPlanNodes(): Promise<PlanNode[]> {
+  const res = await fetch(`${API_BASE}/api/plans/nodes/all`)
+  const json: ApiResponse<RawPlanNode[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '获取任务失败')
+  return json.data.map(mapPlanNode)
+}
+
 export async function addPlanNode(
   projectTagId: number,
   title: string,
   parentId: number | null = null,
+  extra: { dueDate?: string | null; priority?: PlanNode['priority'] } = {},
 ): Promise<PlanNode> {
   const res = await fetch(`${API_BASE}/api/plans/nodes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project_tag_id: projectTagId, parent_id: parentId, title }),
+    body: JSON.stringify({
+      project_tag_id: projectTagId,
+      parent_id: parentId,
+      title,
+      due_date: extra.dueDate ?? null,
+      priority: extra.priority ?? null,
+    }),
   })
   const json: ApiResponse<RawPlanNode> = await res.json()
   if (!json.success || !json.data) throw new Error(json.error || '新增计划节点失败')
@@ -263,7 +286,15 @@ export async function addPlanNode(
 
 export async function updatePlanNode(
   id: number,
-  patch: { title?: string; status?: PlanNode['status'] },
+  patch: {
+    title?: string
+    status?: PlanNode['status']
+    /** null = 清除日期 */
+    dueDate?: string | null
+    priority?: PlanNode['priority']
+    /** null / 空串 = 清除备注 */
+    note?: string | null
+  },
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/plans/nodes/${id}`, {
     method: 'PATCH',
@@ -272,10 +303,32 @@ export async function updatePlanNode(
       id,
       title: patch.title ?? null,
       status: patch.status ?? null,
+      // 后端约定：字段不传 = 不改；传空串 = 清除
+      due_date: patch.dueDate === undefined ? null : (patch.dueDate ?? ''),
+      priority: patch.priority ?? null,
+      note: patch.note === undefined ? null : (patch.note ?? ''),
     }),
   })
   const json: ApiResponse<void> = await res.json()
   if (!json.success) throw new Error(json.error || '更新计划节点失败')
+}
+
+/** 移动任务：换清单 / 换父节点 / 在兄弟里换位置（整棵子树跟着走） */
+export async function movePlanNode(
+  id: number,
+  target: { projectTagId: number; parentId: number | null; index: number },
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/plans/nodes/${id}/move`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project_tag_id: target.projectTagId,
+      parent_id: target.parentId,
+      index: target.index,
+    }),
+  })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '移动任务失败')
 }
 
 export async function deletePlanNode(id: number): Promise<void> {
