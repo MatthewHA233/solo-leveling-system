@@ -25,6 +25,10 @@
     "motion": "^12.40.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "remark-breaks": "^4.0.0",
+    "remark-cjk-friendly": "^2.3.2",
+    "remark-gfm": "^4.0.1",
     "ws": "^8.20.0"
   },
   "devDependencies": {

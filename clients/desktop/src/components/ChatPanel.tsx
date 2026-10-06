@@ -28,6 +28,7 @@ import HudSelect from './HudSelect'
 import ModelUsageBadge from './ModelUsageBadge'
 import IconButton from './ui/IconButton'
 import LedSegments from './ui/LedSegments'
+import FairyMarkdown from './FairyMarkdown'
 
 // ── 可调旋钮 ──
 const TEXT_SIZE = 13.5
@@ -909,14 +910,14 @@ function Bubble({ message, agentName, userCallsign, onDebug, onOmniDebug }: {
       {message.reasoning && (
         <ReasoningBlock text={message.reasoning} answered={message.content.length > 0} />
       )}
-      <div style={{
+      {/* markdown 渲染（加粗 / 列表 / 代码 / 表格……）；用量小牌紧跟在最后一句后面 */}
+      <div className={message.usage ? 'fairy-md has-badge' : 'fairy-md'} style={{
         fontSize: TEXT_SIZE,
         lineHeight: 1.78,
         color: theme.paper,
-        whiteSpace: 'pre-wrap',
         wordBreak: 'break-word',
       }}>
-        {message.content}
+        <FairyMarkdown text={message.content} />
         {message.usage && <ModelUsageBadge call={message.usage} minimal />}
       </div>
       {message.audioUrl && (
