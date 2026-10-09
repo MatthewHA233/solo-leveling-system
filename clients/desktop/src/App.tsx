@@ -3,7 +3,7 @@
 // 核心：昼夜表 + AI 聊天整理
 // ══════════════════════════════════════════════
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { memo, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Boxes, ChevronLeft, ChevronRight, PictureInPicture2, Settings, X } from 'lucide-react'
 import BiliIcon from './components/icons/BiliIcon'
 import {
@@ -325,6 +325,17 @@ function activityBlocksToContextRecords(
     }
   })
 }
+
+// 主舞台的视图常驻（叠成一摞做切换动画），App 顶层任何状态一变（Fairy 回复的每一段字、15 秒一次的刷新……）
+// 都会把它们全部重算一遍，开发模式下单次要半秒多。按 props 记忆：props 没变的视图直接跳过。
+// 传给它们的回调要用 useCallback 稳住，不然每次都是新函数、记忆就白做了
+const StageDayNightChart = memo(DayNightChart)
+const StageProtocolView = memo(ProtocolView)
+const StageProtocolDemoPanel = memo(ProtocolDemoPanel)
+const StageTorrentFieldPanel = memo(TorrentFieldPanel)
+const StageTorrentFieldDemoPanel = memo(TorrentFieldDemoPanel)
+const StageFocusPanel = memo(FocusPanel)
+const NOOP = () => {}
 
 export default function App() {
   // ── Data ──
@@ -935,6 +946,14 @@ export default function App() {
 
   const refreshActivityPalette = useCallback(() => {
     fetchActivityPalette().then(setActivityPalette).catch(() => {})
+  }, [])
+
+  // 主舞台视图的回调（稳定引用，见文件顶部 Stage* 的说明）
+  const handlePlanNodesChange = useCallback(() => { refreshPlanNodes() }, [refreshPlanNodes])
+  const toggleEditMode = useCallback(() => setEditMode((m) => !m), [])
+  const handleAppSpanHover = useCallback((span: PerceptionSpan | null, minute?: number | null) => {
+    setHoveredAppSpan(span)
+    setHoveredAppMinute(minute ?? null)
   }, [])
 
   // 同步设备链接状态：进程内常驻，供顶栏徽章 + SyncPeerDialog 共用
@@ -3065,7 +3084,7 @@ export default function App() {
         <div style={{ flex: 1, minWidth: 0, position: 'relative', perspective: '1400px', perspectiveOrigin: 'top center' }}>
           <div style={{ ...mainPanelStyle('daynight'), display: 'flex' }}>
             <ScreenBezel view="daynight">
-                <DayNightChart
+                <StageDayNightChart
                   activityBlocks={activityBlocks}
                   plannedBlocks={plannedBlocks}
                   planNodes={planNodes}
@@ -3075,7 +3094,7 @@ export default function App() {
                   editMode={editMode}
                   selectedTagId={selectedTagId}
                   selectedPlanNodeId={selectedPlanNodeId}
-                  onEditModeToggle={() => setEditMode((m) => !m)}
+                  onEditModeToggle={toggleEditMode}
                   canUndo={recordLayer === 'actual' ? undoStack.length > 0 : planUndoStack.length > 0}
                   canRedo={recordLayer === 'actual' ? redoStack.length > 0 : planRedoStack.length > 0}
                   onUndo={handleUndo}
@@ -3084,9 +3103,9 @@ export default function App() {
                   perceptionSpans={perceptionSpans}
                   biliSpans={biliSpans}
                   selectedDate={selectedDate}
-                  onSpanClick={() => {}}
+                  onSpanClick={NOOP}
                   onSpanHover={setHoveredTagSpan}
-                  onAppSpanHover={(span, minute) => { setHoveredAppSpan(span); setHoveredAppMinute(minute ?? null) }}
+                  onAppSpanHover={handleAppSpanHover}
                   onBiliSpanHover={setHoveredBiliSpan}
                   trackMode={trackMode}
                   onTrackModeChange={setTrackMode}
@@ -3098,31 +3117,31 @@ export default function App() {
           <div style={{ ...mainPanelStyle('motivation'), display: 'flex' }}>
             <ScreenBezel view="motivation">
               {/* 协议志：清单（滴答清单式任务树，和昼夜表计划层同一份数据）/ 动机云 */}
-              <ProtocolView
+              <StageProtocolView
                 palette={activityPalette}
                 onPaletteChange={refreshActivityPalette}
-                onPlanNodesChange={() => refreshPlanNodes()}
+                onPlanNodesChange={handlePlanNodesChange}
               />
             </ScreenBezel>
           </div>
           <div style={{ ...mainPanelStyle('motivation_static'), display: 'flex' }}>
             <ScreenBezel view="motivation_static">
-              <ProtocolDemoPanel />
+              <StageProtocolDemoPanel />
             </ScreenBezel>
           </div>
           <div style={{ ...mainPanelStyle('torrent'), display: 'flex' }}>
             <ScreenBezel view="torrent">
-              <TorrentFieldPanel />
+              <StageTorrentFieldPanel />
             </ScreenBezel>
           </div>
           <div style={{ ...mainPanelStyle('torrent_static'), display: 'flex' }}>
             <ScreenBezel view="torrent_static">
-              <TorrentFieldDemoPanel />
+              <StageTorrentFieldDemoPanel />
             </ScreenBezel>
           </div>
           <div style={{ ...mainPanelStyle('focus'), display: 'flex' }}>
             <ScreenBezel view="focus">
-              <FocusPanel selectedDate={selectedDate} perceptionSpans={perceptionSpans} />
+              <StageFocusPanel selectedDate={selectedDate} perceptionSpans={perceptionSpans} />
             </ScreenBezel>
           </div>
         </div>

@@ -10,7 +10,7 @@
 // 钛合金语言贯彻到底：边缘是切削倒角（外沿一道亮、紧贴一道暗），不画发光线、不用渐变蓝线
 // ══════════════════════════════════════════════
 
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
 type Pt = readonly [number, number]
 
@@ -48,6 +48,22 @@ interface Props {
   readonly outerStyle?: CSSProperties
   /** 需要伸出轮廓之外的东西（例如拖拽手柄），放在不裁切的外层 */
   readonly outside?: ReactNode
+}
+
+const ANCHOR_SELECTOR = '[data-chassis-tab], [data-chassis-tower]'
+
+/** 这批 DOM 变化碰没碰到凸台 / 塔楼锚点（板里装着编辑器、聊天流式输出，绝大多数变化和锚点无关） */
+function touchesAnchors(records: readonly MutationRecord[]): boolean {
+  const isAnchorish = (n: Node) => n instanceof Element && (n.matches(ANCHOR_SELECTOR) || n.querySelector(ANCHOR_SELECTOR) !== null)
+  return records.some((r) => {
+    if (r.type === 'attributes') {
+      return r.attributeName === 'data-chassis-tab' || r.attributeName === 'data-chassis-tower'
+        || (r.target instanceof Element && r.target.matches(ANCHOR_SELECTOR))
+    }
+    const host = r.target instanceof Element ? r.target : r.target.parentElement
+    if (host?.closest(ANCHOR_SELECTOR)) return true
+    return Array.from(r.addedNodes).some(isAnchorish) || Array.from(r.removedNodes).some(isAnchorish)
+  })
 }
 
 function anchorBox(container: HTMLElement, selector: string): { left: number; right: number } | null {
@@ -114,16 +130,29 @@ export default function ChassisPlate({
     }
     const ro = new ResizeObserver(measure)
     ro.observe(plate)
-    const watchAnchors = () => plate.querySelectorAll('[data-chassis-tab], [data-chassis-tower]').forEach((el) => ro.observe(el))
+    measure()
+    // 没有凸台的板（顶栏、侧栏）用不着锚点：尺寸变化交给上面的 ResizeObserver 就够了
+    if (!notch) return () => ro.disconnect()
+
+    const watchAnchors = () => plate.querySelectorAll(ANCHOR_SELECTOR).forEach((el) => ro.observe(el))
     watchAnchors()
-    // 锚点会随内容换（改名、切视图、面板换内容）：子树变化后重新挂观察、重新量
-    const mo = new MutationObserver(() => { watchAnchors(); measure() })
+    // 锚点会随内容换（改名、切视图、面板换内容）：子树变化后重新挂观察、重新量。
+    // 板里装着整块视图（笔记编辑器、聊天流式输出……），之前每一次 DOM 变化都全树搜锚点 + 强制排版，
+    // 打一个字就来一遍；现在只认碰到锚点的变化，同一帧里的多次变化合并成一次
+    let frame = 0
+    const mo = new MutationObserver((records) => {
+      if (frame || !touchesAnchors(records)) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        watchAnchors()
+        measure()
+      })
+    })
     mo.observe(plate, {
       childList: true, subtree: true, attributes: true,
       attributeFilter: ['style', 'class', 'data-chassis-tab', 'data-chassis-tower'],
     })
-    measure()
-    return () => { ro.disconnect(); mo.disconnect() }
+    return () => { ro.disconnect(); mo.disconnect(); cancelAnimationFrame(frame) }
   }, [notch, dipDepth, cut, anchorPad])
 
   const clipPath = geo
@@ -156,7 +185,7 @@ export default function ChassisPlate({
         }}
       >
         {children}
-        {geo && <ChassisEdge geo={geo} cut={cut} accents={accents} ornaments={ornaments} />}
+        {geo && <ChassisEdgeLayer geo={geo} cut={cut} accents={accents} ornaments={ornaments} />}
       </div>
 
       {outside}
@@ -334,3 +363,6 @@ function ChassisEdge({ geo, cut, accents, ornaments }: {
     </svg>
   )
 }
+
+/** 装饰层只跟几何和开关有关：App 每次重渲染都会带着它重画一整套 SVG（之前占重渲染时间的一成多），参数没变就跳过 */
+const ChassisEdgeLayer = memo(ChassisEdge)
