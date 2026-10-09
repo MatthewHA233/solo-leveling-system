@@ -25,7 +25,7 @@ import {
   Video,
   X,
 } from 'lucide-react'
-import { theme, hud, ti, tiSurface, tiInput, tiTitle, tiKey } from '../theme'
+import { theme, hud, ti, tiSurface, tiInput, tiTitle, tiKey, tiNotice } from '../theme'
 import HudSelect from './HudSelect'
 import Tooltip from './Tooltip'
 import type {
@@ -754,22 +754,24 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
         .hud-card:hover {
           box-shadow: 0 0 0 1px rgba(255,138,76,0.55), inset 0 1px 0 rgba(255,255,255,0.1), 0 2px 8px rgba(0,0,0,0.55);
         }
+        /* 卡片的语义色：标题旁一颗小方灯（以前是左侧竖条，用户嫌丑） */
         .hud-card-stripe {
           position: absolute;
-          left: 0; top: 0; bottom: 0;
-          width: 3px;
+          left: 7px; top: 19px;
+          width: 6px; height: 6px;
+          border-radius: 1.5px;
           background: var(--accent, ${ti.led});
+          box-shadow: 0 0 6px var(--accent, ${ti.led});
           z-index: 1;
         }
         .hud-card > * { position: relative; z-index: 2; }
 
-        /* 卡片内"价格层"分组：去掉边框，用左侧色条 + 半透明深底 */
+        /* 卡片内"价格层"分组：下沉的黑玻璃槽 */
         .hud-tier {
           position: relative;
-          padding: 8px 10px 8px 12px;
+          padding: 8px 10px;
           background: ${tiSurface.well};
           border-radius: 4px;
-          border-left: 3px solid rgba(255,138,76,0.5);
           box-shadow: ${tiSurface.wellShadow};
         }
 
@@ -1082,9 +1084,9 @@ function BailianQuotaScanPanel({
           gridTemplateRows: 'auto auto minmax(0, 1fr)',
           gap: 14,
           padding: 16,
-          border: `1px solid ${theme.hudFrame}`,
-          background: 'rgba(18,17,15,0.98)',
-          boxShadow: `0 0 0 1px ${theme.glassBorder}, 0 24px 80px rgba(0,0,0,0.55)`,
+          borderRadius: 8,
+          background: tiSurface.plate,
+          boxShadow: tiSurface.plateShadow,
         }}
       >
         <header style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -1108,8 +1110,7 @@ function BailianQuotaScanPanel({
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              background: 'rgba(255,255,255,0.04)',
-              border: `1px solid ${theme.glassBorder}`,
+              ...tiKey,
               color: theme.textSecondary,
               cursor: 'pointer',
             }}
@@ -1147,8 +1148,7 @@ function BailianQuotaScanPanel({
               alignItems: 'center',
               minHeight: 30,
               padding: '6px 8px',
-              border: `1px solid ${theme.hudFrameSoft}`,
-              background: 'rgba(255,255,255,0.025)',
+              background: tiSurface.well, boxShadow: tiSurface.wellShadow, borderRadius: 5,
             }}>
               <span style={{
                 color: log.color,
@@ -1560,7 +1560,7 @@ function UsageCalendar({ viewMode, anchorDate, onSelect }: {
             </div>
           ) : (
             <div style={{ position:'relative' }}>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:2, marginBottom:4, paddingBottom:5, borderBottom:`1px solid ${theme.glassBorder}` }}>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:2, marginBottom:4, paddingBottom:5, borderBottom:'1px solid rgba(0,0,0,0.85)', boxShadow:'0 1px 0 rgba(255,255,255,0.06)' }}>
                 {CAL_WEEK_LABELS.map((w, i) => (
                   <div key={w} style={{ textAlign:'center', fontSize:9, fontWeight:700, letterSpacing:1, color: i >= 5 ? theme.shadowPurple : theme.textMuted, fontFamily: theme.fontBody }}>
                     {w}
@@ -1739,7 +1739,7 @@ function StackedBarChart({ calls, viewMode, anchorDate }: {
         ]} onChange={(v) => setGroup(v as BarGroup)} />
       </div>
 
-      <div ref={chartRef} style={{ position: 'relative', borderTop: `1px solid ${theme.hudFrameSoft}`, background: 'rgba(255,255,255,0.02)', padding: '8px 8px 4px 0' }}>
+      <div ref={chartRef} style={{ position: 'relative', borderTop: '1px solid rgba(0,0,0,0.85)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)', padding: '8px 8px 4px 0' }}>
         <div style={{ display: 'flex' }}>
 
           {/* ── 纵轴 ── */}
@@ -1868,9 +1868,9 @@ function StackedBarChart({ calls, viewMode, anchorDate }: {
               zIndex: 100,
               width: tipW,
               padding: '8px 10px',
-              background: theme.panelDeep,
-              border: `1px solid ${theme.hudFrame}`,
-              boxShadow: `0 8px 24px rgba(0,0,0,0.7), 0 0 0 1px ${theme.electricBlue}22`,
+              borderRadius: 6,
+              background: tiSurface.plate,
+              boxShadow: tiSurface.popShadow,
               fontFamily: theme.fontMono,
               fontSize: 11,
               pointerEvents: 'none',
@@ -1885,7 +1885,7 @@ function StackedBarChart({ calls, viewMode, anchorDate }: {
                   <span style={{ color: metric === 'cost' ? theme.dangerRed : theme.electricBlue }}>{formatVal(v)}</span>
                 </div>
               ))}
-              <div style={{ borderTop: `1px solid ${theme.hudFrameSoft}`, marginTop: 5, paddingTop: 5, display: 'flex', justifyContent: 'space-between' }}>
+              <div style={{ borderTop: '1px solid rgba(0,0,0,0.85)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)', marginTop: 5, paddingTop: 5, display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: theme.textMuted }}>合计</span>
                 <span style={{ color: metric === 'cost' ? theme.dangerRed : theme.electricBlue, fontWeight: 700 }}>{formatVal(total)}</span>
               </div>
@@ -1966,8 +1966,6 @@ function LibraryTab({
               disabled={openingBailian}
               style={{
                 ...textActionBtnStyle(bailianName ? theme.textSecondary : pollingBailianLogin ? theme.electricBlue : theme.warningOrange),
-                background: bailianName ? 'rgba(255,255,255,0.04)' : pollingBailianLogin ? `${theme.electricBlue}18` : `${theme.warningOrange}18`,
-                border: `1px solid ${bailianName ? theme.glassBorder : pollingBailianLogin ? theme.electricBlue : theme.warningOrange}`,
                 opacity: openingBailian ? 0.6 : 1,
                 cursor: openingBailian ? 'default' : 'pointer',
               }}
@@ -2405,7 +2403,7 @@ function ModelEditor({
           </div>
           <div style={{ display: 'grid', gap: 10 }}>
             {draft.pricing.map((tier, index) => (
-              <div key={index} style={{ border: `1px solid ${theme.hudFrameSoft}`, background: 'rgba(0,0,0,0.18)', padding: 6 }}>
+              <div key={index} style={{ background: tiSurface.well, boxShadow: tiSurface.wellShadow, borderRadius: 5, padding: 6 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, marginBottom: 8, alignItems: 'end' }}>
                   <EditorField label="区间起始">
                     <input
@@ -2628,7 +2626,6 @@ function ApiKeyPopover({
               style={{
                 ...plainActionStyle,
                 color: newValue.trim() ? theme.expGreen : theme.textMuted,
-                borderColor: newValue.trim() ? `${theme.expGreen}55` : theme.hudFrameSoft,
                 cursor: newValue.trim() ? 'pointer' : 'not-allowed',
                 opacity: newValue.trim() ? 1 : 0.55,
               }}
@@ -2643,8 +2640,7 @@ function ApiKeyPopover({
         {apiKeys.length === 0 ? (
           <div style={{
             padding: '18px 16px',
-            border: `1px dashed ${theme.hudFrameSoft}`,
-            background: 'rgba(255,255,255,0.018)',
+            background: tiSurface.well, boxShadow: tiSurface.wellShadow, borderRadius: 5,
             color: theme.textMuted,
             fontSize: 12,
             lineHeight: 1.7,
@@ -2817,7 +2813,7 @@ const CallRow = React.memo(function CallRow({ call, apiKeyLabel, pricing }: { ca
 
       {/* 标题行：功能名 + 状态徽章 + 成本 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ color: theme.textPrimary, fontFamily: theme.fontDisplay, fontWeight: 700, fontSize: 12, letterSpacing: '0.08em', textShadow: `0 0 6px ${accent}55` }}>
+        <span style={{ color: theme.textPrimary, fontFamily: theme.fontDisplay, fontWeight: 700, fontSize: 12, letterSpacing: '0.08em' }}>
           {featureLabel}
         </span>
         {!call.success && <StatusBadge color={theme.dangerRed} label="ERR" />}
@@ -2850,7 +2846,7 @@ const CallRow = React.memo(function CallRow({ call, apiKeyLabel, pricing }: { ca
 
       {/* 免费额度抵扣 */}
       {saved > 0 && (
-        <div style={{ color: theme.expGreen, fontSize: 10, marginTop: 4, fontFamily: theme.fontMono, textShadow: `0 0 4px ${theme.expGreen}55` }}>
+        <div style={{ color: theme.expGreen, fontSize: 10, marginTop: 4, fontFamily: theme.fontMono }}>
           免费额度抵扣 {formatTokens(freeTokens)} · 节省 {formatCny(saved)}
         </div>
       )}
@@ -2867,8 +2863,7 @@ const CallRow = React.memo(function CallRow({ call, apiKeyLabel, pricing }: { ca
           display: 'flex', alignItems: 'flex-start', gap: 6,
           marginTop: 8,
           padding: '6px 8px',
-          background: `${theme.dangerRed}14`,
-          borderLeft: `2px solid ${theme.dangerRed}`,
+          ...tiNotice(theme.dangerRed),
           color: theme.dangerRed,
           fontSize: 11,
           fontFamily: theme.fontMono,
@@ -2893,11 +2888,9 @@ function StatusBadge({ color, label }: { color: string; label: string }) {
       fontWeight: 800,
       letterSpacing: '0.12em',
       color,
-      background: `${color}1A`,
-      border: `1px solid ${color}66`,
-      textShadow: `0 0 4px ${color}88`,
-      clipPath: 'polygon(2px 0, 100% 0, calc(100% - 2px) 100%, 0 100%)',
-      WebkitClipPath: 'polygon(2px 0, 100% 0, calc(100% - 2px) 100%, 0 100%)',
+      background: tiSurface.well,
+      boxShadow: tiSurface.wellShadow,
+      borderRadius: 3,
     }}>
       {label}
     </span>
@@ -2955,7 +2948,7 @@ function MetricBreakdown({
         )}
       </div>
       {visible.length > 0 && (
-        <div style={{ display: 'grid', gap: 3, marginTop: 8, paddingTop: 6, borderTop: `1px solid ${theme.hudFrameSoft}` }}>
+        <div style={{ display: 'grid', gap: 3, marginTop: 8, paddingTop: 6, borderTop: '1px solid rgba(0,0,0,0.85)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)' }}>
           {visible.map((p) => (
             <div key={p.label} style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontSize: 10 }}>
               <span style={{ color: theme.textSecondary, flexShrink: 0, letterSpacing: 0.3 }}>{p.label}</span>
@@ -2996,7 +2989,7 @@ function MiniMetric({
           {label}
         </span>
         {hasCost && totalCost > 0 && (
-          <span style={{ fontFamily: theme.fontMono, fontSize: 10, fontWeight: 700, color: theme.dangerRed, textShadow: `0 0 4px ${theme.dangerRed}55` }}>
+          <span style={{ fontFamily: theme.fontMono, fontSize: 10, fontWeight: 700, color: theme.dangerRed }}>
             {formatCny(totalCost)}
           </span>
         )}
@@ -3004,7 +2997,6 @@ function MiniMetric({
       <div style={{
         color: accentColor,
         fontFamily: theme.fontMono, fontSize: 13, fontWeight: 800,
-        textShadow: `0 0 6px ${accentColor}55`,
         marginTop: 1,
       }}>
         {value}
@@ -3258,7 +3250,6 @@ function priceGroupLabelStyle(color: string): CSSProperties {
     color,
     width: 26,
     marginTop: 2,
-    textShadow: `0 0 4px ${color}55`,
   }
 }
 
@@ -3315,8 +3306,9 @@ const apiKeyEditorStyle: CSSProperties = {
   gap: 8,
   padding: 10,
   marginBottom: 10,
-  border: `1px solid ${theme.hudFrameSoft}`,
-  background: 'rgba(255,255,255,0.025)',
+  background: tiSurface.well,
+  boxShadow: tiSurface.wellShadow,
+  borderRadius: 6,
 }
 
 const apiKeyRowStyle: CSSProperties = {
@@ -3325,29 +3317,29 @@ const apiKeyRowStyle: CSSProperties = {
   gap: 10,
   alignItems: 'stretch',
   padding: 10,
-  border: `1px solid ${theme.hudFrameSoft}`,
-  background: 'rgba(255,255,255,0.025)',
+  background: tiSurface.well,
+  boxShadow: tiSurface.wellShadow,
+  borderRadius: 6,
 }
 
 const activeBadgeStyle: CSSProperties = {
   color: theme.expGreen,
-  border: `1px solid ${theme.expGreen}55`,
-  background: `${theme.expGreen}12`,
+  background: tiSurface.well,
+  boxShadow: `${tiSurface.wellShadow}, inset 0 0 0 1px ${theme.expGreen}44`,
+  borderRadius: 3,
   fontSize: 10,
   fontFamily: theme.fontMono,
   padding: '1px 5px',
 }
 
 const plainActionStyle: CSSProperties = {
-  border: `1px solid ${theme.electricBlue}40`,
-  background: 'rgba(255,255,255,0.025)',
+  ...tiKey,
   color: theme.electricBlue,
-  padding: '6px 8px',
+  padding: '6px 10px',
   cursor: 'pointer',
-  fontFamily: theme.fontMono,
-  fontSize: 11,
-  clipPath: hud.chamfer8,
-  WebkitClipPath: hud.chamfer8,
+  fontFamily: theme.fontBody,
+  fontSize: 11.5,
+  fontWeight: 700,
 }
 
 const ghostTextBtnStyle: CSSProperties = {
@@ -3362,12 +3354,11 @@ const ghostTextBtnStyle: CSSProperties = {
 
 function smallTextBtnStyle(color: string): CSSProperties {
   return {
-    border: `1px solid ${color}55`,
-    background: `${color}10`,
+    ...tiKey,
     color,
-    padding: '6px 7px',
+    padding: '6px 8px',
     cursor: 'pointer',
-    fontFamily: theme.fontMono,
+    fontFamily: theme.fontBody,
     fontSize: 11,
     clipPath: hud.chamfer8,
     WebkitClipPath: hud.chamfer8,

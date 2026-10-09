@@ -5,6 +5,7 @@ import type { ActivityPalette, ActivityTag, PlanNode } from '../types'
 import { addPlanNode, deletePlanNode, updatePlanNode } from '../lib/local-api'
 import { theme, ti, tiInput, tiSurface, tiTitle } from '../theme'
 import Tooltip from './Tooltip'
+import { useConfirm } from '../hooks/useConfirm'
 
 interface Props {
   readonly selectedDate: Date
@@ -135,6 +136,8 @@ export default function TodoListPanel({
   onNodesChange,
   onPlanBlocksMayChange,
 }: Props) {
+  // 应用内确认框 / 报错提示（不用 Windows 原生 confirm / alert）
+  const [confirm, confirmDialog] = useConfirm()
   const dateKey = toDateKey(selectedDate)
   const [draft, setDraft] = useState('')
   const [projectSearchOpen, setProjectSearchOpen] = useState(false)
@@ -215,11 +218,12 @@ export default function TodoListPanel({
   }
 
   const removeNode = async (node: PlanNode) => {
-    // AUDIT-022 a) 删除前确认，跟 ActivityTagPalette 一致用原生 confirm
+    // AUDIT-022 a) 删除前确认（应用内确认框，不用原生 confirm）
     // 已涂的 planned blocks 会被后端 cascade 软删，提示用户
-    if (!window.confirm(
-      `确定删除计划「${node.title}」？\n已安排的计划时间块会一并清除。`
-    )) return
+    if (!(await confirm({
+      title: '删除计划', question: `删除计划「${node.title}」？`,
+      details: ['已安排的计划时间块会一并清除。'], confirmLabel: '删除', danger: true,
+    }))) return
     setBusy(true)
     setError(null)
     try {
@@ -364,6 +368,7 @@ export default function TodoListPanel({
           })}
         </section>
       </div>
+      {confirmDialog}
     </div>
   )
 }

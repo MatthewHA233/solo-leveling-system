@@ -626,7 +626,7 @@ function SessionRow({
                       background: tiSurface.well,
                       border: 'none',
                       borderRadius: 4,
-                      boxShadow: `${tiSurface.wellShadow}, inset 2px 0 0 ${snip.role === 'user' ? ti.led : ti.sys}`,
+                      boxShadow: tiSurface.wellShadow,
                       color: theme.textPrimary,
                       padding: '4px 6px',
                       fontSize: 10.5,
@@ -638,6 +638,11 @@ function SessionRow({
                       width: '100%',
                     }}
                   >
+                    {/* 谁说的：前面一颗小方灯（你 = 信号橙 / Fairy = 冰蓝），不画左侧竖线 */}
+                    <span style={{
+                      display: 'inline-block', width: 5, height: 5, borderRadius: 1, marginRight: 5, verticalAlign: 1,
+                      background: snip.role === 'user' ? ti.led : ti.sys,
+                    }} />
                     <span style={{
                       color: theme.textMuted,
                       fontFamily: theme.fontMono,

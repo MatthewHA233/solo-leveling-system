@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, Ref } from 'react'
 import { Check, ChevronLeft, ChevronRight, HelpCircle, Minus, Pencil, Plus, RotateCcw } from 'lucide-react'
-import { theme } from '../theme'
+import { theme, tiSurface } from '../theme'
 import type { AnchorBinding, AnchorCategory, AnchorRef, ContextFeedItem } from '../lib/local-api'
 import { updateAnchorKeyword } from '../lib/local-api'
 import { ensureAnchorEmbeddings } from '../lib/anchor-embedding'
@@ -1506,7 +1506,7 @@ function AnchorDetail({ node, cardById, cardRef, onClose, onJumpToCard, placemen
                   </div>
                   <div style={styles.calloutSpeech}>{b.user_speech}</div>
                   {b.selected_text && b.selected_text !== b.user_speech && (
-                    <div style={{ ...styles.calloutQuote, borderLeftColor: `${c}66` }}>
+                    <div style={{ ...styles.calloutQuote, boxShadow: `${tiSurface.wellShadow}, inset 0 0 0 1px ${c}33` }}>
                       {b.selected_text}
                     </div>
                   )}
@@ -1569,7 +1569,8 @@ const styles: Record<string, CSSProperties> = {
     gap: 2,
     padding: '6px 6px',
     background: 'rgba(18,17,15,0.72)',
-    border: `1px solid ${theme.hudFrameSoft}`,
+    border: '1px solid #080807',
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 4px 12px rgba(0,0,0,0.4)',
     borderRadius: 5,
     backdropFilter: 'blur(4px)',
     WebkitBackdropFilter: 'blur(4px)',
@@ -1630,7 +1631,8 @@ const styles: Record<string, CSSProperties> = {
     gap: 4,
     padding: '4px 8px',
     background: 'rgba(18,17,15,0.78)',
-    border: `1px solid ${theme.hudFrameSoft}`,
+    border: '1px solid #080807',
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 4px 12px rgba(0,0,0,0.4)',
     borderRadius: 5,
     backdropFilter: 'blur(4px)',
     WebkitBackdropFilter: 'blur(4px)',
@@ -1658,7 +1660,8 @@ const styles: Record<string, CSSProperties> = {
   toolDivider: {
     width: 1,
     height: 12,
-    background: theme.hudFrameSoft,
+    background: 'rgba(0,0,0,0.85)',
+    boxShadow: '1px 0 0 rgba(255,255,255,0.07)',
     margin: '0 2px',
   },
   legend: {
@@ -1671,11 +1674,11 @@ const styles: Record<string, CSSProperties> = {
     gap: 7,
     padding: '10px 14px',
     background: 'rgba(18,17,15,0.88)',
-    border: `1px solid ${theme.hudFrameSoft}`,
+    border: '1px solid #080807',
     borderRadius: 6,
     backdropFilter: 'blur(6px)',
     WebkitBackdropFilter: 'blur(6px)',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 8px 24px rgba(0,0,0,0.5)',
   },
   legendRow: {
     display: 'flex',
@@ -1742,7 +1745,7 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'flex-start',
     gap: 8,
     padding: '11px 10px 9px 12px',
-    borderBottom: `1px solid ${theme.hudFrameSoft}`,
+    borderBottom: '1px solid rgba(0,0,0,0.75)',
   },
   calloutChip: {
     flexShrink: 0,
@@ -1768,9 +1771,10 @@ const styles: Record<string, CSSProperties> = {
   calloutEditInput: {
     flex: 1,
     minWidth: 0,
-    border: `1px solid ${theme.hudFrameSoft}`,
-    background: 'rgba(0,0,0,0.4)',
-    borderRadius: 3,
+    border: 'none',
+    background: tiSurface.well,
+    boxShadow: tiSurface.wellShadow,
+    borderRadius: 4,
     padding: '3px 7px',
     color: theme.textPrimary,
     fontFamily: theme.fontBody,
@@ -1799,7 +1803,7 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 9.5,
     letterSpacing: '0.1em',
     color: theme.textMuted,
-    borderBottom: `1px dashed ${theme.hudFrameSoft}`,
+    borderBottom: '1px solid rgba(0,0,0,0.6)',
   },
   calloutError: {
     padding: '6px 12px 0',
@@ -1823,7 +1827,7 @@ const styles: Record<string, CSSProperties> = {
     flexDirection: 'column',
     gap: 5,
     paddingBottom: 10,
-    borderBottom: `1px dashed ${theme.hudFrameSoft}`,
+    borderBottom: '1px solid rgba(0,0,0,0.6)',
   },
   calloutMetaRow: {
     display: 'flex',
@@ -1845,10 +1849,9 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.55,
     color: theme.textSecondary,
     fontStyle: 'italic',
-    borderLeft: '2px solid',
-    padding: '3px 7px',
-    background: 'rgba(0,0,0,0.18)',
-    borderRadius: '0 3px 3px 0',
+    padding: '4px 8px',
+    background: tiSurface.well,
+    borderRadius: 4,
   },
   // 视频语境卡标题（可点跳转+注视）：链接态，hover 下划线（CSS 在 root 的 <style> 里）
   calloutSourceLink: {

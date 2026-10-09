@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { Hash, Image as ImageIcon, Type, List, ListOrdered, AtSign, Send, Check, ChevronDown, ChevronUp, Pencil, Plus, Unlink } from 'lucide-react'
-import { theme, ti, tiSurface } from '../theme'
+import { theme, ti, tiSurface, tiSelected, tiSelectedRing, tiKey, tiInput, tiTitle } from '../theme'
 import Segmented from './ui/Segmented'
 import type { ContextFeedItem, AnchorBinding, AnchorRef, AnchorCategory } from '../lib/local-api'
 import { fetchContextFeed, addContextCard, deleteContextCard, updateContextCard, fetchAllBindings, groupBindingsByCard, deleteBinding, addBinding, updateAnchor, addAnchorToBinding } from '../lib/local-api'
@@ -440,15 +440,15 @@ function FlomoMain({
           display: none;
         }
         .torrent-sentence-row {
-          border-left: 2px solid transparent;
-          transition: background 0.15s, border-color 0.15s;
+          border-radius: 4px;
+          transition: background 0.15s, box-shadow 0.15s;
         }
         .torrent-sentence-row:hover {
           background: rgba(255,255,255,0.05);
         }
         .torrent-sentence-row.is-active {
-          border-left-color: ${theme.flameTeal};
           background: ${theme.flameTeal}14;
+          box-shadow: inset 0 0 0 1px ${theme.flameTeal}77;
         }
       `}</style>
       {showCompose && (
@@ -558,9 +558,9 @@ interface DraftAnchor { id: string | null; keyword: string; category: AnchorCate
 const CAT_ORDER: readonly AnchorCategory[] = ['motive', 'view', 'practice']
 
 const linkModalBtn = (c: string): CSSProperties => ({
-  flex: 1, padding: '8px 14px', background: 'transparent',
-  border: `1px solid ${c}`, color: c,
-  fontFamily: theme.fontMono, fontSize: 12, letterSpacing: '0.08em',
+  ...tiKey,
+  flex: 1, height: 34, padding: '0 14px', color: c,
+  fontFamily: theme.fontBody, fontSize: 12.5, fontWeight: 700,
 })
 
 // ── 链接修复弹层：断链想法卡 → 点选目标视频的转录句子 → 把锚点句回填到视频侧 binding ──
@@ -648,16 +648,14 @@ function LinkToVideoModal({ thought, anchors, onClose, onDone }: {
       <div onClick={(e) => e.stopPropagation()} style={{
         position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
         width: 'min(580px, 92vw)', maxHeight: '82vh', zIndex: 99991,
-        background: theme.hudFill, border: `1px solid ${theme.hudFrame}`,
+        background: tiSurface.plate, borderRadius: 8,
         boxShadow: tiSurface.plateShadow,
-        padding: '20px 22px 18px', fontFamily: theme.fontBody,
+        padding: '18px 22px 18px', fontFamily: theme.fontBody,
         display: 'flex', flexDirection: 'column', gap: 12,
       }}>
-        <div style={{
-          fontFamily: theme.fontDisplay, fontSize: 11, fontWeight: 700, letterSpacing: 2,
-          color: theme.electricBlue, textShadow: `0 0 8px ${theme.electricBlue}AA`, textTransform: 'uppercase',
-        }}>
-          ▸ 重新链接到视频
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+          <span className="ti-diamond" aria-hidden />
+          <span style={{ ...tiTitle, fontSize: 14 }}>重新链接到视频</span>
         </div>
         <div style={{ fontSize: 12, color: theme.textSecondary, lineHeight: 1.5 }}>
           把这条想法的锚点句，挂到下面视频转录里你点选的那一句上：
@@ -679,13 +677,13 @@ function LinkToVideoModal({ thought, anchors, onClose, onDone }: {
               onChange={(e) => setQuery(e.target.value)}
               placeholder="搜索转录句子（按关键词快速定位）…"
               style={{
-                background: 'rgba(17,16,14,0.5)', border: `1px solid ${theme.hudFrameSoft}`,
-                color: theme.textPrimary, padding: '6px 10px', fontFamily: theme.fontBody, fontSize: 12, outline: 'none',
+                ...tiInput,
+                padding: '7px 10px', fontFamily: theme.fontBody, fontSize: 12,
               }}
             />
             <div style={{
               overflowY: 'auto', maxHeight: '42vh', display: 'flex', flexDirection: 'column', gap: 2,
-              border: `1px solid ${theme.hudFrameSoft}`, padding: 6,
+              background: tiSurface.well, boxShadow: tiSurface.wellShadow, borderRadius: 6, padding: 6,
             }}>
               {filtered.length === 0 ? (
                 <div style={{ color: theme.textMuted, fontSize: 12, padding: 10 }}>没有匹配的句子。</div>
@@ -694,8 +692,10 @@ function LinkToVideoModal({ thought, anchors, onClose, onDone }: {
                 return (
                   <button key={s.offset} type="button" onClick={() => setPickedOffset(s.offset)} style={{
                     display: 'flex', gap: 8, textAlign: 'left', cursor: 'pointer',
-                    background: picked ? `${theme.electricBlue}22` : 'transparent',
-                    border: `1px solid ${picked ? theme.electricBlue : 'transparent'}`,
+                    // 选中这句 = 凸起的小钛片
+                    background: picked ? tiSelected.background : 'transparent',
+                    boxShadow: picked ? tiSelected.boxShadow : 'none',
+                    border: 'none', borderRadius: 5,
                     color: picked ? theme.textPrimary : theme.textSecondary,
                     padding: '5px 8px', fontFamily: theme.fontBody, fontSize: 12.5, lineHeight: 1.55,
                   }}>
@@ -1290,8 +1290,9 @@ const styles: Record<string, CSSProperties> = {
     padding: '8px 10px',
     border: 'none',
     borderRadius: 5,
-    background: tiSurface.well,
-    boxShadow: `${tiSurface.wellShadow}, inset 3px 0 0 ${theme.flameTeal}`,
+    // 选中 = 凸起的小钛片，环用洪流域的冷钢青（不画左侧竖线）
+    background: tiSelected.background,
+    boxShadow: tiSelectedRing(`${theme.flameTeal}AA`),
     color: theme.textPrimary,
     fontFamily: theme.fontBody,
     fontSize: 12.5,
@@ -1359,7 +1360,8 @@ const styles: Record<string, CSSProperties> = {
   toolbarDivider: {
     width: 1,
     height: 14,
-    background: theme.hudFrameSoft,
+    background: 'rgba(0,0,0,0.85)',
+    boxShadow: '1px 0 0 rgba(255,255,255,0.07)',
     margin: '0 4px',
   },
   composerSend: {
@@ -1579,10 +1581,11 @@ const styles: Record<string, CSSProperties> = {
   // ── B 站转录语境卡 ──
   biliCard: {
     padding: '12px 16px 13px',
-    border: `1px solid ${theme.electricBlue}30`,
-    background: 'linear-gradient(180deg, rgba(30,29,27,0.90), rgba(20,19,17,0.90))',
+    // 一块钛片：深色边缘 + 上沿受光（有锚点标记时边缘换紫，见 biliCardMarked）
+    border: '1px solid #080807',
+    background: 'linear-gradient(180deg, rgba(34,32,29,0.92), rgba(22,21,19,0.92))',
     borderRadius: 10,
-    boxShadow: '0 2px 12px rgba(0,0,0,0.35)',
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.09), 0 3px 10px rgba(0,0,0,0.45)',
     display: 'flex',
     flexDirection: 'column',
     gap: 8,
@@ -1598,8 +1601,8 @@ const styles: Record<string, CSSProperties> = {
     height: 55,
     objectFit: 'cover',
     flexShrink: 0,
-    border: `1px solid ${theme.hudFrameSoft}`,
-    borderRadius: 2,
+    boxShadow: '0 0 0 1px #080807',
+    borderRadius: 3,
   },
   biliHeadText: {
     minWidth: 0,
@@ -1641,7 +1644,6 @@ const styles: Record<string, CSSProperties> = {
     color: 'rgb(192,132,252)',
     fontSize: 9.5,
     letterSpacing: '0.12em',
-    textShadow: '0 0 8px rgba(168,85,247,0.6)',
   },
   // 折叠预览：底部渐隐（mask 渐变），暗示下面还有内容
   biliPreviewFade: {
@@ -1674,14 +1676,13 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'center',
     gap: 4,
     marginTop: 8,
-    border: `1px solid ${theme.electricBlue}55`,
+    ...tiKey,
     borderRadius: 999,
-    background: 'rgba(20,19,17,0.93)',
-    boxShadow: `0 4px 14px rgba(0,0,0,0.55), 0 0 10px ${theme.electricBlue}26`,
-    color: theme.electricBlue,
-    fontFamily: theme.fontMono,
-    fontSize: 10.5,
-    letterSpacing: '0.12em',
+    color: theme.textPrimary,
+    fontFamily: theme.fontBody,
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: '0.08em',
     padding: '4px 16px',
     cursor: 'pointer',
   },
@@ -1699,8 +1700,9 @@ const styles: Record<string, CSSProperties> = {
     width: 24,
     alignSelf: 'stretch',
     borderRadius: 3,
-    border: `1px dashed ${theme.textMuted}66`,
-    background: 'transparent',
+    border: 'none',
+    background: tiSurface.well,
+    boxShadow: tiSurface.wellShadow,
     color: theme.textMuted,
     cursor: 'pointer',
     padding: 0,
@@ -1732,6 +1734,5 @@ const styles: Record<string, CSSProperties> = {
   },
   sentenceStampActive: {
     color: theme.electricBlue,
-    textShadow: `0 0 8px ${theme.electricBlue}99`,
   },
 }

@@ -1045,12 +1045,14 @@ function SegmentList({
             style={{
               marginBottom: 10,
               padding: '7px 10px 8px',
-              borderLeft: `2px solid ${active ? AMBER : PANEL_LINE}`,
+              borderRadius: 5,
+              // 正在播的这句：一圈琥珀内环（不画左侧竖线）
+              boxShadow: active ? `inset 0 0 0 1px ${AMBER}99` : 'none',
               background: active
                 ? 'linear-gradient(90deg, rgba(255,180,84,0.12), rgba(0,215,232,0.035))'
                 : 'rgba(17,16,14,0.34)',
               cursor: seekable ? 'pointer' : 'default',
-              transition: 'background 0.18s ease, border-color 0.18s ease, transform 0.18s ease',
+              transition: 'background 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease',
             }}
             onMouseEnter={(e) => {
               if (seekable && !active) {

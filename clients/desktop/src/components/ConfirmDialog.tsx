@@ -25,6 +25,8 @@ interface Props {
   cancelLabel?: string
   /** 是否标记为"危险" — 确认按钮用红色调 */
   danger?: boolean
+  /** 只留一个确认键（报错 / 通知用，替代 window.alert） */
+  hideCancel?: boolean
   onConfirm: () => void
   onCancel: () => void
 }
@@ -34,6 +36,7 @@ export default function ConfirmDialog({
   confirmLabel = '确认', confirmColor,
   cancelLabel = '取消',
   danger = false,
+  hideCancel = false,
   onConfirm, onCancel,
 }: Props) {
   useEffect(() => {
@@ -132,13 +135,15 @@ export default function ConfirmDialog({
 
         {/* 按钮 */}
         <div style={{ display: 'flex', gap: 10 }}>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="confirm-btn ti-key"
-          >
-            {cancelLabel}
-          </button>
+          {!hideCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="confirm-btn ti-key"
+            >
+              {cancelLabel}
+            </button>
+          )}
           <button
             type="button"
             onClick={onConfirm}

@@ -8,12 +8,13 @@ import { createPortal } from 'react-dom'
 import { X, ChevronRight, ChevronUp, ChevronDown, Mic, Lock, Database, Bot, Eye, EyeOff, Copy, Check, Cpu, Camera, FolderOpen, RefreshCw, Trash2, Settings as SettingsIcon, Ban, Activity } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { theme, hud, tiSurface, tiInput, tiTitle, ti } from '../theme'
+import { theme, hud, tiSurface, tiInput, tiTitle, ti, tiKey } from '../theme'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import type { GpuPrefStatus } from '../lib/local-api'
 import { MagneticButton } from './NeonUI'
 import Tooltip from './Tooltip'
 import HudSelect from './HudSelect'
+import { useConfirm } from '../hooks/useConfirm'
 
 interface Props {
   readonly open: boolean
@@ -67,6 +68,8 @@ function formatBytes(bytes: number): string {
 }
 
 export default function SettingsPanel({ open: isOpen, initialSection, initialSectionTick = 0, config, onUpdate, onClose }: Props) {
+  // 应用内确认框 / 报错提示（不用 Windows 原生 confirm / alert）
+  const [confirm, confirmDialog, notify] = useConfirm()
   // ── Local draft state (不实时写入，点确认才生效) ──
   const [draft, setDraft] = useState({
     aiMode: config.aiMode,
@@ -155,7 +158,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
       setTimeout(() => setTrackingSaved(false), 1600)
     } catch (e) {
       console.error('[Tracking] save failed:', e)
-      alert(`保存追踪设置失败: ${e}`)
+      notify('保存追踪设置失败', String(e))
     } finally {
       setTrackingSaving(false)
     }
@@ -169,7 +172,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
       })
       setWindowBlacklist(next)
     } catch (e) {
-      alert(`移除失败: ${e}`)
+      notify('移除失败', String(e))
     }
   }, [])
 
@@ -212,7 +215,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
       setTimeout(() => setScreenshotSaved(false), 1600)
     } catch (e) {
       console.error('[Screenshot] save failed:', e)
-      alert(`保存截图设置失败: ${e}`)
+      notify('保存截图设置失败', String(e))
     } finally {
       setScreenshotSaving(false)
     }
@@ -224,18 +227,18 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
       await refreshScreenshotInfo()
     } catch (e) {
       console.error('[Screenshot] open folder failed:', e)
-      alert(`打开截图目录失败: ${e}`)
+      notify('打开截图目录失败', String(e))
     }
   }, [refreshScreenshotInfo])
 
   const clearScreenshotData = useCallback(async () => {
-    if (!window.confirm('清空截图目录中的数据？')) return
+    if (!(await confirm({ title: '清空截图', question: '清空截图目录里的数据？', details: ['删掉就找不回来了。'], confirmLabel: '清空', danger: true }))) return
     try {
       const info = await invoke<ScreenshotStorageInfo>('clear_screenshot_data')
       setScreenshotInfo(info)
     } catch (e) {
       console.error('[Screenshot] clear failed:', e)
-      alert(`清空截图失败: ${e}`)
+      notify('清空截图失败', String(e))
     }
   }, [])
 
@@ -294,7 +297,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
         setDbInfo(info)
       } catch (e) {
         console.error('迁移失败:', e)
-        alert(`迁移失败: ${e}`)
+        notify('迁移失败', String(e))
       }
       setMigrating(false)
     }
@@ -828,9 +831,9 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8,
                     padding: '6px 8px',
-                    background: 'rgba(255,80,80,0.04)',
-                    border: `1px solid rgba(255,80,80,0.22)`,
-                    borderRadius: 3,
+                    background: tiSurface.well,
+                    boxShadow: tiSurface.wellShadow,
+                    borderRadius: 5,
                     minWidth: 0,
                   }}
                 >
@@ -868,11 +871,10 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
                         flexShrink: 0,
                         width: 22, height: 22,
                         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                        background: 'transparent',
-                        border: `1px solid ${theme.glassBorder}`,
+                        ...tiKey,
+                        borderRadius: 4,
                         color: theme.textSecondary,
                         cursor: 'pointer',
-                        borderRadius: 2,
                       }}
                     >
                       <Trash2 size={12} />
@@ -908,9 +910,9 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
           {gpuPref && (
             <div style={{
               fontSize: 11, fontFamily: theme.fontBody,
-              background: 'rgba(255,255,255,0.025)',
-              border: `1px solid ${theme.glassBorder}`,
-              borderRadius: 4, padding: '8px 12px',
+              background: tiSurface.well,
+              boxShadow: tiSurface.wellShadow,
+              borderRadius: 6, padding: '8px 12px',
               display: 'grid', gap: 6,
             }}>
               <GpuPrefRow
@@ -976,6 +978,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
         </div>
       </div>
       </div>
+      {confirmDialog}
     </>,
     document.body,
   )
@@ -1234,8 +1237,9 @@ function GpuPrefRow({ label, path, set, missing = false }: {
         <span style={{
           color: statusColor, fontSize: 10, fontWeight: 700, letterSpacing: 0.5,
           padding: '1px 6px',
-          border: `1px solid ${statusColor}66`,
-          borderRadius: 2,
+          background: tiSurface.well,
+          boxShadow: tiSurface.wellShadow,
+          borderRadius: 3,
         }}>
           {statusText}
         </span>
@@ -1289,7 +1293,6 @@ function Section({
       {open && (
         <div style={{
           padding: '8px 0 0 0',
-          borderLeft: `2px solid ${theme.glassBorder}`,
           paddingLeft: 12, marginLeft: 6,
         }}>
           {children}

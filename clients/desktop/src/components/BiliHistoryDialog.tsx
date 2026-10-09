@@ -23,7 +23,7 @@ import type { BiliSpan, DbBiliItem } from '../lib/local-api'
 import type { BiliCursor, ScanProgress, ScanPageEvent, ScanFeedItem } from '../lib/bilibili/useHistory'
 import { loadConfig, updateConfig } from '../lib/agent/agent-config'
 import type { AgentConfig } from '../lib/agent/agent-config'
-import { theme, hud, tiSurface, tiTitle, ti, tiKey } from '../theme'
+import { theme, hud, tiSurface, tiTitle, ti, tiKey, tiInput, tiSelectedRing } from '../theme'
 import Tooltip from './Tooltip'
 import CountdownText from './ui/CountdownText'
 
@@ -747,8 +747,8 @@ export default function BiliHistoryDialog({
         .bhd-card.transcribed { border-color: ${TRANSCRIBE_COLOR}66; }
         .bhd-card.transcribed:hover { border-color: ${TRANSCRIBE_COLOR}; }
         @keyframes bhd-flash {
-          0%, 100% { box-shadow: inset 4px 0 6px -4px rgba(255,200,0,0.4), 0 0 0 1px rgba(255,200,0,0.4); }
-          50%      { box-shadow: inset 4px 0 6px -4px rgba(255,200,0,0.95), 0 0 16px 2px rgba(255,200,0,0.95), 0 0 32px rgba(255,200,0,0.55); }
+          0%, 100% { box-shadow: 0 0 0 1px rgba(255,200,0,0.4); }
+          50%      { box-shadow: 0 0 16px 2px rgba(255,200,0,0.95), 0 0 32px rgba(255,200,0,0.55); }
         }
         .bhd-card.flashing {
           animation: bhd-flash 0.55s ease-in-out 3;
@@ -791,7 +791,7 @@ export default function BiliHistoryDialog({
           position: 'relative',
           display: 'flex', alignItems: 'center', gap: 10,
           padding: '7px 16px',
-          borderBottom: `1px solid ${theme.hudFrameSoft}`,
+          borderBottom: '1px solid rgba(0,0,0,0.8)',
           flexShrink: 0,
           background: 'linear-gradient(180deg, rgba(255,138,76,0.05) 0%, transparent 100%)',
         }}>
@@ -1131,7 +1131,7 @@ export default function BiliHistoryDialog({
             <div style={{
               display: 'flex', alignItems: 'center', gap: 8,
               padding: '8px 12px',
-              borderBottom: `1px solid ${theme.hudFrameSoft}`,
+              borderBottom: '1px solid rgba(0,0,0,0.8)',
             }}>
               <Search size={13} style={{ color: theme.electricBlue, flexShrink: 0 }} />
               <input
@@ -1201,7 +1201,7 @@ export default function BiliHistoryDialog({
             </div>
             <div style={{
               padding: '5px 12px',
-              borderTop: `1px solid ${theme.hudFrameSoft}`,
+              borderTop: '1px solid rgba(0,0,0,0.8)',
               fontSize: 10, color: theme.textMuted,
               display: 'flex', justifyContent: 'space-between', letterSpacing: 0.3,
             }}>
@@ -1241,10 +1241,8 @@ export default function BiliHistoryDialog({
                 onChange={(e) => updateBiliConfig({ biliDownloadPath: e.target.value })}
                 placeholder="E:\\BiliDownloads"
                 style={{
-                  flex: 1, fontSize: 11, padding: '4px 6px',
-                  background: 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${theme.glassBorder}`,
-                  borderRadius: 2,
+                  ...tiInput,
+                  flex: 1, fontSize: 11, padding: '4px 7px',
                   color: theme.textSecondary,
                   fontFamily: theme.fontMono,
                 }}
@@ -1345,7 +1343,7 @@ export default function BiliHistoryDialog({
         <div style={{
           position: 'relative',
           padding: '6px 16px',
-          borderTop: `1px solid ${theme.hudFrameSoft}`,
+          borderTop: '1px solid rgba(0,0,0,0.8)',
           fontSize: 11, color: theme.textMuted,
           display: 'flex', justifyContent: 'space-between',
           flexShrink: 0,
@@ -1607,7 +1605,7 @@ function SearchResultRow({
         padding: '8px 12px',
         background: 'transparent',
         border: 'none',
-        borderBottom: `1px solid ${theme.hudFrameSoft}`,
+        borderBottom: '1px solid rgba(0,0,0,0.8)',
         color: theme.textPrimary,
         cursor: 'pointer',
         textAlign: 'left',
@@ -1744,12 +1742,10 @@ function Card({
       className={`bhd-card ${downloaded ? 'downloaded' : ''} ${transcribed ? 'transcribed' : ''} ${flashing ? 'flashing' : ''}`}
       style={{
         left, top, width: cardW,
-        borderLeft: `3px solid ${accent}`,
-        boxShadow: selectMode && selected
-          ? `inset 4px 0 6px -4px ${accent}88, 0 0 0 2px ${theme.electricBlue}, 0 0 10px ${theme.electricBlue}88`
-          : `inset 4px 0 6px -4px ${accent}88`,
+        // 状态（未下载 / 已下载 / 已转录）看整圈描边色（.downloaded / .transcribed），不画左侧色条
+        ...(selectMode && selected ? { boxShadow: tiSelectedRing(ti.led) } : null),
         cursor: 'pointer',
-        // 已收藏：让竖线外侧的金回纹边饰能伸出卡片左缘（覆盖 .bhd-card 的 overflow/contain 裁剪）
+        // 已收藏：让左缘外侧的金回纹边饰能伸出卡片（覆盖 .bhd-card 的 overflow/contain 裁剪）
         ...(fav && !selectMode ? { overflow: 'visible' as const, contain: 'none' as const } : null),
       }}
       onClick={selectMode ? onToggleSelect : onOpenDetail}
@@ -1960,58 +1956,42 @@ function ScanWaterfall({
         position: 'absolute',
         left: 12, right: 12, top: 84, bottom: 32,
         zIndex: 9,
-        background: 'rgba(12,11,9,0.94)',
-        border: `1px solid ${theme.electricBlue}55`,
+        background: tiSurface.plate,
         clipPath: hud.chamfer12,
         WebkitClipPath: hud.chamfer12,
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
-        boxShadow: `0 0 32px ${theme.electricBlue}33, inset 0 0 60px rgba(255,138,76,0.04)`,
+        boxShadow: tiSurface.plateShadow,
         animation: done
           ? 'bhd-overlay-fade 1.0s ease-out 0.6s forwards'
           : 'bhd-overlay-in 0.18s ease-out',
       }}
     >
-      {/* HUD header */}
+      {/* 标题条：橙灯 + 标题，右边是点阵读数（第几页 / 抓了几条 / 新增几条） */}
       <div style={{
         position: 'relative',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '8px 14px',
-        borderBottom: `1px solid ${theme.electricBlue}33`,
-        background: `linear-gradient(180deg, ${theme.electricBlue}1c, transparent)`,
+        padding: '9px 14px',
+        boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.85), 0 1px 0 rgba(255,255,255,0.07)',
         flexShrink: 0,
       }}>
-        <span style={{
-          display: 'inline-flex', alignItems: 'center', gap: 8,
-          fontFamily: theme.fontDisplay, fontSize: 11, fontWeight: 700,
-          letterSpacing: 2.5, color: theme.electricBlue,
-          textShadow: `0 0 8px ${theme.electricBlue}AA`,
-        }}>
-          <Telescope size={12} />
-          DATA STREAM · DEEP SCAN
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9 }}>
+          <span className="ti-dot ti-dot-led" aria-hidden />
+          <span style={{ ...tiTitle, fontSize: 13 }}>深度扫描中</span>
         </span>
-        <span style={{
-          fontFamily: theme.fontMono, fontSize: 10.5,
-          color: theme.electricBlue, letterSpacing: 0.6,
-        }}>
-          P {String(progress.pages).padStart(3, '0')}
-          <span style={{ opacity: 0.5, margin: '0 6px' }}>·</span>
-          {progress.fetched} ITEMS
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, fontSize: 11, color: theme.textMuted }}>
+          <span>第 <span className="ti-led" style={{ fontSize: 13 }}>{String(progress.pages).padStart(3, '0')}</span> 页</span>
+          <span>已抓 <span className="ti-led" style={{ fontSize: 13 }}>{progress.fetched}</span> 条</span>
           {newCount > 0 && (
-            <>
-              <span style={{ opacity: 0.5, margin: '0 6px' }}>·</span>
-              <span style={{ color: theme.expGreen, textShadow: `0 0 6px ${theme.expGreen}88` }}>
-                +{newCount} NEW
-              </span>
-            </>
+            <span>新增 <span style={{ fontFamily: theme.fontLed, fontWeight: 900, fontSize: 13, color: theme.expGreen }}>+{newCount}</span></span>
           )}
         </span>
-        {/* 扫描线装饰 */}
+        {/* 扫描进行中：底缝里一道走动的橙光（只在这块读数板上，表示还在抓） */}
         <div style={{
-          position: 'absolute', left: 0, right: 0, bottom: 0, height: 1,
-          background: `linear-gradient(90deg, transparent, ${theme.electricBlue}, transparent)`,
+          position: 'absolute', left: 0, right: 0, bottom: -1, height: 1,
+          background: `linear-gradient(90deg, transparent, ${theme.electricBlue}AA, transparent)`,
           animation: 'bhd-scanline 2.4s linear infinite',
-          opacity: 0.7,
+          opacity: 0.6,
         }} />
       </div>
 
@@ -2118,7 +2098,6 @@ function ScanCard({ card }: { card: ScanFeedItem & { id: number; isNew: boolean 
               height: '100%',
               width: `${pct}%`,
               background: card.isNew ? theme.expGreen : theme.electricBlue,
-              boxShadow: `0 0 6px ${card.isNew ? theme.expGreen : theme.electricBlue}`,
             }} />
           </div>
         )}
@@ -2160,7 +2139,6 @@ function ScanCard({ card }: { card: ScanFeedItem & { id: number; isNew: boolean 
             color: card.isNew ? theme.expGreen : theme.textMuted,
             letterSpacing: 0.3,
             flexShrink: 0,
-            textShadow: card.isNew ? `0 0 4px ${theme.expGreen}66` : undefined,
           }}>
             {card.view_at > 0 ? formatViewTime(card.view_at) : ''}
           </span>
@@ -2209,28 +2187,24 @@ function ScanReportOverlay({
           maxHeight: '78%',
           zIndex: 13,
           display: 'flex', flexDirection: 'column',
-          background: theme.hudFill,
-          border: `1px solid ${theme.expGreen}`,
+          background: tiSurface.plate,
           clipPath: hud.chamfer12, WebkitClipPath: hud.chamfer12,
-          boxShadow: `0 24px 60px rgba(0,0,0,0.85), 0 0 40px ${theme.expGreen}55`,
+          boxShadow: tiSurface.plateShadow,
           overflow: 'hidden',
           animation: 'bhd-pop 0.18s ease-out',
         }}
       >
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '10px 14px',
-          borderBottom: `1px solid ${theme.hudFrameSoft}`,
-          background: `linear-gradient(180deg, ${theme.expGreen}22 0%, transparent 100%)`,
+          padding: '11px 14px',
+          boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.85), 0 1px 0 rgba(255,255,255,0.07)',
         }}>
-          <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            fontFamily: theme.fontDisplay, fontSize: 12, fontWeight: 700,
-            letterSpacing: 1.6, color: theme.expGreen,
-            textShadow: `0 0 8px ${theme.expGreen}88`,
-          }}>
-            <Telescope size={13} />
-            深度扫描完成 · 共 {total} 条增量
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9 }}>
+            <span className="ti-dot ti-dot-ok" aria-hidden />
+            <span style={{ ...tiTitle, fontSize: 13 }}>深度扫描完成</span>
+            <span style={{ fontSize: 11.5, color: theme.textMuted }}>
+              共 <span style={{ fontFamily: theme.fontLed, fontWeight: 900, fontSize: 13, color: theme.expGreen }}>{total}</span> 条新记录
+            </span>
           </span>
           <button className="bhd-icon-btn" onClick={onClose}><X size={12} /></button>
         </div>
@@ -2255,25 +2229,22 @@ function ScanReportOverlay({
                     padding: '8px 16px',
                     background: 'transparent',
                     border: 'none',
-                    borderBottom: `1px solid ${theme.hudFrameSoft}`,
+                    borderBottom: '1px solid rgba(0,0,0,0.6)',
+                    boxShadow: '0 1px 0 rgba(255,255,255,0.04)',
                     color: theme.textPrimary,
                     fontFamily: theme.fontMono,
                     fontSize: 12,
                     cursor: 'pointer',
                     textAlign: 'left',
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = `${theme.expGreen}14` }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
                 >
                   <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <span style={{ color: theme.electricBlue, fontWeight: 700 }}>{r.dayStr}</span>
                     <span style={{ color: theme.textMuted, fontSize: 11 }}>周{wd}</span>
                   </span>
-                  <span style={{
-                    color: theme.expGreen,
-                    fontWeight: 700,
-                    textShadow: `0 0 6px ${theme.expGreen}88`,
-                  }}>
+                  <span style={{ color: theme.expGreen, fontFamily: theme.fontLed, fontWeight: 900, fontSize: 14 }}>
                     +{r.count}
                   </span>
                 </button>
@@ -2283,8 +2254,8 @@ function ScanReportOverlay({
         )}
 
         <div style={{
-          padding: '6px 14px',
-          borderTop: `1px solid ${theme.hudFrameSoft}`,
+          padding: '7px 14px',
+          boxShadow: 'inset 0 1px 0 rgba(0,0,0,0.85), inset 0 2px 0 rgba(255,255,255,0.05)',
           fontSize: 10.5, color: theme.textMuted, letterSpacing: 0.4,
         }}>
           点击日期可跳转到当天历史
@@ -2415,10 +2386,9 @@ function DetailOverlay({
           right: 24, top: 24, bottom: 24,
           width: overlayWidth,
           zIndex: 11,
-          background: theme.hudFill,
-          border: `1px solid ${theme.electricBlue}88`,
+          background: tiSurface.plate,
           clipPath: hud.chamfer12, WebkitClipPath: hud.chamfer12,
-          boxShadow: `0 16px 48px rgba(0,0,0,0.8), 0 0 32px ${theme.electricBlue}55`,
+          boxShadow: tiSurface.plateShadow,
           display: 'flex', flexDirection: 'column',
           overflow: 'hidden',
           transition: 'width 320ms cubic-bezier(.2,.8,.2,1), box-shadow 320ms ease',
@@ -2426,16 +2396,13 @@ function DetailOverlay({
       >
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '8px 12px',
-          borderBottom: `1px solid ${theme.hudFrameSoft}`,
+          padding: '9px 12px',
+          boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.85), 0 1px 0 rgba(255,255,255,0.07)',
           flexShrink: 0,
         }}>
-          <span style={{
-            fontFamily: theme.fontDisplay, fontSize: 11, fontWeight: 700,
-            letterSpacing: 2, color: theme.electricBlue,
-            textShadow: `0 0 6px ${theme.electricBlue}AA`,
-          }}>
-            视频 · 详情{theater ? ' · 影院' : ''}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9 }}>
+            <span className="ti-dot ti-dot-led" aria-hidden />
+            <span style={{ ...tiTitle, fontSize: 13 }}>视频详情{theater ? ' · 影院' : ''}</span>
           </span>
           <span style={{ flex: 1 }} />
           {theater && (
@@ -2460,7 +2427,7 @@ function DetailOverlay({
           </Tooltip>
         </div>
         {theater && downloadedPath && (
-          <div style={{ flexShrink: 0, borderBottom: `1px solid ${theme.hudFrameSoft}` }}>
+          <div style={{ flexShrink: 0, borderBottom: '1px solid rgba(0,0,0,0.8)' }}>
             <HudVideoPlayer
               ref={videoHandleRef}
               filePath={downloadedPath}

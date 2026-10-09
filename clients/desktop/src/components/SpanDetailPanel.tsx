@@ -3,25 +3,11 @@
 // ══════════════════════════════════════════════
 
 import type { PerceptionSpan } from '../lib/local-api'
-import { theme, tiTitle } from '../theme'
+import { theme, tiTitle, tiSurface, tiSelected, tiSelectedRing } from '../theme'
 
 interface Props {
   span: PerceptionSpan
 }
-
-const clip4 = `polygon(
-  4px 0, calc(100% - 4px) 0,
-  100% 4px, 100% calc(100% - 4px),
-  calc(100% - 4px) 100%, 4px 100%,
-  0 calc(100% - 4px), 0 4px
-)`
-
-const clip3 = `polygon(
-  3px 0, calc(100% - 3px) 0,
-  100% 3px, 100% calc(100% - 3px),
-  calc(100% - 3px) 100%, 3px 100%,
-  0 calc(100% - 3px), 0 3px
-)`
 
 function fmtTime(dt: string): string {
   return dt.split(' ')[1]?.slice(0, 5) ?? dt
@@ -101,27 +87,27 @@ export default function SpanDetailPanel({ span }: Props) {
               <div key={i} style={{
                 marginTop: 3,
                 marginLeft: i * 10,
-                padding: '5px 10px 5px 12px',
-                background: `linear-gradient(90deg, ${hexToRgba(color, 0.22)} 0%, ${hexToRgba(color, 0.04)} 100%)`,
-                border: `1px solid ${hexToRgba(color, 0.55)}`,
-                clipPath: clip3, WebkitClipPath: clip3,
-                boxShadow: `0 0 10px ${hexToRgba(color, 0.3)}, inset 0 0 8px ${hexToRgba(color, 0.1)}`,
-                display: 'flex', alignItems: 'center', gap: 7,
+                padding: '6px 10px',
+                // 当前这一段 = 凸起的小钛片，环用分类色（不发光）
+                background: tiSelected.background,
+                boxShadow: tiSelectedRing(hexToRgba(color, 0.7)),
+                borderRadius: 6,
+                display: 'flex', alignItems: 'center', gap: 8,
                 position: 'relative',
               }}>
+                <span style={{ width: 7, height: 7, borderRadius: 2, background: color, flexShrink: 0 }} />
                 <span style={{
                   fontSize: 11, fontFamily: theme.fontBody, fontWeight: 700,
                   letterSpacing: 1.5,
-                  color: hexToRgba(color, 0.85),
+                  color: theme.textSecondary,
                 }}>
-                  ▸ 当前
+                  当前
                 </span>
                 <span style={{
                   flex: 1,
                   fontSize: 13, fontWeight: 700,
                   fontFamily: theme.fontBody,
                   color: '#fff',
-                  textShadow: `0 0 6px ${hexToRgba(color, 0.9)}, 0 0 12px ${hexToRgba(color, 0.5)}`,
                   letterSpacing: 0.4,
                   wordBreak: 'break-all',
                 }}>
@@ -148,8 +134,8 @@ export default function SpanDetailPanel({ span }: Props) {
                 fontSize: isRoot ? 12.5 : 11,
                 fontWeight: isRoot ? 700 : 500,
                 fontFamily: isRoot ? theme.fontBody : theme.fontMono,
-                color: isRoot ? color : theme.textSecondary,
-                textShadow: isRoot ? `0 0 5px ${hexToRgba(color, 0.5)}` : undefined,
+                color: isRoot ? theme.textPrimary : theme.textSecondary,
+                fontStyle: isRoot ? 'italic' : 'normal',
                 letterSpacing: isRoot ? 0.5 : 0.3,
               }}>
                 {part}
@@ -169,13 +155,11 @@ export default function SpanDetailPanel({ span }: Props) {
                 fontSize: 9, fontWeight: 700,
                 fontFamily: theme.fontMono,
                 padding: '3px 9px',
-                clipPath: clip3, WebkitClipPath: clip3,
-                background: 'rgba(255,220,100,0.08)',
-                border: '1px solid rgba(255,220,100,0.45)',
+                borderRadius: 4,
+                background: tiSurface.well,
+                boxShadow: tiSurface.wellShadow,
                 color: mc,
                 letterSpacing: 1.2,
-                textShadow: `0 0 4px rgba(255,220,100,0.5)`,
-                boxShadow: 'inset 0 0 6px rgba(255,220,100,0.08)',
               }}>
                 {MARKER_LABELS[m] ?? m}
               </span>
@@ -187,9 +171,9 @@ export default function SpanDetailPanel({ span }: Props) {
       {/* 时间轴：起点 ── 时长 ── 终点 */}
       <div style={{
         padding: '10px 14px',
-        background: 'rgba(17,16,14,0.4)',
-        border: `1px solid ${theme.hudFrameSoft}`,
-        clipPath: clip4, WebkitClipPath: clip4,
+        background: tiSurface.well,
+        boxShadow: tiSurface.wellShadow,
+        borderRadius: 6,
       }}>
         <Timeline
           start={fmtTime(span.start_at)}
@@ -242,11 +226,7 @@ function Timeline({
 function Endpoint({ time, color }: { time: string; color: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
-      <span style={{
-        width: 7, height: 7, borderRadius: '50%',
-        background: color,
-        boxShadow: `0 0 6px ${hexToRgba(color, 0.8)}`,
-      }} />
+      <span style={{ width: 7, height: 7, borderRadius: 2, background: color }} />
       <span style={{
         fontSize: 13, fontWeight: 700,
         color: theme.textPrimary, letterSpacing: 0.5,
@@ -267,8 +247,8 @@ function Track({ duration, color }: { duration: string; color: string }) {
       <div style={{
         position: 'absolute', left: 0, right: 0, top: '50%',
         height: 2, transform: 'translateY(-50%)',
-        background: `linear-gradient(90deg, ${hexToRgba(color, 0.7)} 0%, ${hexToRgba(color, 0.45)} 50%, ${hexToRgba(color, 0.7)} 100%)`,
-        boxShadow: `0 0 5px ${hexToRgba(color, 0.45)}`,
+        background: hexToRgba(color, 0.55),
+        borderRadius: 1,
       }} />
       {/* 时长标签（浮在线段中央） */}
       <span style={{
@@ -276,11 +256,10 @@ function Track({ duration, color }: { duration: string; color: string }) {
         padding: '2px 9px',
         fontSize: 12, fontWeight: 700,
         color,
-        background: 'rgba(17,16,14,0.95)',
-        border: `1px solid ${hexToRgba(color, 0.55)}`,
-        borderRadius: 3,
+        background: '#0B0A09',
+        boxShadow: `0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.06)`,
+        borderRadius: 4,
         letterSpacing: 0.5,
-        textShadow: `0 0 4px ${hexToRgba(color, 0.5)}`,
         whiteSpace: 'nowrap',
       }}>
         {duration}

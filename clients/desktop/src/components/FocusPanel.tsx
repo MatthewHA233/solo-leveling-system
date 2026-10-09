@@ -8,7 +8,7 @@ import { ChevronDown, FolderOpen, Globe, Monitor, Plus, Shield, ShieldOff, Trash
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import type { PerceptionSpan } from '../lib/local-api'
-import { theme, ti, tiInput, tiKey, tiSurface, tiTitle } from '../theme'
+import { theme, ti, tiInput, tiKey, tiSurface, tiTitle, tiSelected } from '../theme'
 import Tooltip from './Tooltip'
 
 // ── 数据类型 ──────────────────────────────────
@@ -257,9 +257,11 @@ function GroupItem({ group, selected, onClick }: { group: FocusGroup; selected: 
       style={{
         width: '100%',
         textAlign: 'left',
-        background: selected ? 'rgba(255,255,255,0.06)' : 'transparent',
+        // 选中 = 凸起的小钛片；生效中看盾牌图标和绿字（不画左侧竖线）
+        background: selected ? tiSelected.background : 'transparent',
         border: 'none',
-        borderLeft: `3px solid ${selected ? ti.led : group.isActive ? theme.expGreen : 'transparent'}`,
+        borderRadius: 6,
+        boxShadow: selected ? tiSelected.boxShadow : 'none',
         padding: '10px 12px',
         cursor: 'pointer',
         transition: 'background 0.15s',
@@ -1244,7 +1246,7 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
                     padding: '8px 12px',
                     borderRadius: 5,
                     background: tiSurface.well,
-                    boxShadow: `${tiSurface.wellShadow}, inset 3px 0 0 ${theme.warningOrange}`,
+                    boxShadow: `${tiSurface.wellShadow}, inset 0 0 0 1px ${theme.warningOrange}55`,
                     color: theme.warningOrange,
                     fontSize: 11.5,
                     lineHeight: 1.6,

@@ -7,9 +7,10 @@ import { useState, useEffect } from 'react'
 import { EyeOff, Check } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import type { PerceptionSpan } from '../lib/local-api'
-import { theme, tiTitle, tiSurface } from '../theme'
+import { theme, tiTitle, tiSurface, tiKey } from '../theme'
 import ConfirmDialog from './ConfirmDialog'
 import Tooltip from './Tooltip'
+import { useConfirm } from '../hooks/useConfirm'
 
 interface Props {
   span: PerceptionSpan
@@ -20,19 +21,19 @@ interface Props {
   isAfk?: boolean
 }
 
-const clip4 = `polygon(
-  4px 0, calc(100% - 4px) 0,
-  100% 4px, 100% calc(100% - 4px),
-  calc(100% - 4px) 100%, 4px 100%,
-  0 calc(100% - 4px), 0 4px
-)`
+/** 下沉的黑玻璃槽（内容框） */
+const well = {
+  background: tiSurface.well,
+  boxShadow: tiSurface.wellShadow,
+  borderRadius: 6,
+} as const
 
-const clip3 = `polygon(
-  3px 0, calc(100% - 3px) 0,
-  100% 3px, 100% calc(100% - 3px),
-  calc(100% - 3px) 100%, 3px 100%,
-  0 calc(100% - 3px), 0 3px
-)`
+/** 读数小窗：时长 / 截图时间 / 离开标记 */
+const readout = {
+  background: tiSurface.well,
+  boxShadow: tiSurface.wellShadow,
+  borderRadius: 4,
+} as const
 
 function fmt(dt: string) {
   return dt.split(' ')[1]?.slice(0, 5) ?? dt
@@ -71,6 +72,8 @@ function brightenForDark(hex: string, minLum = 185): string {
 }
 
 export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }: Props) {
+  // 应用内确认框 / 报错提示（不用 Windows 原生 confirm / alert）
+  const [, confirmDialog, notify] = useConfirm()
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null)
   const [imgError, setImgError] = useState(false)
   const [iconUrl, setIconUrl] = useState<string | null>(null)
@@ -89,7 +92,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
       await invoke('add_window_blacklist', { app: span.group_name, title: titleArg })
       setIgnored(true)
     } catch (e) {
-      alert(`添加忽略失败: ${e}`)
+      notify('添加忽略失败', String(e))
     }
   }
 
@@ -149,7 +152,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
   return (
     <div style={{
       padding: '12px 16px 14px',
-      borderTop: `1px solid ${hexToRgba(color, 0.2)}`,
+      boxShadow: 'inset 0 1px 0 rgba(0,0,0,0.85), inset 0 2px 0 rgba(255,255,255,0.06)',
       fontFamily: theme.fontBody,
     }}>
       {/* Section Header */}
@@ -159,18 +162,16 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
       <div style={{
         display: 'flex', alignItems: 'center', gap: 9,
         marginBottom: 8,
-        padding: '6px 10px',
-        background: `linear-gradient(90deg, ${hexToRgba(color, 0.1)} 0%, ${hexToRgba(color, 0.02)} 100%)`,
-        border: `1px solid ${hexToRgba(color, 0.3)}`,
-        clipPath: clip4, WebkitClipPath: clip4,
+        padding: '6px 8px 6px 7px',
+        ...well,
       }}>
-        {/* 图标（斜切 + 发光） */}
+        {/* 图标：有图标就直接放；没有就用分类色的宝石色块 + 首字 */}
         <div style={{
           width: 22, height: 22, flexShrink: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          clipPath: clip3, WebkitClipPath: clip3,
-          background: iconUrl ? 'transparent' : `linear-gradient(135deg, ${color} 0%, ${hexToRgba(color, 0.6)} 100%)`,
-          boxShadow: `0 0 6px ${hexToRgba(color, 0.5)}`,
+          borderRadius: 5,
+          background: iconUrl ? 'transparent' : `linear-gradient(180deg, ${color}, ${hexToRgba(color, 0.72)})`,
+          boxShadow: iconUrl ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.35), 0 0 0 1px #080807',
         }}>
           {iconUrl ? (
             <img
@@ -191,7 +192,6 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
           fontSize: 12.5, fontWeight: 700,
           fontFamily: theme.fontBody,
           color: theme.textPrimary,
-          textShadow: `0 0 5px ${hexToRgba(color, 0.5)}`,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           letterSpacing: 0.3,
         }}>
@@ -206,12 +206,9 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
             fontSize: 11, fontWeight: 700,
             fontFamily: theme.fontMono,
             letterSpacing: 0.8,
-            color: '#ff4d4d',
+            color: '#ff6b5b',
             padding: '2px 8px',
-            background: 'rgba(255,77,77,0.12)',
-            border: '1px solid rgba(255,77,77,0.55)',
-            clipPath: clip3, WebkitClipPath: clip3,
-            textShadow: '0 0 5px rgba(255,77,77,0.7)',
+            ...readout,
           }}>
             <span style={{
               width: 6, height: 6, borderRadius: '50%',
@@ -230,10 +227,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
           letterSpacing: 0.6,
           color,
           padding: '2px 8px',
-          background: hexToRgba(color, 0.12),
-          border: `1px solid ${hexToRgba(color, 0.5)}`,
-          clipPath: clip3, WebkitClipPath: clip3,
-          textShadow: `0 0 5px ${hexToRgba(color, 0.7)}`,
+          ...readout,
         }}>
           {durStr}
         </span>
@@ -265,19 +259,16 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
       <div style={{
         marginBottom: 10,
         padding: '8px 10px',
-        background: `linear-gradient(180deg, ${hexToRgba(color, 0.08)} 0%, rgba(17,16,14,0.55) 100%)`,
-        border: `1px solid ${hexToRgba(color, 0.32)}`,
-        clipPath: clip3, WebkitClipPath: clip3,
+        ...well,
         display: 'flex', alignItems: 'flex-start', gap: 8,
         lineHeight: 1.45,
         wordBreak: 'break-all',
       }}>
         <span style={{
           fontSize: 10, fontFamily: theme.fontBody, fontWeight: 700,
-          color: hexToRgba(color, 0.85), letterSpacing: 1.4,
+          color: theme.textSecondary, letterSpacing: 1.4,
           flexShrink: 0,
           paddingTop: 2,
-          textShadow: `0 0 4px ${hexToRgba(color, 0.55)}`,
         }}>
           {hasWindowTitle ? '窗口' : '截图'}
         </span>
@@ -298,11 +289,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
           fontSize: 11, fontFamily: theme.fontMono, fontWeight: 700,
           letterSpacing: 0.6,
           color,
-          padding: '1px 7px',
-          background: hexToRgba(color, 0.12),
-          border: `1px solid ${hexToRgba(color, 0.45)}`,
-          clipPath: clip3, WebkitClipPath: clip3,
-          textShadow: `0 0 4px ${hexToRgba(color, 0.6)}`,
+          padding: '1px 4px',
         }}>
           {shotTimeStr}
         </span>
@@ -318,11 +305,10 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
             flexShrink: 0,
             width: 22, height: 22,
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            background: ignored ? hexToRgba(theme.expGreen, 0.16) : 'rgba(255,80,80,0.08)',
-            border: `1px solid ${ignored ? hexToRgba(theme.expGreen, 0.55) : 'rgba(255,80,80,0.4)'}`,
+            ...tiKey,
+            borderRadius: 4,
             color: ignored ? theme.expGreen : '#ff8a8a',
             cursor: ignored || !span.group_name ? 'default' : 'pointer',
-            clipPath: clip3, WebkitClipPath: clip3,
             opacity: !span.group_name ? 0.4 : 1,
           }}
         >
@@ -377,6 +363,7 @@ export default function AppHoverPanel({ span, date, focusMinute, isAfk = false }
         onConfirm={performIgnore}
         onCancel={() => setConfirmOpen(false)}
       />
+      {confirmDialog}
     </div>
   )
 }

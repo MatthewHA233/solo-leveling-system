@@ -17,9 +17,10 @@ import {
   addActivityCategory, deleteActivityCategory, updateActivityCategory,
   addActivityTag, deleteActivityTag, renameActivityPath,
 } from '../lib/local-api'
-import { theme, tiInput, ti, tiKey, tiSurface } from '../theme'
+import { theme, tiInput, ti, tiKey, tiSurface, tiSelected, tiSelectedRing } from '../theme'
 import Tooltip from './Tooltip'
 import PanelTitle from './ui/PanelTitle'
+import { useConfirm } from '../hooks/useConfirm'
 
 interface Props {
   palette: ActivityPalette
@@ -51,6 +52,8 @@ type TagMenu = { tag: ActivityTag; x: number; y: number; mode: 'menu' | 'color' 
 export default function ActivityTagPalette({
   palette, selectedTagId, onSelectTag, onPaletteChange,
 }: Props) {
+  // 应用内确认框 / 报错提示（不用 Windows 原生 confirm / alert）
+  const [confirm, confirmDialog, notify] = useConfirm()
   const [searchQuery, setSearchQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<number | null>(null)
   // 新建标签模式：复用 searchQuery 作为输入；下面的 tag 列表作为模糊匹配提示
@@ -130,11 +133,11 @@ export default function ActivityTagPalette({
     if (!v) return
     if (v === tag.fullPath) { cancelRename(); return }
     const segs = v.split(',').map((s) => s.trim()).filter(Boolean)
-    if (segs.length < 2) { alert('路径至少要 2 段（分类名 + 子段）'); return }
+    if (segs.length < 2) { notify('出错了', '路径至少要 2 段（分类名 + 子段）'); return }
     // 首段必须是已有分类
     const newCat = catByName.get(segs[0])
     if (!newCat) {
-      alert(`首段「${segs[0]}」不是已有分类。可用分类：${[...catByName.keys()].join(' / ')}`)
+      notify('出错了', `首段「${segs[0]}」不是已有分类。可用分类：${[...catByName.keys()].join(' / ')}`)
       return
     }
     const newFullPath = segs.join(',')
@@ -143,7 +146,7 @@ export default function ActivityTagPalette({
       && t.categoryId === newCat.id
       && t.fullPath === newFullPath)
     if (dup) {
-      alert(`已存在同名标签「${newFullPath}」`)
+      notify('出错了', `已存在同名标签「${newFullPath}」`)
       return
     }
     try {
@@ -151,22 +154,22 @@ export default function ActivityTagPalette({
       cancelRename()
       onPaletteChange()
     } catch (e) {
-      alert(`改名失败: ${e}`)
+      notify('改名失败', String(e))
     }
   }, [editingTagSeg, palette.tags, catByName, cancelRename, onPaletteChange])
 
   // ── tag 删除 ──
   const handleDeleteTag = useCallback(async (tag: ActivityTag) => {
     closeAllMenus()
-    if (!window.confirm(`确定删除标签「${tag.fullPath}」？\n已涂的时间块会一并清除。`)) return
+    if (!(await confirm({ title: '删除标签', question: `删除标签「${tag.fullPath}」？`, details: ['已涂的时间块会一并清除。'], confirmLabel: '删除', danger: true }))) return
     onSelectTag(null)
     try {
       await deleteActivityTag(tag.id)
       onPaletteChange()
     } catch (e) {
-      alert(`删除失败: ${e}`)
+      notify('删除失败', String(e))
     }
-  }, [onSelectTag, onPaletteChange, closeAllMenus])
+  }, [onSelectTag, onPaletteChange, closeAllMenus, confirm, notify])
 
   // ── 通过 tag 菜单改分类颜色 ──
   const applyCategoryColor = useCallback(async (catId: number, color: string) => {
@@ -175,7 +178,7 @@ export default function ActivityTagPalette({
       closeAllMenus()
       onPaletteChange()
     } catch (e) {
-      alert(`改颜色失败: ${e}`)
+      notify('改颜色失败', String(e))
     }
   }, [closeAllMenus, onPaletteChange])
 
@@ -190,11 +193,10 @@ export default function ActivityTagPalette({
     apply: () => void | Promise<void>,
   ) => {
     const usedBy = colorUsedBy(color, excludeCategoryId)
-    if (usedBy && !window.confirm(`这个颜色已在「${usedBy}」分类使用。\n真的要选择这个颜色吗？`)) {
-      return
-    }
-    apply()
-  }, [colorUsedBy])
+    if (!usedBy) { void apply(); return }
+    void confirm({ title: '颜色撞了', question: `这个颜色已在「${usedBy}」分类使用，还要选它吗？`, confirmLabel: '就用它' })
+      .then((ok) => { if (ok) void apply() })
+  }, [colorUsedBy, confirm])
 
   // ── 一键初始化默认分类 + 常用标签（空状态时使用） ──
   const [seeding, setSeeding] = useState(false)
@@ -210,7 +212,7 @@ export default function ActivityTagPalette({
       }
       onPaletteChange()
     } catch (e) {
-      alert(`初始化默认分类失败：${e instanceof Error ? e.message : String(e)}`)
+      notify('初始化默认分类失败', String(e instanceof Error ? e.message : String(e)))
     } finally {
       setSeeding(false)
     }
@@ -236,17 +238,17 @@ export default function ActivityTagPalette({
     if (!raw) return
     const segs = raw.split(',').map((s) => s.trim()).filter(Boolean)
     if (segs.length < 2) {
-      alert('新标签格式：分类名,子段[,子段...]（如 "工作,论文,DPO"）')
+      notify('出错了', '新标签格式：分类名,子段[,子段...]（如 "工作,论文,DPO"）')
       return
     }
     const cat = catByName.get(segs[0])
     if (!cat) {
-      alert(`首段「${segs[0]}」不是已有分类。可用分类：${[...catByName.keys()].join(' / ')}`)
+      notify('出错了', `首段「${segs[0]}」不是已有分类。可用分类：${[...catByName.keys()].join(' / ')}`)
       return
     }
     const fullPath = segs.join(',')
     if (palette.tags.some((t) => t.categoryId === cat.id && t.fullPath === fullPath)) {
-      alert(`已存在同名标签「${fullPath}」`)
+      notify('出错了', `已存在同名标签「${fullPath}」`)
       return
     }
     try {
@@ -254,7 +256,7 @@ export default function ActivityTagPalette({
       exitAddMode()
       onPaletteChange()
     } catch (e) {
-      alert(`创建失败: ${e}`)
+      notify('创建失败', String(e))
     }
   }, [searchQuery, catByName, palette.tags, onPaletteChange, exitAddMode])
 
@@ -279,7 +281,7 @@ export default function ActivityTagPalette({
     if (!newName) return
     // 同名分类查重
     if (newName !== cat.name && palette.categories.some((c) => c.id !== cat.id && c.name === newName)) {
-      alert(`已存在同名分类「${newName}」`)
+      notify('出错了', `已存在同名分类「${newName}」`)
       return
     }
     const patch: { name?: string; color?: string } = {}
@@ -294,12 +296,12 @@ export default function ActivityTagPalette({
       cancelEditCategory()
       onPaletteChange()
     } catch (e) {
-      alert(`改分类失败: ${e}`)
+      notify('改分类失败', String(e))
     }
   }, [editingCatId, editingCatName, editingCatColor, catById, palette.categories, onPaletteChange, cancelEditCategory])
 
   const handleDeleteCategory = useCallback(async (cat: ActivityCategory) => {
-    if (!window.confirm(`确定删除分类「${cat.name}」？\n它下面所有标签和已涂时间块都会被一起清掉。`)) return
+    if (!(await confirm({ title: '删除分类', question: `删除分类「${cat.name}」？`, details: ['它下面所有标签和已涂时间块都会被一起清掉。'], confirmLabel: '删除', danger: true }))) return
     onSelectTag(null)
     try {
       await deleteActivityCategory(cat.id)
@@ -307,9 +309,9 @@ export default function ActivityTagPalette({
       cancelEditCategory()
       onPaletteChange()
     } catch (e) {
-      alert(`删除失败: ${e}`)
+      notify('删除失败', String(e))
     }
-  }, [onSelectTag, categoryFilter, cancelEditCategory, onPaletteChange])
+  }, [onSelectTag, categoryFilter, cancelEditCategory, onPaletteChange, confirm, notify])
 
   return (
     <div style={{
@@ -477,6 +479,7 @@ export default function ActivityTagPalette({
           onDelete={() => handleDeleteTag(tagMenu.tag)}
         />
       )}
+      {confirmDialog}
     </div>
   )
 }
@@ -597,9 +600,9 @@ function CategoryEditor({
   return (
     <div style={{
       background: tiSurface.well,
-      boxShadow: `${tiSurface.wellShadow}, inset 3px 0 0 ${color}`,
+      boxShadow: tiSurface.wellShadow,
       borderRadius: 5,
-      padding: '7px 8px 7px 11px',
+      padding: '7px 8px',
       display: 'flex', flexDirection: 'column', gap: 6,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -683,8 +686,9 @@ function TagRow({
         display: 'flex', alignItems: 'center', gap: 6,
         padding: '4px 6px',
         borderRadius: 4,
-        background: selected ? `${color}24` : (hover ? 'rgba(255,255,255,0.05)' : 'transparent'),
-        boxShadow: selected ? `inset 0 0 0 1px ${color}, inset 3px 0 0 ${color}` : undefined,
+        // 选中 = 凸起的小钛片，环用标签自己的颜色（不画左侧色条）
+        background: selected ? tiSelected.background : (hover ? 'rgba(255,255,255,0.05)' : 'transparent'),
+        boxShadow: selected ? tiSelectedRing(`${color}CC`) : undefined,
         cursor: editing ? 'default' : 'pointer',
       }}
     >

@@ -1,11 +1,16 @@
 // ══════════════════════════════════════════════
 // Tooltip — 全局自定义悬浮提示
-// 替代浏览器原生 title，统一 HUD 风格
+// 替代浏览器原生 title；外观 = 一枚小钛片（深色描边 + 上沿受光），不发光、不描橙边
 // ══════════════════════════════════════════════
 
 import { useState, useRef, useEffect, type ReactNode, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { theme } from '../theme'
+
+// 钛片上下两端的颜色：尾巴要接得上（朝下的尾巴接底色、朝上的尾巴接顶色）
+const PLATE_TOP = '#2E2B28'
+const PLATE_BOTTOM = '#211F1C'
+const PLATE_EDGE = '#080807'
 
 interface Props {
   readonly content: ReactNode
@@ -77,22 +82,20 @@ export default function Tooltip({
             ['--tt-from' as any]: pos.placement === 'top' ? '-92%' : '8%',
             ['--tt-to'   as any]: pos.placement === 'top' ? '-100%' : '0%',
             transform: pos.placement === 'top' ? 'translate(-50%, -100%)' : 'translate(-50%, 0)',
-            background: 'rgba(22,21,19,0.96)',
-            border: `1px solid ${theme.electricBlue}55`,
+            background: `linear-gradient(180deg, ${PLATE_TOP}, ${PLATE_BOTTOM})`,
             color: theme.textPrimary,
-            fontSize: 11,
-            fontFamily: theme.fontMono,
-            letterSpacing: 0.3,
+            fontSize: 11.5,
+            fontWeight: 600,
+            fontFamily: theme.fontBody,
+            letterSpacing: 0.2,
             lineHeight: 1.45,
-            padding: '5px 9px',
+            padding: '5px 10px',
             borderRadius: 5,
             pointerEvents: 'none',
             whiteSpace: 'nowrap',
             zIndex: 99999,
-            boxShadow: `0 4px 14px rgba(0,0,0,0.55), 0 0 10px ${theme.electricBlue}33`,
+            boxShadow: `0 0 0 1px ${PLATE_EDGE}, inset 0 1px 0 rgba(255,255,255,0.15), 0 6px 16px rgba(0,0,0,0.6)`,
             animation: 'tooltip-fade 0.12s ease-out',
-            backdropFilter: 'blur(4px)',
-            WebkitBackdropFilter: 'blur(4px)',
           }}
         >
           {content}
@@ -104,8 +107,8 @@ export default function Tooltip({
             width: 0, height: 0,
             borderStyle: 'solid',
             ...(pos.placement === 'top'
-              ? { top: '100%', borderWidth: '5px 5px 0 5px', borderColor: `${theme.electricBlue}55 transparent transparent transparent` }
-              : { bottom: '100%', borderWidth: '0 5px 5px 5px', borderColor: `transparent transparent ${theme.electricBlue}55 transparent` }),
+              ? { top: 'calc(100% + 1px)', borderWidth: '5px 5px 0 5px', borderColor: `${PLATE_EDGE} transparent transparent transparent` }
+              : { bottom: 'calc(100% + 1px)', borderWidth: '0 5px 5px 5px', borderColor: `transparent transparent ${PLATE_EDGE} transparent` }),
           }} />
           {/* 尾巴：填充层（盖在边框层上 1px） */}
           <span style={{
@@ -115,8 +118,8 @@ export default function Tooltip({
             width: 0, height: 0,
             borderStyle: 'solid',
             ...(pos.placement === 'top'
-              ? { top: 'calc(100% - 1px)', borderWidth: '5px 5px 0 5px', borderColor: 'rgba(22,21,19,0.96) transparent transparent transparent' }
-              : { bottom: 'calc(100% - 1px)', borderWidth: '0 5px 5px 5px', borderColor: 'transparent transparent rgba(22,21,19,0.96) transparent' }),
+              ? { top: '100%', borderWidth: '5px 5px 0 5px', borderColor: `${PLATE_BOTTOM} transparent transparent transparent` }
+              : { bottom: '100%', borderWidth: '0 5px 5px 5px', borderColor: `transparent transparent ${PLATE_TOP} transparent` }),
           }} />
         </div>,
         document.body

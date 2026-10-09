@@ -303,7 +303,7 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose,
           transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
           border-radius: 4px;
         }
-        .dpp-cell:hover { background: ${theme.glassHover}; border-color: ${theme.glassBorder}; opacity: 1; }
+        .dpp-cell:hover { background: rgba(255,255,255,0.07); box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); opacity: 1; }
         /* 非当前月：整体 opacity 降低，让数字 + DayRing 一起暗下去（不光暗数字） */
         .dpp-cell.muted { color: ${theme.textMuted}; opacity: 0.32; }
         .dpp-cell.muted:hover { opacity: 0.7; }
@@ -385,7 +385,8 @@ export default function DatePickerPopover({ anchorRef, value, onChange, onClose,
           gap: 2,
           marginBottom: 4,
           paddingBottom: 6,
-          borderBottom: `1px solid ${theme.glassBorder}`,
+          // 星期行下面一道刻缝（暗线 + 亮唇）
+          boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.85), 0 1px 0 rgba(255,255,255,0.06)',
         }}>
           {WEEK_LABELS.map((w, i) => (
             <div key={w} style={{
@@ -510,13 +511,13 @@ function BiliCountBadge({ watched, downloaded, transcribed, active }: {
       letterSpacing: 0, lineHeight: 1,
       position: 'relative', zIndex: 1,
     }}>
-      <span style={{ color: cyan, textShadow: active ? `0 0 4px ${cyan}` : undefined }}>
+      <span style={{ color: cyan }}>
         {watched}
       </span>
       {downloaded > 0 && (
         <>
           <span style={sepStyle}>·</span>
-          <span style={{ color: green, textShadow: `0 0 4px ${green}99` }}>
+          <span style={{ color: green }}>
             {downloaded}
           </span>
         </>
@@ -524,7 +525,7 @@ function BiliCountBadge({ watched, downloaded, transcribed, active }: {
       {transcribed > 0 && (
         <>
           <span style={sepStyle}>·</span>
-          <span style={{ color: purple, textShadow: `0 0 4px ${theme.shadowPurple}AA` }}>
+          <span style={{ color: purple }}>
             {transcribed}
           </span>
         </>

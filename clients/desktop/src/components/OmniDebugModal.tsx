@@ -34,7 +34,7 @@ function CollapsibleSection({
     <div style={{
       borderRadius: 6,
       background: tiSurface.well,
-      boxShadow: `${tiSurface.wellShadow}, inset 3px 0 0 ${color}`,
+      boxShadow: tiSurface.wellShadow,
       overflow: 'hidden',
       marginBottom: 10,
     }}>
@@ -42,6 +42,7 @@ function CollapsibleSection({
         onClick={() => setOpen(o => !o)}
         style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', cursor: 'pointer', userSelect: 'none' }}
       >
+        <span style={{ width: 6, height: 6, borderRadius: 1.5, flexShrink: 0, background: color, boxShadow: `0 0 5px ${color}` }} />
         <span style={{ fontSize: 11, fontWeight: 800, color, letterSpacing: 0.8 }}>{label}</span>
         {!open && preview && (
           <span style={{ fontSize: 10.5, color: theme.textMuted, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -139,11 +140,12 @@ export default function OmniDebugModal({ info, onClose }: Props) {
             <div key={i} style={{
               borderRadius: 6,
               background: tiSurface.well,
-              boxShadow: `${tiSurface.wellShadow}, inset 3px 0 0 ${item.type === 'text' ? ti.led : ti.sys}`,
-              padding: '8px 10px 8px 13px',
+              boxShadow: tiSurface.wellShadow,
+              padding: '8px 10px',
               marginBottom: 8,
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <span style={{ width: 6, height: 6, borderRadius: 1.5, flexShrink: 0, background: item.type === 'text' ? ti.led : ti.sys }} />
                 <span style={{ fontSize: 11, fontWeight: 800, color: item.type === 'text' ? ti.led : ti.sys, letterSpacing: 0.8 }}>
                   {item.type === 'text' ? '文字' : '语音'}
                 </span>

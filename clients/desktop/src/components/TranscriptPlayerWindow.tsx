@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
-import { theme } from '../theme'
+import { theme, tiSurface } from '../theme'
 import HudVideoPlayer, { type HudVideoHandle } from './HudVideoPlayer'
 import Tooltip from './Tooltip'
 
@@ -24,7 +24,6 @@ const MIN_W = 320               // 最小宽
 const MAX_W = 1100              // 最大宽
 const TITLE_H = 32              // 标题栏高
 const EDGE_MARGIN = 16          // 默认位置离视口右下边距 / 拖拽钳制边距
-const BRACKET = 14              // 四角括号臂长
 const GRIP = 7                  // 边缘 resize 手柄厚度
 const CORNER_GRIP = 16          // 底角 resize 手柄边长
 const POS_KEY = 'solevup:transcript-player-pos'
@@ -67,20 +66,6 @@ function fmtTime(sec: number): string {
   const h = Math.floor(m / 60)
   const pad = (n: number) => String(n).padStart(2, '0')
   return h > 0 ? `${h}:${pad(m % 60)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`
-}
-
-/** 四角括号（与聊天面板 Fairy 帧同语义的目标锁定角） */
-function CornerBrackets() {
-  const c = theme.electricBlue
-  const common: React.CSSProperties = { position: 'absolute', width: BRACKET, height: BRACKET, pointerEvents: 'none', zIndex: 2 }
-  return (
-    <>
-      <span style={{ ...common, left: -1, top: -1, borderLeft: `2px solid ${c}`, borderTop: `2px solid ${c}` }} />
-      <span style={{ ...common, right: -1, top: -1, borderRight: `2px solid ${c}`, borderTop: `2px solid ${c}` }} />
-      <span style={{ ...common, left: -1, bottom: -1, borderLeft: `2px solid ${c}`, borderBottom: `2px solid ${c}` }} />
-      <span style={{ ...common, right: -1, bottom: -1, borderRight: `2px solid ${c}`, borderBottom: `2px solid ${c}` }} />
-    </>
-  )
 }
 
 export default function TranscriptPlayerWindow() {
@@ -251,15 +236,14 @@ export default function TranscriptPlayerWindow() {
         top: renderGeom.y,
         width: renderGeom.w,
         zIndex: 9500,
-        background: theme.hudFillDeep,
-        border: `1px solid ${theme.hudFrame}`,
-        boxShadow: `0 14px 44px rgba(0,0,0,0.65), 0 0 18px ${theme.electricBlue}22`,
+        // 一块拉丝钛板浮窗（以前是四角直角括号，禁用）
+        background: tiSurface.plate,
+        borderRadius: 8,
+        boxShadow: tiSurface.plateShadow,
         display: 'flex',
         flexDirection: 'column',
       }}
     >
-      <CornerBrackets />
-
       {/* 边缘 / 底角 resize 手柄 */}
       {grip('left', { left: -GRIP / 2, top: TITLE_H, bottom: CORNER_GRIP, width: GRIP, cursor: 'ew-resize' })}
       {grip('right', { right: -GRIP / 2, top: TITLE_H, bottom: CORNER_GRIP, width: GRIP, cursor: 'ew-resize' })}
@@ -278,7 +262,7 @@ export default function TranscriptPlayerWindow() {
           alignItems: 'center',
           gap: 8,
           padding: '0 10px',
-          borderBottom: `1px solid ${theme.hudFrameSoft}`,
+          boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.85), 0 1px 0 rgba(255,255,255,0.06)',
           fontFamily: theme.fontMono,
           fontSize: 10,
           letterSpacing: 1,

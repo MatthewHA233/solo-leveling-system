@@ -114,6 +114,26 @@ export const tiKey = {
   boxShadow: '0 0 0 1px #080807, inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -2px 0 rgba(0,0,0,0.35), 0 3px 5px rgba(0,0,0,0.55)',
 } as const
 
+/**
+ * 列表选中态：凸起的小钛片 + 一圈淡橙环。替代「左侧一道竖线 / 色条」（用户点名嫌丑）。
+ * 环做成内描边，放在滚动容器里也不会被边缘裁掉；要换语义色就只换 boxShadow 第一段的颜色（见 tiSelectedRing）。
+ */
+export const tiSelected = {
+  background: 'linear-gradient(180deg, rgba(255,255,255,0.085), rgba(255,255,255,0.02)), #1D1B19',
+  boxShadow: 'inset 0 0 0 1px rgba(255,138,76,0.55), inset 0 1px 0 rgba(255,255,255,0.16), 0 0 0 1px #080807, 0 3px 8px rgba(0,0,0,0.5)',
+} as const
+
+/** 选中钛片换环色（洪流域用冷钢青、标签用自己的颜色……） */
+export const tiSelectedRing = (color: string) =>
+  `inset 0 0 0 1px ${color}, inset 0 1px 0 rgba(255,255,255,0.16), 0 0 0 1px #080807, 0 3px 8px rgba(0,0,0,0.5)`
+
+/** 带语义色的提示条（警告 / 错误）：黑玻璃槽 + 一圈淡色内环，不用左侧色条 */
+export const tiNotice = (color: string) => ({
+  background: tiSurface.well,
+  boxShadow: `${tiSurface.wellShadow}, inset 0 0 0 1px ${color}55`,
+  borderRadius: 5,
+})
+
 /** 输入框 / 文本框：下沉的黑玻璃槽 */
 export const tiInput = {
   background: tiSurface.well,

@@ -70,8 +70,8 @@ export default function ActivityToast({ toast, onDismiss, rightPanelWidth = 340 
         padding: '10px 18px',
         background: tiSurface.plate,
         borderRadius: 7,
-        // 钛板浮条：左侧一道活动色刻条标出是哪个标签
-        boxShadow: `${tiSurface.popShadow}, inset 3px 0 0 ${toast.color}`,
+        // 钛板浮条：是哪个标签看前面的色块，不画左侧色条
+        boxShadow: tiSurface.popShadow,
         fontFamily: theme.fontBody,
         color: theme.textPrimary,
         backdropFilter: 'blur(6px)',

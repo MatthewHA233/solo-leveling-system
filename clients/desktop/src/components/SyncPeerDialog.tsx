@@ -373,8 +373,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
           <div style={{
             flex: 1,
             minWidth: 0,
-            border: `1px solid ${theme.hudFrameSoft}`,
-            background: 'rgba(255,138,76,0.04)',
+            ...wellBox,
             padding: '8px 10px',
             display: 'grid',
             gap: 4,
@@ -403,8 +402,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                border: `1px solid ${theme.electricBlue}66`,
-                background: 'rgba(255,138,76,0.08)',
+                ...keycap,
                 color: theme.electricBlue,
               }}>
                 <LocalIcon size={15} />
@@ -468,8 +466,8 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
               type="button"
               onClick={() => setLogOpen((v) => !v)}
               style={{
-                ...iconButtonStyle(logOpen ? theme.electricBlue : theme.textSecondary, false),
-                background: logOpen ? `${theme.electricBlue}1A` : 'rgba(255,138,76,0.04)',
+                ...iconButtonStyle(logOpen ? '#140A04' : theme.textSecondary, false),
+                ...(logOpen ? { background: 'linear-gradient(180deg, #FFA66E, #EC6E32)' } : null),
                 position: 'relative',
               }}
             >
@@ -502,8 +500,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
 
         {logOpen && (
           <div style={{
-            border: `1px solid ${theme.hudFrameSoft}`,
-            background: 'rgba(255,138,76,0.03)',
+            ...wellBox,
             padding: '7px 10px',
             display: 'flex', flexDirection: 'column', gap: 4,
             maxHeight: 200, overflow: 'auto',
@@ -526,7 +523,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
                   lineHeight: 1.4,
                   color: entry.kind === 'error' ? '#ff9b9b' : entry.kind === 'sync' ? theme.expGreen : theme.textPrimary,
                   padding: '2px 0',
-                  borderBottom: idx < syncLog!.length - 1 ? `1px solid ${theme.glassBorder}` : undefined,
+                  borderBottom: idx < syncLog!.length - 1 ? '1px solid rgba(255,255,255,0.05)' : undefined,
                 }}>
                   <span style={{
                     fontFamily: theme.fontMono, fontSize: 9.5, color: theme.textMuted, opacity: 0.8,
@@ -569,7 +566,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
           </div>
           {links.length === 0 ? (
             <div style={{
-              border: `1px dashed ${theme.expGreen}44`,
+              ...wellBox,
               padding: '12px 11px',
               fontSize: 11.5,
               lineHeight: 1.6,
@@ -616,7 +613,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
           </div>
           {unlinkedPeers.length === 0 ? (
             <div style={{
-              border: `1px dashed ${theme.hudFrameSoft}`,
+              ...wellBox,
               padding: '10px 11px',
               fontSize: 11.5,
               color: theme.textMuted,
@@ -638,10 +635,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
         </div>
 
         {/* 折叠：手动输入 IP（直接建立链接） */}
-        <div style={{
-          border: `1px solid ${manualOpen ? theme.hudFrameSoft : theme.glassBorder}`,
-          background: manualOpen ? 'rgba(255,138,76,0.04)' : 'transparent',
-        }}>
+        <div style={wellBox}>
           <button
             type="button"
             onClick={() => setManualOpen((v) => !v)}
@@ -711,7 +705,6 @@ function LinkedCard({
   onSyncNow: () => void
   onUnlink: () => void
 }) {
-  const tint = online ? theme.expGreen : theme.textMuted
   return (
     <div style={{
       display: 'grid',
@@ -719,23 +712,15 @@ function LinkedCard({
       alignItems: 'center',
       gap: 10,
       padding: '8px 10px',
-      border: `1px solid ${tint}44`,
-      background: online ? 'rgba(70,255,170,0.04)' : 'rgba(255,255,255,0.02)',
+      // 在线 = 一圈淡绿内环（不画左侧发光竖条）
+      ...wellBox,
+      boxShadow: online ? `${tiSurface.wellShadow}, inset 0 0 0 1px ${theme.expGreen}55` : tiSurface.wellShadow,
       position: 'relative',
     }}>
-      {/* 链接线视觉：左侧一段绿色发光竖条 */}
-      <div style={{
-        position: 'absolute',
-        left: -1, top: 8, bottom: 8, width: 3,
-        background: tint,
-        boxShadow: online ? `0 0 8px ${theme.expGreen}AA` : undefined,
-        opacity: online ? 1 : 0.45,
-      }} />
       <div style={{
         width: 32, height: 32,
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        border: `1px solid ${tint}66`,
-        background: online ? `${theme.expGreen}10` : 'rgba(255,255,255,0.025)',
+        ...keycap,
         color: online ? theme.expGreen : theme.textSecondary,
         position: 'relative',
       }}>
@@ -808,14 +793,12 @@ function UnlinkedCard({
       alignItems: 'center',
       gap: 8,
       padding: '8px 10px',
-      border: `1px solid ${theme.hudFrameSoft}`,
-      background: 'rgba(255,138,76,0.03)',
+      ...wellBox,
     }}>
       <div style={{
         width: 28, height: 28, flexShrink: 0,
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        border: `1px solid ${theme.hudFrameSoft}`,
-        background: 'rgba(255,138,76,0.06)',
+        ...keycap,
         color: theme.textPrimary,
       }}>
         <Icon size={14} />
@@ -878,6 +861,19 @@ const sectionTitleStyle: CSSProperties = {
   color: theme.electricBlue,
 }
 
+/** 内容框：下沉的黑玻璃槽（替代细描边方框 + 半透明色底） */
+const wellBox: CSSProperties = {
+  background: tiSurface.well,
+  boxShadow: tiSurface.wellShadow,
+  borderRadius: 6,
+}
+
+/** 图标块：小实体键帽（替代细描边方块） */
+const keycap: CSSProperties = {
+  ...tiKey,
+  borderRadius: 5,
+}
+
 const inputStyle: CSSProperties = {
   ...tiInput,
   flex: 1,
@@ -903,14 +899,13 @@ function iconButtonStyle(color: string, disabled: boolean): CSSProperties {
 
 function primaryButtonStyle(color: string): CSSProperties {
   return {
+    ...tiKey,
     height: 26,
     padding: '0 10px',
-    border: `1px solid ${color}66`,
-    background: `${color}14`,
     color,
-    fontFamily: theme.fontMono,
-    fontSize: 11,
-    letterSpacing: 0.6,
+    fontFamily: theme.fontBody,
+    fontSize: 11.5,
+    fontWeight: 700,
     cursor: 'pointer',
   }
 }
@@ -923,8 +918,9 @@ const modelBadgeStyle: CSSProperties = {
   fontSize: 9,
   letterSpacing: 0.6,
   color: theme.textSecondary,
-  background: 'rgba(255,255,255,0.04)',
-  border: `1px solid ${theme.glassBorder}`,
+  background: tiSurface.well,
+  boxShadow: tiSurface.wellShadow,
+  borderRadius: 3,
   whiteSpace: 'nowrap',
   flexShrink: 0,
 }
