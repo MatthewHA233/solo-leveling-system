@@ -136,6 +136,76 @@ pub fn apply(_enable: bool) -> Result<GpuPrefStatus, String> {
     Ok(read_status())
 }
 
+/// 启动时、主窗口创建之前调用。
+///
+/// msedgewebview2.exe 的路径带版本号，WebView2 跟着 Edge 每隔几天静默更新一次，
+/// 一更新路径就变、偏好就失效。以前要等前端加载完才补写——那时 WebView2 的显卡进程
+/// 早就起来了，这次启动用不上独显，还每次弹「立即重启」。
+/// 现在赶在 WebView2 启动前补上：本应用 exe 那条在（= 用户开着独显开关）才补，
+/// 当次启动就直接走独显。顺手清掉已经不存在的旧版本记录（每次更新都会留一条）。
+///
+/// 这时日志插件还没装（它在主窗口之后注册），所以把要记的话返回给调用方，晚点再写。
+#[cfg(windows)]
+pub fn refresh_on_startup() -> Vec<String> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let mut notes = Vec::new();
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let Ok(key) = hkcu.open_subkey_with_flags(REG_KEY, KEY_READ | KEY_WRITE) else {
+        return notes;
+    };
+    let Ok(self_exe) = std::env::current_exe().map(|p| p.to_string_lossy().to_string()) else {
+        return notes;
+    };
+    let enabled = key
+        .get_value::<String, _>(&self_exe)
+        .map(|v| v.contains("GpuPreference=2"))
+        .unwrap_or(false);
+    if !enabled {
+        return notes;
+    }
+
+    // 旧版本：EdgeWebView\Application\<版本>\msedgewebview2.exe 且文件已不存在
+    let stale: Vec<String> = key
+        .enum_values()
+        .filter_map(|r| r.ok())
+        .map(|(name, _)| name)
+        .filter(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower.contains(r"\edgewebview\application\")
+                && lower.ends_with(r"\msedgewebview2.exe")
+                && !std::path::Path::new(name).exists()
+        })
+        .collect();
+    for name in &stale {
+        let _ = key.delete_value(name);
+    }
+    if !stale.is_empty() {
+        notes.push(format!("[GpuPref] 清掉 {} 条已不存在的旧版 WebView2 偏好", stale.len()));
+    }
+
+    if let Some((p, version)) = find_webview2_path() {
+        let p_str = p.to_string_lossy().to_string();
+        let already = key
+            .get_value::<String, _>(&p_str)
+            .map(|v| v.contains("GpuPreference=2"))
+            .unwrap_or(false);
+        if !already {
+            notes.push(match key.set_value(&p_str, &HIGH_PERF_VALUE.to_string()) {
+                Ok(()) => format!("[GpuPref] WebView2 已更新到 {}，窗口创建前补上高性能偏好", version),
+                Err(e) => format!("[GpuPref] 补写 WebView2 {} 偏好失败: {}", version, e),
+            });
+        }
+    }
+    notes
+}
+
+#[cfg(not(windows))]
+pub fn refresh_on_startup() -> Vec<String> {
+    Vec::new()
+}
+
 /// 在 HKLM 注册表里查找 EdgeWebView 当前安装版本号，拼出 msedgewebview2.exe 路径
 #[cfg(windows)]
 fn find_webview2_path() -> Option<(PathBuf, String)> {

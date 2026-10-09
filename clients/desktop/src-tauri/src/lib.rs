@@ -1742,6 +1742,9 @@ pub fn run() {
         .manage(focus_lock_state)
         .manage(voice::VoiceState::default())
         .setup(move |app| {
+            // 独显偏好：赶在 WebView2 显卡进程启动前补上当前版本路径（WebView2 自动更新后路径会变）
+            let gpu_notes = gpu_pref::refresh_on_startup();
+
             // 主窗口在配置里 create: false，这里按配置创建，才能带上开发构建的浏览器参数
             // （原本 Tauri 在 setup 之前建配置窗口，所以放在 setup 最前面，顺序不变）
             let main_config = app
@@ -1820,6 +1823,9 @@ pub fn run() {
                         .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(5))
                         .build(),
                 )?;
+            }
+            for note in &gpu_notes {
+                log::info!("{}", note);
             }
             // 启动时在后台静默创建 bilibili WebView（隐藏窗口）
             // WebView2 会复用之前的登录 session（cookies 持久化在用户 profile 目录）

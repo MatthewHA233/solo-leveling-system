@@ -19,7 +19,7 @@ import { anchorToContext } from './lib/anchor-to-context'
 import { locateSegment } from './lib/segment-locate'
 import { fetchBiliTranscriptPlain } from './lib/bili-transcript'
 import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLayer } from './types'
-import { theme, hud, ti } from './theme'
+import { theme, hud, ti, tiSurface, tiTitle } from './theme'
 
 // Agent
 import { getDashScopeApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
@@ -645,8 +645,9 @@ export default function App() {
           webview2_path: string | null
           webview2_pref_set: boolean
         }>('get_gpu_pref_status')
-        const wasFullyConfigured = before.self_exe_pref_set
-          && (before.webview2_path === null || before.webview2_pref_set)
+        // 只有「本应用 exe 那条还没写过」才算第一次开启、需要提示重启。
+        // WebView2 自动更新导致的新版本路径由 Rust 在建窗口前补写（gpu_pref::refresh_on_startup），不打扰用户
+        const firstTimeEnable = !before.self_exe_pref_set
         await invoke('set_gpu_pref_high_performance', { enable: config.useDiscreteGpu })
 
         // 标记当前会话是否处于"等重启"状态：开关开但还没切到独显
@@ -657,7 +658,7 @@ export default function App() {
           window.sessionStorage.removeItem('solo:gpuPendingRestart')
         }
 
-        if (config.useDiscreteGpu && !wasFullyConfigured) {
+        if (config.useDiscreteGpu && firstTimeEnable) {
           setGpuToastVisible(true)  // 常驻显示，等用户主动选择"立即重启"或"稍后"
         }
       } catch {
@@ -3525,61 +3526,44 @@ export default function App() {
       {/* 活动记录涂块 toast（10s 自动消失） */}
       <ActivityToast toast={paintToast} onDismiss={() => setPaintToast(null)} rightPanelWidth={rightPanelWidth} />
 
-      {/* 首次启用独显高性能 → 右上角橙色 toast，常驻直到用户选择"立即重启"或"稍后" */}
+      {/* 首次开启独显高性能 → 右上角一块钛板提示，常驻直到用户选「立即重启」或「下次再说」 */}
       {gpuToastVisible && (
         <div
+          role="status"
           style={{
             position: 'fixed',
-            right: 18, top: 18,
+            right: 18, top: 84,
             zIndex: 99999,
-            padding: '12px 14px',
-            background: 'rgba(38,22,4,0.96)',
-            border: `1px solid ${theme.warningOrange}AA`,
+            width: 330,
+            padding: '14px 16px 14px',
+            borderRadius: 8,
+            background: tiSurface.plate,
+            boxShadow: `${tiSurface.popShadow}, 0 0 0 1px rgba(255,138,76,0.35)`,
             color: theme.textPrimary,
             fontFamily: theme.fontBody,
-            fontSize: 12, lineHeight: 1.5,
-            boxShadow: `0 0 0 1px ${theme.warningOrange}33, 0 6px 24px rgba(0,0,0,0.55), 0 0 18px ${theme.warningOrange}44`,
-            maxWidth: 340,
-            animation: 'gpuToastIn 0.25s ease',
+            animation: 'gpuToastIn 0.22s cubic-bezier(.2,.8,.2,1)',
           }}
         >
-          <div style={{ color: theme.warningOrange, fontWeight: 800, marginBottom: 4, letterSpacing: 0.5 }}>
-            已启用独显高性能
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
+            <span className="ti-dot ti-dot-led" aria-hidden />
+            <span style={{ ...tiTitle, fontSize: 14 }}>已开启独显高性能</span>
           </div>
-          <div style={{ color: theme.textSecondary, marginBottom: 10 }}>
-            重启应用后会自动切换到独立显卡；可在 设置 → 图形性能 中关闭。
+          <div className="ti-well" style={{ padding: '8px 10px', borderRadius: 5, fontSize: 12, lineHeight: 1.65, color: theme.textSecondary, marginBottom: 12 }}>
+            重启应用后改用独立显卡渲染；可在 设置 → 图形性能 里关掉。
           </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
-            <button
-              onClick={() => setGpuToastVisible(false)}
-              style={{
-                padding: '4px 12px',
-                background: 'transparent',
-                border: `1px solid ${theme.glassBorder}`,
-                color: theme.textSecondary, cursor: 'pointer',
-                fontSize: 11, fontFamily: theme.fontBody,
-              }}
-            >
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button type="button" className="ti-key" onClick={() => setGpuToastVisible(false)}
+              style={{ height: 28, padding: '0 12px', fontSize: 12 }}>
               下次再说
             </button>
-            <button
-              onClick={() => { invoke('restart_app').catch(() => {}) }}
-              style={{
-                padding: '4px 12px',
-                background: `${theme.warningOrange}22`,
-                border: `1px solid ${theme.warningOrange}AA`,
-                color: theme.warningOrange, cursor: 'pointer',
-                fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
-                fontFamily: theme.fontBody,
-                textShadow: `0 0 6px ${theme.warningOrange}88`,
-              }}
-            >
+            <button type="button" className="ti-key ti-key-primary" onClick={() => { invoke('restart_app').catch(() => {}) }}
+              style={{ height: 28, padding: '0 14px', fontSize: 12 }}>
               立即重启
             </button>
           </div>
         </div>
       )}
-      <style>{`@keyframes gpuToastIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+      <style>{`@keyframes gpuToastIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }`}</style>
     </div>
   )
 }
