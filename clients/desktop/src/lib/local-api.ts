@@ -12,7 +12,7 @@ import type {
   PlannedBlock,
 } from '../types'
 
-const API_BASE = 'http://localhost:39733'
+export const API_BASE = 'http://localhost:39733'
 
 interface ApiResponse<T> {
   success: boolean

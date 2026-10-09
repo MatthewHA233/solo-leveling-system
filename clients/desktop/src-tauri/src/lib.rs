@@ -6,6 +6,8 @@ use tauri::Emitter;
 
 mod db;
 mod api;
+mod notes;
+mod notes_api;
 mod sync_discovery;
 mod sync_engine;
 mod fish_tts;

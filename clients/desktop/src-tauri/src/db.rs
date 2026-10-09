@@ -611,7 +611,8 @@ pub struct BiliTranscriptRun {
 // ── 数据库管理 ──
 
 pub struct Database {
-    conn: Arc<Mutex<Connection>>,
+    // pub(crate)：笔记（notes.rs）在自己的文件里给 Database 加方法，不往这个大文件里塞
+    pub(crate) conn: Arc<Mutex<Connection>>,
     db_path: PathBuf,
 }
 
@@ -1345,6 +1346,7 @@ impl Database {
         // AUDIT-036：旧库的 model_api_keys 补 deleted_at（tombstone）
         let _ = conn.execute_batch("ALTER TABLE model_api_keys ADD COLUMN deleted_at TEXT");
         migrate_legacy_perception_tables(&conn)?;
+        crate::notes::init_note_tables(&conn)?;
 
         // 首次启动写入百炼模型库与默认绑定种子（已存在则跳过，幂等）
         seed_model_registry(&conn)?;

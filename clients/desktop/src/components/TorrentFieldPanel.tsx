@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { Hash, Image as ImageIcon, Type, List, ListOrdered, AtSign, Send, Check, ChevronDown, ChevronUp, Pencil, Plus, Unlink } from 'lucide-react'
@@ -13,6 +13,9 @@ import TranscriptPlayerWindow from './TranscriptPlayerWindow'
 import { fetchBiliTranscriptSentences, type TranscriptSentence } from '../lib/bili-transcript'
 import ConfirmDialog from './ConfirmDialog'
 import Tooltip from './Tooltip'
+
+// 笔记（Notion 式）带一整套块编辑器，体积大：点进「笔记」视图才加载
+const NotesView = lazy(() => import('./notes/NotesView'))
 
 // 老想法卡迁移标记；原 localStorage 数据保留作备份不删
 const THOUGHT_STORAGE_KEY = 'slu.torrent.thoughtCards.v1'
@@ -117,10 +120,26 @@ function formatTimeOnly(iso: string): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-type TorrentSubview = 'cards' | 'context' | 'anchors'
+type TorrentSubview = 'cards' | 'context' | 'anchors' | 'notes'
+
+const SUBVIEW_KEY = 'slu.torrent.subview'
+const SUBVIEWS: readonly TorrentSubview[] = ['cards', 'context', 'anchors', 'notes']
+
+function loadSubview(): TorrentSubview {
+  try {
+    const v = localStorage.getItem(SUBVIEW_KEY)
+    return SUBVIEWS.includes(v as TorrentSubview) ? (v as TorrentSubview) : 'cards'
+  } catch {
+    return 'cards'
+  }
+}
 
 export default function TorrentFieldPanel() {
-  const [subview, setSubview] = useState<TorrentSubview>('cards')
+  const [subview, setSubviewState] = useState<TorrentSubview>(loadSubview)
+  const setSubview = useCallback((v: TorrentSubview) => {
+    setSubviewState(v)
+    try { localStorage.setItem(SUBVIEW_KEY, v) } catch { /* 本机存不了就算了 */ }
+  }, [])
   const [thoughtDraft, setThoughtDraft] = useState('')
   const [feed, setFeed] = useState<ContextFeedItem[]>([])
   // 全部锚点绑定按 card_id 分组：一次拉、各卡共享（替代每卡一个 fetchCardBindings 请求）
@@ -214,21 +233,27 @@ export default function TorrentFieldPanel() {
       {/* 视图切换：钛合金段选（面板标题「洪流域」已在主面板凸台上，这里不重复） */}
       <div style={styles.tabsRow}>
         <span style={styles.tabsLabel}>视图</span>
-        <Segmented<'cards' | 'context' | 'anchors'>
+        <Segmented<TorrentSubview>
           value={subview}
           onChange={setSubview}
           options={[
             { value: 'cards', label: '想法卡片', led: ti.ok, tip: '随手记下的想法' },
             { value: 'context', label: '语境库', led: ti.sys, tip: '转录过的视频语境' },
             { value: 'anchors', label: '锚点域', led: '#C9A6F0', tip: '锚点认知地图' },
+            { value: 'notes', label: '笔记', led: theme.warningOrange, tip: 'Notion 式笔记：页面无限嵌套、块编辑，全部存在本地' },
           ]}
         />
         <div className="ti-groove-h" style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }} />
       </div>
 
       <div style={styles.frameWrap}>
-        <main style={styles.content}>
-          {subview === 'cards' ? (
+        {/* 笔记自带左栏 + 正文，贴满整块屏，不要外层内边距 */}
+        <main style={subview === 'notes' ? styles.contentBleed : styles.content}>
+          {subview === 'notes' ? (
+            <Suspense fallback={<div style={styles.contextPlaceholder}>正在载入笔记…</div>}>
+              <NotesView />
+            </Suspense>
+          ) : subview === 'cards' ? (
             <ThoughtDock
               key="cards"
               draft={thoughtDraft}
@@ -1231,6 +1256,13 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: 0,
+    overflow: 'hidden',
+  },
+  contentBleed: {
+    position: 'absolute',
+    inset: 0,
+    display: 'flex',
+    flexDirection: 'column',
     overflow: 'hidden',
   },
   contextPlaceholder: {

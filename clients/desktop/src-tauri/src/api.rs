@@ -1772,6 +1772,7 @@ pub fn create_router(
         .route("/api/motives/protocols", get(list_motive_protocols))
         .route("/api/motives/protocols/{anchor_id}", put(upsert_motive_protocol))
         .route("/api/anchors/{id}", patch(update_anchor))
+        .merge(crate::notes_api::routes())
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
