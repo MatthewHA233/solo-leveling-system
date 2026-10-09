@@ -335,6 +335,8 @@ const StageProtocolDemoPanel = memo(ProtocolDemoPanel)
 const StageTorrentFieldPanel = memo(TorrentFieldPanel)
 const StageTorrentFieldDemoPanel = memo(TorrentFieldDemoPanel)
 const StageFocusPanel = memo(FocusPanel)
+// 右侧聊天栏也一直挂着（看详情时只是藏起来），同样按 props 记忆
+const StageChatPanel = memo(ChatPanel)
 const NOOP = () => {}
 
 export default function App() {
@@ -2848,6 +2850,27 @@ export default function App() {
     }
   }
 
+  // 聊天栏的回调（稳定引用，StageChatPanel 才跳得过去）
+  const toggleAiMode = useCallback(() => {
+    handleConfigUpdate({ aiMode: config.aiMode === 'omni' ? 'regular' : 'omni' })
+  }, [handleConfigUpdate, config.aiMode])
+  const toggleTts = useCallback(() => {
+    handleConfigUpdate({ ttsEnabled: !config.ttsEnabled })
+  }, [handleConfigUpdate, config.ttsEnabled])
+  const toggleSessionPicker = useCallback(() => {
+    if (pickerOpen) {
+      setPickerOpen(false)
+      return
+    }
+    // 顺手清理之前留下的空白会话（无任何消息），不动当前会话
+    cleanupEmptyChatSessions(sessionIdRef.current)
+      .catch(() => [])
+      .then(() => getRecentChatSessions(50))
+      .then((s) => setSessions(s))
+      .catch(() => {})
+    setPickerOpen(true)
+  }, [pickerOpen])
+
   return (
     <div className="app-shell" style={{
       display: 'flex', flexDirection: 'column',
@@ -3381,7 +3404,7 @@ export default function App() {
               <>
                 {/* 始终挂载 ChatPanel，避免卸载导致摄像头预览状态丢失 */}
                 <div style={{ display: hasDetail ? 'none' : 'flex', flexDirection: 'column', height: '100%' }}>
-                  <ChatPanel
+                  <StageChatPanel
                     messages={chatMessages}
                     isProcessing={isProcessing}
                     onSend={handleSend}
@@ -3389,30 +3412,18 @@ export default function App() {
                     userCallsign={config.agentCallUser}
                     gazeTarget={gazeTarget}
                     aiMode={config.aiMode}
-                    onToggleAiMode={() => handleConfigUpdate({ aiMode: config.aiMode === 'omni' ? 'regular' : 'omni' })}
+                    onToggleAiMode={toggleAiMode}
                     cameraReady={presence.ready}
                     cameraPresent={presence.state === 'present'}
                     cameraWindowOpen={cameraWindowOpen}
                     onToggleCamera={CAMERA_PRESENCE_ENABLED ? toggleCameraWindow : undefined}
                     ttsEnabled={config.ttsEnabled}
-                    onToggleTts={() => handleConfigUpdate({ ttsEnabled: !config.ttsEnabled })}
+                    onToggleTts={toggleTts}
                     sessionsOpen={pickerOpen}
                     sessionTitle={sessionTitle}
                     fairyState={fairyUiState}
                     contextRatio={contextRatio}
-                    onOpenSessions={() => {
-                      if (pickerOpen) {
-                        setPickerOpen(false)
-                      } else {
-                        // 顺手清理之前留下的空白会话（无任何消息），不动当前会话
-                        cleanupEmptyChatSessions(sessionIdRef.current)
-                          .catch(() => [])
-                          .then(() => getRecentChatSessions(50))
-                          .then((s) => setSessions(s))
-                          .catch(() => {})
-                        setPickerOpen(true)
-                      }
-                    }}
+                    onOpenSessions={toggleSessionPicker}
                   />
                 </div>
                 {hasDetail && (

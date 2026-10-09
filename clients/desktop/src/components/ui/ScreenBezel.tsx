@@ -5,7 +5,7 @@
 //   屏是冷光投影面（.ti-holo-screen：顶沿冰蓝光 + 刻度 + 蜂巢微纹）
 // ══════════════════════════════════════════════
 
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import type { MainViewMode } from '../ViewSwitcher'
 import ChassisPlate from './ChassisPlate'
 
@@ -36,6 +36,32 @@ function LedClock() {
   )
 }
 
+/**
+ * 框顶铭文：左 = 菱形灯 + 视图名（凸台锚点）；右 = 散热格栅 + 时钟（塔楼锚点）。
+ * 只跟视图名有关——单独记忆，App 每次重渲染时不用跟着整面板重建
+ */
+const BezelHeader = memo(function BezelHeader({ view }: { view: MainViewMode }) {
+  return (
+    <div style={{
+      position: 'absolute', top: 0, left: 16, right: 16, height: 26,
+      display: 'flex', alignItems: 'center', gap: 10,
+      pointerEvents: 'none', userSelect: 'none', zIndex: 2,
+    }}>
+      <span data-chassis-tab style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span className="ti-diamond" aria-hidden />
+        <span style={{ fontSize: 14, fontWeight: 900, fontStyle: 'italic', letterSpacing: '0.12em', color: 'var(--ti-text)' }}>{NAMES[view]}</span>
+      </span>
+      <span style={{ flex: 1 }} />
+      <span data-chassis-tower style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span className="ti-vents" aria-hidden style={{ width: 38 }} />
+        <span className="ti-well" style={{ display: 'inline-flex', alignItems: 'center', height: 19, padding: '0 7px', borderRadius: 4 }}>
+          <LedClock />
+        </span>
+      </span>
+    </div>
+  )
+})
+
 export default function ScreenBezel({ view, children }: {
   view: MainViewMode
   children: React.ReactNode
@@ -51,23 +77,7 @@ export default function ScreenBezel({ view, children }: {
       // 屏幕外圈唇边占 2px：板的内边距各让出 2px，屏幕尺寸不变（昼夜表按高度排布，不能动它的可用高度）
       style={{ display: 'flex', flexDirection: 'column', padding: '24px 5px 5px' }}
     >
-      <div style={{
-        position: 'absolute', top: 0, left: 16, right: 16, height: 26,
-        display: 'flex', alignItems: 'center', gap: 10,
-        pointerEvents: 'none', userSelect: 'none', zIndex: 2,
-      }}>
-        <span data-chassis-tab style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span className="ti-diamond" aria-hidden />
-          <span style={{ fontSize: 14, fontWeight: 900, fontStyle: 'italic', letterSpacing: '0.12em', color: 'var(--ti-text)' }}>{NAMES[view]}</span>
-        </span>
-        <span style={{ flex: 1 }} />
-        <span data-chassis-tower style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span className="ti-vents" aria-hidden style={{ width: 38 }} />
-          <span className="ti-well" style={{ display: 'inline-flex', alignItems: 'center', height: 19, padding: '0 7px', borderRadius: 4 }}>
-            <LedClock />
-          </span>
-        </span>
-      </div>
+      <BezelHeader view={view} />
       <div className="ti-screen-rim" style={{ flex: 1, minHeight: 0, display: 'flex' }}>
         <div className="ti-screen ti-holo-screen" style={{ flex: 1, minHeight: 0 }}>
           <div style={{ position: 'absolute', inset: 0 }}>{children}</div>
