@@ -5,7 +5,7 @@
 //   任务就是昼夜表「计划」层用的计划节点——这里建的任务，昼夜表上直接能拿去排时间
 // ══════════════════════════════════════════════
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ActivityPalette } from '../../../types'
 import { addActivityTag } from '../../../lib/local-api'
 import ListSidebar from './ListSidebar'
@@ -28,6 +28,8 @@ export interface ChecklistViewProps {
 
 // ── 界面偏好（只是本机的便利：选中的视图、折叠状态……读写失败就用默认值） ──
 const PREF_KEY = 'slu.protocol.checklist'
+/** 面板宽过这个值，详情栏才并排停靠；否则从右边滑出盖在任务区上 */
+const DOCK_MIN_WIDTH = 1080
 interface Prefs {
   selection: ChecklistSelection
   collapsed: number[]
@@ -65,6 +67,16 @@ export default function ChecklistView({ palette, onPaletteChange, onPlanNodesCha
   const tree = useMemo(() => buildListTree(palette), [palette])
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
+  // 主面板窄的时候（左栏 + 详情会把任务区挤没），详情改成盖在任务区上的抽屉
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const [narrow, setNarrow] = useState(false)
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setNarrow(el.clientWidth < DOCK_MIN_WIDTH))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   useEffect(() => { savePrefs(prefs) }, [prefs])
   const patchPrefs = useCallback((patch: Partial<Prefs>) => setPrefs((p) => ({ ...p, ...patch })), [])
@@ -110,7 +122,7 @@ export default function ChecklistView({ palette, onPaletteChange, onPlanNodesCha
   }, [onPaletteChange, patchPrefs, prefs.expanded])
 
   return (
-    <div style={{ display: 'flex', height: '100%', minHeight: 0 }}>
+    <div ref={wrapRef} style={{ position: 'relative', display: 'flex', height: '100%', minHeight: 0 }}>
       <ListSidebar
         tree={tree}
         selection={selection}
@@ -136,13 +148,18 @@ export default function ChecklistView({ palette, onPaletteChange, onPlanNodesCha
         defaultTagId={prefs.defaultTagId}
         onDefaultTagChange={(tagId) => patchPrefs({ defaultTagId: tagId })}
       />
-      <TaskDetail
-        data={data}
-        palette={palette}
-        taskId={selectedTaskId}
-        today={today}
-        onSelectTask={setSelectedTaskId}
-      />
+      {/* 详情：只在选中任务时出现 */}
+      {selectedTaskId != null && (
+        <div className={narrow ? 'pt-detail-drawer' : undefined} style={narrow ? undefined : { display: 'flex', minHeight: 0 }}>
+          <TaskDetail
+            data={data}
+            palette={palette}
+            taskId={selectedTaskId}
+            today={today}
+            onSelectTask={setSelectedTaskId}
+          />
+        </div>
+      )}
     </div>
   )
 }

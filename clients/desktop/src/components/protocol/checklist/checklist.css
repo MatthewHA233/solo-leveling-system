@@ -1,23 +1,120 @@
-/* 协议志 · 清单：行、折叠箭头、行内输入框（钛合金材质，见 styles/titanium.css） */
+/* ══════════════════════════════════════════════
+   协议志 · 清单（钛合金机体语言，见 styles/titanium.css）
+   不用左侧竖线：选中 = 凸起的小钛片；层级 = 刻槽导轨；分隔 = 刻线；读数 = 黑玻璃小窗
+   ══════════════════════════════════════════════ */
 
-/* 任务行：悬停微亮；选中 = 左侧橙色刻条 + 亮一档 */
-.pt-row { position: relative; transition: background 0.1s; }
-.pt-row:hover { background: rgba(255, 255, 255, 0.045); }
-.pt-row[data-selected="1"] { background: rgba(255, 255, 255, 0.075); box-shadow: inset 3px 0 0 var(--ti-led); }
+/* ── 选中态：凸起的小钛片 + 一圈淡橙环（和实体键悬停同一种语言）
+   只包内容部分：左边的层级刻槽留在钛片外面，不然刻槽在钛片里看着像左侧竖线 ── */
+.pt-row[data-selected="1"] > .pt-row-body,
+.pt-list-row[data-selected="1"] > .pt-list-body {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.02)), #1D1B19;
+  box-shadow:
+    0 0 0 1px #080807,
+    0 0 0 2px rgba(255, 138, 76, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5),
+    0 4px 10px rgba(0, 0, 0, 0.55);
+  z-index: 1;
+  border-radius: 6px;
+}
 
-/* 行尾的「＋」：平时藏着，悬停 / 选中才露 */
+/* ── 任务行 ── */
+.pt-row {
+  position: relative;
+  display: flex; align-items: stretch;
+  min-height: 38px;
+  padding-left: 8px;
+  cursor: default;
+}
+.pt-row:hover:not([data-selected="1"]) > .pt-row-body { background: rgba(255, 255, 255, 0.04); }
+/* 行间刻线：从本行缩进处起，暗线 + 亮唇 */
+.pt-row::after {
+  content: '';
+  position: absolute; left: var(--pt-indent, 30px); right: 10px; bottom: -1px;
+  height: 2px; pointer-events: none;
+  border-top: 1px solid rgba(0, 0, 0, 0.7);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+}
+.pt-row[data-selected="1"]::after { display: none; }
+.pt-row-body {
+  position: relative;
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 9px;
+  padding: 0 10px 0 6px;
+  border-radius: 6px;
+  transition: background 0.1s, box-shadow 0.1s;
+}
+
+/* 层级导轨：每层一道刻槽（暗槽底 + 右侧受光），上下行连成一条 */
+.pt-guide {
+  width: 20px; flex-shrink: 0; align-self: stretch;
+  background: linear-gradient(90deg,
+    transparent 8px, rgba(0, 0, 0, 0.85) 8px 9px, rgba(255, 255, 255, 0.08) 9px 10px, transparent 10px);
+}
+
+.pt-title {
+  font-size: 13.5px; line-height: 1.45; font-weight: 500;
+  color: var(--ti-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pt-title[data-root="1"] { font-weight: 700; }
+.pt-row[data-done="1"] .pt-title { color: var(--ti-text-muted); text-decoration: line-through; text-decoration-color: rgba(255, 255, 255, 0.25); }
+.pt-context {
+  font-size: 10.5px; color: var(--ti-text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── 勾选框：下沉小槽，圈色 = 优先级；勾上 = 填满钛灰 ── */
+.pt-check {
+  flex-shrink: 0; padding: 0; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 4px;
+  border: 1.5px solid var(--ring, #7A756E);
+  background: var(--ti-well);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.95), 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: #0B0A09;
+  transition: box-shadow 0.12s, background 0.12s;
+}
+.pt-check:hover { box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.95), 0 0 0 3px rgba(255, 255, 255, 0.06), 0 0 8px var(--ring); }
+.pt-check[data-done="1"] {
+  border-color: #6E6962;
+  background: linear-gradient(180deg, #A8A39C, #7E7973);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+/* ── 读数小窗：黑玻璃槽；data-led = 点阵数字 ── */
+.pt-chip {
+  display: inline-flex; align-items: center;
+  height: 19px; padding: 0 6px;
+  border-radius: 4px;
+  background: var(--ti-well);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.95), 0 1px 0 rgba(255, 255, 255, 0.08);
+  font-size: 11px; font-weight: 800; color: var(--ti-text-dim);
+  white-space: nowrap;
+}
+.pt-chip[data-led="1"] { font-family: var(--ti-font-led); font-weight: 900; font-size: 12.5px; color: var(--ti-text-dim); letter-spacing: 0.02em; }
+.pt-due[data-tone="today"] { color: var(--ti-led-hi); text-shadow: 0 0 6px rgba(255, 130, 60, 0.6); }
+.pt-due[data-tone="over"] { color: #FF6B5B; text-shadow: 0 0 6px rgba(255, 80, 70, 0.55); }
+.pt-due[data-tone="later"] { color: var(--ti-text-dim); }
+.pt-due[data-tone="done"] { color: var(--ti-text-faint); }
+
+/* 优先级：信号强度式 3 格 LED */
+.pt-meter { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
+.pt-meter > span { width: 3px; border-radius: 1px; }
+
+/* ── 小实体键：行尾「＋」、折叠箭头 ── */
 .pt-row-add {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; padding: 0; flex-shrink: 0;
+  width: 22px; height: 22px; padding: 0; flex-shrink: 0;
   border: none; border-radius: 4px; cursor: pointer;
   color: var(--ti-text-dim);
   background: linear-gradient(180deg, #3A3733, #26241F);
-  box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255, 255, 255, 0.16);
-  opacity: 0; transition: opacity 0.12s;
+  box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 2px 3px rgba(0, 0, 0, 0.5);
+  opacity: 0; transition: opacity 0.12s, box-shadow 0.12s;
 }
 .pt-row:hover .pt-row-add, .pt-row[data-selected="1"] .pt-row-add,
-.pt-list-row:hover .pt-row-add { opacity: 1; }
-.pt-row-add:hover { color: var(--ti-text); box-shadow: 0 0 0 1px var(--ti-led), inset 0 1px 0 rgba(255, 255, 255, 0.2); }
+.pt-list-row:hover .pt-row-add, .pt-section:hover .pt-row-add { opacity: 1; }
+.pt-row-add:hover { color: var(--ti-text); box-shadow: 0 0 0 1px var(--ti-led), inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 2px 3px rgba(0, 0, 0, 0.5); }
 
 .pt-caret {
   display: inline-flex; align-items: center; justify-content: center;
@@ -25,7 +122,7 @@
   border: none; background: transparent; cursor: pointer;
   color: var(--ti-text-muted); border-radius: 3px;
 }
-.pt-caret:hover { color: var(--ti-text); background: rgba(255, 255, 255, 0.07); }
+.pt-caret:hover { color: var(--ti-text); background: rgba(255, 255, 255, 0.08); }
 
 /* 行内改名 / 新任务 / 新清单：下沉的黑玻璃槽 + 橙色细环 */
 .pt-inline-input {
@@ -37,21 +134,115 @@
 }
 .pt-inline-input::placeholder { color: var(--ti-text-faint); }
 
-/* 左栏清单行 */
-.pt-list-row {
-  display: flex; align-items: center; gap: 7px;
-  height: 30px; padding-right: 8px; border-radius: 5px;
-  cursor: pointer; user-select: none;
-  transition: background 0.1s;
+/* ── 分段标题：斜切小铭牌 + 拖一道刻线 ── */
+.pt-section {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 8px 6px;
 }
-.pt-list-row:hover { background: rgba(255, 255, 255, 0.05); }
-.pt-list-row[data-selected="1"] { background: rgba(255, 255, 255, 0.085); box-shadow: inset 3px 0 0 var(--ti-led); }
+.pt-section-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 22px; padding: 0 12px;
+  transform: skewX(-14deg);
+  border-radius: 3px;
+  background: linear-gradient(180deg, #34312D, #24221F);
+  box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 2px 4px rgba(0, 0, 0, 0.5);
+  max-width: 70%;
+}
+.pt-section-tab > * { transform: skewX(14deg); }
+.pt-section-label {
+  font-size: 12px; font-weight: 900; font-style: italic; letter-spacing: 0.04em;
+  color: var(--ti-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pt-section-rule {
+  flex: 1; height: 2px;
+  border-top: 1px solid rgba(0, 0, 0, 0.85);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
 
-/* 底部「已完成 N」折叠条 */
-.pt-done-toggle {
-  display: inline-flex; align-items: center; gap: 5px;
-  height: 26px; padding: 0 8px;
-  border: none; border-radius: 4px; background: transparent; cursor: pointer;
-  color: var(--ti-text-dim); font-size: 12px; font-weight: 700; font-family: inherit;
+/* ── 左栏 ── */
+/* 智能视图：2×2 实体键，右上角点阵计数；选中整块橙 */
+.pt-smart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.pt-smart-key {
+  position: relative;
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-end; gap: 3px;
+  height: 50px; padding: 0 10px 8px;
+  border: none; border-radius: 6px; cursor: pointer; text-align: left;
+  color: var(--ti-text);
+  background: linear-gradient(180deg, #37342F, #24221F);
+  box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 -2px 0 rgba(0, 0, 0, 0.35), 0 3px 5px rgba(0, 0, 0, 0.55);
+  transition: background 0.12s, box-shadow 0.12s, transform 0.06s;
+  font-family: inherit;
 }
-.pt-done-toggle:hover { background: rgba(255, 255, 255, 0.05); color: var(--ti-text); }
+.pt-smart-key:hover:not([data-active="1"]) {
+  background: linear-gradient(180deg, #423E39, #2B2925);
+  box-shadow: 0 0 0 1px var(--ti-led), inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 3px 8px rgba(0, 0, 0, 0.55);
+}
+.pt-smart-key:active { transform: translateY(1px); }
+.pt-smart-key[data-active="1"] {
+  color: #140A04;
+  background: linear-gradient(180deg, #FFA66E, #EC6E32);
+  box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 0 14px rgba(255, 120, 60, 0.3), 0 3px 6px rgba(0, 0, 0, 0.55);
+}
+.pt-smart-key .pt-smart-label { font-size: 12.5px; font-weight: 900; font-style: italic; letter-spacing: 0.04em; }
+.pt-smart-key .pt-smart-count {
+  position: absolute; top: 6px; right: 8px;
+  font-family: var(--ti-font-led); font-weight: 900; font-size: 15px; line-height: 1;
+  color: var(--ti-led-hi); text-shadow: 0 0 6px rgba(255, 130, 60, 0.55);
+}
+.pt-smart-key[data-active="1"] .pt-smart-count { color: #140A04; text-shadow: none; }
+
+/* 清单树行 */
+.pt-list-row {
+  position: relative;
+  display: flex; align-items: stretch;
+  height: 30px; padding-left: 4px; padding-right: 2px;
+  cursor: pointer; user-select: none;
+}
+.pt-list-row:hover:not([data-selected="1"]) > .pt-list-body { background: rgba(255, 255, 255, 0.05); }
+.pt-list-row .pt-guide { width: 13px; background: linear-gradient(90deg, transparent 6px, rgba(0, 0, 0, 0.85) 6px 7px, rgba(255, 255, 255, 0.08) 7px 8px, transparent 8px); }
+.pt-list-body { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 0 6px 0 2px; border-radius: 5px; transition: background 0.1s; }
+
+/* 底部「已完成 N」：一枚实体键 */
+.pt-done-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 10px;
+  border: none; border-radius: 5px; cursor: pointer;
+  color: var(--ti-text-dim); font-size: 12px; font-weight: 800; font-family: inherit;
+  background: linear-gradient(180deg, #34312D, #24221F);
+  box-shadow: 0 0 0 1px #080807, inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+.pt-done-toggle:hover { color: var(--ti-text); box-shadow: 0 0 0 1px var(--ti-led), inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 2px 4px rgba(0, 0, 0, 0.5); }
+
+/* ── 详情栏：标签 + 刻线分组 ── */
+.pt-field-label {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px;
+  font-size: 11px; font-weight: 900; font-style: italic; letter-spacing: 0.1em;
+  color: var(--ti-text-dim);
+}
+.pt-field-label::after {
+  content: ''; flex: 1; height: 2px;
+  border-top: 1px solid rgba(0, 0, 0, 0.85);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* 详情栏子任务托盘里的行 */
+.pt-sub {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 30px; padding: 0 8px; border-radius: 4px;
+  cursor: pointer;
+}
+.pt-sub:hover { background: rgba(255, 255, 255, 0.05); }
+.pt-sub + .pt-sub { box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.7), inset 0 2px 0 rgba(255, 255, 255, 0.035); }
+.pt-sub-title { flex: 1; min-width: 0; font-size: 12.5px; color: var(--ti-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pt-sub[data-done="1"] .pt-sub-title { color: var(--ti-text-muted); text-decoration: line-through; }
+
+/* 窄面板：详情从右边滑出，盖在任务区上（左缘一道深投影，像抽出来的一块板） */
+.pt-detail-drawer {
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 6;
+  display: flex; min-height: 0;
+  box-shadow: -18px 0 36px rgba(0, 0, 0, 0.6);
+  animation: ptDrawerIn 0.18s cubic-bezier(.2, .8, .2, 1) both;
+}
+@keyframes ptDrawerIn { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }

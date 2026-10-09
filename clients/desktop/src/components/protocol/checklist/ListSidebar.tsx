@@ -3,9 +3,10 @@
 
 import { useMemo, useState } from 'react'
 import { CalendarDays, ChevronDown, ChevronRight, CircleCheck, Eye, EyeOff, Layers, Plus, Sun } from 'lucide-react'
-import { theme, ti } from '../../../theme'
+import { theme } from '../../../theme'
 import Tooltip from '../../Tooltip'
 import { SMART_VIEWS, type ChecklistSelection, type ListNode, type SmartView } from './model'
+import { Guides } from './TaskRow'
 
 const SMART_ICON: Record<SmartView, typeof Sun> = { today: Sun, week: CalendarDays, all: Layers, done: CircleCheck }
 
@@ -60,8 +61,9 @@ export default function ListSidebar(props: ListSidebarProps) {
           className="pt-list-row"
           data-selected={selected ? '1' : undefined}
           onClick={() => props.onSelect({ kind: 'list', key: n.key })}
-          style={{ paddingLeft: 6 + n.depth * 14 }}
         >
+          <Guides depth={n.depth} />
+          <div className="pt-list-body">
           <span style={{ width: 14, flexShrink: 0, display: 'inline-flex', justifyContent: 'center' }}>
             {kids.length > 0 && (
               <button type="button" className="pt-caret" aria-label={open ? '收起' : '展开'}
@@ -70,14 +72,19 @@ export default function ListSidebar(props: ListSidebarProps) {
               </button>
             )}
           </span>
+          {/* 分类色：根是一颗亮着的方灯，子清单是暗一档的小灯 */}
           <span style={{
             width: n.depth === 0 ? 8 : 5, height: n.depth === 0 ? 8 : 5, borderRadius: 2, flexShrink: 0,
-            background: n.color, opacity: n.depth === 0 ? 1 : 0.7,
+            background: n.color, opacity: n.depth === 0 ? 1 : 0.65,
+            boxShadow: n.depth === 0 ? `0 0 6px ${n.color}99` : 'none',
           }} />
           <span style={{
             flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            fontSize: n.depth === 0 ? 13 : 12.5, fontWeight: n.depth === 0 ? 800 : 500,
-            color: selected ? theme.textPrimary : n.depth === 0 ? theme.textPrimary : theme.textSecondary,
+            fontSize: n.depth === 0 ? 13 : 12.5,
+            fontWeight: n.depth === 0 ? 900 : selected ? 800 : 500,
+            fontStyle: n.depth === 0 ? 'italic' : 'normal',
+            letterSpacing: n.depth === 0 ? '0.04em' : 0,
+            color: selected || n.depth === 0 ? theme.textPrimary : theme.textSecondary,
           }}>
             {n.label}
           </span>
@@ -87,10 +94,13 @@ export default function ListSidebar(props: ListSidebarProps) {
               <Plus size={11} strokeWidth={2.6} />
             </button>
           </Tooltip>
-          {count > 0 && <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: selected ? ti.led : theme.textMuted, minWidth: 14, textAlign: 'right' }}>{count}</span>}
+          {count > 0 && (
+            <span className="pt-chip" data-led="1" style={{ height: 17, padding: '0 5px', fontSize: 11.5, color: selected ? 'var(--ti-led-hi)' : undefined }}>{count}</span>
+          )}
+          </div>
         </div>
         {creatingUnder === n.key && (
-          <div style={{ paddingLeft: 6 + (n.depth + 1) * 14 + 20, paddingRight: 6, margin: '2px 0 4px' }}>
+          <div style={{ paddingLeft: 4 + (n.depth + 1) * 13 + 22, paddingRight: 6, margin: '3px 0 5px' }}>
             <input
               autoFocus
               className="pt-inline-input"
@@ -115,25 +125,23 @@ export default function ListSidebar(props: ListSidebarProps) {
 
   return (
     <div style={{
-      width: 228, flexShrink: 0, display: 'flex', flexDirection: 'column', minHeight: 0,
+      width: 236, flexShrink: 0, display: 'flex', flexDirection: 'column', minHeight: 0,
       background: 'rgba(0,0,0,0.2)',
       borderRight: '1px solid rgba(0,0,0,0.88)',
       boxShadow: '1px 0 0 rgba(255,255,255,0.1)',
     }}>
-      <div style={{ padding: '12px 8px 8px', display: 'flex', flexDirection: 'column', gap: 2, flexShrink: 0 }}>
+      <div className="pt-smart-grid" style={{ padding: '12px 10px 12px', flexShrink: 0 }}>
         {SMART_VIEWS.map((v) => {
           const Icon = SMART_ICON[v.id]
-          const selected = selection.kind === 'smart' && selection.id === v.id
+          const active = selection.kind === 'smart' && selection.id === v.id
           const count = props.smartCounts[v.id]
           return (
-            <div key={v.id} className="pt-list-row" data-selected={selected ? '1' : undefined}
-              onClick={() => props.onSelect({ kind: 'smart', id: v.id })} style={{ paddingLeft: 10, height: 32 }}>
-              <Icon size={14} color={selected ? ti.led : theme.textSecondary} />
-              <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: theme.textPrimary }}>{v.label}</span>
-              {count > 0 && v.id !== 'done' && (
-                <span style={{ fontFamily: theme.fontMono, fontSize: 10.5, color: v.id === 'today' ? ti.led : theme.textMuted }}>{count}</span>
-              )}
-            </div>
+            <button key={v.id} type="button" className="pt-smart-key" data-active={active ? '1' : undefined}
+              onClick={() => props.onSelect({ kind: 'smart', id: v.id })}>
+              {count > 0 && v.id !== 'done' && <span className="pt-smart-count">{count}</span>}
+              <Icon size={15} strokeWidth={2.2} />
+              <span className="pt-smart-label">{v.label}</span>
+            </button>
           )
         })}
       </div>
@@ -141,8 +149,8 @@ export default function ListSidebar(props: ListSidebarProps) {
       <div className="ti-groove-h" style={{ margin: '0 10px', flexShrink: 0 }} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 12px 6px', flexShrink: 0 }}>
-        <span style={{ fontSize: 11, fontWeight: 800, color: theme.textSecondary, letterSpacing: '0.12em' }}>清单</span>
-        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 12, fontWeight: 900, fontStyle: 'italic', color: theme.textPrimary, letterSpacing: '0.12em' }}>清单</span>
+        <span className="pt-section-rule" />
         <Tooltip content={showAll ? '只看有任务的清单' : '显示全部标签（好往新清单里加任务）'}>
           <button type="button" className="ti-key" data-active={showAll ? '1' : undefined}
             onClick={props.onToggleShowAll} aria-label="显示全部标签" style={{ width: 24, height: 22 }}>

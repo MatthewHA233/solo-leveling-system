@@ -1,12 +1,12 @@
 // 协议志 · 清单右栏：选中任务的详情——标题、日期、优先级、所在清单、备注、子任务、删除
 
-import { useEffect, useMemo, useState } from 'react'
-import { Check, Trash2, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Trash2, X } from 'lucide-react'
 import type { ActivityPalette, PlanPriority } from '../../../types'
-import { theme, ti, tiInput } from '../../../theme'
+import { theme, ti, tiInput, tiSurface } from '../../../theme'
 import HudSelect from '../../HudSelect'
 import ConfirmDialog from '../../ConfirmDialog'
-import { PRIORITY_COLOR, PRIORITY_LABEL } from './TaskRow'
+import { CheckBox, DueChip, PRIORITY_COLOR, PRIORITY_LABEL } from './TaskRow'
 import type { ChecklistData } from './use-checklist'
 import { addDays, ancestorTitles, childrenIndex, dueLabel, subtreeIds } from './model'
 
@@ -25,9 +25,7 @@ function nextMonday(today: string): string {
   return addDays(today, ((8 - dow) % 7) || 7)
 }
 
-const label = (text: string) => (
-  <div style={{ fontSize: 11, fontWeight: 800, color: theme.textSecondary, letterSpacing: '0.1em', marginBottom: 6 }}>{text}</div>
-)
+const label = (text: string) => <div className="pt-field-label">{text}</div>
 
 export default function TaskDetail({ data, palette, taskId, today, onSelectTask }: TaskDetailProps) {
   const byId = useMemo(() => new Map(data.nodes.map((n) => [n.id, n] as const)), [data.nodes])
@@ -36,6 +34,7 @@ export default function TaskDetail({ data, palette, taskId, today, onSelectTask 
   const [title, setTitle] = useState('')
   const [note, setNote] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const datePickerRef = useRef<HTMLInputElement>(null)
 
   // 换了任务（或外面改了它）就同步输入框
   useEffect(() => {
@@ -79,28 +78,23 @@ export default function TaskDetail({ data, palette, taskId, today, onSelectTask 
 
   return (
     <div style={shellStyle}>
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 16px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {/* 标题行 */}
-        <div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 18px 22px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+        {/* 标题行（右上角收起键） */}
+        <div style={{ position: 'relative', paddingRight: 30 }}>
+          <button type="button" className="ti-key" aria-label="收起详情" title="收起详情"
+            onClick={() => onSelectTask(null)}
+            style={{ position: 'absolute', top: -2, right: 0, width: 24, height: 24 }}>
+            <X size={13} />
+          </button>
           {crumbs.length > 0 && (
-            <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {crumbs.join(' › ')}
+            <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {crumbs.join(' › ')} ›
             </div>
           )}
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-            <button
-              type="button"
-              aria-label={done ? '标记为未完成' : '标记为完成'}
-              onClick={() => void data.update(node.id, { status: done ? 'active' : 'done' })}
-              style={{
-                width: 20, height: 20, marginTop: 3, flexShrink: 0, padding: 0, cursor: 'pointer', borderRadius: 5,
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                border: `1.5px solid ${done ? theme.textMuted : PRIORITY_COLOR[node.priority]}`,
-                background: done ? theme.textMuted : 'transparent', color: '#0B0A09',
-              }}
-            >
-              {done && <Check size={13} strokeWidth={3.2} />}
-            </button>
+            <span style={{ marginTop: 4, display: 'inline-flex' }}>
+              <CheckBox done={done} priority={node.priority} size={20} onToggle={() => void data.update(node.id, { status: done ? 'active' : 'done' })} />
+            </span>
             <textarea
               value={title}
               rows={1}
@@ -110,7 +104,7 @@ export default function TaskDetail({ data, palette, taskId, today, onSelectTask 
               style={{
                 flex: 1, minWidth: 0, resize: 'none', border: 'none', outline: 'none', background: 'transparent',
                 color: done ? theme.textMuted : theme.textPrimary, textDecoration: done ? 'line-through' : 'none',
-                fontFamily: theme.fontBody, fontSize: 16, fontWeight: 800, lineHeight: 1.45, fieldSizing: 'content',
+                fontFamily: theme.fontBody, fontSize: 17, fontWeight: 900, lineHeight: 1.45, fieldSizing: 'content',
               } as React.CSSProperties}
             />
           </div>
@@ -126,12 +120,24 @@ export default function TaskDetail({ data, palette, taskId, today, onSelectTask 
                 {c.label}
               </button>
             ))}
-            <input
-              type="date"
-              value={node.dueDate ?? ''}
-              onChange={(e) => setDue(e.target.value || null)}
-              style={{ ...tiInput, height: 26, padding: '0 8px', fontSize: 12, fontFamily: theme.fontMono, colorScheme: 'dark' }}
-            />
+            {/* 选日期：一枚实体键，点了弹系统日历（原生日期框空着时的「yyyy/mm/日」太难看，藏起来） */}
+            <span style={{ position: 'relative', display: 'inline-flex' }}>
+              <button type="button" className="ti-key"
+                data-active={node.dueDate && !dueChoices.some((c) => c.value === node.dueDate) ? '1' : undefined}
+                onClick={() => { const el = datePickerRef.current; if (!el) return; try { el.showPicker() } catch { el.focus() } }}
+                style={{ height: 26, padding: '0 10px', fontSize: 12 }}>
+                {node.dueDate && !dueChoices.some((c) => c.value === node.dueDate) ? node.dueDate.slice(5).replace('-', '月') + '日' : '选日期'}
+              </button>
+              <input
+                ref={datePickerRef}
+                type="date"
+                tabIndex={-1}
+                aria-hidden
+                value={node.dueDate ?? ''}
+                onChange={(e) => setDue(e.target.value || null)}
+                style={{ position: 'absolute', inset: 0, opacity: 0, pointerEvents: 'none', colorScheme: 'dark' }}
+              />
+            </span>
             {node.dueDate && (
               <button type="button" className="ti-key" aria-label="清除日期" onClick={() => setDue(null)} style={{ width: 26, height: 26 }}>
                 <X size={12} />
@@ -139,8 +145,9 @@ export default function TaskDetail({ data, palette, taskId, today, onSelectTask 
             )}
           </div>
           {node.dueDate && (
-            <div style={{ marginTop: 6, fontSize: 11.5, color: node.dueDate < today && !done ? '#FF6B5B' : theme.textSecondary }}>
-              {dueLabel(node.dueDate, today)}{node.dueDate < today && !done ? ' · 已逾期' : ''}
+            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5, color: theme.textSecondary }}>
+              <DueChip due={node.dueDate} today={today} done={done} />
+              <span>{node.dueDate}{node.dueDate < today && !done ? ' · 已逾期' : ` · ${dueLabel(node.dueDate, today)}`}</span>
             </div>
           )}
         </div>
@@ -203,28 +210,19 @@ export default function TaskDetail({ data, palette, taskId, today, onSelectTask 
         {/* 子任务 */}
         <div>
           {label(`子任务${kids.length ? ` · ${kids.filter((k) => k.status === 'done').length}/${kids.length}` : ''}`)}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div className="ti-well" style={{ display: 'flex', flexDirection: 'column', gap: 1, padding: 6, borderRadius: 6 }}>
             {kids.map((k) => (
-              <div key={k.id} className="pt-row" onClick={() => onSelectTask(k.id)} style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 28, padding: '0 8px', borderRadius: 4 }}>
-                <button type="button" aria-label="勾选"
-                  onClick={(e) => { e.stopPropagation(); void data.update(k.id, { status: k.status === 'done' ? 'active' : 'done' }) }}
-                  style={{
-                    width: 14, height: 14, flexShrink: 0, padding: 0, cursor: 'pointer', borderRadius: 3,
-                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    border: `1.5px solid ${k.status === 'done' ? theme.textMuted : PRIORITY_COLOR[k.priority]}`,
-                    background: k.status === 'done' ? theme.textMuted : 'transparent', color: '#0B0A09',
-                  }}>
-                  {k.status === 'done' && <Check size={10} strokeWidth={3.2} />}
-                </button>
-                <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: k.status === 'done' ? theme.textMuted : theme.textPrimary, textDecoration: k.status === 'done' ? 'line-through' : 'none' }}>
-                  {k.title}
-                </span>
+              <div key={k.id} className="pt-sub" data-done={k.status === 'done' ? '1' : undefined} onClick={() => onSelectTask(k.id)}>
+                <CheckBox done={k.status === 'done'} priority={k.priority} size={14}
+                  onToggle={() => void data.update(k.id, { status: k.status === 'done' ? 'active' : 'done' })} />
+                <span className="pt-sub-title">{k.title}</span>
+                {k.dueDate && <DueChip due={k.dueDate} today={today} done={k.status === 'done'} />}
               </div>
             ))}
             <input
               className="pt-inline-input"
               placeholder="+ 添加子任务，回车保存"
-              style={{ marginTop: 4 }}
+              style={{ marginTop: kids.length ? 4 : 0, boxShadow: 'none', background: 'transparent' }}
               onKeyDown={(e) => {
                 if (e.nativeEvent.isComposing || e.key !== 'Enter') return
                 const t = e.currentTarget.value.trim()
@@ -242,9 +240,9 @@ export default function TaskDetail({ data, palette, taskId, today, onSelectTask 
         display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', flexShrink: 0,
         borderTop: '1px solid rgba(0,0,0,0.88)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)',
       }}>
-        <span style={{ flex: 1, fontSize: 10.5, color: theme.textMuted, fontFamily: theme.fontMono }}>
-          建于 {node.createdAt.slice(0, 16).replace('T', ' ')}
-          {node.completedAt && <span style={{ color: ti.ok }}> · 完成于 {node.completedAt.slice(0, 16).replace('T', ' ')}</span>}
+        <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2, fontSize: 10.5, color: theme.textMuted }}>
+          <span>建于 <span className="ti-led-dim" style={{ fontSize: 11.5 }}>{node.createdAt.slice(0, 16).replace('T', ' ')}</span></span>
+          {node.completedAt && <span style={{ color: ti.ok }}>完成于 <span className="ti-led-dim" style={{ fontSize: 11.5, color: ti.ok }}>{node.completedAt.slice(0, 16).replace('T', ' ')}</span></span>}
         </span>
         <button type="button" className="ti-key" aria-label="删除任务"
           onClick={() => (descendantCount > 0 ? setConfirmDelete(true) : (onSelectTask(null), void data.remove(node.id)))}
@@ -268,8 +266,8 @@ export default function TaskDetail({ data, palette, taskId, today, onSelectTask 
 }
 
 const shellStyle: React.CSSProperties = {
-  width: 310, flexShrink: 0, display: 'flex', flexDirection: 'column', minHeight: 0,
-  background: 'rgba(0,0,0,0.16)',
-  borderLeft: '1px solid rgba(0,0,0,0.88)',
-  boxShadow: 'inset 1px 0 0 rgba(255,255,255,0.1)',
+  width: 318, flexShrink: 0, display: 'flex', flexDirection: 'column', minHeight: 0,
+  background: tiSurface.plate,
+  borderLeft: '1px solid rgba(0,0,0,0.9)',
+  boxShadow: 'inset 1px 0 0 rgba(255,255,255,0.12), inset 0 1px 0 rgba(255,255,255,0.08)',
 }

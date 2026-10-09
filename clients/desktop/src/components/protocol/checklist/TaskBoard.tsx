@@ -8,9 +8,9 @@
 import { Fragment, useCallback, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Plus } from 'lucide-react'
 import type { ActivityPalette, ActivityTag, PlanNode } from '../../../types'
-import { theme, ti, tiInput, tiTitle } from '../../../theme'
+import { theme, tiInput, tiTitle } from '../../../theme'
 import HudSelect from '../../HudSelect'
-import TaskRow, { ROW_INDENT } from './TaskRow'
+import TaskRow, { Guides, ROW_INDENT } from './TaskRow'
 import type { ChecklistData } from './use-checklist'
 import {
   ancestorTitles, childrenIndex, doneGroups, findListNode, flattenTaskTree, listPathLabel,
@@ -29,7 +29,7 @@ interface Draft {
 }
 
 type Block =
-  | { readonly kind: 'tree'; readonly key: string; readonly title: string | null; readonly tagId: number; readonly rows: readonly TaskRowItem[] }
+  | { readonly kind: 'tree'; readonly key: string; readonly title: string | null; readonly tagId: number; readonly rows: readonly TaskRowItem[]; readonly color?: string }
   | { readonly kind: 'flat'; readonly key: string; readonly title: string | null; readonly tasks: readonly PlanNode[] }
 
 export interface TaskBoardProps {
@@ -77,7 +77,8 @@ export default function TaskBoard(props: TaskBoardProps) {
           ? tag.fullPath.split(',').slice(base.depth + 1).join(' › ')
           : null
         const title = base ? rel : (tag ? tag.fullPath.split(',').join(' › ') : null)
-        return { kind: 'tree', key: `t:${id}`, title, tagId: id, rows: flattenTaskTree(index, rootsOf(id), collapsed) }
+        const color = tag ? palette.categories.find((c) => c.id === tag.categoryId)?.color : undefined
+        return { kind: 'tree', key: `t:${id}`, title, tagId: id, color, rows: flattenTaskTree(index, rootsOf(id), collapsed) }
       })
 
     if (selection.kind === 'list') {
@@ -123,7 +124,7 @@ export default function TaskBoard(props: TaskBoardProps) {
         return { blocks: treeBlocks(ids, null), scopeTagIds: ids, doneRoots: [], title: label, activeCount: active.length }
       }
     }
-  }, [selection, listNode, data.nodes, index, tagById, collapsed, today])
+  }, [selection, listNode, data.nodes, index, tagById, palette.categories, collapsed, today])
 
   // 平铺视图每行的「所在清单 › 父任务」
   const contextOf = useCallback((node: PlanNode) => {
@@ -324,7 +325,9 @@ export default function TaskBoard(props: TaskBoardProps) {
   }
 
   const draftRow = (d: Draft) => (
-    <div key="draft" style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 34, padding: `0 10px 0 ${8 + d.depth * ROW_INDENT + 22}px` }}>
+    <div key="draft" className="pt-row" style={{ ['--pt-indent' as string]: `${8 + d.depth * ROW_INDENT + 22}px` }}>
+      <Guides depth={d.depth} />
+      <div className="pt-row-body" style={{ paddingLeft: 23 }}>
       <span style={{ width: 16, height: 16, flexShrink: 0, borderRadius: 4, border: `1.5px dashed ${theme.textMuted}` }} />
       <input
         autoFocus
@@ -333,6 +336,7 @@ export default function TaskBoard(props: TaskBoardProps) {
         onKeyDown={(e) => onDraftKey(d, e)}
         onBlur={(e) => { const v = e.currentTarget.value; if (v.trim()) void submitDraft(d, v); else setDraft(null) }}
       />
+      </div>
     </div>
   )
 
@@ -363,11 +367,11 @@ export default function TaskBoard(props: TaskBoardProps) {
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* 标题 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 18px 10px', flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 20px 12px', flexShrink: 0 }}>
         <span className="ti-diamond" aria-hidden />
-        <span style={{ ...tiTitle, fontSize: 16, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
-        <span className="ti-well" style={{ padding: '1px 7px', borderRadius: 4 }}>
-          <span className="ti-led" style={{ fontSize: 12 }}>{activeCount}</span>
+        <span style={{ ...tiTitle, fontSize: 19, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+        <span className="ti-well" style={{ display: 'inline-flex', alignItems: 'center', height: 24, padding: '0 9px', borderRadius: 5 }}>
+          <span className="ti-led" style={{ fontSize: 16 }}>{activeCount}</span>
         </span>
         <span style={{ flex: 1 }} />
         {data.error && <span style={{ fontSize: 11.5, color: theme.dangerRed, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{data.error}</span>}
@@ -375,9 +379,18 @@ export default function TaskBoard(props: TaskBoardProps) {
 
       {/* 快速添加 */}
       {!(selection.kind === 'smart' && selection.id === 'done') && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 18px 12px', flexShrink: 0 }}>
-          <div style={{ ...tiInput, flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8, height: 36, padding: '0 10px' }}>
-            <Plus size={15} color={ti.led} strokeWidth={2.6} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 20px 14px', flexShrink: 0 }}>
+          <div style={{ ...tiInput, flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10, height: 42, padding: '0 6px', borderRadius: 7 }}>
+            <button
+              type="button"
+              className="ti-key ti-key-primary"
+              aria-label="添加"
+              disabled={quickTagId == null || !quick.trim()}
+              onClick={() => void submitQuick()}
+              style={{ width: 30, height: 30, borderRadius: 5 }}
+            >
+              <Plus size={16} strokeWidth={2.8} />
+            </button>
             <input
               ref={quickRef}
               value={quick}
@@ -388,11 +401,11 @@ export default function TaskBoard(props: TaskBoardProps) {
               }}
               placeholder={quickTagId == null ? '先在左边选一个清单' : selection.kind === 'smart' && selection.id !== 'all' ? '添加今天要做的事，回车保存' : '添加任务，回车保存'}
               disabled={quickTagId == null}
-              style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none', outline: 'none', color: theme.textPrimary, fontSize: 13.5, fontFamily: theme.fontBody }}
+              style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none', outline: 'none', color: theme.textPrimary, fontSize: 14, fontFamily: theme.fontBody }}
             />
           </div>
           {listNode?.tagId == null && quickTagOptions.length > 0 && quickTagId != null && (
-            <div style={{ width: 210, flexShrink: 0 }}>
+            <div style={{ width: 220, flexShrink: 0 }}>
               <HudSelect
                 value={String(quickTagId)}
                 options={quickTagOptions}
@@ -404,10 +417,10 @@ export default function TaskBoard(props: TaskBoardProps) {
         </div>
       )}
 
-      <div className="ti-groove-h" style={{ margin: '0 18px', flexShrink: 0 }} />
+      <div className="ti-groove-h" style={{ margin: '0 20px', flexShrink: 0 }} />
 
       {/* 任务 */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '8px 10px 24px' }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 12px 28px' }}>
         {data.loading && <div style={{ padding: 20, color: theme.textMuted, fontSize: 12.5 }}>加载中…</div>}
         {!data.loading && empty && (
           <div style={{ padding: '48px 20px', textAlign: 'center', color: theme.textSecondary, fontSize: 13, lineHeight: 1.8 }}>
@@ -420,10 +433,15 @@ export default function TaskBoard(props: TaskBoardProps) {
           return (
             <Fragment key={b.key}>
               {b.title && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 8px 4px', fontSize: 11.5, fontWeight: 800, color: theme.textSecondary, letterSpacing: '0.04em' }}>
-                  {b.title}
+                <div className="pt-section">
+                  <span className="pt-section-tab">
+                    {b.kind === 'tree' && b.color && <span style={{ width: 7, height: 7, borderRadius: 2, background: b.color, boxShadow: `0 0 5px ${b.color}99`, flexShrink: 0 }} />}
+                    <span className="pt-section-label">{b.title}</span>
+                  </span>
+                  <span className="pt-section-rule" />
+                  <span className="pt-chip" data-led="1">{b.kind === 'tree' ? b.rows.filter((r) => r.node.status === 'active').length : b.tasks.length}</span>
                   {b.kind === 'tree' && (
-                    <button type="button" className="pt-row-add" style={{ opacity: 1 }} aria-label="在这个清单里加任务"
+                    <button type="button" className="pt-row-add" aria-label="在这个清单里加任务" title="在这个清单里加任务"
                       onClick={() => setDraft({ projectTagId: b.tagId, parentId: null, index: (index.get(null) ?? []).filter((n) => n.projectTagId === b.tagId).length, depth: 0, afterId: b.rows.at(-1)?.node.id ?? null })}>
                       <Plus size={12} strokeWidth={2.6} />
                     </button>
@@ -439,7 +457,7 @@ export default function TaskBoard(props: TaskBoardProps) {
 
         {/* 本清单已完成的任务：收在底部 */}
         {doneRoots.length > 0 && (
-          <div style={{ marginTop: 14 }}>
+          <div style={{ marginTop: 18, paddingLeft: 8 }}>
             <button type="button" className="pt-done-toggle" onClick={() => setShowDone((v) => !v)}>
               {showDone ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
               已完成 <span style={{ fontFamily: theme.fontMono }}>{doneRoots.length}</span>
