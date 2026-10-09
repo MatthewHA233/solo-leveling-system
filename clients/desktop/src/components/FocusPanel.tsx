@@ -706,13 +706,17 @@ export default function FocusPanel({ selectedDate, perceptionSpans }: FocusPanel
   useEffect(() => {
     const timer = window.setInterval(() => {
       const expiredIds: string[] = []
-      setGroups((prev) => prev.map((g) => {
-        if (!g.isActive || !g.activatedAt || g.durationMins === null) return g
-        const expiresAt = g.activatedAt + g.durationMins * 60_000
-        if (Date.now() < expiresAt) return g
-        expiredIds.push(g.id)
-        return { ...g, isActive: false, activatedAt: null }
-      }))
+      setGroups((prev) => {
+        const next = prev.map((g) => {
+          if (!g.isActive || !g.activatedAt || g.durationMins === null) return g
+          const expiresAt = g.activatedAt + g.durationMins * 60_000
+          if (Date.now() < expiresAt) return g
+          expiredIds.push(g.id)
+          return { ...g, isActive: false, activatedAt: null }
+        })
+        // 没有组到期就原样返回：每秒都换新数组会让面板每秒重渲染一次
+        return expiredIds.length > 0 ? next : prev
+      })
       expiredIds.forEach((id) => invoke('focus_lock_stop', { groupId: id }).catch(console.error))
     }, 1000)
     return () => window.clearInterval(timer)

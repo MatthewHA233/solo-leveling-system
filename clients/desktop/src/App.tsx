@@ -849,12 +849,13 @@ export default function App() {
   const contextRatio = useMemo(() => estimateChars(conversationRef.current) / HIGH_WATER_CHARS, [chatMessages])
 
 
+  // 今天每 15 秒轮询一次：数据没变就保留原数组——换成新数组会让整个 App 重渲染一遍（开发模式下约半秒，界面一顿一顿的）
   const refreshPerceptionSpans = useCallback(() => {
     fetchPerceptionSpans(selectedDate)
-      .then(setPerceptionSpans)
+      .then((next) => setPerceptionSpans((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next)))
       .catch(() => {})
     fetchBiliSpans(selectedDate)
-      .then(setBiliSpans)
+      .then((next) => setBiliSpans((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next)))
       .catch(() => {})
   }, [selectedDate])
 
@@ -1138,8 +1139,10 @@ export default function App() {
   // 定时刷新 discovered peers（每 5 秒）—— 顶栏判断 linked 设备在线/离线
   useEffect(() => {
     const timer = setInterval(() => {
+      // 比较时去掉 last_seen_at：对端在线时它每轮都变，整份比较永远不等，会每 5 秒重渲染整个 App
+      const stable = (list: readonly SyncPeer[]) => JSON.stringify(list.map((p) => ({ ...p, last_seen_at: '' })))
       fetchSyncPeers()
-        .then((next) => setDiscoveredPeers((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next)))
+        .then((next) => setDiscoveredPeers((prev) => (stable(prev) === stable(next) ? prev : next)))
         .catch(() => {})
     }, 5000)
     return () => clearInterval(timer)
