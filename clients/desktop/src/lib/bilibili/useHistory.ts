@@ -44,7 +44,8 @@ export interface UseBiliHistoryReturn {
   isLoading: boolean
   error: string | null
   lastUpdated: Date | null
-  countdown: number
+  /** 下次自动同步的时刻（ms）；倒计时由显示处自己算，钩子不每秒触发重渲染 */
+  nextSyncAt: number | null
   intervalSeconds: number
   isPaused: boolean
   windowClosed: boolean
@@ -70,7 +71,7 @@ export function useBiliHistory(options: UseBiliHistoryOptions = {}): UseBiliHist
   const [error, setError] = useState<string | null>(null)
   const [windowClosed, setWindowClosed] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
-  const [countdown, setCountdown] = useState(initInterval)
+  const [nextSyncAt, setNextSyncAt] = useState<number | null>(null)
   const [isPaused, setIsPaused] = useState(false)
   const [intervalSeconds, setIntervalSeconds] = useState(initInterval)
   const [cursor, setCursor] = useState<BiliCursor | null>(null)
@@ -81,9 +82,8 @@ export function useBiliHistory(options: UseBiliHistoryOptions = {}): UseBiliHist
   const loadingOlderRef = useRef(false)
   const scanningRef = useRef(false)
 
-  const countdownRef = useRef(initInterval)
-  const isPausedRef = useRef(false)
-  isPausedRef.current = isPaused
+  // 重新排期（手动同步后从头计时用）；由下面的自动刷新 effect 填进来
+  const armRef = useRef<(delayMs: number) => void>(() => {})
 
   const doFetch = useCallback(async () => {
     // 深度扫描占用 fetch_bili_history 通道，轮询/手动同步先让位
@@ -192,39 +192,39 @@ export function useBiliHistory(options: UseBiliHistoryOptions = {}): UseBiliHist
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled])
 
-  // 倒计时 + 自动刷新
+  // 自动刷新：按截止时刻设一个闹钟，到点才醒一次——两次同步之间不轮询、不 setState。
+  // nextSyncAt 一个周期只变一次；要显示剩余秒数的地方自己拿它算（见 CountdownText）
   useEffect(() => {
-    if (!enabled || intervalSeconds === 0) return
-    countdownRef.current = intervalSeconds
-    setCountdown(intervalSeconds)
-
-    const timer = setInterval(() => {
-      if (isPausedRef.current) return
-      // 深度扫描中：冻结倒计时，等扫描结束后从头开始
-      if (scanningRef.current) {
-        countdownRef.current = intervalSeconds
-        setCountdown(intervalSeconds)
-        return
-      }
-      countdownRef.current -= 1
-      setCountdown(countdownRef.current)
-      if (countdownRef.current <= 0) {
-        doFetch()
-        countdownRef.current = intervalSeconds
-        setCountdown(intervalSeconds)
-      }
-    }, 1000)
-
-    return () => clearInterval(timer)
-  }, [intervalSeconds, enabled, doFetch])
+    if (!enabled || intervalSeconds === 0 || isPaused) {
+      setNextSyncAt(null)
+      armRef.current = () => {}
+      return
+    }
+    let timer: number | undefined
+    const arm = (delayMs: number) => {
+      window.clearTimeout(timer)
+      setNextSyncAt(Date.now() + delayMs)
+      timer = window.setTimeout(() => {
+        // 深度扫描占着 fetch 通道：这一轮让位，过一个周期再来
+        if (!scanningRef.current) doFetch()
+        arm(intervalSeconds * 1000)
+      }, delayMs)
+    }
+    armRef.current = arm
+    arm(intervalSeconds * 1000)
+    return () => {
+      window.clearTimeout(timer)
+      armRef.current = () => {}
+    }
+  }, [intervalSeconds, enabled, isPaused, doFetch])
 
   const pause = useCallback(() => setIsPaused(true), [])
   const resume = useCallback(() => setIsPaused(false), [])
   const clearNew = useCallback(() => setNewItems([]), [])
 
   const refresh = useCallback(() => {
-    countdownRef.current = intervalSeconds
-    setCountdown(intervalSeconds)
+    // 手动同步：闹钟从头计时
+    armRef.current(intervalSeconds * 1000)
     doFetch()
   }, [doFetch, intervalSeconds])
 
@@ -309,7 +309,7 @@ export function useBiliHistory(options: UseBiliHistoryOptions = {}): UseBiliHist
 
   return {
     newItems, isLoading, error, lastUpdated,
-    countdown, intervalSeconds, isPaused, windowClosed, cursor, hasMoreRemote,
+    nextSyncAt, intervalSeconds, isPaused, windowClosed, cursor, hasMoreRemote,
     scanProgress, scanSnapshotBvids, scanLastPage,
     pause, resume, refresh, loadOlderHistory, fullScan, clearNew, setIntervalSeconds,
   }

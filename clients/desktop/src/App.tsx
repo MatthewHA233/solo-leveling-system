@@ -113,6 +113,7 @@ import type { FairyState } from './components/FairyHUD'
 import { CloseConfirmModal } from './components/CloseConfirmModal'
 import Tooltip from './components/Tooltip'
 import { usePresenceDetection } from './hooks/usePresenceDetection'
+import { CAMERA_PRESENCE_ENABLED } from './lib/presence/feature'
 import { useDataDays, hasDataOrIsToday } from './hooks/useDataDays'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 
@@ -424,7 +425,8 @@ export default function App() {
   const [linkedDevices, setLinkedDevices] = useState<LinkedDevice[]>([])
   const [discoveredPeers, setDiscoveredPeers] = useState<SyncPeer[]>([])
   const [syncingDeviceIds, setSyncingDeviceIds] = useState<ReadonlySet<string>>(() => new Set())
-  const [autoSyncCountdownS, setAutoSyncCountdownS] = useState<number>(60)
+  // 下次自动同步的时刻：一分钟才变一次（别每秒 set 倒计时——会让整个 App 每秒重渲染）
+  const [nextAutoSyncAt, setNextAutoSyncAt] = useState<number>(() => Date.now() + 60_000)
   // 同步日志：最近 20 条事件（启动/完成/错误/本地操作反馈），LAN 浮层日志面板展示
   // 去重：5 秒内相同 text 不重复入库，避免离线重试刷屏
   const [syncLog, setSyncLog] = useState<readonly SyncLogEntry[]>([])
@@ -499,7 +501,7 @@ export default function App() {
 
   const {
     isLoading: biliLoading, error: biliError,
-    lastUpdated: biliLastUpdated, countdown: biliCountdown,
+    lastUpdated: biliLastUpdated, nextSyncAt: biliNextSyncAt,
     intervalSeconds: biliIntervalSec, isPaused: biliPaused,
     windowClosed: biliWinClosed, cursor: biliCursor, hasMoreRemote: biliHasMoreRemote,
     scanProgress: biliScanProgress,
@@ -602,7 +604,11 @@ export default function App() {
   const pickerDock = useDockPresence(pickerOpen)
 
   // ── Presence Detection ──
-  const { presence, videoRef } = usePresenceDetection(config.overlayEnabled)
+  // 摄像头整套暂时关掉（见 lib/presence/feature.ts）
+  const { presence, videoRef } = usePresenceDetection(CAMERA_PRESENCE_ENABLED && config.overlayEnabled)
+  // 系统提示词只在重算时读一下当前在场状态：检测每帧都在更新它，绑进依赖会让提示词每秒重算好几遍
+  const presenceRef = useRef(presence)
+  presenceRef.current = presence
 
   // 预热 mic 权限：防止首次长按 Alt 时弹出权限弹窗导致无反应
   useEffect(() => {
@@ -664,6 +670,7 @@ export default function App() {
 
   // 将人脸框数据实时发送到摄像头子窗口
   useEffect(() => {
+    if (!CAMERA_PRESENCE_ENABLED) return
     import('@tauri-apps/api/event').then(({ emitTo }) => {
       emitTo('camera-preview', 'face-data', { faces: presence.faces }).catch(() => {
         // 子窗口未开启时静默忽略
@@ -1130,7 +1137,9 @@ export default function App() {
   // 定时刷新 discovered peers（每 5 秒）—— 顶栏判断 linked 设备在线/离线
   useEffect(() => {
     const timer = setInterval(() => {
-      fetchSyncPeers().then(setDiscoveredPeers).catch(() => {})
+      fetchSyncPeers()
+        .then((next) => setDiscoveredPeers((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next)))
+        .catch(() => {})
     }, 5000)
     return () => clearInterval(timer)
   }, [])
@@ -1156,15 +1165,11 @@ export default function App() {
         })
       }
     }
+    setNextAutoSyncAt(Date.now() + AUTO_SYNC_INTERVAL_S * 1000)
     const tick = setInterval(() => {
-      setAutoSyncCountdownS((s) => {
-        if (s <= 1) {
-          triggerAutoSync()
-          return AUTO_SYNC_INTERVAL_S
-        }
-        return s - 1
-      })
-    }, 1000)
+      triggerAutoSync()
+      setNextAutoSyncAt(Date.now() + AUTO_SYNC_INTERVAL_S * 1000)
+    }, AUTO_SYNC_INTERVAL_S * 1000)
     return () => clearInterval(tick)
   }, [])
 
@@ -2159,7 +2164,7 @@ export default function App() {
       activityTags: wantActivity ? activityTags : undefined,
       appUsage: wantActivity ? appUsage : undefined,
       biliHistory: wantBili ? biliHistory : undefined,
-      presence,
+      presence: presenceRef.current,
       // 锁定卡不走意图裁剪：体量小且主人随时可能说"这张卡片"
       focusedCard: focusedCardRef.current ?? undefined,
     })
@@ -2177,7 +2182,7 @@ export default function App() {
     const base = `${staticPrompt}\n\n${dynamicContext}`
     systemPromptRef.current = history ? `${base}\n\n${history}` : base
     return systemPromptRef.current
-  }, [presence, activityPalette])
+  }, [activityPalette])
   refreshSystemPromptRef.current = refreshSystemPrompt
 
   // ── System Prompt 预热 + 定时刷新（每分钟，供 Omni 模式热读）──
@@ -2833,13 +2838,15 @@ export default function App() {
     }}>
       {/* 全局颗粒：所有钛板共用的材质噪点（静态瓦片，不重绘） */}
       <div className="ti-grain" aria-hidden />
-      {/* ── 隐藏摄像头（presence detection） ── */}
-      <video
-        ref={videoRef}
-        style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
-        muted
-        playsInline
-      />
+      {/* ── 隐藏摄像头（presence detection；整套关掉时不挂） ── */}
+      {CAMERA_PRESENCE_ENABLED && (
+        <video
+          ref={videoRef}
+          style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
+          muted
+          playsInline
+        />
+      )}
 
       {/* ── Top Bar ──（钛合金机体：一整块拉丝钛板；铭牌 / 视图键位 / LED 日期读数 / 链路 / 实体键） */}
       <ChassisPlate
@@ -3363,7 +3370,7 @@ export default function App() {
                     cameraReady={presence.ready}
                     cameraPresent={presence.state === 'present'}
                     cameraWindowOpen={cameraWindowOpen}
-                    onToggleCamera={toggleCameraWindow}
+                    onToggleCamera={CAMERA_PRESENCE_ENABLED ? toggleCameraWindow : undefined}
                     ttsEnabled={config.ttsEnabled}
                     onToggleTts={() => handleConfigUpdate({ ttsEnabled: !config.ttsEnabled })}
                     sessionsOpen={pickerOpen}
@@ -3471,7 +3478,7 @@ export default function App() {
         isLoading={biliLoading}
         error={biliError}
         lastUpdated={biliLastUpdated}
-        countdown={biliCountdown}
+        nextSyncAt={biliNextSyncAt}
         intervalSeconds={biliIntervalSec}
         isPaused={biliPaused}
         windowClosed={biliWinClosed}
@@ -3509,7 +3516,7 @@ export default function App() {
         open={showSync}
         anchorRect={syncAnchorRect}
         onClose={() => setShowSync(false)}
-        nextSyncCountdownS={autoSyncCountdownS}
+        nextSyncAt={nextAutoSyncAt}
         anySyncing={syncingDeviceIds.size > 0}
         syncLog={syncLog}
         appendLog={pushSyncLog}

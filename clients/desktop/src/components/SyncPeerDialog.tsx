@@ -39,6 +39,7 @@ import {
 import type { LinkedDevice, SyncHello, SyncPeer } from '../lib/local-api'
 import { theme, tiInput, tiSurface, tiTitle, tiKey, hud } from '../theme'
 import Tooltip from './Tooltip'
+import CountdownText from './ui/CountdownText'
 
 export interface SyncLogEntry {
   /** epoch ms */
@@ -54,7 +55,8 @@ interface Props {
   readonly onClose: () => void
   readonly anchorRect?: DOMRect | null
   /** 距下次自动同步剩余秒数（由 App.tsx 全局计时） */
-  readonly nextSyncCountdownS?: number
+  /** 下次自动同步的时刻（ms），剩余秒数在弹窗里自己算 */
+  readonly nextSyncAt?: number
   /** 是否有任意 linked 设备正在同步（用于波形和倒计时暂停文案） */
   readonly anySyncing?: boolean
   /** 同步事件日志（来自 App.tsx 全局） */
@@ -95,7 +97,7 @@ function formatLastSync(value: string | null): string {
   return date === todayStr ? `今天 ${time.slice(0, 5)}` : `${date.slice(5)} ${time.slice(0, 5)}`
 }
 
-export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCountdownS, anySyncing, syncLog, appendLog }: Props) {
+export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, anySyncing, syncLog, appendLog }: Props) {
   const [localHello, setLocalHello] = useState<SyncHello | null>(null)
   const [peers, setPeers] = useState<SyncPeer[]>([])
   const [links, setLinks] = useState<LinkedDevice[]>([])
@@ -547,7 +549,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
             <span style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted }}>
               · {links.length} 台
             </span>
-            {links.length > 0 && typeof nextSyncCountdownS === 'number' && (
+            {links.length > 0 && nextSyncAt != null && (
               <span style={{
                 marginLeft: 'auto',
                 display: 'inline-flex',
@@ -561,7 +563,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncCoun
                 <Timer size={10} className={anySyncing ? 'spin' : undefined} />
                 {anySyncing
                   ? '同步中…'
-                  : `下次自动 ${Math.max(0, Math.round(nextSyncCountdownS))}s`}
+                  : <>下次自动 <CountdownText target={nextSyncAt} />s</>}
               </span>
             )}
           </div>

@@ -25,6 +25,7 @@ import { loadConfig, updateConfig } from '../lib/agent/agent-config'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import { theme, hud, tiSurface, tiTitle, ti, tiKey } from '../theme'
 import Tooltip from './Tooltip'
+import CountdownText from './ui/CountdownText'
 
 // 转录主题色：橙（取代紫——紫和 ✨ 一样是 AI 视觉重灾区，见 memory feedback-no-sparkles-icon 同类偏好）
 const TRANSCRIBE_COLOR = '#FF9F45'
@@ -73,7 +74,8 @@ interface Props {
   readonly isLoading: boolean
   readonly error: string | null
   readonly lastUpdated: Date | null
-  readonly countdown: number
+  /** 下次自动同步的时刻（ms），剩余秒数在弹窗里自己算 */
+  readonly nextSyncAt: number | null
   readonly intervalSeconds: number
   readonly isPaused: boolean
   readonly windowClosed: boolean
@@ -228,7 +230,7 @@ function layoutMasonry(spans: BiliSpan[], dayStr: string, cols: number): { place
 // ══════════════════════════════════════════════
 export default function BiliHistoryDialog({
   open, initialDate,
-  isLoading, error, lastUpdated, countdown, intervalSeconds, isPaused,
+  isLoading, error, lastUpdated, nextSyncAt, intervalSeconds, isPaused,
   windowClosed, cursor, hasMoreRemote: _hasMoreRemote,
   scanProgress, scanSnapshotBvids, scanLastPage,
   onRefresh, onFullScan, onSetInterval, onClose,
@@ -1005,7 +1007,7 @@ export default function BiliHistoryDialog({
                 {isPaused ? (
                   <span style={{ color: theme.textSecondary }}>· 已暂停</span>
                 ) : lastUpdated ? (
-                  <span style={{ color: theme.textSecondary }}>· {countdown}s 后{windowClosed ? '重试' : '同步'}</span>
+                  <span style={{ color: theme.textSecondary }}>· <CountdownText target={nextSyncAt} />s 后{windowClosed ? '重试' : '同步'}</span>
                 ) : (
                   <span style={{ color: theme.textSecondary }}>等待首次同步</span>
                 )}
