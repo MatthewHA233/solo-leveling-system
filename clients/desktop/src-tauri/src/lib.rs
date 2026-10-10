@@ -1757,7 +1757,15 @@ pub fn run() {
                 .find(|w| w.label == "main")
                 .cloned()
                 .ok_or("tauri.conf.json 缺少 main 窗口配置")?;
-            with_dev_browser_args(tauri::WebviewWindowBuilder::from_config(app, &main_config)?).build()?;
+            let main_builder = tauri::WebviewWindowBuilder::from_config(app, &main_config)?;
+            // Windows：去掉系统标题栏（和钛合金界面不搭，还会和顶栏铭牌出现两次 logo），
+            // 顶栏自己承担拖动 / 双击最大化 / 最小化·最大化·关闭（前端 WindowControls）。
+            // 窗口底透明：机体四角是 45° 切角，页面把四角挖空（topbar.css 的 .frameless），露出桌面而不是黑角；
+            // 不要系统阴影——Win10 上无框窗口的"阴影"是一圈 1px 白边，会把挖空的角又框成直角。
+            // 无框窗口的边缘照样能拖拽调大小（tao 自己做边缘命中）。macOS 保留系统红绿灯
+            #[cfg(windows)]
+            let main_builder = main_builder.decorations(false).shadow(false).transparent(true);
+            with_dev_browser_args(main_builder).build()?;
 
             // 注册专注锁 Native Messaging host（幂等；失败只降级，不阻断启动）
             focus_lock::register_native_host();

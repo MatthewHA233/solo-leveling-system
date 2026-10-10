@@ -91,6 +91,8 @@ import TorrentFieldDemoPanel from './components/TorrentFieldDemoPanel'
 import FocusPanel from './components/FocusPanel'
 import ViewSwitcher, { type MainViewMode } from './components/ViewSwitcher'
 import IconButton from './components/ui/IconButton'
+import WindowControls from './components/ui/WindowControls'
+import './styles/topbar.css'
 import ScreenBezel from './components/ui/ScreenBezel'
 import ChassisPlate from './components/ui/ChassisPlate'
 import ChatPanel from './components/ChatPanel'
@@ -2873,8 +2875,9 @@ export default function App() {
 
   return (
     <div className="app-shell" style={{
+      // 最外圈不留白：Windows 去掉系统标题栏后，外圈那 8px 深色底会变成一圈黑框；面板之间的缝（gap）保留
       display: 'flex', flexDirection: 'column',
-      gap: 8, padding: 8,
+      gap: 8, padding: 0,
       height: '100vh',
       background: hud.backdrop,
       color: theme.textPrimary,
@@ -2895,15 +2898,18 @@ export default function App() {
       )}
 
       {/* ── Top Bar ──（钛合金机体：一整块拉丝钛板；铭牌 / 视图键位 / LED 日期读数 / 链路 / 实体键） */}
+      {/* 顶栏兼当窗口标题栏（Windows 去掉了系统标题栏）：整条按住都能拖窗口、空白处双击最大化（lib/window-drag） */}
       <ChassisPlate
         cut={10}
         className="ti-plate"
         outerStyle={{ height: 52, flexShrink: 0, zIndex: 2 }}
-        style={{ display: 'flex', alignItems: 'stretch' }}
+        // 当标题栏用：按住拖窗口时别把日期、链路这些字选成一片蓝
+        style={{ display: 'flex', alignItems: 'stretch', userSelect: 'none', containerType: 'inline-size', containerName: 'topbar' }}
+        dragRegion
       >
         {/* ── 铭牌：点阵 S + 字标 + 型号（版本号也在悬停提示里） ── */}
         <Tooltip content={`Solevup v${__APP_VERSION__}`} display="flex" wrapStyle={{ alignSelf: 'stretch' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '0 16px 0 14px', cursor: 'default', userSelect: 'none' }}>
+          <div className="tb-logo">
             <span
               className="ti-well ti-led"
               onContextMenu={(e) => {
@@ -2914,7 +2920,7 @@ export default function App() {
             >
               S
             </span>
-            <div>
+            <div className="tb-wordmark">
               <div className="ti-tech" style={{ fontSize: 15, fontWeight: 700, letterSpacing: '0.24em', color: theme.paper, lineHeight: 1.1 }}>
                 SOLEVUP
               </div>
@@ -2923,7 +2929,7 @@ export default function App() {
           </div>
         </Tooltip>
 
-        <div className="ti-groove-v" style={{ margin: '12px 0' }} />
+        <div className="ti-groove-v tb-logo-groove" style={{ margin: '12px 0' }} />
 
         {/* ── 视图键位（悬停时背后的视图卡向上露顶，见 mainPanelStyle） ── */}
         <div
@@ -2934,14 +2940,14 @@ export default function App() {
           <ViewSwitcher viewMode={mainView} onChange={setMainView} protocolLabel={protocolViewLabel} />
         </div>
 
-        <div style={{ flex: 1 }} />
+        <div className="tb-drag" />
 
         {/* BiliJobsWidget：常驻编排 + 后端进度收集 + 进度面板（无顶栏按钮，不可见；
             面板由 B站历史弹窗工具栏入口经 solevup:toggle-bili-jobs 打开）。 */}
         <BiliJobsWidget />
 
         {/* ── 日期：点阵 LED 读数（点开选日期），两侧实体键翻页 ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px' }}>
+        <div className="tb-date">
           <IconButton tip={prevHasData ? '前一天' : '前一天无数据'} onClick={prevDay} disabled={!prevHasData} size={22}>
             <ChevronLeft size={12} />
           </IconButton>
@@ -2949,11 +2955,11 @@ export default function App() {
             <button
               ref={dateAnchorRef}
               type="button"
-              className="ti-well"
+              className="ti-well tb-date-well"
               onClick={() => setDatePickerOpen((v) => !v)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 9,
-                height: 34, padding: '0 11px',
+                height: 34,
                 border: 'none', cursor: 'pointer', borderRadius: 5,
                 outline: datePickerOpen ? `1px solid ${ti.led}66` : 'none',
               }}
@@ -2961,7 +2967,7 @@ export default function App() {
               <span className="ti-led" style={{ fontSize: 19, letterSpacing: '0.04em' }}>
                 {String(selectedDate.getMonth() + 1).padStart(2, '0')}·{String(selectedDate.getDate()).padStart(2, '0')}
               </span>
-              <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.1 }}>
+              <span className="tb-date-sub" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.1, whiteSpace: 'nowrap' }}>
                 <span style={{ fontSize: 11.5, color: theme.paper }}>{WEEKDAY_ZH[selectedDate.getDay()]}</span>
                 <span style={{ fontSize: 10, color: theme.paperMuted }}>{relativeDayLabel(selectedDate)}</span>
               </span>
@@ -2974,7 +2980,7 @@ export default function App() {
             <Tooltip content="回到今天">
               <button
                 type="button"
-                className="ti-key ti-key-primary"
+                className="ti-key ti-key-primary tb-date-today"
                 onClick={goToday}
                 style={{ height: 24, padding: '0 10px', marginLeft: 4, fontSize: 12 }}
               >
@@ -3009,7 +3015,7 @@ export default function App() {
               <button
                 ref={syncTriggerRef}
                 type="button"
-                className="ui-icon-btn"
+                className="ui-icon-btn tb-sync"
                 onClick={() => {
                   setShowSync((open) => {
                     const next = !open
@@ -3021,20 +3027,19 @@ export default function App() {
                 }}
                 style={{
                   display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'flex-start',
-                  padding: '0 14px',
                   background: showSync ? theme.surfaceRaised : 'transparent',
                   border: 'none', cursor: 'pointer',
                   color: theme.paperDim, fontFamily: theme.fontBody,
                 }}
               >
-                <span style={{ fontSize: 10, color: theme.paperMuted, letterSpacing: '0.2em' }}>同步</span>
+                <span className="tb-sync-title" style={{ fontSize: 10, color: theme.paperMuted, letterSpacing: '0.2em' }}>同步</span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 2, fontSize: 12 }}>
                   <span
                     className={dotClass}
                     aria-hidden
                     style={{ animation: anySyncing ? 'glowPulse 1.2s ease-in-out infinite' : undefined }}
                   />
-                  <span style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span className="tb-sync-text" style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {summary}
                   </span>
                 </span>
@@ -3046,7 +3051,7 @@ export default function App() {
         <div className="ti-groove-v" style={{ margin: '12px 0' }} />
 
         {/* ── 实体键 ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '0 12px 0 12px' }}>
+        <div className="tb-keys">
           <IconButton
             tip="B站历史记录"
             label="B站"
@@ -3098,6 +3103,9 @@ export default function App() {
             <Settings size={15} />
           </IconButton>
         </div>
+
+        <div className="ti-groove-v" style={{ margin: '12px 0' }} />
+        <WindowControls />
       </ChassisPlate>
 
       {/* ── Main: Chart + Right Panel ── */}

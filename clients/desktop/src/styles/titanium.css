@@ -64,6 +64,7 @@
   transition: color 0.12s, background 0.12s, box-shadow 0.12s, transform 0.06s;
   flex-shrink: 0;
 }
+.ti-key-labeled { padding: 0 11px 0 9px; }
 .ti-key:hover:not(:disabled) {
   background: linear-gradient(180deg, #46423D, #2D2A26);
   box-shadow:
@@ -89,6 +90,18 @@
 }
 .ti-key[data-active="1"]:hover:not(:disabled) { background: linear-gradient(180deg, #FFB585, #F27A3E); }
 .ti-key:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* 危险键（窗口关闭）：悬停一圈信号红，不发橙光 */
+.ti-key-danger:hover:not(:disabled) {
+  color: #FFD2CB;
+  background: linear-gradient(180deg, #5A2620, #3A1814);
+  box-shadow:
+    0 0 0 1px #E8685A,
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.35),
+    0 3px 8px rgba(0, 0, 0, 0.55),
+    0 0 10px rgba(232, 104, 90, 0.3);
+}
 
 /* 主操作：实色橙 + 黑色粗体字（记录 / 发送 / 回今天） */
 .ti-key-primary {

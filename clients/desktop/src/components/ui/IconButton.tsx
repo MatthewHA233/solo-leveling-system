@@ -26,7 +26,8 @@ export default function IconButton({ tip, onClick, active, dim, disabled, size =
       <button
         ref={buttonRef}
         type="button"
-        className="ti-key"
+        // 带字的键内距在 .ti-key-labeled 里（顶栏变窄时 topbar.css 会把它收成方键）
+        className={label ? 'ti-key ti-key-labeled' : 'ti-key'}
         data-active={active ? '1' : undefined}
         onClick={onClick}
         disabled={disabled}
@@ -35,13 +36,12 @@ export default function IconButton({ tip, onClick, active, dim, disabled, size =
         style={{
           height: size,
           width: label ? undefined : size,
-          padding: label ? '0 11px 0 9px' : 0,
           fontSize: 12.5,
           opacity: dim && !disabled ? 0.55 : undefined,
         }}
       >
         {children}
-        {label && <span>{label}</span>}
+        {label && <span className="ti-key-label">{label}</span>}
       </button>
     </Tooltip>
   )

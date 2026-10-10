@@ -25,6 +25,11 @@ if (isFairyWindow) {
   document.body.style.background = 'transparent'
 }
 
+// Windows 主窗口：无系统标题栏 + 窗口底透明（lib.rs），由 .frameless 把机体四角挖空（styles/topbar.css）
+if (!isFairyWindow && !isCameraWindow && !isDebugPrepWindow && navigator.userAgent.includes('Windows')) {
+  document.documentElement.classList.add('frameless')
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {isFairyWindow

@@ -1,0 +1,64 @@
+/* ══════════════════════════════════════════════
+   顶栏（兼窗口标题栏）随宽度收紧——容器查询，纯 CSS，不引起任何重渲染
+   全展开约需 1360px，窗口最窄 800px（tauri.conf.json minWidth）。变窄时按这个顺序让位：
+     ① 功能键的字（B站 / 模型 / Fairy / 设置 → 方形图标键）
+     ② 字标与版本号、视图键位编号、同步设备名
+     ③ 日期下面的星期 / 「今天」、「同步」两个字（只留状态灯）
+     ④ 各组内距收紧；「回今天」收进日期弹层（弹层页脚也有）
+     ⑤ 点阵 S 铭牌
+   中间那块拖拽区始终留一点宽，窗口总有地方能按住拖。
+   选择器都写成两个类：本文件可能比 titanium.css 先加载，同级选择器会被它盖掉。
+   ══════════════════════════════════════════════ */
+
+/* ── 无框窗口（Windows）：窗口底透明，把整页的四角按各板的切角挖掉——
+      顶栏 cut=10，主舞台 / 右栏 cut=12；板与板之间的缝仍是深色底。最大化时贴满屏幕，不挖。
+      挖在 html 上而不是 .app-shell：clip-path 会生成层叠上下文，挂在 .app-shell 上会把
+      全局颗粒（z 9000）压到 body 里的弹窗下面；根元素本来就是根层叠上下文，不改变任何叠放 ── */
+html.frameless:not([data-window-maximized]) {
+  clip-path: polygon(
+    10px 0, calc(100% - 10px) 0, 100% 10px,
+    100% calc(100% - 12px), calc(100% - 12px) 100%,
+    12px 100%, 0 calc(100% - 12px), 0 10px
+  );
+}
+
+.tb-logo { display: flex; align-items: center; gap: 11px; padding: 0 16px 0 14px; cursor: default; user-select: none; }
+.tb-tabs { display: flex; align-items: center; gap: 7px; padding: 0 12px 0 14px; }
+.tb-drag { flex: 1; min-width: 28px; }
+.tb-date { display: flex; align-items: center; gap: 6px; padding: 0 12px; }
+.tb-date .tb-date-well { padding: 0 11px; }
+.ui-icon-btn.tb-sync { padding: 0 14px; }
+.tb-keys { display: flex; align-items: center; gap: 7px; padding: 0 12px; }
+.tb-winctl { display: flex; align-items: center; gap: 6px; padding: 0 12px 0 10px; }
+
+@container topbar (max-width: 1360px) {
+  .tb-keys .ti-key-label { display: none; }
+  .tb-keys .ti-key-labeled { padding: 0; aspect-ratio: 1; }
+}
+
+@container topbar (max-width: 1220px) {
+  .tb-logo .tb-wordmark,
+  .tb-tabs .ti-tab-no,
+  .tb-sync .tb-sync-text { display: none; }
+}
+
+@container topbar (max-width: 1000px) {
+  .tb-date .tb-date-sub,
+  .tb-sync .tb-sync-title { display: none; }
+}
+
+@container topbar (max-width: 980px) {
+  .tb-tabs { gap: 5px; padding: 0 8px 0 10px; }
+  .tb-tabs .ti-tab { padding: 0 9px; }
+  .tb-date { gap: 4px; padding: 0 8px; }
+  .tb-date .tb-date-well { padding: 0 8px; }
+  .tb-date > :has(> .tb-date-today) { display: none; }
+  .ui-icon-btn.tb-sync { padding: 0 10px; }
+  .tb-keys { gap: 5px; padding: 0 8px; }
+  .tb-winctl { gap: 4px; padding: 0 8px 0 6px; }
+}
+
+@container topbar (max-width: 860px) {
+  .tb-logo,
+  .ti-groove-v.tb-logo-groove { display: none; }
+}

@@ -11,6 +11,7 @@
 // ══════════════════════════════════════════════
 
 import { memo, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { handleTitleBarMouseDown } from '../../lib/window-drag'
 
 type Pt = readonly [number, number]
 
@@ -48,6 +49,8 @@ interface Props {
   readonly outerStyle?: CSSProperties
   /** 需要伸出轮廓之外的东西（例如拖拽手柄），放在不裁切的外层 */
   readonly outside?: ReactNode
+  /** 按住板面任何地方都能拖动窗口、空白处双击最大化：Windows 去掉系统标题栏后由顶栏承担（lib/window-drag） */
+  readonly dragRegion?: boolean
 }
 
 const ANCHOR_SELECTOR = '[data-chassis-tab], [data-chassis-tower]'
@@ -102,7 +105,7 @@ function chamferCss(cut: number): string {
 
 export default function ChassisPlate({
   children, notch = false, dipDepth = 10, cut = 12, anchorPad = 12,
-  accents = 'none', ornaments = false, className, style, outerStyle, outside,
+  accents = 'none', ornaments = false, className, style, outerStyle, outside, dragRegion = false,
 }: Props) {
   const plateRef = useRef<HTMLDivElement>(null)
   const [geo, setGeo] = useState<Geometry | null>(null)
@@ -176,6 +179,7 @@ export default function ChassisPlate({
       <div
         ref={plateRef}
         data-chassis=""
+        onMouseDown={dragRegion ? handleTitleBarMouseDown : undefined}
         className={className}
         style={{
           position: 'relative', flex: 1, minWidth: 0, minHeight: 0,
