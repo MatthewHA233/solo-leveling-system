@@ -1759,6 +1759,7 @@ pub fn create_router(
         .route("/api/presence/spans/{id}/close", axum::routing::put(close_presence_span))
         .route("/api/focus/rules", get(get_focus_rules))
         .route("/api/focus/heartbeat", post(recv_focus_heartbeat))
+        .route("/api/focus/active-tab", post(recv_active_tab))
         .route("/api/context/feed", get(get_context_feed))
         .route("/api/context/cards", post(add_context_card))
         .route("/api/context/cards/{id}", delete(delete_context_card).patch(update_context_card))
@@ -1773,6 +1774,7 @@ pub fn create_router(
         .route("/api/motives/protocols/{anchor_id}", put(upsert_motive_protocol))
         .route("/api/anchors/{id}", patch(update_anchor))
         .merge(crate::notes_api::routes())
+        .merge(crate::protocols_api::routes())
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -1793,6 +1795,25 @@ async fn get_focus_rules() -> Json<ApiResponse<crate::focus_lock::FocusRulesSnap
 async fn recv_focus_heartbeat() -> Json<ApiResponse<()>> {
     crate::focus_lock::shared().lock().unwrap().last_ext_heartbeat_ms =
         crate::focus_lock::now_ms();
+    Json(ApiResponse::ok(()))
+}
+
+/// 扩展上报的当前标签页（经 nm_host 转来）
+#[derive(Deserialize)]
+struct ActiveTabReport {
+    url: String,
+    #[serde(default)]
+    title: String,
+}
+
+const ACTIVE_TAB_URL_MAX: usize = 2048;
+const ACTIVE_TAB_TITLE_MAX: usize = 300;
+
+async fn recv_active_tab(Json(report): Json<ActiveTabReport>) -> Json<ApiResponse<()>> {
+    crate::focus_lock::set_active_tab(
+        report.url.chars().take(ACTIVE_TAB_URL_MAX).collect(),
+        report.title.chars().take(ACTIVE_TAB_TITLE_MAX).collect(),
+    );
     Json(ApiResponse::ok(()))
 }
 

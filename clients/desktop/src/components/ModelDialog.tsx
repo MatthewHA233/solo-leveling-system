@@ -108,6 +108,8 @@ const FEATURE_SPECS: readonly FeatureSpec[] = [
   { feature: 'fairy_voice_asr', label: 'Fairy 语音识别', category: 'asr', hint: '按住右 Alt 说话的流式识别（带热词与对话上下文）', allowedCategories: ['asr'] },
   { feature: 'anchor_cluster_name', label: '锚点域簇命名', category: 'text', hint: '给认知地图聚簇起 2~6 字主题名（建议低价模型）' },
   { feature: 'motive_blueprint', label: '协议志·动机蓝图', category: 'text', hint: '把一条动机展开成行动方向与具体步骤（建议中高质量模型）' },
+  { feature: 'protocol_gray', label: '协议·灰色地带判断', category: 'decision', hint: '白名单里标「灰」的内容在前台时，按协议用意和窗口标题判断是学习还是娱乐', allowedCategories: ['decision'] },
+  { feature: 'protocol_gray_vision', label: '协议·灰色地带判断（看图）', category: 'decision', hint: '标题看不出来时看截图判断；必须能看图（截图会发给模型，注意它的数据留存）', requiredModalities: ['image'], allowedCategories: ['decision'] },
 ]
 
 const FEATURE_LABEL = new Map(FEATURE_SPECS.map((f) => [f.feature, f.label]))
@@ -518,16 +520,18 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
   }, [applyQuotaProgress])
 
   const scanFreeQuota = useCallback(async () => {
+    // 免费额度是百炼的概念：走 Vercel 的决策模型不扫
+    const bailianModels = models.filter((m) => m.provider !== 'vercel')
     setErr(null)
     setScanningQuota(true)
     startBailianLoginPolling()
     setQuotaModalOpen(true)
-    setQuotaProgress({ stage: 'start', total: models.length, scanned: 0, ok: 0, failed: 0 })
+    setQuotaProgress({ stage: 'start', total: bailianModels.length, scanned: 0, ok: 0, failed: 0 })
     setQuotaLogs([{
       id: `start-local-${Date.now()}`,
       stage: 'start',
       modelId: '',
-      message: `准备扫描 ${models.length} 个模型；如未登录，请先在百炼窗口完成登录`,
+      message: `准备扫描 ${bailianModels.length} 个模型；如未登录，请先在百炼窗口完成登录`,
       color: theme.electricBlue,
     }])
     await drainQuotaProgress()
@@ -535,7 +539,7 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
       void drainQuotaProgress()
     }, 500)
     try {
-      const codes = models.map((m) => m.id)
+      const codes = bailianModels.map((m) => m.id)
       const rows = await scanBailianFreeQuota(codes)
       setFreeQuotas(rows)
       window.dispatchEvent(new CustomEvent('model-free-quota-updated'))
@@ -1953,12 +1957,13 @@ function LibraryTab({
 }) {
   return (
     <section style={panelStyle}>
-      <div style={panelHeaderStyle}>
-        <div>
+      {/* 分类加到六个后一行放不下：按钮区整体折到下一行靠右，不去挤压分类键里的字 */}
+      <div style={{ ...panelHeaderStyle, flexWrap: 'wrap', rowGap: 10 }}>
+        <div style={{ flex: '1 1 280px', minWidth: 0 }}>
           <div style={sectionTitleStyle}>模型库</div>
           <div style={mutedStyle}>点击「修改」编辑参数 · 价格单位：元 / 百万 Token · 历史调用成本不回溯</div>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <Tooltip content={bailianName ? '打开百炼窗口' : '打开百炼登录窗口，登录后自动识别'}>
             <button
               type="button"
@@ -2007,6 +2012,7 @@ function LibraryTab({
               { value: 'realtime', label: 'Realtime' },
               { value: 'embedding', label: '向量嵌入' },
               { value: 'asr', label: '语音识别' },
+              { value: 'decision', label: '决策判断' },
             ]}
             onChange={(v) => onCategory(v as ModelCategory)}
           />
@@ -2049,6 +2055,7 @@ function modelCategoryAccent(cat: ModelCategory): string {
   if (cat === 'realtime') return theme.warningOrange
   if (cat === 'embedding') return theme.shadowPurple
   if (cat === 'asr') return theme.expGreen
+  if (cat === 'decision') return ti.sys
   return theme.electricBlue
 }
 
@@ -2068,6 +2075,7 @@ function ModelCard({
   const modalities = parseList(model.modalities)
   const displayName = model.display_name?.trim() || model.id
   const accent = modelCategoryAccent(model.category)
+  const isVercel = model.provider === 'vercel'
 
   return (
     <div className="hud-card" style={{ '--accent': accent, '--accent-soft': `${accent}55`, padding: '14px 14px 12px 18px' } as CSSProperties}>
@@ -2081,31 +2089,43 @@ function ModelCard({
           style={{ flexShrink: 0 }}
         />
         <div style={{ minWidth: 0, flex: 1 }}>
-          <Tooltip content="打开百炼模型详情">
-            <button
-              type="button"
-              onClick={onOpenBailianDetail}
-              style={{
-                appearance: 'none',
-                background: 'transparent',
-                border: 'none',
-                color: theme.textPrimary,
-                cursor: 'pointer',
-                display: 'block',
-                fontFamily: 'inherit',
-                fontSize: 13,
-                fontWeight: 800,
-                lineHeight: 1.3,
-                margin: 0,
-                padding: 0,
-                textAlign: 'left',
-                whiteSpace: 'normal',
-                wordBreak: 'break-all',
-              }}
-            >
-              {displayName}
-            </button>
-          </Tooltip>
+          {isVercel ? (
+            // 走 Vercel AI Gateway 的模型（决策判断）：没有百炼详情页，标一下渠道
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <span style={{ color: theme.textPrimary, fontSize: 13, fontWeight: 800, lineHeight: 1.3, wordBreak: 'break-all' }}>
+                {displayName}
+              </span>
+              <span style={{ color: accent, background: tiSurface.well, boxShadow: tiSurface.wellShadow, borderRadius: 3, padding: '1px 6px', fontSize: 10, fontWeight: 700 }}>
+                Vercel
+              </span>
+            </div>
+          ) : (
+            <Tooltip content="打开百炼模型详情">
+              <button
+                type="button"
+                onClick={onOpenBailianDetail}
+                style={{
+                  appearance: 'none',
+                  background: 'transparent',
+                  border: 'none',
+                  color: theme.textPrimary,
+                  cursor: 'pointer',
+                  display: 'block',
+                  fontFamily: 'inherit',
+                  fontSize: 13,
+                  fontWeight: 800,
+                  lineHeight: 1.3,
+                  margin: 0,
+                  padding: 0,
+                  textAlign: 'left',
+                  whiteSpace: 'normal',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {displayName}
+              </button>
+            </Tooltip>
+          )}
           <div style={{ color: theme.textPrimary, opacity: 0.7, fontFamily: theme.fontMono, fontSize: 10, marginTop: 3, wordBreak: 'break-all', letterSpacing: 0.2 }}>
             {model.id}
           </div>
@@ -2211,8 +2231,14 @@ function ModelCard({
         })}
       </div>
       <div style={{ color: theme.textPrimary, opacity: 0.78, fontFamily: theme.fontMono, fontSize: 10, marginBottom: 10, letterSpacing: 0.3 }}>
-        单位：元 / 百万 token
+        单位：元 / 百万 token{isVercel ? '（美元价按 1:7.1 折算）' : ''}
       </div>
+      {/* 决策模型的实测成绩 / 数据留存说明（种子里写在 notes，用「｜」分段） */}
+      {isVercel && model.notes && (
+        <div style={{ display: 'grid', gap: 3, marginBottom: 10, fontSize: 11, lineHeight: 1.5, color: theme.textSecondary }}>
+          {model.notes.split('｜').map((line) => <div key={line}>{line}</div>)}
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
         <button type="button" onClick={onEdit} style={cardBtnStyle(theme.textPrimary)}>
@@ -2363,6 +2389,7 @@ function ModelEditor({
                   { value: 'realtime', label: 'Realtime' },
                   { value: 'embedding', label: '向量嵌入' },
                   { value: 'asr', label: '语音识别' },
+                  { value: 'decision', label: '决策判断' },
                 ]}
                 onChange={(v) => setDraft((m) => ({ ...m, category: v as ModelCategory }))}
               />
@@ -3063,6 +3090,8 @@ function Segmented({ value, options, onChange }: { value: string; options: { val
             style={{
               height: 24,
               padding: '0 12px',
+              flexShrink: 0,
+              whiteSpace: 'nowrap',
               border: 'none',
               borderRadius: 4,
               background: active

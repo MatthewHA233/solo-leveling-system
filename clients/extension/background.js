@@ -40,6 +40,9 @@ function connect() {
 
   // 主动报告就绪，桌面端据此下发当前规则
   send({ type: 'hello', extReady: true })
+  // 重连后桌面端不知道现在开着哪页：重报一次
+  lastReportedTab = ''
+  reportActiveTab()
 }
 
 function scheduleReconnect() {
@@ -137,6 +140,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true
   }
   return false
+})
+
+// ── 当前标签页上报 ────────────────────────────
+// 协议的灰色网站（比如 B 站：学习还是娱乐）要按「现在开着哪一页」判断，桌面端只看得到窗口标题，
+// 所以切标签 / 换页 / 切窗口时把当前激活页的网址和标题报上去（只发给本机桌面端）
+
+let lastReportedTab = ''
+
+async function reportActiveTab() {
+  try {
+    const win = await chrome.windows.getLastFocused()
+    if (!win || win.id === undefined) return
+    const [tab] = await chrome.tabs.query({ active: true, windowId: win.id })
+    if (!tab || !tab.url) return
+    const key = tab.url + ' ' + (tab.title || '')
+    if (key === lastReportedTab) return
+    lastReportedTab = key
+    send({ type: 'active_tab', url: tab.url, title: tab.title || '' })
+  } catch {
+    // 窗口刚关之类：下一次切换再报
+  }
+}
+
+chrome.tabs.onActivated.addListener(() => { reportActiveTab() })
+chrome.tabs.onUpdated.addListener((_tabId, info, tab) => {
+  if (tab.active && (info.url || info.title || info.status === 'complete')) reportActiveTab()
+})
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  if (windowId !== chrome.windows.WINDOW_ID_NONE) reportActiveTab()
 })
 
 // ── 保活与生命周期 ────────────────────────────

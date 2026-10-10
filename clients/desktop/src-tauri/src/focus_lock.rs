@@ -72,10 +72,35 @@ pub struct FocusRulesSnapshot {
     pub exceptions: Vec<String>,
 }
 
+/// 协议志正在进行的一局：白名单模式（不在名单里的应用 / 网站一律拦）。规则在开局时冻结，见 protocol.rs
+#[derive(Clone, Debug)]
+pub struct ProtocolRules {
+    pub session_id: String,
+    pub protocol_name: String,
+    /// 放行的应用规则（含灰色项），写法同屏蔽组的应用规则：exe 名 / 路径 / title:关键词
+    pub apps: Vec<String>,
+    /// 放行的网站（含灰色项）
+    pub sites: Vec<String>,
+    /// 定时局的结束时刻（Unix ms），None = 不限时
+    pub planned_end_ms: Option<i64>,
+}
+
+/// 浏览器里当前激活的标签页（扩展在切标签 / 换页 / 切窗口时上报）：协议的灰色网站判断要知道现在开着哪个网址
+#[derive(Clone, Debug)]
+pub struct ActiveTab {
+    pub url: String,
+    pub title: String,
+}
+
 pub struct SharedFocusState {
     pub snapshot: FocusRulesSnapshot,
     /// 扩展最近一次心跳时间（Unix ms），0 = 从未上线
     pub last_ext_heartbeat_ms: i64,
+    active_tab: Option<ActiveTab>,
+    /// 屏蔽组聚合出的网站 / 例外（快照由它和协议一起算出）
+    group_websites: Vec<String>,
+    group_exceptions: Vec<String>,
+    protocol: Option<ProtocolRules>,
 }
 
 static SHARED: std::sync::OnceLock<Arc<std::sync::Mutex<SharedFocusState>>> =
@@ -86,8 +111,50 @@ pub fn shared() -> &'static Arc<std::sync::Mutex<SharedFocusState>> {
         Arc::new(std::sync::Mutex::new(SharedFocusState {
             snapshot: FocusRulesSnapshot::default(),
             last_ext_heartbeat_ms: 0,
+            active_tab: None,
+            group_websites: Vec::new(),
+            group_exceptions: Vec::new(),
+            protocol: None,
         }))
     })
+}
+
+/// 扩展里「*」= 全部网站（只拦主框架，见 extension/matcher.js）
+const ALL_SITES: &str = "*";
+
+/// 由屏蔽组 + 协议重新算出给扩展的快照并 bump revision。
+/// 协议进行中：全部网站都拦，只放行协议白名单——屏蔽组的例外不能在这时候开口子，所以不并进来
+fn rebuild_snapshot(shared: &mut SharedFocusState) {
+    let (mut websites, mut exceptions) = match &shared.protocol {
+        Some(p) => (vec![ALL_SITES.to_string()], p.sites.clone()),
+        None => (shared.group_websites.clone(), shared.group_exceptions.clone()),
+    };
+    websites.sort();
+    websites.dedup();
+    exceptions.sort();
+    exceptions.dedup();
+    shared.snapshot.revision = shared.snapshot.revision.wrapping_add(1);
+    shared.snapshot.websites = websites;
+    shared.snapshot.exceptions = exceptions;
+}
+
+/// 开局 / 结束一局时调用：None = 没有进行中的局
+pub fn set_protocol_rules(rules: Option<ProtocolRules>) {
+    let mut shared = shared().lock().unwrap();
+    shared.protocol = rules;
+    rebuild_snapshot(&mut shared);
+}
+
+pub fn protocol_rules() -> Option<ProtocolRules> {
+    shared().lock().unwrap().protocol.clone()
+}
+
+pub fn set_active_tab(url: String, title: String) {
+    shared().lock().unwrap().active_tab = Some(ActiveTab { url, title });
+}
+
+pub fn active_tab() -> Option<ActiveTab> {
+    shared().lock().unwrap().active_tab.clone()
 }
 
 pub fn now_ms() -> i64 {
@@ -97,7 +164,7 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// 把当前所有活跃组的网站/例外聚合进共享快照并 bump revision。
+/// 把当前所有活跃组的网站/例外聚合进共享快照并 bump revision（去重排序在 rebuild_snapshot 里）。
 /// 在持有 active_groups 锁的调用点之后调用（传入已读出的组集合避免重复锁）。
 fn publish_rules_snapshot(groups: &HashMap<String, GroupData>) {
     let mut websites: Vec<String> = Vec::new();
@@ -106,15 +173,11 @@ fn publish_rules_snapshot(groups: &HashMap<String, GroupData>) {
         websites.extend(g.websites.iter().cloned());
         exceptions.extend(g.exceptions.iter().cloned());
     }
-    websites.sort();
-    websites.dedup();
-    exceptions.sort();
-    exceptions.dedup();
 
     let mut shared = shared().lock().unwrap();
-    shared.snapshot.revision = shared.snapshot.revision.wrapping_add(1);
-    shared.snapshot.websites = websites;
-    shared.snapshot.exceptions = exceptions;
+    shared.group_websites = websites;
+    shared.group_exceptions = exceptions;
+    rebuild_snapshot(&mut shared);
 }
 
 #[derive(serde::Serialize)]
@@ -486,6 +549,94 @@ fn minimize_matching_foreground_window(blocked_apps: &[String]) -> Option<FocusW
 #[cfg(not(windows))]
 fn minimize_matching_foreground_window(_blocked_apps: &[String]) -> Option<FocusWindowInfo> {
     None
+}
+
+/// 协议白名单模式下永远放行的系统外壳：桌面 / 任务栏 / 开始菜单 / 输入法 / 锁屏，以及任务管理器（最后的出口）。
+/// 读不出进程路径的窗口（unknown）也放过，宁可漏拦也别和系统窗口打架
+const PROTOCOL_SHELL_APPS: &[&str] = &[
+    "explorer.exe",
+    "dwm.exe",
+    "searchhost.exe",
+    "searchapp.exe",
+    "startmenuexperiencehost.exe",
+    "shellexperiencehost.exe",
+    "textinputhost.exe",
+    "lockapp.exe",
+    "taskmgr.exe",
+    "unknown",
+];
+
+/// 协议拦下的一个窗口
+pub struct ProtocolBlockHit {
+    pub app: String,
+    pub title: String,
+}
+
+/// 协议进行中：前台窗口不在白名单里就最小化。返回被拦的窗口（没拦返回 None）
+#[cfg(windows)]
+pub fn enforce_protocol_foreground(rules: &ProtocolRules) -> Option<ProtocolBlockHit> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_MINIMIZE};
+
+    let (hwnd, info) = current_foreground_window()?;
+    if info.pid == std::process::id()
+        || PROTOCOL_SHELL_APPS.contains(&info.app.as_str())
+        || focus_window_matches_rules(&info, &rules.apps)
+    {
+        return None;
+    }
+
+    unsafe {
+        ShowWindow(hwnd, SW_MINIMIZE);
+    }
+    log::info!(
+        "[Protocol] 不在白名单，已最小化 app={} title={}",
+        info.app,
+        info.title
+    );
+    Some(ProtocolBlockHit { app: info.app, title: info.title })
+}
+
+#[cfg(not(windows))]
+pub fn enforce_protocol_foreground(_rules: &ProtocolRules) -> Option<ProtocolBlockHit> {
+    None
+}
+
+/// 前台窗口（不含 Solevup 自己）：灰色地带判断看「现在在看什么」
+pub struct ForegroundWindow {
+    /// 小写 exe 名
+    pub app: String,
+    pub title: String,
+}
+
+#[cfg(windows)]
+pub fn foreground_window() -> Option<ForegroundWindow> {
+    let (_, info) = current_foreground_window()?;
+    (info.pid != std::process::id()).then_some(ForegroundWindow { app: info.app, title: info.title })
+}
+
+#[cfg(not(windows))]
+pub fn foreground_window() -> Option<ForegroundWindow> {
+    None
+}
+
+/// 前台还是这个应用就把它最小化（灰色地带连续判成娱乐时的「收紧」）。返回是否真的压下去了
+#[cfg(windows)]
+pub fn minimize_foreground_app(app: &str) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_MINIMIZE};
+    match current_foreground_window() {
+        Some((hwnd, info)) if info.app == app && info.pid != std::process::id() => {
+            unsafe {
+                ShowWindow(hwnd, SW_MINIMIZE);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(not(windows))]
+pub fn minimize_foreground_app(_app: &str) -> bool {
+    false
 }
 
 // ── 扩展掉线阶梯惩罚 ──────────────────────────

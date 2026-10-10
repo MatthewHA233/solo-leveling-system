@@ -12,27 +12,27 @@ use uuid::Uuid;
 use chrono::{Duration, NaiveDateTime, Utc};
 
 #[cfg(windows)]
-const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets_windows";
+pub(crate) const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets_windows";
 #[cfg(windows)]
-const PERCEPTION_EVENTS_TABLE: &str = "perception_events_windows";
+pub(crate) const PERCEPTION_EVENTS_TABLE: &str = "perception_events_windows";
 #[cfg(windows)]
 const APP_CATALOG_TABLE: &str = "app_catalog_windows";
 #[cfg(windows)]
 const PERCEPTION_PLATFORM: &str = "win";
 
 #[cfg(target_os = "macos")]
-const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets_macos";
+pub(crate) const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets_macos";
 #[cfg(target_os = "macos")]
-const PERCEPTION_EVENTS_TABLE: &str = "perception_events_macos";
+pub(crate) const PERCEPTION_EVENTS_TABLE: &str = "perception_events_macos";
 #[cfg(target_os = "macos")]
 const APP_CATALOG_TABLE: &str = "app_catalog_macos";
 #[cfg(target_os = "macos")]
 const PERCEPTION_PLATFORM: &str = "mac";
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
-const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets";
+pub(crate) const PERCEPTION_BUCKETS_TABLE: &str = "perception_buckets";
 #[cfg(all(not(windows), not(target_os = "macos")))]
-const PERCEPTION_EVENTS_TABLE: &str = "perception_events";
+pub(crate) const PERCEPTION_EVENTS_TABLE: &str = "perception_events";
 #[cfg(all(not(windows), not(target_os = "macos")))]
 const APP_CATALOG_TABLE: &str = "app_catalog";
 #[cfg(all(not(windows), not(target_os = "macos")))]
@@ -1347,10 +1347,13 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE model_api_keys ADD COLUMN deleted_at TEXT");
         migrate_legacy_perception_tables(&conn)?;
         crate::notes::init_note_tables(&conn)?;
+        crate::protocol::init_protocol_tables(&conn)?;
+        crate::jev::init_jev_tables(&conn)?;
 
         // 首次启动写入百炼模型库与默认绑定种子（已存在则跳过，幂等）
         seed_model_registry(&conn)?;
         seed_feature_bindings(&conn)?;
+        crate::jev::seed_decision_models(&conn)?;
 
         log::info!("[Database] 表初始化完成");
         Ok(())

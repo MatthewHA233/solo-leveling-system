@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// 协议志：清单（滴答清单式的任务树）/ 动机云（动机长出行动的蓝图）
+// 协议志：协议（白名单锁机，开局后只放行名单里的应用 / 网站）/ 清单（滴答清单式的任务树）/ 动机云（动机长出行动的蓝图）
 //   面板标题「协议志」已在主面板凸台上，这里只放视图切换。
 //   动机云逐帧跑膜模拟，不在它那页时卸载，省 CPU / 内存。
 // ══════════════════════════════════════════════
@@ -10,14 +10,17 @@ import { theme, ti } from '../../theme'
 import Segmented from '../ui/Segmented'
 import MotiveCloud from '../motive-cloud/MotiveCloud'
 import ChecklistView from './checklist/ChecklistView'
+import LockView from './lock/LockView'
 
-type ProtocolSubview = 'checklist' | 'motives'
+type ProtocolSubview = 'lock' | 'checklist' | 'motives'
+const SUBVIEWS: readonly ProtocolSubview[] = ['lock', 'checklist', 'motives']
 
 const SUBVIEW_KEY = 'slu.protocol.subview'
 
 function loadSubview(): ProtocolSubview {
   try {
-    return localStorage.getItem(SUBVIEW_KEY) === 'motives' ? 'motives' : 'checklist'
+    const saved = localStorage.getItem(SUBVIEW_KEY)
+    return SUBVIEWS.find((v) => v === saved) ?? 'checklist'
   } catch {
     return 'checklist'
   }
@@ -49,6 +52,7 @@ export default function ProtocolView(props: ProtocolViewProps) {
           value={subview}
           onChange={change}
           options={[
+            { value: 'lock', label: '协议', led: ti.led, tip: '每份协议一份白名单：开局后只放行名单里的应用和网站' },
             { value: 'checklist', label: '清单', led: ti.led, tip: '任务清单：多层清单 + 无限子任务，和昼夜表的计划是同一份' },
             { value: 'motives', label: '动机云', led: ti.sys, tip: '动机长出行动方向的蓝图' },
           ]}
@@ -56,9 +60,11 @@ export default function ProtocolView(props: ProtocolViewProps) {
         <div className="ti-groove-h" style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }} />
       </div>
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-        {subview === 'checklist'
-          ? <ChecklistView palette={props.palette} onPaletteChange={props.onPaletteChange} onPlanNodesChange={props.onPlanNodesChange} />
-          : <MotiveCloud />}
+        {subview === 'lock' && <LockView />}
+        {subview === 'checklist' && (
+          <ChecklistView palette={props.palette} onPaletteChange={props.onPaletteChange} onPlanNodesChange={props.onPlanNodesChange} />
+        )}
+        {subview === 'motives' && <MotiveCloud />}
       </div>
     </div>
   )

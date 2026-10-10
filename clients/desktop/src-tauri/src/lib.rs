@@ -8,6 +8,11 @@ mod db;
 mod api;
 mod notes;
 mod notes_api;
+mod jev;
+mod protocol;
+mod protocol_gray;
+mod protocol_watch;
+mod protocols_api;
 mod sync_discovery;
 mod sync_engine;
 mod fish_tts;
@@ -1786,6 +1791,10 @@ pub fn run() {
                 let app_handle_for_api: std::sync::Arc<tauri::AppHandle> =
                     std::sync::Arc::new(app.handle().clone());
                 let app_handle_for_startup = app_handle_for_api.clone();
+                // 协议志的锁：接着上次没结束的局 + 前台窗口白名单执行 + 定时局到点结束
+                protocol_watch::spawn_protocol_watcher(db_clone.clone(), app_handle_for_api.clone());
+                // 灰色地带的 AI 判断（决策模型，模型库绑定）：独立循环，网络慢也不耽误拦截
+                protocol_gray::spawn_gray_judge(db_clone.clone(), app_handle_for_api.clone());
                 tauri::async_runtime::spawn(async move {
                     api::start_server(db_for_api, bili_clone, bailian_clone, bili_dl_clone, app_handle_for_api, 39733).await;
                 });

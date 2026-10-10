@@ -20,7 +20,7 @@ interface ApiResponse<T> {
   error?: string
 }
 
-function toLocalDateStr(date: Date): string {
+export function toLocalDateStr(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
@@ -1184,7 +1184,8 @@ export async function closePresenceSpan(id: string, endTime: string): Promise<vo
 // 通过 tauri invoke 调用，不走 HTTP
 // ══════════════════════════════════════════════
 
-export type ModelCategory = 'text' | 'omni' | 'realtime' | 'embedding' | 'asr'
+/** decision = 决策模型（只做选择题 / 打分题，走 Vercel AI Gateway，见 src-tauri/src/jev.rs） */
+export type ModelCategory = 'text' | 'omni' | 'realtime' | 'embedding' | 'asr' | 'decision'
 
 export interface ModelPricingTier {
   tier_min_tokens: number

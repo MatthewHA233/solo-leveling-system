@@ -88,31 +88,43 @@
     return '||' + pattern
   }
 
+  // 「*」= 全部网站（协议志的白名单模式：全拦 + 名单放行）。
+  // dNR 不允许 urlFilter 以 ||* 开头，所以这条干脆不写 urlFilter（= 匹配所有 URL）；
+  // 而且只拦主框架：白名单网页里嵌的第三方框（登录、验证码、嵌入示例）照常加载
+  const ALL_SITES = '*'
+
+  function ruleToCondition(raw) {
+    const pattern = normalizePattern(raw)
+    if (!pattern) return null
+    if (pattern === ALL_SITES) return { resourceTypes: ['main_frame'] }
+    return { urlFilter: ruleToUrlFilter(pattern), resourceTypes: ['main_frame', 'sub_frame'] }
+  }
+
   function compileToDnr(websites, exceptions, redirectUrl) {
     const rules = []
     let id = 1
 
     ;(websites || []).forEach((raw) => {
-      const urlFilter = ruleToUrlFilter(raw)
-      if (!urlFilter) return
+      const condition = ruleToCondition(raw)
+      if (!condition) return
       rules.push({
         id: id++,
         priority: PRIORITY_BLOCK,
         action: redirectUrl
           ? { type: 'redirect', redirect: { url: redirectUrl } }
           : { type: 'block' },
-        condition: { urlFilter, resourceTypes: ['main_frame', 'sub_frame'] },
+        condition,
       })
     })
 
     ;(exceptions || []).forEach((raw) => {
-      const urlFilter = ruleToUrlFilter(raw)
-      if (!urlFilter) return
+      const condition = ruleToCondition(raw)
+      if (!condition) return
       rules.push({
         id: id++,
         priority: PRIORITY_ALLOW,
         action: { type: 'allow' },
-        condition: { urlFilter, resourceTypes: ['main_frame', 'sub_frame'] },
+        condition,
       })
     })
 

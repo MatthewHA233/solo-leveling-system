@@ -6,6 +6,7 @@
 //   · GET  /api/focus/rules     → 规则有新 revision 就推给扩展
 //   · POST /api/focus/heartbeat → 上报「扩展在线」（本进程存活即扩展已连接，
 //                                   扩展被禁用时 Chrome 会杀掉本进程，心跳自然中断）
+//   · POST /api/focus/active-tab → 转交扩展上报的当前标签页（协议的灰色网站判断用）
 //
 // 不依赖 tokio/reqwest：localhost 小报文，裸 TcpStream 足够，且更轻更稳。
 // ══════════════════════════════════════════════
@@ -81,6 +82,9 @@ fn handle_ext_message(msg: &serde_json::Value) {
     let kind = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
     if matches!(kind, "hello" | "pong" | "rules_applied") {
         let _ = http_post("/api/focus/heartbeat", "{\"ext_ready\":true}");
+    }
+    if kind == "active_tab" {
+        let _ = http_post("/api/focus/active-tab", &msg.to_string());
     }
 }
 

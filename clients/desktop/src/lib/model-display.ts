@@ -8,6 +8,7 @@ export const MODEL_CATEGORY_LABEL: Record<ModelCategory, string> = {
   realtime: 'Realtime',
   embedding: '\u5411\u91cf\u5d4c\u5165',
   asr: '\u8bed\u97f3\u8bc6\u522b',
+  decision: '\u51b3\u7b56\u5224\u65ad',
 }
 
 export function formatModelName(model: ModelDef): string {
