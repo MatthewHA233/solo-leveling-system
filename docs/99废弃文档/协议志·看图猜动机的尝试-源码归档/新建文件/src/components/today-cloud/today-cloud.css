@@ -1,0 +1,77 @@
+/* 今日动机云：黑色舞台上的共振膜 + 宋体标签；底栏是黑玻璃上的一行 */
+
+.tc-stage { position: absolute; inset: 0; overflow: hidden; background: #050505; user-select: none; }
+.tc-canvas { position: absolute; inset: 0; display: block; }
+.tc-head {
+  position: absolute; top: 18px; left: 22px; margin: 0;
+  font-family: 'Exo 2', 'Microsoft YaHei', sans-serif; font-size: 11px; font-weight: 600;
+  letter-spacing: 0.34em; color: #5E6873;
+}
+.tc-sep { margin: 0 0.6em; color: #39424B; }
+.tc-legend {
+  position: absolute; top: 38px; left: 22px; right: 22px; margin: 0; display: flex; align-items: center; flex-wrap: wrap;
+  font-family: 'Microsoft YaHei', sans-serif; font-size: 11px; color: #56616B; letter-spacing: 0.06em;
+}
+.tc-ring { width: 9px; height: 9px; margin-right: 6px; border-radius: 50%; border: 1px solid rgba(158, 216, 242, 0.75); }
+.tc-now {
+  position: absolute; top: 16px; right: 22px; margin: 0; max-width: 46%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: 'Microsoft YaHei', sans-serif; font-size: 12px; color: #9ED8F2; letter-spacing: 0.04em;
+}
+
+.tc-labels { position: absolute; inset: 0; pointer-events: none; }
+.tc-anchor { position: absolute; left: 0; top: 0; width: 0; height: 0; will-change: transform, opacity; }
+/* 字距 0、字重 400：pretext 按这个量的，渲染要和测量一致 */
+.tc-motive {
+  position: absolute; padding: 0; margin: 0; background: transparent; border: none; cursor: pointer; pointer-events: auto;
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', serif; font-weight: 400; letter-spacing: 0;
+  transition: color 0.2s;
+}
+.tc-line { display: block; white-space: nowrap; }
+.tc-motive:hover { color: #FFE2BD !important; }
+.tc-motive:focus-visible { outline: 1px solid #FFE2BD; outline-offset: 3px; }
+.tc-hit {
+  position: absolute; left: -12px; top: -12px; width: 24px; height: 24px; border-radius: 50%;
+  background: transparent; border: none; padding: 0; cursor: pointer; pointer-events: auto;
+}
+
+.tc-empty {
+  position: absolute; left: 50%; top: 44%; transform: translate(-50%, -50%); margin: 0;
+  width: min(460px, 86%); text-align: center; line-height: 1.9;
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', serif; font-size: 15px; color: #7C8792;
+}
+.tc-error {
+  position: absolute; top: 64px; left: 22px; display: flex; gap: 12px; align-items: center;
+  font-size: 12px; color: #FF9A7A;
+}
+.tc-error button { background: transparent; border: none; color: #BFB3A4; cursor: pointer; font-size: 12px; }
+
+.tc-bar {
+  position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+  width: min(720px, calc(100% - 32px)); min-height: 42px; box-sizing: border-box;
+  display: flex; align-items: center; gap: 12px; padding: 6px 8px 6px 16px;
+  background: rgba(8, 9, 11, 0.86); border: 1px solid #1C232B; border-radius: 6px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+.tc-bar-text {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', serif; font-size: 14px; color: #E4E0DA;
+}
+.tc-bar-meta { flex: none; font-size: 11.5px; color: #7C8792; white-space: nowrap; }
+.tc-btn {
+  flex: none; height: 28px; padding: 0 12px; border-radius: 4px; cursor: pointer; white-space: nowrap;
+  background: transparent; border: 1px solid #2A333D; color: #BFB3A4; font-size: 12px;
+}
+.tc-btn:hover { border-color: #4A5560; color: #E4E0DA; }
+.tc-btn-sys { border-color: rgba(158, 216, 242, 0.45); color: #9ED8F2; }
+.tc-btn-sys:hover { border-color: rgba(158, 216, 242, 0.85); color: #CFEFFF; }
+.tc-input {
+  flex: 1; min-width: 0; height: 28px; background: transparent; border: none; outline: none;
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', serif; font-size: 14px; color: #E4E0DA;
+}
+.tc-input::placeholder { color: #56616B; }
+
+@media (max-width: 760px) {
+  .tc-now { top: 58px; left: 22px; right: 22px; max-width: none; }
+  .tc-bar-meta { display: none; }
+}

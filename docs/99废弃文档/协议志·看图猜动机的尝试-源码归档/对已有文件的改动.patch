@@ -1,0 +1,955 @@
+diff --git a/clients/desktop/src-tauri/Cargo.toml b/clients/desktop/src-tauri/Cargo.toml
+index 03e08ee..db0cc64 100644
+--- a/clients/desktop/src-tauri/Cargo.toml
++++ b/clients/desktop/src-tauri/Cargo.toml
+@@ -115,3 +115,8 @@ debug = "line-tables-only"
+ # 第三方依赖不要调试符号：从不单步调试 Tauri / tokio 等库的源码
+ [profile.dev.package."*"]
+ debug = false
++
++# 截图缩放 + JPEG 编码在不优化的调试版里要 1.5 秒（系统感知每 10 秒截一次，思维终端里一眼看得出慢在这）；
++# 只给 image 开优化，调试版也降到一两百毫秒
++[profile.dev.package.image]
++opt-level = 3
+diff --git a/clients/desktop/src-tauri/capabilities/default.json b/clients/desktop/src-tauri/capabilities/default.json
+index 329b68b..81fb48d 100644
+--- a/clients/desktop/src-tauri/capabilities/default.json
++++ b/clients/desktop/src-tauri/capabilities/default.json
+@@ -6,6 +6,7 @@
+     "main",
+     "camera-preview",
+     "fairy-window",
++    "system-window",
+     "bili-login",
+     "bailian-login"
+   ],
+diff --git a/clients/desktop/src-tauri/src/api.rs b/clients/desktop/src-tauri/src/api.rs
+index afd7c02..5fc3731 100644
+--- a/clients/desktop/src-tauri/src/api.rs
++++ b/clients/desktop/src-tauri/src/api.rs
+@@ -1775,6 +1775,7 @@ pub fn create_router(
+         .route("/api/anchors/{id}", patch(update_anchor))
+         .merge(crate::notes_api::routes())
+         .merge(crate::protocols_api::routes())
++        .merge(crate::sense_api::routes())
+         .layer(
+             CorsLayer::new()
+                 .allow_origin(Any)
+diff --git a/clients/desktop/src-tauri/src/db.rs b/clients/desktop/src-tauri/src/db.rs
+index a505564..be58303 100644
+--- a/clients/desktop/src-tauri/src/db.rs
++++ b/clients/desktop/src-tauri/src/db.rs
+@@ -1349,11 +1349,15 @@ impl Database {
+         crate::notes::init_note_tables(&conn)?;
+         crate::protocol::init_protocol_tables(&conn)?;
+         crate::jev::init_jev_tables(&conn)?;
++        crate::sense::init_sense_tables(&conn)?;
++        crate::sense_today::init_today_tables(&conn)?;
++        crate::sense_motives::init_motive_tables(&conn)?;
+ 
+         // 首次启动写入百炼模型库与默认绑定种子（已存在则跳过，幂等）
+         seed_model_registry(&conn)?;
+         seed_feature_bindings(&conn)?;
+         crate::jev::seed_decision_models(&conn)?;
++        crate::sense_hypo::seed_binding(&conn)?;
+ 
+         log::info!("[Database] 表初始化完成");
+         Ok(())
+diff --git a/clients/desktop/src-tauri/src/jev.rs b/clients/desktop/src-tauri/src/jev.rs
+index 035dd76..e8fc84a 100644
+--- a/clients/desktop/src-tauri/src/jev.rs
++++ b/clients/desktop/src-tauri/src/jev.rs
+@@ -1,7 +1,7 @@
+ // ══════════════════════════════════════════════
+ // 决策模型（System One 接口，Jev 开的头）：只做选择题 / 是非题 / 打分题，不生成文字；快（百毫秒级）、输出免费
+-//   协议的灰色地带拿它判断「这段内容和协议用意的关系」（见 protocol_gray.rs）
+-//   用哪个模型由模型库绑定（feature_bindings：protocol_gray 基础判断 / protocol_gray_vision 看图判断），
++//   协议的灰色地带拿它判断「这段内容和协议用意的关系」（protocol_gray.rs），系统感知内核拿它判活动和动机（sense.rs）
++//   用哪个模型由模型库绑定（feature_bindings：protocol_gray / system_sense 按标题判断，*_vision 看截图判断），
+ //   推荐的几个（Decision-1 / Jev / Liquid d1）由 seed_decision_models 写进模型库，带价格和实测成绩
+ //   渠道：默认 Vercel AI Gateway（国内直连）；连接（地址 + Key）存本机 jev_config 一行，Key 读出时只给后四位
+ //   每次调用记进模型审计（model_call_log，feature = 这次用的功能位）
+@@ -22,11 +22,13 @@ const MAX_URL_CHARS: usize = 300;
+ const MAX_KEY_CHARS: usize = 500;
+ const ERROR_BODY_CHARS: usize = 200;
+ 
+-/// 模型库里的功能位：按标题判断 / 看截图判断
++/// 模型库里的功能位：灰色地带按标题判断 / 看截图判断；系统感知内核按标题判断 / 看截图判断
+ pub const FEATURE_GRAY: &str = "protocol_gray";
+ pub const FEATURE_GRAY_VISION: &str = "protocol_gray_vision";
+-const DEFAULT_GRAY_MODEL: &str = "microsoft/microsoft-decision-1";
+-const DEFAULT_GRAY_VISION_MODEL: &str = "liquid/d1";
++pub const FEATURE_SENSE: &str = "system_sense";
++pub const FEATURE_SENSE_VISION: &str = "system_sense_vision";
++const DEFAULT_TEXT_MODEL: &str = "microsoft/microsoft-decision-1";
++const DEFAULT_VISION_MODEL: &str = "liquid/d1";
+ 
+ /// 模型库统一按「元 / 百万 token」记价；Vercel 标的是美元，按这个汇率折算（备注里留着美元原价）
+ const USD_TO_CNY: f64 = 7.1;
+@@ -112,7 +114,13 @@ pub(crate) fn seed_decision_models(conn: &Connection) -> Result<(), String> {
+         )
+         .map_err(|e| e.to_string())?;
+     }
+-    for (feature, model) in [(FEATURE_GRAY, DEFAULT_GRAY_MODEL), (FEATURE_GRAY_VISION, DEFAULT_GRAY_VISION_MODEL)] {
++    let defaults = [
++        (FEATURE_GRAY, DEFAULT_TEXT_MODEL),
++        (FEATURE_GRAY_VISION, DEFAULT_VISION_MODEL),
++        (FEATURE_SENSE, DEFAULT_TEXT_MODEL),
++        (FEATURE_SENSE_VISION, DEFAULT_VISION_MODEL),
++    ];
++    for (feature, model) in defaults {
+         conn.execute(
+             "INSERT OR IGNORE INTO feature_bindings (feature, model_id, updated_at) VALUES (?1, ?2, ?3)",
+             params![feature, model, now],
+@@ -123,7 +131,7 @@ pub(crate) fn seed_decision_models(conn: &Connection) -> Result<(), String> {
+ }
+ 
+ fn default_model(feature: &str) -> &'static str {
+-    if feature == FEATURE_GRAY_VISION { DEFAULT_GRAY_VISION_MODEL } else { DEFAULT_GRAY_MODEL }
++    if feature == FEATURE_GRAY_VISION || feature == FEATURE_SENSE_VISION { DEFAULT_VISION_MODEL } else { DEFAULT_TEXT_MODEL }
+ }
+ 
+ fn clean_base_url(raw: &str) -> Result<String, String> {
+@@ -248,20 +256,68 @@ fn truncate(s: &str, max: usize) -> String {
+     s.chars().take(max).collect()
+ }
+ 
+-async fn post_choice(cfg: &JevConfig, state: &str, q: &ChoiceQuestion<'_>) -> Result<(serde_json::Value, u64), String> {
+-    if cfg.api_key.is_empty() {
+-        return Err("还没填判断模型的 Key".into());
++/// 发给决策模型的「状态」：纯文字，或文字 + 一张当前窗口截图（JPEG）。
++/// 经 Vercel 时图片必须放在 state 的 content parts 里、type = image_url（顶层 images 字段会被丢掉，2026-10-10 实测）
++pub enum DecideState<'a> {
++    Text(&'a str),
++    WithImage { text: &'a str, jpeg: &'a [u8] },
++}
++
++impl DecideState<'_> {
++    fn to_json(&self) -> serde_json::Value {
++        use base64::Engine as _;
++        match self {
++            DecideState::Text(t) => serde_json::Value::String((*t).to_string()),
++            DecideState::WithImage { text, jpeg } => serde_json::json!([
++                { "type": "text", "text": text },
++                { "type": "image_url", "image_url": {
++                    "url": format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(jpeg))
++                } },
++            ]),
++        }
+     }
+-    let criteria: serde_json::Map<String, serde_json::Value> = q
+-        .criteria
++
++    fn has_image(&self) -> bool {
++        matches!(self, DecideState::WithImage { .. })
++    }
++}
++
++/// 一次请求的结果：answers 原样保留（题 id → 答案），用 parse_choice / parse_noul 取
++#[derive(Debug, Clone)]
++pub struct DecideOutcome {
++    pub answers: serde_json::Value,
++    pub latency_ms: u64,
++    pub model: String,
++    pub input_tokens: i64,
++}
++
++/// 选择题的 JSON：criteria = [(选项 key, 选项描述)]
++pub fn choice_json(instructions: &str, criteria: &[(String, String)]) -> serde_json::Value {
++    let map: serde_json::Map<String, serde_json::Value> = criteria
+         .iter()
+-        .map(|(k, v)| ((*k).to_string(), serde_json::Value::String((*v).to_string())))
++        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+         .collect();
+-    let body = serde_json::json!({
+-        "model": cfg.model,
+-        "state": state,
+-        "questions": { q.id: { "type": "choice", "instructions": q.instructions, "criteria": criteria } },
+-    });
++    serde_json::json!({ "type": "choice", "instructions": instructions, "criteria": map })
++}
++
++/// 是非题的 JSON
++pub fn noul_json(instructions: &str) -> serde_json::Value {
++    serde_json::json!({ "type": "noul", "instructions": instructions })
++}
++
++pub fn parse_noul(answers: &serde_json::Value, id: &str) -> Option<f64> {
++    answers.get(id)?.get("noul")?.as_f64()
++}
++
++pub fn parse_choice(answers: &serde_json::Value, id: &str) -> Option<ChoiceAnswer> {
++    serde_json::from_value(answers.get(id)?.clone()).ok()
++}
++
++async fn post(cfg: &JevConfig, state: &DecideState<'_>, questions: &serde_json::Value) -> Result<(serde_json::Value, u64), String> {
++    if cfg.api_key.is_empty() {
++        return Err("还没填判断模型的 Key".into());
++    }
++    let body = serde_json::json!({ "model": cfg.model, "state": state.to_json(), "questions": questions });
+     let started = Instant::now();
+     let res = client()
+         .post(format!("{}/v1/systemone", cfg.base_url))
+@@ -281,34 +337,37 @@ async fn post_choice(cfg: &JevConfig, state: &str, q: &ChoiceQuestion<'_>) -> Re
+     Ok((json, latency_ms))
+ }
+ 
+-/// 问一道选择题；成功失败都记进模型审计（feature = 这次用的功能位）
+-pub async fn decide_choice(
++/// 一次问一道或几道题（同一个状态，模型并行判）；成功失败都记进模型审计（feature = 这次用的功能位）
++pub async fn decide(
+     db: &Database,
+     feature: &str,
+     cfg: &JevConfig,
+-    state: &str,
+-    q: &ChoiceQuestion<'_>,
+-) -> Result<ChoiceOutcome, String> {
++    state: &DecideState<'_>,
++    questions: serde_json::Value,
++) -> Result<DecideOutcome, String> {
+     let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+-    let result = post_choice(cfg, state, q).await.and_then(|(json, latency_ms)| {
+-        let answer: ChoiceAnswer = serde_json::from_value(json["answers"][q.id].clone())
+-            .map_err(|_| format!("判断结果里没有这道题的答案：{}", truncate(&json.to_string(), ERROR_BODY_CHARS)))?;
+-        Ok(ChoiceOutcome {
+-            answer,
++    let result = post(cfg, state, &questions).await.and_then(|(json, latency_ms)| {
++        let answers = json.get("answers").cloned().filter(|a| a.is_object()).ok_or_else(|| {
++            format!("判断结果里没有答案：{}", truncate(&json.to_string(), ERROR_BODY_CHARS))
++        })?;
++        Ok(DecideOutcome {
++            answers,
+             latency_ms,
+             model: json["model"].as_str().unwrap_or(&cfg.model).to_string(),
+             input_tokens: json["usage"]["input_tokens"].as_i64().unwrap_or(0),
+         })
+     });
+ 
++    let tokens = result.as_ref().map(|o| o.input_tokens).unwrap_or(0);
+     let audit = LogModelCallRequest {
+         api_key_id: None,
+         feature: feature.into(),
+         model_id: cfg.model.clone(),
+         started_at,
+         duration_ms: result.as_ref().ok().map(|o| o.latency_ms as i64),
+-        prompt_text_tokens: result.as_ref().map(|o| o.input_tokens).unwrap_or(0),
+-        prompt_image_tokens: 0,
++        // 带图时整份输入算图片 token（Liquid d1 图文同价，记账只为分得清）
++        prompt_text_tokens: if state.has_image() { 0 } else { tokens },
++        prompt_image_tokens: if state.has_image() { tokens } else { 0 },
+         prompt_video_tokens: 0,
+         prompt_audio_tokens: 0,
+         completion_text_tokens: 0,
+@@ -323,6 +382,22 @@ pub async fn decide_choice(
+     result
+ }
+ 
++/// 问一道选择题（灰色地带用）
++pub async fn decide_choice(
++    db: &Database,
++    feature: &str,
++    cfg: &JevConfig,
++    state: &str,
++    q: &ChoiceQuestion<'_>,
++) -> Result<ChoiceOutcome, String> {
++    let criteria: Vec<(String, String)> = q.criteria.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect();
++    let questions = serde_json::json!({ q.id: choice_json(q.instructions, &criteria) });
++    let out = decide(db, feature, cfg, &DecideState::Text(state), questions).await?;
++    let answer = parse_choice(&out.answers, q.id)
++        .ok_or_else(|| format!("判断结果里没有这道题的答案：{}", truncate(&out.answers.to_string(), ERROR_BODY_CHARS)))?;
++    Ok(ChoiceOutcome { answer, latency_ms: out.latency_ms, model: out.model, input_tokens: out.input_tokens })
++}
++
+ // ── 灰色地带那道题 ──
+ 
+ pub const RELATION_QUESTION_ID: &str = "relation";
+diff --git a/clients/desktop/src-tauri/src/lib.rs b/clients/desktop/src-tauri/src/lib.rs
+index 9713909..9fa66f2 100644
+--- a/clients/desktop/src-tauri/src/lib.rs
++++ b/clients/desktop/src-tauri/src/lib.rs
+@@ -13,6 +13,12 @@ mod protocol;
+ mod protocol_gray;
+ mod protocol_watch;
+ mod protocols_api;
++mod sense;
++mod sense_api;
++mod sense_hypo;
++mod sense_motives;
++mod sense_thoughts;
++mod sense_today;
+ mod sync_discovery;
+ mod sync_engine;
+ mod fish_tts;
+@@ -1795,6 +1801,8 @@ pub fn run() {
+                 protocol_watch::spawn_protocol_watcher(db_clone.clone(), app_handle_for_api.clone());
+                 // 灰色地带的 AI 判断（决策模型，模型库绑定）：独立循环，网络慢也不耽误拦截
+                 protocol_gray::spawn_gray_judge(db_clone.clone(), app_handle_for_api.clone());
++                // 系统 · 感知内核：每 10 秒看一眼，猜你此刻在推进哪个小目标，拿不准就来问（悬浮系统窗靠它说话）
++                sense::spawn_sense_kernel(db_clone.clone(), app_handle_for_api.clone());
+                 tauri::async_runtime::spawn(async move {
+                     api::start_server(db_for_api, bili_clone, bailian_clone, bili_dl_clone, app_handle_for_api, 39733).await;
+                 });
+diff --git a/clients/desktop/src-tauri/src/perception_windows.rs b/clients/desktop/src-tauri/src/perception_windows.rs
+index 11a7984..4b56fc5 100644
+--- a/clients/desktop/src-tauri/src/perception_windows.rs
++++ b/clients/desktop/src-tauri/src/perception_windows.rs
+@@ -522,8 +522,8 @@ fn capture_screenshot_now(settings: &ScreenshotSettings) -> Result<PathBuf, Stri
+ 
+     let (x, y, width, height) =
+         capture_rect(settings).ok_or_else(|| "截图区域尺寸无效".to_string())?;
+-    let pixels = capture_region_bgra(x, y, width, height)?;
+-    let image = bgra_to_rgba(width, height, &pixels)?;
++    let pixels = capture_region_bgra(x, y, width, height, true)?;
++    let image = bgra_to_rgba(width, height, pixels)?;
+     let image = resize_for_settings(image, settings.resolution_percent);
+     let bytes = encode_screenshot_image(image, &settings.format, settings.quality)?;
+     fs::write(&path, bytes).map_err(|e| format!("写入截图失败: {}", e))?;
+@@ -755,6 +755,38 @@ fn file_extension_for_format(format: &str) -> &'static str {
+     }
+ }
+ 
++/// 系统感知的一张截图 + 各段耗时（思维终端里显示，看慢在哪）
++pub struct ActiveShot {
++    pub jpeg: Vec<u8>,
++    pub grab_ms: u64,
++    pub convert_ms: u64,
++    pub shrink_ms: u64,
++}
++
++/// 截当前前台窗口，缩到最长边不超过 max_side，编成 JPEG，只在内存里（不落盘）——系统感知内核看图判断用
++/// 不带 CAPTUREBLT：分层窗口（包括我们自己悬浮的系统窗）不截进去，也省掉 DWM 同步那一下
++pub fn capture_active_window_jpeg(max_side: u32, quality: u8) -> Result<ActiveShot, String> {
++    let (x, y, width, height) = active_window_rect().ok_or_else(|| "读不到前台窗口".to_string())?;
++    let t0 = std::time::Instant::now();
++    let pixels = capture_region_bgra(x, y, width, height, false)?;
++    let grab_ms = t0.elapsed().as_millis() as u64;
++    let t1 = std::time::Instant::now();
++    let image = bgra_to_rgba(width, height, pixels)?;
++    let convert_ms = t1.elapsed().as_millis() as u64;
++    let t2 = std::time::Instant::now();
++    // 用 DynamicImage 的方法而不是泛型的 imageops::resize：泛型代码在调用方（本 crate，调试版不优化）里生成，
++    // 缩一张整窗截图要 800+ms；DynamicImage 的方法在 image 库里编译（Cargo.toml 给它开了优化）。
++    // thumbnail = 面积平均的整数缩小，快，屏幕文字也清楚
++    let image = DynamicImage::ImageRgba8(image);
++    let small = if image.width().max(image.height()) > max_side { image.thumbnail(max_side, max_side) } else { image };
++    let mut cursor = Cursor::new(Vec::new());
++    DynamicImage::ImageRgb8(small.to_rgb8())
++        .write_to(&mut cursor, ImageOutputFormat::Jpeg(quality))
++        .map_err(|e| format!("编码 JPG 失败: {}", e))?;
++    let jpeg = cursor.into_inner();
++    Ok(ActiveShot { jpeg, grab_ms, convert_ms, shrink_ms: t2.elapsed().as_millis() as u64 })
++}
++
+ fn capture_rect(settings: &ScreenshotSettings) -> Option<(i32, i32, i32, i32)> {
+     if settings.capture_target == "active_window" {
+         if let Some(rect) = active_window_rect() {
+@@ -818,7 +850,8 @@ fn virtual_screen_rect() -> Option<(i32, i32, i32, i32)> {
+     }
+ }
+ 
+-fn bgra_to_rgba(width: i32, height: i32, pixels: &[u8]) -> Result<RgbaImage, String> {
++/// 原地把 BGRA 换成 RGBA（不另拼一份：调试版里逐像素 extend 要几百毫秒）
++fn bgra_to_rgba(width: i32, height: i32, mut pixels: Vec<u8>) -> Result<RgbaImage, String> {
+     if width <= 0 || height <= 0 {
+         return Err("截图尺寸无效".to_string());
+     }
+@@ -827,12 +860,12 @@ fn bgra_to_rgba(width: i32, height: i32, pixels: &[u8]) -> Result<RgbaImage, Str
+         return Err("截图像素数据长度不匹配".to_string());
+     }
+ 
+-    let mut rgba = Vec::with_capacity(pixels.len());
+-    for px in pixels.chunks_exact(4) {
+-        rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
++    for px in pixels.chunks_exact_mut(4) {
++        px.swap(0, 2);
++        px[3] = 255;
+     }
+ 
+-    RgbaImage::from_raw(width as u32, height as u32, rgba)
++    RgbaImage::from_raw(width as u32, height as u32, pixels)
+         .ok_or_else(|| "构建截图图像失败".to_string())
+ }
+ 
+@@ -1053,7 +1086,8 @@ fn extract_app_icon_bmp(exe_path: &str) -> Option<Vec<u8>> {
+     result
+ }
+ 
+-fn capture_region_bgra(x: i32, y: i32, width: i32, height: i32) -> Result<Vec<u8>, String> {
++/// layered = 带上分层窗口（CAPTUREBLT：慢一些，而且会把悬浮在上面的透明窗也截进去）
++fn capture_region_bgra(x: i32, y: i32, width: i32, height: i32, layered: bool) -> Result<Vec<u8>, String> {
+     render_to_bgra(width, height, |hdc| {
+         use windows_sys::Win32::Graphics::Gdi::{BitBlt, GetDC, ReleaseDC, CAPTUREBLT, SRCCOPY};
+ 
+@@ -1062,7 +1096,7 @@ fn capture_region_bgra(x: i32, y: i32, width: i32, height: i32) -> Result<Vec<u8
+             return false;
+         }
+         let ok =
+-            unsafe { BitBlt(hdc, 0, 0, width, height, screen, x, y, SRCCOPY | CAPTUREBLT) != 0 };
++            unsafe { BitBlt(hdc, 0, 0, width, height, screen, x, y, if layered { SRCCOPY | CAPTUREBLT } else { SRCCOPY }) != 0 };
+         unsafe {
+             ReleaseDC(std::ptr::null_mut(), screen);
+         }
+diff --git a/clients/desktop/src/App.tsx b/clients/desktop/src/App.tsx
+index b5dd210..fc216fb 100644
+--- a/clients/desktop/src/App.tsx
++++ b/clients/desktop/src/App.tsx
+@@ -92,6 +92,7 @@ import FocusPanel from './components/FocusPanel'
+ import ViewSwitcher, { type MainViewMode } from './components/ViewSwitcher'
+ import IconButton from './components/ui/IconButton'
+ import WindowControls from './components/ui/WindowControls'
++import { CHAT_PREFILL_EVENT, DISCUSS_EVENT } from './lib/system-api'
+ import './styles/topbar.css'
+ import ScreenBezel from './components/ui/ScreenBezel'
+ import ChassisPlate from './components/ui/ChassisPlate'
+@@ -341,6 +342,11 @@ const StageFocusPanel = memo(FocusPanel)
+ const StageChatPanel = memo(ChatPanel)
+ const NOOP = () => {}
+ 
++/** 协议志的系统窗口（components/system/SystemWindow）：透明、置顶、整窗鼠标穿透，放主屏右上角、顶栏下面 */
++const SYSTEM_WINDOW_LABEL = 'system-window'
++const SYSTEM_WINDOW_SIZE = { width: 400, height: 170 } as const
++const SYSTEM_WINDOW_MARGIN = { right: 16, top: 64 } as const
++
+ export default function App() {
+   // ── Data ──
+   const [selectedDate, setSelectedDate] = useState(new Date())
+@@ -821,6 +827,72 @@ export default function App() {
+     }
+   }, [config.fairyWindowEnabled])
+ 
++  // ── 系统窗口里点了「聊聊」：主窗口叫到前台、切回聊天，把系统的问题填进输入框（协商在对话里继续） ──
++  useEffect(() => {
++    let alive = true
++    let unlisten: (() => void) | undefined
++    import('@tauri-apps/api/event')
++      .then(({ listen }) => listen<{ question?: string }>(DISCUSS_EVENT, (e) => {
++        const question = e.payload?.question
++        if (!question) return
++        setShowSettings(false)
++        import('@tauri-apps/api/window')
++          .then(({ getCurrentWindow }) => getCurrentWindow().setFocus())
++          .catch(() => { /* 叫不到前台也不影响填字 */ })
++        // 聊天面板可能刚从设置页切回来、还没挂上：等一拍再填
++        window.setTimeout(() => {
++          window.dispatchEvent(new CustomEvent(CHAT_PREFILL_EVENT, { detail: { text: `关于你刚才问的「${question}」——` } }))
++        }, 120)
++      }))
++      .then((u) => { if (alive) unlisten = u; else u() })
++      .catch((e: unknown) => console.warn('[system] 监听「聊聊」失败', e))
++    return () => { alive = false; unlisten?.() }
++  }, [])
++
++  // ── 系统窗口：协议志的「系统」，悬浮在主屏右上角（只显示、整窗鼠标穿透，见 components/system） ──
++  useEffect(() => {
++    if (!navigator.userAgent.includes('Windows')) return
++    let cancelled = false
++    let created: { close: () => Promise<void> } | null = null
++    const init = async () => {
++      const [{ WebviewWindow }, { primaryMonitor }] = await Promise.all([
++        import('@tauri-apps/api/webviewWindow'),
++        import('@tauri-apps/api/window'),
++      ])
++      // 主窗口整页刷新后系统窗口还在：直接沿用，不重复开
++      if (cancelled || await WebviewWindow.getByLabel(SYSTEM_WINDOW_LABEL)) return
++      const monitor = await primaryMonitor()
++      const scale = monitor?.scaleFactor ?? 1
++      const left = monitor ? monitor.position.x / scale : 0
++      const top = monitor ? monitor.position.y / scale : 0
++      const screenWidth = monitor ? monitor.size.width / scale : 1920
++      const options = await withBrowserArgs({
++        url: window.location.href.replace(/#.*$/, '') + '#system',
++        title: 'Solevup 系统',
++        width: SYSTEM_WINDOW_SIZE.width,
++        height: SYSTEM_WINDOW_SIZE.height,
++        x: Math.round(left + screenWidth - SYSTEM_WINDOW_SIZE.width - SYSTEM_WINDOW_MARGIN.right),
++        y: Math.round(top + SYSTEM_WINDOW_MARGIN.top),
++        alwaysOnTop: true,
++        decorations: false,
++        resizable: false,
++        maximizable: false,
++        minimizable: false,
++        skipTaskbar: true,
++        transparent: true,
++        shadow: false,
++        focus: false,
++      })
++      if (cancelled) return
++      created = new WebviewWindow(SYSTEM_WINDOW_LABEL, options)
++    }
++    init().catch((e: unknown) => console.error('[system] 系统窗口启动失败:', e))
++    return () => {
++      cancelled = true
++      created?.close().catch(() => {})
++    }
++  }, [])
++
+   const emitFairyConfig = useCallback((scale: number, aiMode: ChatMode) => {
+     import('@tauri-apps/api/event').then(({ emitTo }) => {
+       emitTo('fairy-window', 'fairy-config', {
+diff --git a/clients/desktop/src/components/ChatPanel.tsx b/clients/desktop/src/components/ChatPanel.tsx
+index ca62db0..f06c0a9 100644
+--- a/clients/desktop/src/components/ChatPanel.tsx
++++ b/clients/desktop/src/components/ChatPanel.tsx
+@@ -10,6 +10,7 @@
+ // ══════════════════════════════════════════════
+ 
+ import { useCallback, useMemo, useRef, useEffect, useState } from 'react'
++import { CHAT_PREFILL_EVENT } from '../lib/system-api'
+ import { MessageSquare, Camera, Eye, Volume2, VolumeX, Bug, Radio, History, X, Play, Pause } from 'lucide-react'
+ import { invoke } from '@tauri-apps/api/core'
+ import { listen } from '@tauri-apps/api/event'
+@@ -142,6 +143,18 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName =
+     inputRef.current?.focus()
+   }, [])
+ 
++  // 系统窗口里点了「聊聊」：把系统的问题填进输入框，你接着说，协商在对话里继续
++  useEffect(() => {
++    const onPrefill = (e: Event) => {
++      const text = (e as CustomEvent<{ text?: string }>).detail?.text
++      if (!text) return
++      setInput(text)
++      inputRef.current?.focus()
++    }
++    window.addEventListener(CHAT_PREFILL_EVENT, onPrefill)
++    return () => window.removeEventListener(CHAT_PREFILL_EVENT, onPrefill)
++  }, [])
++
+   useEffect(() => {
+     let cancelled = false
+     ;(async () => {
+diff --git a/clients/desktop/src/components/ModelDialog.tsx b/clients/desktop/src/components/ModelDialog.tsx
+index 8ace656..74f0ddd 100644
+--- a/clients/desktop/src/components/ModelDialog.tsx
++++ b/clients/desktop/src/components/ModelDialog.tsx
+@@ -109,6 +109,9 @@ const FEATURE_SPECS: readonly FeatureSpec[] = [
+   { feature: 'anchor_cluster_name', label: '锚点域簇命名', category: 'text', hint: '给认知地图聚簇起 2~6 字主题名（建议低价模型）' },
+   { feature: 'motive_blueprint', label: '协议志·动机蓝图', category: 'text', hint: '把一条动机展开成行动方向与具体步骤（建议中高质量模型）' },
+   { feature: 'protocol_gray', label: '协议·灰色地带判断', category: 'decision', hint: '白名单里标「灰」的内容在前台时，按协议用意和窗口标题判断是学习还是娱乐', allowedCategories: ['decision'] },
++  { feature: 'system_sense_vision', label: '系统·感知（看截图）', category: 'decision', hint: '每 10 秒截当前窗口，粗判你此刻在推进动机云里的哪一颗（临时判断；聊天 / 密码类窗口永不截）；必须能看图', requiredModalities: ['image'], allowedCategories: ['decision'] },
++  { feature: 'system_sense', label: '系统·感知（只看标题）', category: 'decision', hint: '不截图的窗口（标题带密码 / 银行 / 支付等）只按标题猜', allowedCategories: ['decision'] },
++  { feature: 'system_sense_hypothesis', label: '系统·提议动机', category: 'text', hint: '一分钟都对不上云里任何一颗时，看截图提议一颗新动机，再由系统窗口问你收不收（建议多模态强模型）', requiredModalities: ['image'] },
+   { feature: 'protocol_gray_vision', label: '协议·灰色地带判断（看图）', category: 'decision', hint: '标题看不出来时看截图判断；必须能看图（截图会发给模型，注意它的数据留存）', requiredModalities: ['image'], allowedCategories: ['decision'] },
+ ]
+ 
+diff --git a/clients/desktop/src/components/motive-cloud/FocusBar.tsx b/clients/desktop/src/components/motive-cloud/FocusBar.tsx
+index 0a6b6c2..d668201 100644
+--- a/clients/desktop/src/components/motive-cloud/FocusBar.tsx
++++ b/clients/desktop/src/components/motive-cloud/FocusBar.tsx
+@@ -22,11 +22,14 @@ interface Props {
+   readonly onWish: () => void
+   readonly onReturnToCloud: () => void
+   readonly onRelease: () => void
++  /** 今天立约了没有（今日动机云的冰蓝细环） */
++  readonly declaredToday: boolean
++  readonly onToggleToday: () => void
+ }
+ 
+ export default function FocusBar({
+   text, contextCount, destiny, hasBlueprint, canAddDirection, generating, error,
+-  onExpand, onAddDirection, onWish, onReturnToCloud, onRelease,
++  onExpand, onAddDirection, onWish, onReturnToCloud, onRelease, declaredToday, onToggleToday,
+ }: Props) {
+   const isWish = destiny === 'wish'
+   return (
+@@ -40,6 +43,11 @@ export default function FocusBar({
+         <p className="mc-focus-status">正在展开……</p>
+       ) : (
+         <div className="mc-focus-actions">
++          {!isWish && (
++            <button type="button" className={`mc-act${declaredToday ? '' : ' mc-today'}`} onClick={onToggleToday}>
++              {declaredToday ? '今天先不推进它' : '今天推进它'}
++            </button>
++          )}
+           {isWish && (
+             <button type="button" className="mc-act" onClick={onReturnToCloud}>带回云里</button>
+           )}
+@@ -84,6 +92,9 @@ export default function FocusBar({
+         .mc-act:focus-visible { outline: 1px solid #F3E9DC; outline-offset: 4px; }
+         .mc-primary { color: ${MOTIVE}; border-bottom-color: rgba(255,153,51,0.45); }
+         .mc-primary:hover { color: #FFC58A; border-bottom-color: ${MOTIVE}; }
++        /* 「今天推进它」：系统冰蓝——这是和系统立约 */
++        .mc-today { color: #9ED8F2; border-bottom-color: rgba(158,216,242,0.45); }
++        .mc-today:hover { color: #C8ECFC; border-bottom-color: #9ED8F2; }
+         .mc-release:hover { color: #E0A07A; border-bottom-color: rgba(224,160,122,0.45); }
+         .mc-focus-status {
+           margin: 18px 0 0; font-family: ${SANS}; font-size: 13px; color: #8E847A; letter-spacing: 0.1em;
+diff --git a/clients/desktop/src/components/motive-cloud/MotiveCloud.tsx b/clients/desktop/src/components/motive-cloud/MotiveCloud.tsx
+index 83fbcae..c6fa5b0 100644
+--- a/clients/desktop/src/components/motive-cloud/MotiveCloud.tsx
++++ b/clients/desktop/src/components/motive-cloud/MotiveCloud.tsx
+@@ -1,6 +1,8 @@
+ // ══════════════════════════════════════════════
+-// 协议志 · 动机云
++// 协议志 · 今日动机云
+ //   舞台是一张共振膜（membrane.ts）。动机是停在膜上的光点，各自轻轻颤动。
++//   · 今天这一层（use-today）：今天真推进了的动机振得更强（时长由系统感知内核归来），一点没碰的安静下来；
++//     今天立约的动机套一圈冰蓝细环（系统色：和系统立的约）。理想（环）× 真实（涟漪）叠在一起，只描述不评判
+ //   · 入场：动机一颗接一颗落到膜上，每颗激起一圈涟漪，彼此干涉
+ //   · 选中：动机滑到中央，到位那一刻才「敲响」—— 波荡开，其余动机退远变暗
+ //   · 展开成行动：AI 思考时动机有节奏地共振；蓝图到手后再敲一次，方向与步骤沿波前结晶
+@@ -24,6 +26,8 @@ import { LABEL_FAMILY, TIERS, loadLabelFonts, measureLabel, placeLabels, spreadB
+ import type { MeasuredLabel, PlacedLabel, Tier } from './motive-label-layout'
+ import { useMotiveData } from './use-motive-data'
+ import type { Motive } from './use-motive-data'
++import { useToday } from './use-today'
++import type { TodayView } from '../../lib/system-api'
+ 
+ // ── 可调旋钮 ──────────────────────────────────
+ const MOTIVE_RGB = '255,153,51'   // 动机橙（锚点域同色）
+@@ -51,6 +55,12 @@ const HEART_BEAT = 2600
+ /** 放下：消散时长（ms） */
+ const DISSOLVE_MS = 1300
+ const MAX_DIRECTIONS = 5
++/** 今天这一层：立约细环用系统冰蓝；推进满这么久，环就点亮 */
++const SYSTEM_RGB = '158,216,242'
++const LIVED_SECONDS = 300
++/** 今天一点没碰的动机振幅压到这么低（安静，不消失）；推进得越久越强，封顶 */
++const QUIET_AMP = 0.35
++const MAX_TODAY_AMP = 2.2
+ 
+ interface Body {
+   x: number
+@@ -80,6 +90,13 @@ const focusPoint = (w: number, h: number): Pt => ({ x: w / 2, y: h * 0.42 })
+ const wishOrbit = (w: number, h: number) => ({ cx: w / 2, cy: h / 2, rx: w * 0.46, ry: h * 0.44 })
+ const dotRadius = (refs: number) => 2.4 + Math.min(refs, 5) * 0.45
+ 
++/** 今天推进了多久 → 振幅倍数（今天还什么都没有时保持原样）：10 分钟 ≈ 1，半小时 ≈ 1.4，两小时 ≈ 2 */
++function todayAmp(today: TodayView | null, seconds: number): number {
++  if (!today || (today.judgedSeconds === 0 && today.declared.length === 0)) return 1
++  if (seconds <= 0) return QUIET_AMP
++  return Math.min(MAX_TODAY_AMP, 0.6 + 0.4 * Math.log2(1 + seconds / 600))
++}
++
+ /** 按引用次数分主次：前 30% 大、中间 40% 中、其余小 */
+ function assignTiers(motives: readonly Motive[]): Map<string, Tier> {
+   const ranked = [...motives].sort((a, b) => b.refs - a.refs || b.text.length - a.text.length)
+@@ -90,6 +107,7 @@ function assignTiers(motives: readonly Motive[]): Map<string, Tier> {
+ 
+ export default function MotiveCloud() {
+   const { motives, protocols, vectors, status, error, reload, putProtocol } = useMotiveData()
++  const { today, toggleDeclared } = useToday()
+ 
+   const stageRef = useRef<HTMLDivElement>(null)
+   const canvasRef = useRef<HTMLCanvasElement>(null)
+@@ -140,8 +158,8 @@ export default function MotiveCloud() {
+   const hasBlueprint = !!blueprint && blueprint.directions.length > 0
+ 
+   // 动画循环读最新状态（不随渲染重建循环）
+-  const stateRef = useRef({ motives, focusId, generatingId, destinyOf })
+-  stateRef.current = { motives, focusId, generatingId, destinyOf }
++  const stateRef = useRef({ motives, focusId, generatingId, destinyOf, today })
++  stateRef.current = { motives, focusId, generatingId, destinyOf, today }
+ 
+   // ── 舞台只占窗口里看得见的高度：窗口比应用整体布局矮时，面板底部会落到窗口外，
+   //    动机和底部聚焦栏都得在看得见的范围里 ──
+@@ -359,11 +377,12 @@ export default function MotiveCloud() {
+           b.appeared = true
+           mem.drop(b.x, b.y, 2.6 * calm, 1.6)
+         }
++        const livedAmp = todayAmp(s.today, s.today?.motiveSeconds.get(m.id) ?? 0)
+         // 持续声源：平时每颗云里的动机都在轻轻振动（频率各异 → 膜上流动的干涉纹）；
+         // 有焦点时全场静音，只剩被选中的那一颗在响
+         if (b.appeared && dissolveAt === undefined && !isWish) {
+           if (isFocus) mem.vibrate(b.x, b.y, FOCUS_SOURCE_AMP * calm, b.hz, b.phase, t, dt)
+-          else if (!s.focusId) mem.vibrate(b.x, b.y, SOURCE_AMP * calm, b.hz, b.phase, t, dt)
++          else if (!s.focusId) mem.vibrate(b.x, b.y, SOURCE_AMP * calm * livedAmp, b.hz, b.phase, t, dt)
+         }
+ 
+         // 透明度
+@@ -387,7 +406,7 @@ export default function MotiveCloud() {
+         const r = dotRadius(m.refs) * (isFocus ? 1.5 : 1)
+         const rgb = isWish ? WISH_RGB : MOTIVE_RGB
+         const glow = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, r * 3.4)
+-        glow.addColorStop(0, `rgba(${rgb},${0.42 * dotA})`)
++        glow.addColorStop(0, `rgba(${rgb},${Math.min(0.8, 0.42 * dotA * Math.max(0.7, livedAmp))})`)
+         glow.addColorStop(1, `rgba(${rgb},0)`)
+         ctx.fillStyle = glow
+         ctx.beginPath()
+@@ -405,6 +424,15 @@ export default function MotiveCloud() {
+           ctx.arc(b.x, b.y, r + 4.5, 0, Math.PI * 2)
+           ctx.stroke()
+         }
++        // 今天立约的动机：一圈冰蓝细环；今天真推进够久了，环就点亮
++        if (!isFocus && s.today?.declared.includes(m.id)) {
++          const lived = (s.today.motiveSeconds.get(m.id) ?? 0) >= LIVED_SECONDS
++          ctx.strokeStyle = `rgba(${SYSTEM_RGB},${(lived ? 0.9 : 0.5) * dotA})`
++          ctx.lineWidth = lived ? 1.4 : 1
++          ctx.beginPath()
++          ctx.arc(b.x, b.y, r + 8, 0, Math.PI * 2)
++          ctx.stroke()
++        }
+         if (isFocus) {
+           const breathe = Math.sin(t * 2.2) * 2
+           ctx.strokeStyle = `rgba(${MOTIVE_RGB},0.35)`
+@@ -602,7 +630,12 @@ export default function MotiveCloud() {
+     >
+       <canvas ref={canvasRef} className="mc-canvas" />
+ 
+-      <header className="mc-head">协议志<span className="mc-head-sep">/</span>动机云</header>
++      <header className="mc-head">协议志<span className="mc-head-sep">/</span>今日动机云</header>
++      {today && (today.declared.length > 0 || today.judgedSeconds > 0) && (
++        <p className="mc-today-legend">
++          <span className="mc-today-ring" aria-hidden />今天立约<span className="mc-head-sep">·</span>涟漪越强，今天真推进得越多
++        </p>
++      )}
+ 
+       {released.length > 0 && (
+         <button
+@@ -706,6 +739,8 @@ export default function MotiveCloud() {
+           onWish={() => { void setDestiny(focused, 'wish'); setFocusId(null) }}
+           onReturnToCloud={() => void setDestiny(focused, hasBlueprint ? 'action' : 'cloud')}
+           onRelease={() => release(focused)}
++          declaredToday={today?.declared.includes(focused.id) ?? false}
++          onToggleToday={() => void toggleDeclared(focused.id)}
+         />
+       )}
+ 
+@@ -721,6 +756,14 @@ export default function MotiveCloud() {
+           letter-spacing: 0.34em; color: #5E6873;
+         }
+         .mc-head-sep { margin: 0 0.6em; color: #39424B; }
++        .mc-today-legend {
++          position: absolute; top: 38px; left: 22px; margin: 0; display: flex; align-items: center;
++          font-family: 'Microsoft YaHei', sans-serif; font-size: 11px; color: #56616B; letter-spacing: 0.06em;
++        }
++        .mc-today-ring {
++          width: 9px; height: 9px; margin-right: 7px; border-radius: 50%;
++          border: 1px solid rgba(${SYSTEM_RGB}, 0.75);
++        }
+         .mc-labels, .mc-blueprint { position: absolute; inset: 0; pointer-events: none; }
+         .mc-blueprint .mc-node { pointer-events: auto; }
+         .mc-anchor { position: absolute; left: 0; top: 0; width: 0; height: 0; will-change: transform, opacity; }
+diff --git a/clients/desktop/src/components/protocol/ProtocolView.tsx b/clients/desktop/src/components/protocol/ProtocolView.tsx
+index a9ceab2..1e0cee4 100644
+--- a/clients/desktop/src/components/protocol/ProtocolView.tsx
++++ b/clients/desktop/src/components/protocol/ProtocolView.tsx
+@@ -1,14 +1,14 @@
+ // ══════════════════════════════════════════════
+-// 协议志：协议（白名单锁机，开局后只放行名单里的应用 / 网站）/ 清单（滴答清单式的任务树）/ 动机云（动机长出行动的蓝图）
++// 协议志：协议（白名单锁机，开局后只放行名单里的应用 / 网站）/ 清单（滴答清单式的任务树）/ 动机云（今日动机云：这个月的动机，今天推进得越久越亮）
+ //   面板标题「协议志」已在主面板凸台上，这里只放视图切换。
+-//   动机云逐帧跑膜模拟，不在它那页时卸载，省 CPU / 内存。
++//   动机云逐帧跑膜模拟，不在它那页时卸载，省 CPU / 内存。旧的动机锚点云（motive-cloud/MotiveCloud）暂时不挂出来。
+ // ══════════════════════════════════════════════
+ 
+ import { useState } from 'react'
+ import type { ActivityPalette } from '../../types'
+ import { theme, ti } from '../../theme'
+ import Segmented from '../ui/Segmented'
+-import MotiveCloud from '../motive-cloud/MotiveCloud'
++import TodayCloud from '../today-cloud/TodayCloud'
+ import ChecklistView from './checklist/ChecklistView'
+ import LockView from './lock/LockView'
+ 
+@@ -54,7 +54,7 @@ export default function ProtocolView(props: ProtocolViewProps) {
+           options={[
+             { value: 'lock', label: '协议', led: ti.led, tip: '每份协议一份白名单：开局后只放行名单里的应用和网站' },
+             { value: 'checklist', label: '清单', led: ti.led, tip: '任务清单：多层清单 + 无限子任务，和昼夜表的计划是同一份' },
+-            { value: 'motives', label: '动机云', led: ti.sys, tip: '动机长出行动方向的蓝图' },
++            { value: 'motives', label: '动机云', led: ti.sys, tip: '这个月的动机：今天推进得越久越亮，系统觉得你此刻在推进哪颗就敲响哪颗' },
+           ]}
+         />
+         <div className="ti-groove-h" style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }} />
+@@ -64,7 +64,7 @@ export default function ProtocolView(props: ProtocolViewProps) {
+         {subview === 'checklist' && (
+           <ChecklistView palette={props.palette} onPaletteChange={props.onPaletteChange} onPlanNodesChange={props.onPlanNodesChange} />
+         )}
+-        {subview === 'motives' && <MotiveCloud />}
++        {subview === 'motives' && <TodayCloud />}
+       </div>
+     </div>
+   )
+diff --git a/clients/desktop/src/components/protocol/lock/LockView.tsx b/clients/desktop/src/components/protocol/lock/LockView.tsx
+index 4a5a047..f53be17 100644
+--- a/clients/desktop/src/components/protocol/lock/LockView.tsx
++++ b/clients/desktop/src/components/protocol/lock/LockView.tsx
+@@ -10,7 +10,9 @@ import JevSettings from './JevSettings'
+ import ProtocolEditor from './ProtocolEditor'
+ import ProtocolList from './ProtocolList'
+ import SessionPanel from './SessionPanel'
++import ThoughtTerminal from './ThoughtTerminal'
+ import { useProtocolLock } from './use-protocol-lock'
++import type { ToolPanel } from './ProtocolList'
+ import './lock.css'
+ 
+ export default function LockView() {
+@@ -19,18 +21,19 @@ export default function LockView() {
+   const [pickedId, setPickedId] = useState<string | null>(null)
+   /** 局进行中也想改这份协议（下一局生效）：右边换成编辑器 */
+   const [editLive, setEditLive] = useState(false)
+-  /** 右边显示「灰色地带 · AI 判断」设置 */
+-  const [jevOpen, setJevOpen] = useState(false)
++  /** 右边换成工具面板：灰色地带的 AI 判断设置 / 系统的思维终端 */
++  const [tool, setTool] = useState<ToolPanel | null>(null)
++  const toolOpen = tool !== null
+ 
+   // 没手动选过：有局在进行就看这一局，否则看第一份协议
+   const selectedId = pickedId ?? session?.protocolId ?? protocols[0]?.id ?? null
+   const selected = protocols.find((p) => p.id === selectedId) ?? null
+-  const showSession = !jevOpen && session !== null && !editLive && (selectedId === session.protocolId || selected === null)
++  const showSession = !toolOpen && session !== null && !editLive && (selectedId === session.protocolId || selected === null)
+ 
+   const select = (id: string) => {
+     setPickedId(id)
+     setEditLive(false)
+-    setJevOpen(false)
++    setTool(null)
+   }
+ 
+   const create = async (name: string) => {
+@@ -51,8 +54,8 @@ export default function LockView() {
+         selectedId={showSession ? session.protocolId : selectedId}
+         onSelect={select}
+         onCreate={create}
+-        jevOpen={jevOpen}
+-        onOpenJev={() => setJevOpen(true)}
++        tool={tool}
++        onOpenTool={setTool}
+       />
+       <div className="pl-main">
+         {data.error && (
+@@ -61,7 +64,9 @@ export default function LockView() {
+             <button type="button" className="pl-chip-btn" aria-label="关闭提示" onClick={data.clearError}><X size={12} /></button>
+           </div>
+         )}
+-        {jevOpen ? (
++        {tool === 'thoughts' ? (
++          <ThoughtTerminal />
++        ) : tool === 'jev' ? (
+           <JevSettings />
+         ) : showSession ? (
+           <SessionPanel
+diff --git a/clients/desktop/src/components/protocol/lock/ProtocolList.tsx b/clients/desktop/src/components/protocol/lock/ProtocolList.tsx
+index 429c895..7c8e230 100644
+--- a/clients/desktop/src/components/protocol/lock/ProtocolList.tsx
++++ b/clients/desktop/src/components/protocol/lock/ProtocolList.tsx
+@@ -1,22 +1,24 @@
+-// 协议志 · 协议左栏：协议列表（进行中的那份亮一颗灯）+ 灰色地带的 AI 判断设置 + 新建
++// 协议志 · 协议左栏：协议列表（进行中的那份亮一颗灯）+ 灰色地带的 AI 判断设置 + 系统的思维终端 + 新建
+ 
+ import { useState } from 'react'
+-import { Plus, ScanEye } from 'lucide-react'
++import { Plus, ScanEye, SquareTerminal } from 'lucide-react'
+ import type { LockProtocol, LockSession } from '../../../lib/protocol-api'
+ import { STRENGTH_META } from './lock-model'
+ 
++export type ToolPanel = 'jev' | 'thoughts'
++
+ export interface ProtocolListProps {
+   readonly protocols: readonly LockProtocol[]
+   readonly session: LockSession | null
+   readonly selectedId: string | null
+   readonly onSelect: (id: string) => void
+   readonly onCreate: (name: string) => Promise<void>
+-  /** 右边正在显示「灰色地带 · AI 判断」设置 */
+-  readonly jevOpen: boolean
+-  readonly onOpenJev: () => void
++  /** 右边正在显示的工具面板（null = 协议本身） */
++  readonly tool: ToolPanel | null
++  readonly onOpenTool: (tool: ToolPanel) => void
+ }
+ 
+-export default function ProtocolList({ protocols, session, selectedId, onSelect, onCreate, jevOpen, onOpenJev }: ProtocolListProps) {
++export default function ProtocolList({ protocols, session, selectedId, onSelect, onCreate, tool, onOpenTool }: ProtocolListProps) {
+   const [draft, setDraft] = useState('')
+ 
+   const create = async () => {
+@@ -37,7 +39,7 @@ export default function ProtocolList({ protocols, session, selectedId, onSelect,
+               key={p.id}
+               type="button"
+               className="pl-row"
+-              data-selected={!jevOpen && p.id === selectedId ? '1' : undefined}
++              data-selected={tool === null && p.id === selectedId ? '1' : undefined}
+               onClick={() => onSelect(p.id)}
+             >
+               <span className={live ? 'ti-dot ti-dot-led' : 'ti-dot ti-dot-off'} aria-hidden />
+@@ -53,10 +55,14 @@ export default function ProtocolList({ protocols, session, selectedId, onSelect,
+         )}
+       </div>
+       <div className="pl-side-foot">
+-        <button type="button" className="pl-row" data-selected={jevOpen ? '1' : undefined} onClick={onOpenJev} style={{ width: '100%' }}>
++        <button type="button" className="pl-row" data-selected={tool === 'jev' ? '1' : undefined} onClick={() => onOpenTool('jev')} style={{ width: '100%' }}>
+           <ScanEye size={14} aria-hidden />
+           <span className="pl-row-name" style={{ fontWeight: 500 }}>灰色地带 · AI 判断</span>
+         </button>
++        <button type="button" className="pl-row" data-selected={tool === 'thoughts' ? '1' : undefined} onClick={() => onOpenTool('thoughts')} style={{ width: '100%' }}>
++          <SquareTerminal size={14} aria-hidden />
++          <span className="pl-row-name" style={{ fontWeight: 500 }}>系统 · 思维终端</span>
++        </button>
+       </div>
+       <div className="pl-new">
+         <input
+diff --git a/clients/desktop/src/components/protocol/lock/lock.css b/clients/desktop/src/components/protocol/lock/lock.css
+index 149d530..62a5b55 100644
+--- a/clients/desktop/src/components/protocol/lock/lock.css
++++ b/clients/desktop/src/components/protocol/lock/lock.css
+@@ -142,3 +142,29 @@
+ .pl-prob-fill { height: 100%; background: var(--ti-led); }
+ .pl-prob-num { font-family: var(--ti-font-mono); text-align: right; color: var(--ti-text); }
+ .pl-side-foot { padding: 8px 4px 0; }
++
++/* ── 思维终端：黑玻璃凹槽里的等宽日志，一轮一条刻线 ── */
++.tt-root { height: 100%; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
++.tt-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
++.tt-body {
++  flex: 1; min-height: 0; overflow-y: auto; padding: 8px 14px 12px;
++  font-family: var(--ti-font-mono); font-size: 12px; line-height: 1.7;
++}
++.tt-empty { color: var(--ti-text-faint); padding: 10px 0; }
++.tt-round + .tt-round { margin-top: 6px; }
++.tt-rule {
++  display: flex; justify-content: space-between; gap: 12px;
++  margin: 4px 0 2px; padding-bottom: 2px;
++  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
++  font-size: 10.5px; color: var(--ti-text-faint); letter-spacing: 0.06em;
++}
++.tt-rule [data-slow="1"] { color: var(--ti-led); }
++.tt-line { display: grid; grid-template-columns: 4em 1fr auto; gap: 12px; color: var(--ti-text-dim); }
++.tt-kind { color: var(--ti-text-muted); }
++.tt-text { min-width: 0; overflow-wrap: anywhere; }
++.tt-ms { color: var(--ti-text-faint); text-align: right; }
++.tt-ms[data-slow="1"] { color: var(--ti-led); }
++.tt-line[data-kind="propose"] .tt-kind, .tt-line[data-kind="propose"] .tt-text { color: var(--ti-text); }
++.tt-line[data-kind="ask"] .tt-kind, .tt-line[data-kind="ask"] .tt-text { color: var(--ti-sys); }
++.tt-line[data-kind="skip"] { color: var(--ti-text-faint); }
++.tt-line[data-kind="error"] .tt-kind, .tt-line[data-kind="error"] .tt-text { color: #FF7A6B; }
+diff --git a/clients/desktop/src/main.tsx b/clients/desktop/src/main.tsx
+index 6e55d77..9ca38a1 100644
+--- a/clients/desktop/src/main.tsx
++++ b/clients/desktop/src/main.tsx
+@@ -14,25 +14,31 @@ import App from './App.tsx'
+ import CameraWindow from './components/CameraWindow.tsx'
+ import FairyWindow from './components/FairyWindow.tsx'
+ import DebugPrepWindow from './components/DebugPrepWindow.tsx'
++import SystemWindow from './components/system/SystemWindow.tsx'
+ 
+ const isCameraWindow    = window.location.hash === '#camera'
+ const isFairyWindow     = window.location.hash === '#fairy'
+ const isDebugPrepWindow = window.location.hash === '#debug-prep'
++const isSystemWindow    = window.location.hash === '#system'
+ 
+-// Fairy 窗口：React 渲染前同步清除背景，防止 index.css 的暗色 body 背景闪出矩形
+-if (isFairyWindow) {
++// Fairy / 系统窗口：React 渲染前同步清除背景，防止 index.css 的暗色 body 背景闪出矩形
++if (isFairyWindow || isSystemWindow) {
+   document.documentElement.style.background = 'transparent'
+   document.body.style.background = 'transparent'
+ }
++// 系统窗口的样式都挂在 html.sys-window 下（它的 CSS 跟着打包进了每个窗口，不能漏到别的窗口）
++if (isSystemWindow) document.documentElement.classList.add('sys-window')
+ 
+ // Windows 主窗口：无系统标题栏 + 窗口底透明（lib.rs），由 .frameless 把机体四角挖空（styles/topbar.css）
+-if (!isFairyWindow && !isCameraWindow && !isDebugPrepWindow && navigator.userAgent.includes('Windows')) {
++if (!isFairyWindow && !isCameraWindow && !isDebugPrepWindow && !isSystemWindow && navigator.userAgent.includes('Windows')) {
+   document.documentElement.classList.add('frameless')
+ }
+ 
+ createRoot(document.getElementById('root')!).render(
+   <StrictMode>
+-    {isFairyWindow
++    {isSystemWindow
++      ? <SystemWindow />
++      : isFairyWindow
+       ? <FairyWindow />
+       : isCameraWindow
+         ? <CameraWindow />

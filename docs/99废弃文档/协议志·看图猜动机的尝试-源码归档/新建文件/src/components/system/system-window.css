@@ -1,0 +1,103 @@
+/* ══════════════════════════════════════════════
+   系统窗口：冰蓝「系统色」（theme.system），和钛合金机体的橙色分开——这是系统在说话，不是机体
+   克制：细线、玻璃、字和光；不用四角括号；动画只做淡入（用户系统关了动画，reduced-motion 下连淡入都去掉）
+   全部挂在 html.sys-window 下：这份 CSS 会跟着打包进每个窗口
+   ══════════════════════════════════════════════ */
+
+html.sys-window {
+  --sys-ice: #9ED8F2;
+  --sys-ice-hi: #C8ECFC;
+  --sys-ice-glow: rgba(158, 216, 242, 0.45);
+  --sys-text: #EAF6FC;
+  --sys-text-dim: rgba(200, 236, 252, 0.72);
+  --sys-glass: rgba(6, 12, 18, 0.84);
+}
+
+html.sys-window, html.sys-window body, html.sys-window #root { background: transparent; margin: 0; overflow: hidden; }
+
+.sys-root {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  padding: 6px 8px;
+  font-family: 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ── 平时：一颗菱形 + 一行小字 ── */
+.sys-glyph {
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 2px;
+  background: rgba(6, 12, 18, 0.55);
+}
+.sys-diamond {
+  width: 9px; height: 9px; flex-shrink: 0;
+  transform: rotate(45deg);
+  background: var(--sys-ice);
+  box-shadow: 0 0 8px var(--sys-ice-glow), 0 0 2px var(--sys-ice-hi);
+  opacity: 0.55;
+}
+.sys-glyph[data-live="1"] .sys-diamond { opacity: 1; }
+.sys-diamond-sm { width: 7px; height: 7px; opacity: 1; }
+.sys-glyph-text {
+  font-size: 11.5px; letter-spacing: 0.06em;
+  color: var(--sys-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 浮出：系统说一句 ── */
+.sys-panel {
+  min-width: 260px; max-width: 380px;
+  padding: 10px 16px 12px;
+  background: var(--sys-glass);
+  border: 1px solid rgba(158, 216, 242, 0.32);
+  border-radius: 2px;
+  box-shadow: 0 0 28px rgba(158, 216, 242, 0.14), inset 0 1px 0 rgba(200, 236, 252, 0.08);
+  animation: sys-in 0.28s ease-out;
+}
+.sys-head { display: flex; align-items: center; gap: 8px; }
+.sys-label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.32em;
+  color: var(--sys-ice);
+  text-shadow: 0 0 10px var(--sys-ice-glow);
+}
+/* 一道光线：中间亮、两头淡 */
+.sys-rule {
+  height: 1px; margin: 8px 0 9px;
+  background: linear-gradient(90deg, transparent, var(--sys-ice) 18%, var(--sys-ice-hi) 50%, var(--sys-ice) 82%, transparent);
+  opacity: 0.55;
+}
+.sys-line {
+  font-size: 16px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--sys-text);
+  text-shadow: 0 0 12px rgba(158, 216, 242, 0.25);
+}
+.sys-sub {
+  margin-top: 5px;
+  font-size: 12.5px; line-height: 1.5;
+  color: var(--sys-text-dim);
+  overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+
+/* ── 发问：问句 + 三个安静的键（只有这时窗口能点） ── */
+.sys-ask { pointer-events: auto; }
+.sys-actions { display: flex; gap: 10px; margin-top: 12px; }
+.sys-btn {
+  height: 26px; padding: 0 14px;
+  border: 1px solid rgba(158, 216, 242, 0.32); border-radius: 2px;
+  background: transparent; color: var(--sys-text-dim);
+  font: inherit; font-size: 12.5px; letter-spacing: 0.08em;
+  cursor: pointer;
+}
+.sys-btn:hover { color: var(--sys-text); border-color: rgba(158, 216, 242, 0.7); box-shadow: 0 0 10px rgba(158, 216, 242, 0.18); }
+.sys-btn-main { color: var(--sys-ice-hi); border-color: rgba(158, 216, 242, 0.6); }
+
+@keyframes sys-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sys-panel { animation: none; }
+}
