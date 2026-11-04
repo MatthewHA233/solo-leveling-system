@@ -135,7 +135,7 @@ export default function SessionPicker({
 
   const titleModelOptions = useMemo(() => {
     const quotaByModel = new Map(freeQuotas.map((q) => [q.model_id, q]))
-    const textModels = models.filter((m) => m.category === 'text')
+    const textModels = models.filter((m) => m.category === 'text' && m.provider !== 'anthropic')
     return textModels.map((m) => modelSelectOption(m, quotaByModel.get(m.id)))
   }, [freeQuotas, models])
 

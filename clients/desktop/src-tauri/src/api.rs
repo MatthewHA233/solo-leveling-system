@@ -1776,6 +1776,7 @@ pub fn create_router(
         .merge(crate::notes_api::routes())
         .merge(crate::protocols_api::routes())
         .merge(crate::network::routes())
+        .merge(crate::anthropic::routes())
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

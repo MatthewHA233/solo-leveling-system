@@ -178,12 +178,40 @@ function formatCny(n: number | null | undefined): string {
   return `¥${n.toFixed(2)}`
 }
 
+function formatUsd(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return '$0.00'
+  if (n < 0.01 && n > 0) {
+    const digits = Math.min(8, Math.max(4, 1 - Math.floor(Math.log10(n))))
+    return `$${n.toFixed(digits)}`
+  }
+  return `$${n.toFixed(2)}`
+}
+
 function priceText(n: number | null | undefined): string {
   return n == null ? '-' : String(n)
 }
 
-function nextApiKeyLabel(apiKeys: readonly ModelApiKey[]): string {
-  const base = '百炼 API Key'
+type KeyProvider = 'dashscope' | 'anthropic'
+
+/** 各提供商的 Key 弹层文案（同一个 Key 库，按提供商分开看） */
+const KEY_PROVIDER_META: Record<KeyProvider, { label: string; hint: string; url: string; pageName: string; defaultLabel: string }> = {
+  dashscope: {
+    label: '百炼',
+    hint: '请填写百炼平台的 API KEY',
+    url: 'https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key',
+    pageName: '百炼 API Key 页面',
+    defaultLabel: '百炼 API Key',
+  },
+  anthropic: {
+    label: 'Anthropic',
+    hint: 'Anthropic 官方 API Key（请求走设置 → 网络代理里的端口）',
+    url: 'https://console.anthropic.com/settings/keys',
+    pageName: 'Anthropic 控制台',
+    defaultLabel: 'Anthropic API Key',
+  },
+}
+
+function nextApiKeyLabel(apiKeys: readonly ModelApiKey[], base = '百炼 API Key'): string {
   const labels = new Set(apiKeys.map((k) => k.label.trim()).filter(Boolean))
   if (!labels.has(base)) return base
   for (let i = 2; i < 1000; i += 1) {
@@ -281,6 +309,7 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
   const [creatingApiKey, setCreatingApiKey] = useState(false)
   const [newApiKeyLabel, setNewApiKeyLabel] = useState('百炼 API Key')
   const [newApiKeyValue, setNewApiKeyValue] = useState('')
+  const [keyProvider, setKeyProvider] = useState<KeyProvider>('dashscope')
   const [pendingDeleteKey, setPendingDeleteKey] = useState<ModelApiKey | null>(null)
   const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
   const [scanningQuota, setScanningQuota] = useState(false)
@@ -317,7 +346,7 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
     try {
       const featureArg = feature === 'all' ? null : feature
       const modelArg = modelId === 'all' ? null : modelId
-      const apiKeyArg = apiKeys.find((k) => k.is_active)?.id ?? null
+      const apiKeyArg = apiKeys.find((k) => k.is_active && k.provider === 'dashscope')?.id ?? null
       const callRows = await invoke<ModelCallLog[]>('query_call_log', {
         timeFrom: from,
         timeTo: to,
@@ -425,6 +454,11 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
       acc.completionAudio += c.completion_audio_tokens
       acc.cost += c.cost_cny ?? 0
       acc.saved += c.free_quota_saved_cny ?? 0
+      // 美元计费的调用单价也是美元，不混进人民币拆分，单独累加
+      if (c.cost_usd != null) {
+        acc.costUsd += c.cost_usd
+        return acc
+      }
       const bd = breakdownCallCost(c, modelPricingMap.get(c.model_id))
       const grossCost = [...bd.inputs, ...bd.outputs].reduce((s, p) => s + p.cost, 0)
       const netRatio = grossCost > 0 ? Math.max(0, Math.min(1, ((c.cost_cny ?? grossCost) / grossCost))) : 1
@@ -446,6 +480,7 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
       promptText: 0, promptImage: 0, promptVideo: 0, promptAudio: 0,
       completionText: 0, completionAudio: 0,
       cost: 0,
+      costUsd: 0,
       saved: 0,
       costPromptText: 0, costPromptImage: 0, costPromptVideo: 0, costPromptAudio: 0,
       costCompletionText: 0, costCompletionAudio: 0,
@@ -457,8 +492,11 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
   }, [bindings])
 
   const activeApiKey = useMemo(() => {
-    return apiKeys.find((k) => k.is_active) ?? null
+    return apiKeys.find((k) => k.is_active && k.provider === 'dashscope') ?? null
   }, [apiKeys])
+  /** 当前弹层里这个提供商的 Key 列表 */
+  const providerKeys = useMemo(() => apiKeys.filter((k) => k.provider === keyProvider), [apiKeys, keyProvider])
+  const providerActiveId = useMemo(() => providerKeys.find((k) => k.is_active)?.id ?? null, [providerKeys])
 
   const freeQuotaByModel = useMemo(() => {
     return new Map(freeQuotas.map((q) => [q.model_id, q]))
@@ -521,7 +559,7 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
 
   const scanFreeQuota = useCallback(async () => {
     // 免费额度是百炼的概念：走 Vercel 的决策模型不扫
-    const bailianModels = models.filter((m) => m.provider !== 'vercel')
+    const bailianModels = models.filter((m) => m.provider !== 'vercel' && m.provider !== 'anthropic')
     setErr(null)
     setScanningQuota(true)
     startBailianLoginPolling()
@@ -583,10 +621,16 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
   }, [drainQuotaProgress, models, refreshBailianAccount, startBailianLoginPolling])
 
   const startCreateApiKey = useCallback(() => {
-    setNewApiKeyLabel(nextApiKeyLabel(apiKeys))
+    setNewApiKeyLabel(nextApiKeyLabel(apiKeys.filter((k) => k.provider === keyProvider), KEY_PROVIDER_META[keyProvider].defaultLabel))
     setNewApiKeyValue('')
     setCreatingApiKey(true)
-  }, [apiKeys])
+  }, [apiKeys, keyProvider])
+
+  const changeKeyProvider = useCallback((next: KeyProvider) => {
+    setKeyProvider(next)
+    setCreatingApiKey(false)
+    setNewApiKeyValue('')
+  }, [])
 
   const activateApiKey = useCallback(async (key: ModelApiKey) => {
     setErr(null)
@@ -610,18 +654,22 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
   const saveNewApiKey = useCallback(async () => {
     setErr(null)
     try {
+      const meta = KEY_PROVIDER_META[keyProvider]
       const key = await upsertModelApiKey({
-        label: newApiKeyLabel.trim() || nextApiKeyLabel(apiKeys),
+        label: newApiKeyLabel.trim() || nextApiKeyLabel(apiKeys.filter((k) => k.provider === keyProvider), meta.defaultLabel),
         api_key: newApiKeyValue,
         is_active: true,
+        provider: keyProvider,
       })
-      onUpdate({
-        dashscopeApiKey: key.api_key || null,
-        openaiApiKey: key.api_key || null,
-        omniApiKey: null,
-        asrApiKey: null,
-      })
-      setNewApiKeyLabel(nextApiKeyLabel([...apiKeys, key]))
+      if (keyProvider === 'dashscope') {
+        onUpdate({
+          dashscopeApiKey: key.api_key || null,
+          openaiApiKey: key.api_key || null,
+          omniApiKey: null,
+          asrApiKey: null,
+        })
+      }
+      setNewApiKeyLabel(nextApiKeyLabel([...apiKeys, key].filter((k) => k.provider === keyProvider), meta.defaultLabel))
       setNewApiKeyValue('')
       setCreatingApiKey(false)
       setSaved(`${key.label} 已保存并切换`)
@@ -631,7 +679,7 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
     } catch (e) {
       setErr(String(e))
     }
-  }, [apiKeys, loadBase, loadUsage, newApiKeyLabel, newApiKeyValue, onUpdate])
+  }, [apiKeys, keyProvider, loadBase, loadUsage, newApiKeyLabel, newApiKeyValue, onUpdate])
 
   const requestDeleteApiKey = useCallback((key: ModelApiKey) => {
     setPendingDeleteKey(key)
@@ -857,8 +905,10 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
             </Tooltip>
             {apiKeyOpen && (
               <ApiKeyPopover
-                apiKeys={apiKeys}
-                activeId={activeApiKey?.id ?? null}
+                apiKeys={providerKeys}
+                activeId={providerActiveId}
+                provider={keyProvider}
+                onProviderChange={changeKeyProvider}
                 creating={creatingApiKey}
                 newLabel={newApiKeyLabel}
                 newValue={newApiKeyValue}
@@ -1206,6 +1256,7 @@ function UsageTab({
     promptText: number; promptImage: number; promptVideo: number; promptAudio: number
     completionText: number; completionAudio: number
     cost: number
+    costUsd: number
     saved: number
     costPromptText: number; costPromptImage: number; costPromptVideo: number; costPromptAudio: number
     costCompletionText: number; costCompletionAudio: number
@@ -1280,6 +1331,7 @@ function UsageTab({
           <Metric
             label="成本"
             value={formatCny(totals.cost)}
+            secondary={totals.costUsd > 0 ? formatUsd(totals.costUsd) : undefined}
             accent={theme.dangerRed}
             note={totals.saved > 0 ? `免费额度节省 ${formatCny(totals.saved)}` : undefined}
           />
@@ -2075,7 +2127,8 @@ function ModelCard({
   const modalities = parseList(model.modalities)
   const displayName = model.display_name?.trim() || model.id
   const accent = modelCategoryAccent(model.category)
-  const isVercel = model.provider === 'vercel'
+  // 走网关 / 官方直连的模型：没有百炼详情页，标一下渠道
+  const isVercel = model.provider === 'vercel' || model.provider === 'anthropic'
 
   return (
     <div className="hud-card" style={{ '--accent': accent, '--accent-soft': `${accent}55`, padding: '14px 14px 12px 18px' } as CSSProperties}>
@@ -2096,7 +2149,7 @@ function ModelCard({
                 {displayName}
               </span>
               <span style={{ color: accent, background: tiSurface.well, boxShadow: tiSurface.wellShadow, borderRadius: 3, padding: '1px 6px', fontSize: 10, fontWeight: 700 }}>
-                Vercel
+                {model.provider === 'anthropic' ? 'Anthropic' : 'Vercel'}
               </span>
             </div>
           ) : (
@@ -2214,7 +2267,7 @@ function ModelCard({
                 <div style={priceGroupStyle}>
                   <span style={priceGroupLabelStyle(theme.textSecondary)}>输入</span>
                   <div style={priceListStyle}>
-                    {inputs.map((p) => <PriceTag key={p.label} label={p.label} value={p.value} color={ti.led} />)}
+                    {inputs.map((p) => <PriceTag key={p.label} label={p.label} value={p.value} color={ti.led} currency={model.currency} />)}
                   </div>
                 </div>
               )}
@@ -2222,7 +2275,7 @@ function ModelCard({
                 <div style={priceGroupStyle}>
                   <span style={priceGroupLabelStyle(theme.textSecondary)}>输出</span>
                   <div style={priceListStyle}>
-                    {outputs.map((p) => <PriceTag key={p.label} label={p.label} value={p.value} color={theme.warningOrange} />)}
+                    {outputs.map((p) => <PriceTag key={p.label} label={p.label} value={p.value} color={theme.warningOrange} currency={model.currency} />)}
                   </div>
                 </div>
               )}
@@ -2268,13 +2321,13 @@ function modalityIcon(label: string, color: string): React.ReactNode {
   }
 }
 
-function PriceTag({ label, value, color }: { label: string; value: number | null; color: string }) {
+function PriceTag({ label, value, color, currency }: { label: string; value: number | null; color: string; currency?: string }) {
   return (
     <Tooltip content={label}>
       <span className="hud-pricetag" style={{ ['--tone' as never]: color }}>
         {modalityIcon(label, color)}
         <span style={{ color: theme.textPrimary, fontWeight: 700, fontSize: 11.5 }}>
-          ¥{value}
+          {currency === 'USD' ? '$' : '¥'}{value}
         </span>
       </span>
     </Tooltip>
@@ -2570,6 +2623,8 @@ function BindingsTab({
 function ApiKeyPopover({
   apiKeys,
   activeId,
+  provider,
+  onProviderChange,
   creating,
   newLabel,
   newValue,
@@ -2583,6 +2638,8 @@ function ApiKeyPopover({
 }: {
   apiKeys: ModelApiKey[]
   activeId: string | null
+  provider: KeyProvider
+  onProviderChange: (p: KeyProvider) => void
   creating: boolean
   newLabel: string
   newValue: string
@@ -2596,14 +2653,26 @@ function ApiKeyPopover({
 }) {
   return (
     <div style={apiKeyPopoverStyle}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        {(['dashscope', 'anthropic'] as const).map((p) => (
+          <button key={p} type="button" onClick={() => onProviderChange(p)} style={{
+            ...plainActionStyle,
+            flex: 1,
+            color: provider === p ? theme.expGreen : theme.textMuted,
+            fontWeight: provider === p ? 800 : 400,
+          }}>
+            {KEY_PROVIDER_META[p].label}
+          </button>
+        ))}
+      </div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
         <div>
           <div style={{ color: theme.textPrimary, fontSize: 13, fontWeight: 800 }}>API Key</div>
-          <div style={{ color: theme.textMuted, fontSize: 11 }}>请填写百炼平台的 API KEY</div>
+          <div style={{ color: theme.textMuted, fontSize: 11 }}>{KEY_PROVIDER_META[provider].hint}</div>
         </div>
         <button
           type="button"
-          onClick={() => { void invoke('open_url_in_browser', { url: 'https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key' }) }}
+          onClick={() => { void invoke('open_url_in_browser', { url: KEY_PROVIDER_META[provider].url }) }}
           style={{
             color: theme.electricBlue,
             fontSize: 11,
@@ -2616,7 +2685,7 @@ function ApiKeyPopover({
             padding: 0,
           }}
         >
-          点击访问百炼 API Key 页面
+          点击访问{KEY_PROVIDER_META[provider].pageName}
         </button>
       </div>
 
@@ -2678,7 +2747,7 @@ function ApiKeyPopover({
               请访问
               <button
                 type="button"
-                onClick={() => { void invoke('open_url_in_browser', { url: 'https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key' }) }}
+                onClick={() => { void invoke('open_url_in_browser', { url: KEY_PROVIDER_META[provider].url }) }}
                 style={{
                   color: theme.electricBlue,
                   textDecoration: 'underline',
@@ -2690,7 +2759,7 @@ function ApiKeyPopover({
                   fontFamily: 'inherit',
                 }}
               >
-                百炼 API Key 页面
+                {KEY_PROVIDER_META[provider].pageName}
               </button>
               申请 API Key
             </div>
@@ -2830,7 +2899,9 @@ const CallRow = React.memo(function CallRow({ call, apiKeyLabel, pricing }: { ca
   const outputParts = bd.outputs.map((p) => ({ label: p.label, value: p.tokens, cost: p.cost }))
   const saved = call.free_quota_saved_cny ?? 0
   const freeTokens = call.free_quota_tokens ?? 0
-  const cost = call.cost_cny ?? 0
+  const isUsd = call.cost_usd != null
+  const money = isUsd ? formatUsd : formatCny
+  const cost = (isUsd ? call.cost_usd : call.cost_cny) ?? 0
   const accent = !call.success ? theme.dangerRed : saved > 0 ? theme.expGreen : theme.electricBlue
   const featureLabel = FEATURE_LABEL.get(call.feature) ?? call.feature
 
@@ -2851,7 +2922,7 @@ const CallRow = React.memo(function CallRow({ call, apiKeyLabel, pricing }: { ca
           fontSize: 14,
           ['--accent-soft' as never]: cost > 0 ? `${theme.dangerRed}66` : `${theme.expGreen}66`,
         }}>
-          {formatCny(call.cost_cny)}
+          {money(isUsd ? call.cost_usd : call.cost_cny)}
         </span>
       </div>
 
@@ -2880,8 +2951,8 @@ const CallRow = React.memo(function CallRow({ call, apiKeyLabel, pricing }: { ca
 
       {/* 输入/输出明细 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, marginTop: 8 }}>
-        <MiniMetric label="输入" value={formatTokens(prompt)} sub={inputParts} accent={theme.electricBlue} />
-        <MiniMetric label="输出" value={formatTokens(completion)} sub={outputParts} accent={theme.warningOrange} />
+        <MiniMetric label="输入" value={formatTokens(prompt)} sub={inputParts} money={money} accent={theme.electricBlue} />
+        <MiniMetric label="输出" value={formatTokens(completion)} sub={outputParts} money={money} accent={theme.warningOrange} />
       </div>
 
       {/* 错误提示条 */}
@@ -2938,13 +3009,14 @@ function PriceBox({ label, value, onChange }: { label: string; value: number | n
   )
 }
 
-function Metric({ label, value, accent, note }: { label: string; value: string; accent?: string; note?: string }) {
+function Metric({ label, value, accent, note, secondary }: { label: string; value: string; accent?: string; note?: string; secondary?: string }) {
   const stripeColor = accent ?? theme.electricBlue
   return (
     <div className="hud-card" style={{ '--accent': stripeColor, '--accent-soft': `${stripeColor}5C` } as CSSProperties}>
       <span className="hud-card-stripe" />
       <div style={metricLabelStyle}>{label}</div>
       <div className="hud-num" style={{ color: stripeColor, fontSize: 24, marginTop: 4 }}>{value}</div>
+      {secondary && <div className="hud-num" style={{ color: stripeColor, fontSize: 16, marginTop: 2 }}>{secondary}</div>}
       {note && <div style={{ color: theme.expGreen, fontFamily: theme.fontMono, fontSize: 10, marginTop: 6, letterSpacing: 0.3 }}>{note}</div>}
     </div>
   )
@@ -2994,12 +3066,13 @@ function MetricBreakdown({
 }
 
 function MiniMetric({
-  label, value, sub, accent,
+  label, value, sub, accent, money = formatCny,
 }: {
   label: string
   value: string
   sub?: { label: string; value: number; cost?: number }[]
   accent?: string
+  money?: (n: number) => string
 }) {
   const accentColor = accent ?? theme.electricBlue
   const visible = (sub ?? []).filter((p) => p.value > 0 || (p.cost ?? 0) > 0)
@@ -3017,7 +3090,7 @@ function MiniMetric({
         </span>
         {hasCost && totalCost > 0 && (
           <span style={{ fontFamily: theme.fontMono, fontSize: 10, fontWeight: 700, color: theme.dangerRed }}>
-            {formatCny(totalCost)}
+            {money(totalCost)}
           </span>
         )}
       </div>
@@ -3047,7 +3120,7 @@ function MiniMetric({
                   opacity: p.cost > 0 ? 1 : 0.55,
                   flexShrink: 0, minWidth: 40, textAlign: 'right',
                 }}>
-                  {p.cost > 0 ? formatCny(p.cost) : '不计费'}
+                  {p.cost > 0 ? money(p.cost) : '不计费'}
                 </span>
               )}
             </div>

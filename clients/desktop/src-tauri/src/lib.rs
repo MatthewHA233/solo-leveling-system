@@ -10,6 +10,8 @@ mod notes;
 mod notes_api;
 mod jev;
 mod protocol;
+mod anthropic;
+mod anthropic_stream;
 mod network;
 mod protocol_gray;
 mod protocol_watch;
@@ -110,6 +112,19 @@ fn webview_browser_args() -> Option<String> {
 #[tauri::command]
 fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+/// Anthropic 流式聊天：前端组好 body，这里走代理发出去，事件 anthropic-stream-{streamId} 推回来
+#[tauri::command]
+async fn anthropic_stream_start(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    stream_id: String,
+    feature: String,
+    body: serde_json::Value,
+) -> Result<(), String> {
+    let db = state.db.read().await.clone().ok_or_else(|| "数据库还没就绪".to_string())?;
+    anthropic_stream::start_stream(app_handle, db, stream_id, feature, body).await
 }
 
 #[tauri::command]
@@ -1930,6 +1945,7 @@ pub fn run() {
             webview_browser_args,
             open_url_in_browser,
             fish_tts_connect,
+            anthropic_stream_start,
             fish_tts_send_text,
             fish_tts_flush,
             fish_tts_stop,

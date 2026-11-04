@@ -477,6 +477,7 @@ export interface SyncModelCallLog {
   completion_text_tokens: number
   completion_audio_tokens: number
   cost_cny: number | null
+  cost_usd?: number | null
   free_quota_tokens: number
   free_quota_saved_cny: number
   success: number
@@ -1209,6 +1210,7 @@ export interface ModelDef {
   notes: string | null
   deprecated: boolean
   updated_at: string
+  currency?: string                   // 'CNY' | 'USD'
   pricing: ModelPricingTier[]
 }
 
@@ -1225,6 +1227,8 @@ export interface ModelApiKey {
   is_active: boolean
   created_at: string
   updated_at: string
+  /** 'dashscope' | 'anthropic'（以后还会有别的） */
+  provider: string
 }
 
 export interface UpsertModelApiKeyRequest {
@@ -1232,6 +1236,8 @@ export interface UpsertModelApiKeyRequest {
   label: string
   api_key: string
   is_active: boolean
+  /** 缺省 = 百炼 */
+  provider?: string
 }
 
 export interface ModelCallLog {
@@ -1248,6 +1254,7 @@ export interface ModelCallLog {
   completion_text_tokens: number
   completion_audio_tokens: number
   cost_cny: number | null
+  cost_usd?: number | null
   free_quota_tokens: number
   free_quota_saved_cny: number
   success: boolean

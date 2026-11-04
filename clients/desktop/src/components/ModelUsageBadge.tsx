@@ -20,6 +20,15 @@ function formatCny(n: number | null | undefined): string {
   return `¥${n.toFixed(2)}`
 }
 
+function formatUsd(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return '$0.00'
+  if (n < 0.01 && n > 0) {
+    const digits = Math.min(8, Math.max(4, 1 - Math.floor(Math.log10(n))))
+    return `$${n.toFixed(digits)}`
+  }
+  return `$${n.toFixed(2)}`
+}
+
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 1 : 2)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 1 : 2)}K`
@@ -57,7 +66,9 @@ function formatSeconds(value: unknown): string | null {
 export default function ModelUsageBadge({ call, compact = false, minimal = false }: Props) {
   if (!call) return null
   const saved = call.free_quota_saved_cny ?? 0
-  const cost = call.cost_cny ?? 0
+  const isUsd = call.cost_usd != null
+  const money = isUsd ? formatUsd : formatCny
+  const cost = (isUsd ? call.cost_usd : call.cost_cny) ?? 0
   const gross = cost + saved
   const accent = saved > 0 ? theme.expGreen : cost > 0 ? theme.dangerRed : theme.expGreen
   const metadata = parseMetadata(call.metadata)
@@ -65,10 +76,10 @@ export default function ModelUsageBadge({ call, compact = false, minimal = false
   const content = (
     <div style={{ display: 'grid', gap: 6, minWidth: 210 }}>
       <div style={{ color: theme.electricBlue, fontFamily: theme.fontMono, fontWeight: 800 }}>{call.model_id}</div>
-      <Line label="实际成本" value={formatCny(cost)} color={cost > 0 ? theme.dangerRed : theme.expGreen} />
-      {saved > 0 && <Line label="免费额度节省" value={formatCny(saved)} color={theme.expGreen} />}
+      <Line label="实际成本" value={money(cost)} color={cost > 0 ? theme.dangerRed : theme.expGreen} />
+      {saved > 0 && <Line label="免费额度节省" value={money(saved)} color={theme.expGreen} />}
       {saved > 0 && <Line label="免费额度抵扣" value={formatTokens(call.free_quota_tokens)} color={theme.expGreen} />}
-      <Line label="理论成本" value={formatCny(gross)} color={theme.textSecondary} />
+      <Line label="理论成本" value={money(gross)} color={theme.textSecondary} />
       <Line label="输入" value={formatTokens(totalInput(call))} color={theme.textSecondary} />
       <Line label="输出" value={formatTokens(totalOutput(call))} color={theme.textSecondary} />
       {asrDuration && <Line label="ASR 音频时长" value={asrDuration} color={theme.textSecondary} />}
@@ -89,7 +100,7 @@ export default function ModelUsageBadge({ call, compact = false, minimal = false
           whiteSpace: 'nowrap',
           cursor: 'help',
         }}>
-          {formatCny(cost)}
+          {money(cost)}
         </span>
       </Tooltip>
     )
@@ -114,9 +125,9 @@ export default function ModelUsageBadge({ call, compact = false, minimal = false
         whiteSpace: 'nowrap',
       }}>
         <ReceiptText size={compact ? 11 : 12} />
-        {formatCny(cost)}
+        {money(cost)}
         {asrDuration && <span style={{ color: theme.textSecondary }}>ASR {asrDuration}</span>}
-        {saved > 0 && <span style={{ color: theme.expGreen }}>省 {formatCny(saved)}</span>}
+        {saved > 0 && <span style={{ color: theme.expGreen }}>省 {money(saved)}</span>}
       </span>
     </Tooltip>
   )

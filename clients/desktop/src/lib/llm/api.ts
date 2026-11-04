@@ -8,6 +8,7 @@
 // ══════════════════════════════════════════════
 
 import { Stream } from './stream'
+import { isAnthropicModel, streamAnthropic } from './anthropic-stream'
 import { normalizeMessagesForAPI } from './normalize'
 import { logModelUsage, type DashScopeUsage } from '../model-audit'
 import type { ModelCallLog } from '../local-api'
@@ -181,6 +182,8 @@ export function queryModel(
   messages: Message[],
   options: QueryOptions,
 ): Stream<ApiStreamChunk> {
+  // Anthropic（claude-*）走 Rust 代理通道，见 anthropic-stream.ts
+  if (isAnthropicModel(options.model)) return streamAnthropic(messages, options)
   const abortController = new AbortController()
   const signal = options.signal
     ? AbortSignal.any([options.signal, abortController.signal])

@@ -206,10 +206,17 @@ pub struct SyncExport {
     pub feature_bindings: Vec<SyncFeatureBinding>,
 }
 
+fn default_sync_provider() -> String {
+    PROVIDER_DASHSCOPE.to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SyncModelApiKey {
     pub id: String,
     pub label: String,
+    /// 老设备的 payload 没有这一项：按百炼处理
+    #[serde(default = "default_sync_provider")]
+    pub provider: String,
     /// AUDIT-036：tombstone 行（deleted_at IS NOT NULL）的 api_key 在 export
     /// 时会被强制清成空串，不把明文 key 复制到其他设备
     pub api_key: String,
@@ -240,6 +247,8 @@ pub struct SyncModelCallLog {
     pub success: i32,
     pub error_message: Option<String>,
     pub metadata: Option<String>,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -759,6 +768,8 @@ impl Database {
     /// 创建表结构
     fn init_tables(&self) -> Result<(), String> {
         let conn = self.conn.blocking_lock();
+        // 旧表 model_api_keys → ai_provider_keys（建表前先改名，否则会先建出一张空表）
+        migrate_ai_provider_keys_table(&conn)?;
         conn.execute_batch(r#"
             -- 活动记录：分类（一级，用户可加，颜色定义在这）
             CREATE TABLE IF NOT EXISTS activity_categories (
@@ -1285,8 +1296,9 @@ impl Database {
             -- 百炼 API Key 库（本地保存，调用日志按 id 归属）
             -- AUDIT-036：deleted_at 作为 tombstone，让删除可被同步传播；
             -- 软删时 api_key 字段会被清成空串（不泄露明文给对端）
-            CREATE TABLE IF NOT EXISTS model_api_keys (
+            CREATE TABLE IF NOT EXISTS ai_provider_keys (
                 id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL DEFAULT 'dashscope',
                 label TEXT NOT NULL,
                 api_key TEXT NOT NULL,
                 is_active INTEGER NOT NULL DEFAULT 0,
@@ -1294,7 +1306,7 @@ impl Database {
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 deleted_at TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_model_api_keys_active ON model_api_keys(is_active);
+            CREATE INDEX IF NOT EXISTS idx_model_api_keys_active ON ai_provider_keys(is_active);
 
             -- 调用日志（每次模型调用一行）
             CREATE TABLE IF NOT EXISTS model_call_log (
@@ -1344,7 +1356,7 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE model_call_log ADD COLUMN free_quota_saved_cny REAL NOT NULL DEFAULT 0");
         let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_call_api_key ON model_call_log(api_key_id, started_at DESC)");
         // AUDIT-036：旧库的 model_api_keys 补 deleted_at（tombstone）
-        let _ = conn.execute_batch("ALTER TABLE model_api_keys ADD COLUMN deleted_at TEXT");
+        let _ = conn.execute_batch("ALTER TABLE ai_provider_keys ADD COLUMN deleted_at TEXT");
         migrate_legacy_perception_tables(&conn)?;
         crate::notes::init_note_tables(&conn)?;
         crate::protocol::init_protocol_tables(&conn)?;
@@ -1352,7 +1364,10 @@ impl Database {
         crate::network::init_network_tables(&conn)?;
 
         // 首次启动写入百炼模型库与默认绑定种子（已存在则跳过，幂等）
+        ensure_column(&conn, "model_registry", "currency", "currency TEXT NOT NULL DEFAULT 'CNY'")?;
+        ensure_column(&conn, "model_call_log", "cost_usd", "cost_usd REAL")?;
         seed_model_registry(&conn)?;
+        crate::anthropic::seed_anthropic_models(&conn)?;
         seed_feature_bindings(&conn)?;
         crate::jev::seed_decision_models(&conn)?;
 
@@ -2302,7 +2317,7 @@ impl Database {
         // AUDIT-036：export 含 deleted_at（让 tombstone 跨端同步），tombstone
         // 的 api_key 字段在 payload 层清成空串避免明文 key 复制到对端
         let mut stmt = conn.prepare(
-            "SELECT id, label, api_key, is_active, created_at, updated_at, deleted_at FROM model_api_keys"
+            "SELECT id, label, api_key, is_active, created_at, updated_at, deleted_at, provider FROM ai_provider_keys"
         ).map_err(|e| e.to_string())?;
         let model_api_keys = stmt.query_map([], |row| {
             let deleted_at: Option<String> = row.get(6)?;
@@ -2315,6 +2330,7 @@ impl Database {
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
                 deleted_at,
+                provider: row.get(7)?,
             })
         }).map_err(|e| e.to_string())?
           .filter_map(|r| r.ok())
@@ -2327,11 +2343,11 @@ impl Database {
                     prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
                     completion_text_tokens, completion_audio_tokens,
                     cost_cny, free_quota_tokens, free_quota_saved_cny,
-                    success, error_message, metadata
+                    success, error_message, metadata, cost_usd
              FROM model_call_log l
              WHERE l.api_key_id IS NULL
                 OR NOT EXISTS (
-                    SELECT 1 FROM model_api_keys k
+                    SELECT 1 FROM ai_provider_keys k
                     WHERE k.id = l.api_key_id AND k.deleted_at IS NOT NULL
                 )"
         ).map_err(|e| e.to_string())?;
@@ -2355,6 +2371,7 @@ impl Database {
                 success: row.get(15)?,
                 error_message: row.get(16)?,
                 metadata: row.get(17)?,
+                cost_usd: row.get(18)?,
             })
         }).map_err(|e| e.to_string())?
           .filter_map(|r| r.ok())
@@ -2608,7 +2625,7 @@ impl Database {
         //   让对端下一轮同步能拿到 inactive 状态
         for row in payload.model_api_keys {
             let local_updated: Option<String> = conn.query_row(
-                "SELECT updated_at FROM model_api_keys WHERE id = ?",
+                "SELECT updated_at FROM ai_provider_keys WHERE id = ?",
                 params![&row.id],
                 |r| r.get(0),
             ).optional().map_err(|e| e.to_string())?;
@@ -2621,22 +2638,22 @@ impl Database {
             let api_key_to_store: &str = if is_tombstone { "" } else { row.api_key.as_str() };
             let is_active_to_store: i32 = if is_tombstone { 0 } else { row.is_active };
             conn.execute(
-                "INSERT INTO model_api_keys (id, label, api_key, is_active, created_at, updated_at, deleted_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                "INSERT INTO ai_provider_keys (id, label, api_key, is_active, created_at, updated_at, deleted_at, provider)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                    label=excluded.label, api_key=excluded.api_key, is_active=excluded.is_active,
                    created_at=excluded.created_at, updated_at=excluded.updated_at,
-                   deleted_at=excluded.deleted_at",
+                   deleted_at=excluded.deleted_at, provider=excluded.provider",
                 params![&row.id, &row.label, api_key_to_store, is_active_to_store,
-                        &row.created_at, &row.updated_at, &row.deleted_at],
+                        &row.created_at, &row.updated_at, &row.deleted_at, &row.provider],
             ).map_err(|e| e.to_string())?;
             // active 归一化：刚 import 的活 active 行存在时，其他 active 全 降级
             if !is_tombstone && row.is_active == 1 {
                 conn.execute(
-                    "UPDATE model_api_keys
+                    "UPDATE ai_provider_keys
                      SET is_active = 0, updated_at = ?
-                     WHERE id != ? AND is_active = 1 AND deleted_at IS NULL",
-                    params![&row.updated_at, &row.id],
+                     WHERE id != ? AND is_active = 1 AND deleted_at IS NULL AND provider = ?",
+                    params![&row.updated_at, &row.id, &row.provider],
                 ).map_err(|e| e.to_string())?;
             }
             if is_tombstone {
@@ -2650,7 +2667,7 @@ impl Database {
         for row in payload.model_call_log {
             if let Some(api_key_id) = row.api_key_id.as_deref() {
                 let key_deleted: bool = conn.query_row(
-                    "SELECT deleted_at IS NOT NULL FROM model_api_keys WHERE id = ?",
+                    "SELECT deleted_at IS NOT NULL FROM ai_provider_keys WHERE id = ?",
                     params![api_key_id],
                     |r| r.get::<_, i64>(0),
                 ).optional().map_err(|e| e.to_string())?.unwrap_or(0) != 0;
@@ -2673,14 +2690,14 @@ impl Database {
                     prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
                     completion_text_tokens, completion_audio_tokens,
                     cost_cny, free_quota_tokens, free_quota_saved_cny,
-                    success, error_message, metadata)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    success, error_message, metadata, cost_usd)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     &row.id, &row.api_key_id, &row.feature, &row.model_id, &row.started_at, row.duration_ms,
                     row.prompt_text_tokens, row.prompt_image_tokens, row.prompt_video_tokens, row.prompt_audio_tokens,
                     row.completion_text_tokens, row.completion_audio_tokens,
                     row.cost_cny, row.free_quota_tokens, row.free_quota_saved_cny,
-                    row.success, &row.error_message, &row.metadata,
+                    row.success, &row.error_message, &row.metadata, row.cost_usd,
                 ],
             ).map_err(|e| e.to_string())?;
             result.model_call_log += 1;
@@ -5037,6 +5054,7 @@ pub struct ModelDef {
     pub notes: Option<String>,
     pub deprecated: bool,
     pub updated_at: String,
+    pub currency: String,                 // 'CNY' | 'USD'（决定费用记在 cost_cny 还是 cost_usd）
     pub pricing: Vec<ModelPricingTier>,   // 按 tier_min_tokens 升序
 }
 
@@ -5060,6 +5078,34 @@ pub struct FeatureBinding {
     pub updated_at: String,
 }
 
+/// 提供商标识（存进 ai_provider_keys.provider；以后再加别的家就加一个值）
+pub const PROVIDER_DASHSCOPE: &str = "dashscope";
+pub const PROVIDER_ANTHROPIC: &str = "anthropic";
+
+fn key_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelApiKey> {
+    Ok(ModelApiKey {
+        id: r.get(0)?,
+        label: r.get(1)?,
+        api_key: r.get(2)?,
+        is_active: r.get::<_, i64>(3)? != 0,
+        created_at: r.get(4)?,
+        updated_at: r.get(5)?,
+        provider: r.get(6)?,
+    })
+}
+
+fn normalize_provider(raw: Option<&str>) -> Result<String, String> {
+    let p = raw.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(PROVIDER_DASHSCOPE);
+    match p {
+        PROVIDER_DASHSCOPE | PROVIDER_ANTHROPIC => Ok(p.to_string()),
+        other => Err(format!("不认识的提供商：{other}")),
+    }
+}
+
+fn default_key_label(provider: &str) -> &'static str {
+    if provider == PROVIDER_ANTHROPIC { "Anthropic API Key" } else { "百炼 API Key" }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ModelApiKey {
     pub id: String,
@@ -5068,6 +5114,7 @@ pub struct ModelApiKey {
     pub is_active: bool,
     pub created_at: String,
     pub updated_at: String,
+    pub provider: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -5076,6 +5123,9 @@ pub struct UpsertModelApiKeyRequest {
     pub label: String,
     pub api_key: String,
     pub is_active: bool,
+    /// 缺省 = 百炼（老前端不传也能用）
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -5098,6 +5148,7 @@ pub struct ModelCallLog {
     pub success: bool,
     pub error_message: Option<String>,
     pub metadata: Option<String>,
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -5141,6 +5192,7 @@ pub struct CallLogBucket {
     pub prompt_tokens_total: i64,
     pub completion_tokens_total: i64,
     pub cost_cny_total: f64,
+    pub cost_usd_total: f64,
 }
 
 /// 同步官方模型种子（插入新模型，更新已有官方模型的模态/价格）。
@@ -5435,7 +5487,7 @@ impl Database {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT id, category, provider, display_name, modalities,
-                    context_window, notes, deprecated, updated_at
+                    context_window, notes, deprecated, updated_at, currency
              FROM model_registry
              ORDER BY category DESC, id DESC"
         ).map_err(|e| e.to_string())?;
@@ -5451,6 +5503,7 @@ impl Database {
                 notes:          r.get(6)?,
                 deprecated:     r.get::<_, i64>(7)? != 0,
                 updated_at:     r.get(8)?,
+                currency:       r.get(9)?,
                 pricing:        Vec::new(),
             })
         }).map_err(|e| e.to_string())?;
@@ -5573,47 +5626,39 @@ impl Database {
         Ok(result.ok())
     }
 
-    // ── model_api_keys ──
+    // ── ai_provider_keys（API Key 库：百炼 / Anthropic / 以后的提供商；每个提供商各自一个启用中的 Key）──
 
     pub async fn list_model_api_keys(&self) -> Result<Vec<ModelApiKey>, String> {
         let conn = self.conn.lock().await;
         // AUDIT-036：过滤 tombstone（deleted_at IS NULL）
         let mut stmt = conn.prepare(
-            "SELECT id, label, api_key, is_active, created_at, updated_at
-             FROM model_api_keys
+            "SELECT id, label, api_key, is_active, created_at, updated_at, provider
+             FROM ai_provider_keys
              WHERE deleted_at IS NULL
-             ORDER BY is_active DESC, updated_at DESC"
+             ORDER BY provider, is_active DESC, updated_at DESC"
         ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| Ok(ModelApiKey {
-            id: r.get(0)?,
-            label: r.get(1)?,
-            api_key: r.get(2)?,
-            is_active: r.get::<_, i64>(3)? != 0,
-            created_at: r.get(4)?,
-            updated_at: r.get(5)?,
-        })).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], key_row).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub async fn get_active_model_api_key(&self) -> Result<Option<ModelApiKey>, String> {
+    /// 某个提供商当前启用的 Key（没有 = None）
+    pub async fn get_active_model_api_key_for(&self, provider: &str) -> Result<Option<ModelApiKey>, String> {
         let conn = self.conn.lock().await;
         let result = conn.query_row(
-            "SELECT id, label, api_key, is_active, created_at, updated_at
-             FROM model_api_keys
-             WHERE is_active = 1 AND deleted_at IS NULL
+            "SELECT id, label, api_key, is_active, created_at, updated_at, provider
+             FROM ai_provider_keys
+             WHERE is_active = 1 AND deleted_at IS NULL AND provider = ?
              ORDER BY updated_at DESC
              LIMIT 1",
-            [],
-            |r| Ok(ModelApiKey {
-                id: r.get(0)?,
-                label: r.get(1)?,
-                api_key: r.get(2)?,
-                is_active: r.get::<_, i64>(3)? != 0,
-                created_at: r.get(4)?,
-                updated_at: r.get(5)?,
-            })
+            rusqlite::params![provider],
+            key_row,
         );
         Ok(result.ok())
+    }
+
+    /// 百炼的启用 Key（老调用点都是百炼）
+    pub async fn get_active_model_api_key(&self) -> Result<Option<ModelApiKey>, String> {
+        self.get_active_model_api_key_for(PROVIDER_DASHSCOPE).await
     }
 
     pub async fn upsert_model_api_key(&self, req: UpsertModelApiKeyRequest) -> Result<ModelApiKey, String> {
@@ -5621,8 +5666,9 @@ impl Database {
 
         let mut conn = self.conn.lock().await;
         let id = req.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let provider = normalize_provider(req.provider.as_deref())?;
         let label = if req.label.trim().is_empty() {
-            "百炼 API Key".to_string()
+            default_key_label(&provider).to_string()
         } else {
             req.label.trim().to_string()
         };
@@ -5634,32 +5680,32 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let should_activate = req.is_active || {
             let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM model_api_keys WHERE is_active = 1 AND deleted_at IS NULL",
-                [], |r| r.get(0),
+                "SELECT COUNT(*) FROM ai_provider_keys WHERE is_active = 1 AND deleted_at IS NULL AND provider = ?",
+                params![&provider],
+                |r| r.get(0),
             ).unwrap_or(0);
             count == 0
         };
 
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         if should_activate {
-            // AUDIT-036：把其他 active 行 bump updated_at = now，让对端 LWW
-            // 能拿到 inactive 状态（之前不 bump，会让对端继续以为本地是 active）
+            // AUDIT-036：把同提供商的其他 active 行 bump updated_at = now，让对端 LWW 能拿到 inactive 状态
             tx.execute(
-                "UPDATE model_api_keys SET is_active = 0, updated_at = ?
-                 WHERE is_active = 1 AND deleted_at IS NULL",
-                params![&now],
+                "UPDATE ai_provider_keys SET is_active = 0, updated_at = ?
+                 WHERE is_active = 1 AND deleted_at IS NULL AND provider = ?",
+                params![&now, &provider],
             ).map_err(|e| e.to_string())?;
         }
         tx.execute(
-            "INSERT INTO model_api_keys (id, label, api_key, is_active, created_at, updated_at, deleted_at)
-             VALUES (?, ?, ?, ?, ?, ?, NULL)
+            "INSERT INTO ai_provider_keys (id, label, api_key, is_active, created_at, updated_at, deleted_at, provider)
+             VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
              ON CONFLICT(id) DO UPDATE SET
                label=excluded.label,
                api_key=excluded.api_key,
                is_active=excluded.is_active,
                updated_at=excluded.updated_at,
                deleted_at=NULL",
-            params![&id, &label, &api_key, if should_activate { 1 } else { 0 }, &now, &now],
+            params![&id, &label, &api_key, if should_activate { 1 } else { 0 }, &now, &now, &provider],
         ).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
 
@@ -5670,77 +5716,71 @@ impl Database {
             is_active: should_activate,
             created_at: now.clone(),
             updated_at: now,
+            provider,
         })
     }
 
     pub async fn set_active_model_api_key(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
         // AUDIT-036：tombstone 行不可被 activate
-        let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM model_api_keys WHERE id = ? AND deleted_at IS NULL",
+        let provider: String = conn.query_row(
+            "SELECT provider FROM ai_provider_keys WHERE id = ? AND deleted_at IS NULL",
             rusqlite::params![id],
             |r| r.get(0),
-        ).unwrap_or(0);
-        if exists == 0 {
-            return Err("API Key 不存在".to_string());
-        }
-        // AUDIT-036：所有未删的 key 都 bump updated_at（既 set 也 unset），
-        // 让对端 LWW 能拿到完整 active 状态变化；之前只 bump 目标 key 的
-        // updated_at，被置 inactive 的其他 key 不动，导致两端各自切 active 后
-        // 同步会出现多个 is_active=1 的脏数据
+        ).optional().map_err(|e| e.to_string())?
+            .ok_or_else(|| "API Key 不存在".to_string())?;
+        // AUDIT-036：同提供商的所有未删 key 都 bump updated_at（既 set 也 unset），让对端 LWW 能拿到完整 active 变化
         let now = Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE model_api_keys
+            "UPDATE ai_provider_keys
              SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END,
                  updated_at = ?
-             WHERE deleted_at IS NULL",
-            rusqlite::params![id, &now],
+             WHERE deleted_at IS NULL AND provider = ?",
+            rusqlite::params![id, &now, &provider],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
     pub async fn delete_model_api_key(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        // AUDIT-036：改软删 — 写 deleted_at + 清明文 api_key + is_active=0，
-        // 保留 row 作为 tombstone 让对端同步时知道这个 id 已删，不会再把
-        // 明文 key 重新 push 回来；AUDIT-064：本地 call_log 硬删，并在
-        // import/export 侧屏蔽 tombstone key 的日志，防止其他设备回流。
-        let was_active: bool = conn.query_row(
-            "SELECT is_active FROM model_api_keys WHERE id = ? AND deleted_at IS NULL",
+        // AUDIT-036：改软删 — 写 deleted_at + 清明文 api_key + is_active=0，保留 row 作为 tombstone
+        // AUDIT-064：本地 call_log 硬删，并在 import/export 侧屏蔽 tombstone key 的日志，防止其他设备回流
+        let row: Option<(String, i64)> = conn.query_row(
+            "SELECT provider, is_active FROM ai_provider_keys WHERE id = ? AND deleted_at IS NULL",
             rusqlite::params![id],
-            |r| Ok(r.get::<_, i64>(0)? != 0),
-        ).unwrap_or(false);
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional().map_err(|e| e.to_string())?;
+        let Some((provider, was_active)) = row else {
+            return Ok(());  // 已被删 / 不存在，幂等
+        };
 
         conn.execute("DELETE FROM model_call_log WHERE api_key_id = ?", rusqlite::params![id])
             .map_err(|e| e.to_string())?;
 
         let now = Utc::now().to_rfc3339();
-        let changed = conn.execute(
-            "UPDATE model_api_keys
+        conn.execute(
+            "UPDATE ai_provider_keys
              SET deleted_at = ?, api_key = '', is_active = 0, updated_at = ?
              WHERE id = ? AND deleted_at IS NULL",
             rusqlite::params![&now, &now, id],
         ).map_err(|e| e.to_string())?;
-        if changed == 0 {
-            return Ok(());  // 已被删 / 不存在，幂等
-        }
 
-        if was_active {
-            // 找一个最近的活 key 顶上 active
+        if was_active != 0 {
+            // 找同提供商里最近的一个活 key 顶上 active
             let next_id: Option<String> = conn.query_row(
-                "SELECT id FROM model_api_keys
-                 WHERE deleted_at IS NULL
+                "SELECT id FROM ai_provider_keys
+                 WHERE deleted_at IS NULL AND provider = ?
                  ORDER BY updated_at DESC LIMIT 1",
-                [],
+                rusqlite::params![&provider],
                 |r| r.get(0),
-            ).ok();
+            ).optional().map_err(|e| e.to_string())?;
             if let Some(next_id) = next_id {
                 conn.execute(
-                    "UPDATE model_api_keys
+                    "UPDATE ai_provider_keys
                      SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END,
                          updated_at = ?
-                     WHERE deleted_at IS NULL",
-                    rusqlite::params![next_id, &now],
+                     WHERE deleted_at IS NULL AND provider = ?",
+                    rusqlite::params![&next_id, &now, &provider],
                 ).map_err(|e| e.to_string())?;
             }
         }
@@ -5932,6 +5972,15 @@ impl Database {
             rows.filter_map(|r| r.ok()).collect()
         };
 
+        let currency: String = {
+            let conn = self.conn.lock().await;
+            conn.query_row(
+                "SELECT currency FROM model_registry WHERE id = ?",
+                params![&req.model_id],
+                |r| r.get::<_, String>(0),
+            ).unwrap_or_else(|_| "CNY".to_string())
+        };
+
         let gross_cost = Self::compute_cost(&req, &tiers)
             .or_else(|| Self::compute_asr_duration_cost(&req));
         let billable_tokens = if req.success {
@@ -5964,19 +6013,20 @@ impl Database {
             _ => 0.0,
         };
         let cost = gross_cost.map(|cost| (cost - free_quota_saved_cny).max(0.0));
+        let (cost_cny, cost_usd) = if currency == "USD" { (None, cost) } else { (cost, None) };
 
         conn.execute(
             "INSERT INTO model_call_log
              (id, api_key_id, feature, model_id, started_at, duration_ms,
               prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
               completion_text_tokens, completion_audio_tokens,
-              cost_cny, free_quota_tokens, free_quota_saved_cny, success, error_message, metadata)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              cost_cny, free_quota_tokens, free_quota_saved_cny, success, error_message, metadata, cost_usd)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 &id, &req.api_key_id, &req.feature, &req.model_id, &req.started_at, &req.duration_ms,
                 &req.prompt_text_tokens, &req.prompt_image_tokens, &req.prompt_video_tokens, &req.prompt_audio_tokens,
                 &req.completion_text_tokens, &req.completion_audio_tokens,
-                &cost, &free_quota_tokens, &free_quota_saved_cny, if req.success { 1 } else { 0 }, &req.error_message, &req.metadata,
+                &cost_cny, &free_quota_tokens, &free_quota_saved_cny, if req.success { 1 } else { 0 }, &req.error_message, &req.metadata, &cost_usd,
             ],
         ).map_err(|e| e.to_string())?;
         if free_quota_tokens > 0 {
@@ -6002,7 +6052,7 @@ impl Database {
             "SELECT id, api_key_id, feature, model_id, started_at, duration_ms,
                     prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
                     completion_text_tokens, completion_audio_tokens,
-                    cost_cny, free_quota_tokens, free_quota_saved_cny, success, error_message, metadata
+                    cost_cny, free_quota_tokens, free_quota_saved_cny, success, error_message, metadata, cost_usd
              FROM model_call_log WHERE id = ? LIMIT 1"
         ).map_err(|e| e.to_string())?;
         match stmt.query_row(rusqlite::params![id], |r| Ok(ModelCallLog {
@@ -6023,7 +6073,7 @@ impl Database {
             free_quota_saved_cny: r.get(14)?,
             success: r.get::<_, i64>(15)? != 0,
             error_message: r.get(16)?,
-            metadata: r.get(17)?,
+            metadata: r.get(17)?, cost_usd: r.get(18)?,
         })) {
             Ok(row) => Ok(Some(row)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -6045,7 +6095,7 @@ impl Database {
             "SELECT id, api_key_id, feature, model_id, started_at, duration_ms,
                     prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens,
                     completion_text_tokens, completion_audio_tokens,
-                    cost_cny, free_quota_tokens, free_quota_saved_cny, success, error_message, metadata
+                    cost_cny, free_quota_tokens, free_quota_saved_cny, success, error_message, metadata, cost_usd
              FROM model_call_log WHERE 1=1"
         );
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -6069,7 +6119,7 @@ impl Database {
             free_quota_tokens: r.get(13)?,
             free_quota_saved_cny: r.get(14)?,
             success: r.get::<_, i64>(15)? != 0,
-            error_message: r.get(16)?, metadata: r.get(17)?,
+            error_message: r.get(16)?, metadata: r.get(17)?, cost_usd: r.get(18)?,
         })).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -6097,7 +6147,8 @@ impl Database {
                     COUNT(*) AS call_count,
                     COALESCE(SUM(prompt_text_tokens + prompt_image_tokens + prompt_video_tokens + prompt_audio_tokens), 0) AS p_total,
                     COALESCE(SUM(completion_text_tokens + completion_audio_tokens), 0) AS c_total,
-                    COALESCE(SUM(cost_cny), 0) AS cost_total
+                    COALESCE(SUM(cost_cny), 0) AS cost_total,
+                    COALESCE(SUM(cost_usd), 0) AS cost_usd_total
              FROM model_call_log
              WHERE started_at >= ? AND started_at < ?",
             bucket = bucket_expr,
@@ -6118,6 +6169,7 @@ impl Database {
             prompt_tokens_total: r.get(2)?,
             completion_tokens_total: r.get(3)?,
             cost_cny_total: r.get(4)?,
+            cost_usd_total: r.get(5)?,
         })).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -6131,4 +6183,37 @@ fn normalize_due_date(raw: Option<&str>) -> Result<Option<String>, String> {
     chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d")
         .map(|d| Some(d.format("%Y-%m-%d").to_string()))
         .map_err(|_| format!("日期格式不对：{raw}（要 YYYY-MM-DD）"))
+}
+
+/// 旧表 model_api_keys 改名为 ai_provider_keys，并补 provider 列（老数据全是百炼）。
+/// 新库没有旧表时什么也不做；两张表都在时不动，免得丢数据
+fn migrate_ai_provider_keys_table(conn: &Connection) -> Result<(), String> {
+    let table_exists = |name: &str| -> Result<bool, String> {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            rusqlite::params![name],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .map_err(|e| e.to_string())
+    };
+    if table_exists("model_api_keys")? && !table_exists("ai_provider_keys")? {
+        conn.execute_batch("ALTER TABLE model_api_keys RENAME TO ai_provider_keys")
+            .map_err(|e| format!("Key 库改名失败: {e}"))?;
+        log::info!("[Database] model_api_keys 已改名为 ai_provider_keys");
+    }
+    if table_exists("ai_provider_keys")? {
+        let has_provider: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('ai_provider_keys') WHERE name = 'provider'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if has_provider == 0 {
+            conn.execute_batch("ALTER TABLE ai_provider_keys ADD COLUMN provider TEXT NOT NULL DEFAULT 'dashscope'")
+                .map_err(|e| format!("Key 库补 provider 列失败: {e}"))?;
+        }
+    }
+    Ok(())
 }
