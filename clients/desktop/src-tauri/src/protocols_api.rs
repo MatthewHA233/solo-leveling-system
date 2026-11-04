@@ -179,5 +179,5 @@ async fn jev_test(State(state): State<ApiState>, Json(req): Json<JevTestRequest>
         &pick(req.app, TEST_APP),
         &pick(req.title, TEST_TITLE),
     );
-    reply(jev::decide_choice(&state.db, jev::FEATURE_GRAY, &cfg, &text, &jev::relation_question()).await)
+    reply(jev::decide_choice(&state.db, jev::FEATURE_GRAY, &cfg, &jev::DecideState::Text(&text), &jev::relation_question()).await)
 }

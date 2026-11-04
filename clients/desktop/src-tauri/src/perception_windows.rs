@@ -522,8 +522,8 @@ fn capture_screenshot_now(settings: &ScreenshotSettings) -> Result<PathBuf, Stri
 
     let (x, y, width, height) =
         capture_rect(settings).ok_or_else(|| "截图区域尺寸无效".to_string())?;
-    let pixels = capture_region_bgra(x, y, width, height)?;
-    let image = bgra_to_rgba(width, height, &pixels)?;
+    let pixels = capture_region_bgra(x, y, width, height, true)?;
+    let image = bgra_to_rgba(width, height, pixels)?;
     let image = resize_for_settings(image, settings.resolution_percent);
     let bytes = encode_screenshot_image(image, &settings.format, settings.quality)?;
     fs::write(&path, bytes).map_err(|e| format!("写入截图失败: {}", e))?;
@@ -755,6 +755,38 @@ fn file_extension_for_format(format: &str) -> &'static str {
     }
 }
 
+/// 前台窗口的一张截图 + 各段耗时（抓屏 / 转色 / 缩放编码，查慢在哪用）
+pub struct ActiveShot {
+    pub jpeg: Vec<u8>,
+    pub grab_ms: u64,
+    pub convert_ms: u64,
+    pub shrink_ms: u64,
+}
+
+/// 截当前前台窗口，缩到最长边不超过 max_side，编成 JPEG，只在内存里（不落盘）——灰色地带看图判断用
+/// 不带 CAPTUREBLT：悬浮在上面的透明窗不截进去，也省掉 DWM 同步那一下
+pub fn capture_active_window_jpeg(max_side: u32, quality: u8) -> Result<ActiveShot, String> {
+    let (x, y, width, height) = active_window_rect().ok_or_else(|| "读不到前台窗口".to_string())?;
+    let t0 = std::time::Instant::now();
+    let pixels = capture_region_bgra(x, y, width, height, false)?;
+    let grab_ms = t0.elapsed().as_millis() as u64;
+    let t1 = std::time::Instant::now();
+    let image = bgra_to_rgba(width, height, pixels)?;
+    let convert_ms = t1.elapsed().as_millis() as u64;
+    let t2 = std::time::Instant::now();
+    // 用 DynamicImage 的方法而不是泛型的 imageops::resize：泛型代码在调用方（本 crate，调试版不优化）里生成，
+    // 缩一张整窗截图要 800+ms；DynamicImage 的方法在 image 库里编译（Cargo.toml 给它开了优化）。
+    // thumbnail = 面积平均的整数缩小，快，屏幕文字也清楚
+    let image = DynamicImage::ImageRgba8(image);
+    let small = if image.width().max(image.height()) > max_side { image.thumbnail(max_side, max_side) } else { image };
+    let mut cursor = Cursor::new(Vec::new());
+    DynamicImage::ImageRgb8(small.to_rgb8())
+        .write_to(&mut cursor, ImageOutputFormat::Jpeg(quality))
+        .map_err(|e| format!("编码 JPG 失败: {}", e))?;
+    let jpeg = cursor.into_inner();
+    Ok(ActiveShot { jpeg, grab_ms, convert_ms, shrink_ms: t2.elapsed().as_millis() as u64 })
+}
+
 fn capture_rect(settings: &ScreenshotSettings) -> Option<(i32, i32, i32, i32)> {
     if settings.capture_target == "active_window" {
         if let Some(rect) = active_window_rect() {
@@ -818,7 +850,8 @@ fn virtual_screen_rect() -> Option<(i32, i32, i32, i32)> {
     }
 }
 
-fn bgra_to_rgba(width: i32, height: i32, pixels: &[u8]) -> Result<RgbaImage, String> {
+/// 原地把 BGRA 换成 RGBA（不另拼一份：调试版里逐像素 extend 要几百毫秒）
+fn bgra_to_rgba(width: i32, height: i32, mut pixels: Vec<u8>) -> Result<RgbaImage, String> {
     if width <= 0 || height <= 0 {
         return Err("截图尺寸无效".to_string());
     }
@@ -827,12 +860,12 @@ fn bgra_to_rgba(width: i32, height: i32, pixels: &[u8]) -> Result<RgbaImage, Str
         return Err("截图像素数据长度不匹配".to_string());
     }
 
-    let mut rgba = Vec::with_capacity(pixels.len());
-    for px in pixels.chunks_exact(4) {
-        rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
+    for px in pixels.chunks_exact_mut(4) {
+        px.swap(0, 2);
+        px[3] = 255;
     }
 
-    RgbaImage::from_raw(width as u32, height as u32, rgba)
+    RgbaImage::from_raw(width as u32, height as u32, pixels)
         .ok_or_else(|| "构建截图图像失败".to_string())
 }
 
@@ -1053,7 +1086,8 @@ fn extract_app_icon_bmp(exe_path: &str) -> Option<Vec<u8>> {
     result
 }
 
-fn capture_region_bgra(x: i32, y: i32, width: i32, height: i32) -> Result<Vec<u8>, String> {
+/// layered = 带上分层窗口（CAPTUREBLT：慢一些，而且会把悬浮在上面的透明窗也截进去）
+fn capture_region_bgra(x: i32, y: i32, width: i32, height: i32, layered: bool) -> Result<Vec<u8>, String> {
     render_to_bgra(width, height, |hdc| {
         use windows_sys::Win32::Graphics::Gdi::{BitBlt, GetDC, ReleaseDC, CAPTUREBLT, SRCCOPY};
 
@@ -1062,7 +1096,7 @@ fn capture_region_bgra(x: i32, y: i32, width: i32, height: i32) -> Result<Vec<u8
             return false;
         }
         let ok =
-            unsafe { BitBlt(hdc, 0, 0, width, height, screen, x, y, SRCCOPY | CAPTUREBLT) != 0 };
+            unsafe { BitBlt(hdc, 0, 0, width, height, screen, x, y, if layered { SRCCOPY | CAPTUREBLT } else { SRCCOPY }) != 0 };
         unsafe {
             ReleaseDC(std::ptr::null_mut(), screen);
         }

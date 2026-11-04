@@ -115,3 +115,8 @@ debug = "line-tables-only"
 # 第三方依赖不要调试符号：从不单步调试 Tauri / tokio 等库的源码
 [profile.dev.package."*"]
 debug = false
+
+# 截图缩放 + JPEG 编码在不优化的调试版里要 1.5 秒（灰色地带看图判断要截前台窗口）；
+# 给 image 开优化，再配合 perception_windows 里用 DynamicImage 的非泛型方法，调试版也降到一两百毫秒
+[profile.dev.package.image]
+opt-level = 3

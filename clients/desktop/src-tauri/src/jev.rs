@@ -1,7 +1,7 @@
 // ══════════════════════════════════════════════
 // 决策模型（System One 接口，Jev 开的头）：只做选择题 / 是非题 / 打分题，不生成文字；快（百毫秒级）、输出免费
-//   协议的灰色地带拿它判断「这段内容和协议用意的关系」（见 protocol_gray.rs）
-//   用哪个模型由模型库绑定（feature_bindings：protocol_gray 基础判断 / protocol_gray_vision 看图判断），
+//   协议的灰色地带拿它判断「这段内容和协议用意的关系」（protocol_gray.rs）：先按标题判，没把握再看截图判
+//   用哪个模型由模型库绑定（feature_bindings：protocol_gray 按标题判断，protocol_gray_vision 看截图判断），
 //   推荐的几个（Decision-1 / Jev / Liquid d1）由 seed_decision_models 写进模型库，带价格和实测成绩
 //   渠道：默认 Vercel AI Gateway（国内直连）；连接（地址 + Key）存本机 jev_config 一行，Key 读出时只给后四位
 //   每次调用记进模型审计（model_call_log，feature = 这次用的功能位）
@@ -22,11 +22,11 @@ const MAX_URL_CHARS: usize = 300;
 const MAX_KEY_CHARS: usize = 500;
 const ERROR_BODY_CHARS: usize = 200;
 
-/// 模型库里的功能位：按标题判断 / 看截图判断
+/// 模型库里的功能位：灰色地带按标题判断 / 看截图判断
 pub const FEATURE_GRAY: &str = "protocol_gray";
 pub const FEATURE_GRAY_VISION: &str = "protocol_gray_vision";
-const DEFAULT_GRAY_MODEL: &str = "microsoft/microsoft-decision-1";
-const DEFAULT_GRAY_VISION_MODEL: &str = "liquid/d1";
+const DEFAULT_TEXT_MODEL: &str = "microsoft/microsoft-decision-1";
+const DEFAULT_VISION_MODEL: &str = "liquid/d1";
 
 /// 模型库统一按「元 / 百万 token」记价；Vercel 标的是美元，按这个汇率折算（备注里留着美元原价）
 const USD_TO_CNY: f64 = 7.1;
@@ -112,7 +112,8 @@ pub(crate) fn seed_decision_models(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     }
-    for (feature, model) in [(FEATURE_GRAY, DEFAULT_GRAY_MODEL), (FEATURE_GRAY_VISION, DEFAULT_GRAY_VISION_MODEL)] {
+    let defaults = [(FEATURE_GRAY, DEFAULT_TEXT_MODEL), (FEATURE_GRAY_VISION, DEFAULT_VISION_MODEL)];
+    for (feature, model) in defaults {
         conn.execute(
             "INSERT OR IGNORE INTO feature_bindings (feature, model_id, updated_at) VALUES (?1, ?2, ?3)",
             params![feature, model, now],
@@ -123,7 +124,7 @@ pub(crate) fn seed_decision_models(conn: &Connection) -> Result<(), String> {
 }
 
 fn default_model(feature: &str) -> &'static str {
-    if feature == FEATURE_GRAY_VISION { DEFAULT_GRAY_VISION_MODEL } else { DEFAULT_GRAY_MODEL }
+    if feature == FEATURE_GRAY_VISION { DEFAULT_VISION_MODEL } else { DEFAULT_TEXT_MODEL }
 }
 
 fn clean_base_url(raw: &str) -> Result<String, String> {
@@ -248,20 +249,70 @@ fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-async fn post_choice(cfg: &JevConfig, state: &str, q: &ChoiceQuestion<'_>) -> Result<(serde_json::Value, u64), String> {
+/// 发给决策模型的「状态」：纯文字，或文字 + 一张当前窗口截图（JPEG）。
+/// 经 Vercel 时图片必须放在 state 的 content parts 里、type = image_url（顶层 images 字段会被丢掉，2026-10-10 实测）
+pub enum DecideState<'a> {
+    Text(&'a str),
+    WithImage { text: &'a str, jpeg: &'a [u8] },
+}
+
+impl DecideState<'_> {
+    fn to_json(&self) -> serde_json::Value {
+        use base64::Engine as _;
+        match self {
+            DecideState::Text(t) => serde_json::Value::String((*t).to_string()),
+            DecideState::WithImage { text, jpeg } => serde_json::json!([
+                { "type": "text", "text": text },
+                { "type": "image_url", "image_url": {
+                    "url": format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(jpeg))
+                } },
+            ]),
+        }
+    }
+
+    fn has_image(&self) -> bool {
+        matches!(self, DecideState::WithImage { .. })
+    }
+}
+
+/// 一次请求的结果：answers 原样保留（题 id → 答案），用 parse_choice / parse_noul 取
+#[derive(Debug, Clone)]
+pub struct DecideOutcome {
+    pub answers: serde_json::Value,
+    pub latency_ms: u64,
+    pub model: String,
+    pub input_tokens: i64,
+}
+
+/// 选择题的 JSON：criteria = [(选项 key, 选项描述)]
+pub fn choice_json(instructions: &str, criteria: &[(String, String)]) -> serde_json::Value {
+    let map: serde_json::Map<String, serde_json::Value> = criteria
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+        .collect();
+    serde_json::json!({ "type": "choice", "instructions": instructions, "criteria": map })
+}
+
+/// 是非题的 JSON（调用层保留：灰色地带目前只用选择题）
+#[allow(dead_code)]
+pub fn noul_json(instructions: &str) -> serde_json::Value {
+    serde_json::json!({ "type": "noul", "instructions": instructions })
+}
+
+#[allow(dead_code)]
+pub fn parse_noul(answers: &serde_json::Value, id: &str) -> Option<f64> {
+    answers.get(id)?.get("noul")?.as_f64()
+}
+
+pub fn parse_choice(answers: &serde_json::Value, id: &str) -> Option<ChoiceAnswer> {
+    serde_json::from_value(answers.get(id)?.clone()).ok()
+}
+
+async fn post(cfg: &JevConfig, state: &DecideState<'_>, questions: &serde_json::Value) -> Result<(serde_json::Value, u64), String> {
     if cfg.api_key.is_empty() {
         return Err("还没填判断模型的 Key".into());
     }
-    let criteria: serde_json::Map<String, serde_json::Value> = q
-        .criteria
-        .iter()
-        .map(|(k, v)| ((*k).to_string(), serde_json::Value::String((*v).to_string())))
-        .collect();
-    let body = serde_json::json!({
-        "model": cfg.model,
-        "state": state,
-        "questions": { q.id: { "type": "choice", "instructions": q.instructions, "criteria": criteria } },
-    });
+    let body = serde_json::json!({ "model": cfg.model, "state": state.to_json(), "questions": questions });
     let started = Instant::now();
     let res = client()
         .post(format!("{}/v1/systemone", cfg.base_url))
@@ -281,34 +332,37 @@ async fn post_choice(cfg: &JevConfig, state: &str, q: &ChoiceQuestion<'_>) -> Re
     Ok((json, latency_ms))
 }
 
-/// 问一道选择题；成功失败都记进模型审计（feature = 这次用的功能位）
-pub async fn decide_choice(
+/// 一次问一道或几道题（同一个状态，模型并行判）；成功失败都记进模型审计（feature = 这次用的功能位）
+pub async fn decide(
     db: &Database,
     feature: &str,
     cfg: &JevConfig,
-    state: &str,
-    q: &ChoiceQuestion<'_>,
-) -> Result<ChoiceOutcome, String> {
+    state: &DecideState<'_>,
+    questions: serde_json::Value,
+) -> Result<DecideOutcome, String> {
     let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let result = post_choice(cfg, state, q).await.and_then(|(json, latency_ms)| {
-        let answer: ChoiceAnswer = serde_json::from_value(json["answers"][q.id].clone())
-            .map_err(|_| format!("判断结果里没有这道题的答案：{}", truncate(&json.to_string(), ERROR_BODY_CHARS)))?;
-        Ok(ChoiceOutcome {
-            answer,
+    let result = post(cfg, state, &questions).await.and_then(|(json, latency_ms)| {
+        let answers = json.get("answers").cloned().filter(|a| a.is_object()).ok_or_else(|| {
+            format!("判断结果里没有答案：{}", truncate(&json.to_string(), ERROR_BODY_CHARS))
+        })?;
+        Ok(DecideOutcome {
+            answers,
             latency_ms,
             model: json["model"].as_str().unwrap_or(&cfg.model).to_string(),
             input_tokens: json["usage"]["input_tokens"].as_i64().unwrap_or(0),
         })
     });
 
+    let tokens = result.as_ref().map(|o| o.input_tokens).unwrap_or(0);
     let audit = LogModelCallRequest {
         api_key_id: None,
         feature: feature.into(),
         model_id: cfg.model.clone(),
         started_at,
         duration_ms: result.as_ref().ok().map(|o| o.latency_ms as i64),
-        prompt_text_tokens: result.as_ref().map(|o| o.input_tokens).unwrap_or(0),
-        prompt_image_tokens: 0,
+        // 带图时整份输入算图片 token（Liquid d1 图文同价，记账只为分得清）
+        prompt_text_tokens: if state.has_image() { 0 } else { tokens },
+        prompt_image_tokens: if state.has_image() { tokens } else { 0 },
         prompt_video_tokens: 0,
         prompt_audio_tokens: 0,
         completion_text_tokens: 0,
@@ -321,6 +375,22 @@ pub async fn decide_choice(
         log::warn!("[Jev] 记模型审计失败: {e}");
     }
     result
+}
+
+/// 问一道选择题（灰色地带用）
+pub async fn decide_choice(
+    db: &Database,
+    feature: &str,
+    cfg: &JevConfig,
+    state: &DecideState<'_>,
+    q: &ChoiceQuestion<'_>,
+) -> Result<ChoiceOutcome, String> {
+    let criteria: Vec<(String, String)> = q.criteria.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect();
+    let questions = serde_json::json!({ q.id: choice_json(q.instructions, &criteria) });
+    let out = decide(db, feature, cfg, state, questions).await?;
+    let answer = parse_choice(&out.answers, q.id)
+        .ok_or_else(|| format!("判断结果里没有这道题的答案：{}", truncate(&out.answers.to_string(), ERROR_BODY_CHARS)))?;
+    Ok(ChoiceOutcome { answer, latency_ms: out.latency_ms, model: out.model, input_tokens: out.input_tokens })
 }
 
 // ── 灰色地带那道题 ──

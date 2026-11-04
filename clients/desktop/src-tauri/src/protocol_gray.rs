@@ -1,6 +1,8 @@
 // ══════════════════════════════════════════════
 // 协议志 · 灰色地带的实时判断（决策模型，见 jev.rs；用哪个模型看模型库的 protocol_gray 绑定）
 //   白名单里标「灰」的条目在前台时，按协议用意问 Jev「这段内容和用意的关系」：
+//   · 先按标题判（protocol_gray）；标题判下来没把握，再截当前窗口看图判一次（protocol_gray_vision），用看图的结果
+//     （截图只在灰色条目在前台时截、只在内存里、不落盘；图片放在 state 的 content parts 里，见 jev::DecideState）
 //   · 标题一变就判；同一标题每 60 秒复判一次；任意两次至少隔 10 秒（省钱、不刷屏）
 //   · 有把握 = 选中项概率 ≥ 0.8 且 Jev 的把握度 ≥ 0.75
 //     （实测：原神全剧情 1.00 / 1.00；程序员 vlog 0.81 / 0.72、Claude Code 搞笑 0.71 / 0.56 都算没把握）
@@ -17,7 +19,7 @@ use tauri::AppHandle;
 
 use crate::db::Database;
 use crate::focus_lock;
-use crate::jev::{self, ChoiceOutcome, RELATION_ADJACENT, RELATION_OFF_TASK, RELATION_ON_TASK};
+use crate::jev::{self, ChoiceOutcome, DecideState, RELATION_ADJACENT, RELATION_OFF_TASK, RELATION_ON_TASK};
 use crate::protocol::{NewJudgment, ProtocolSession};
 use crate::protocol_watch::notify;
 
@@ -26,6 +28,9 @@ const MIN_GAP: Duration = Duration::from_secs(10);
 const REJUDGE_AFTER: Duration = Duration::from_secs(60);
 const SURE_PROBABILITY: f64 = 0.8;
 const SURE_CONFIDENCE: f64 = 0.75;
+/// 看图判断发出去的截图：最长边 / JPEG 质量
+const SHOT_SIDE: u32 = 768;
+const SHOT_QUALITY: u8 = 80;
 const WARN_AT: u32 = 2;
 const SQUEEZE_AT: u32 = 4;
 /// 扩展上报的标签页只在前台是这些浏览器时才有意义
@@ -196,15 +201,20 @@ impl GrayJudge {
         self.key_judged_at = Some(now);
 
         let state = jev::relation_state(&self.intent, &target.app, &target.describe());
-        match jev::decide_choice(db, jev::FEATURE_GRAY, &cfg, &state, &jev::relation_question()).await {
-            Ok(outcome) => self.apply(db, app, &target, &outcome).await,
-            Err(e) => log::warn!("[ProtocolGray] 判断失败: {e}"),
-        }
+        let by_title = match jev::decide_choice(db, jev::FEATURE_GRAY, &cfg, &DecideState::Text(&state), &jev::relation_question()).await {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("[ProtocolGray] 判断失败: {e}");
+                return;
+            }
+        };
+        // 标题看不出来 → 看图再判一次；看图失败就用标题的结果（没把握的不加不减）
+        let outcome = if is_sure(&by_title) { by_title } else { judge_by_screenshot(db, &state).await.unwrap_or(by_title) };
+        self.apply(db, app, &target, &outcome).await;
     }
 
     async fn apply(&mut self, db: &Database, app: &AppHandle, target: &GrayTarget, o: &ChoiceOutcome) {
-        let p = o.answer.probabilities.get(&o.answer.choice).copied().unwrap_or(0.0);
-        let sure = p >= SURE_PROBABILITY && o.answer.confidence >= SURE_CONFIDENCE;
+        let sure = is_sure(o);
         let verdict = match (sure, o.answer.choice.as_str()) {
             (true, RELATION_ON_TASK) => "on",
             (true, RELATION_ADJACENT) => "adjacent",
@@ -244,6 +254,46 @@ impl GrayJudge {
         if let Err(e) = db.protocol_judgment_record(record).await {
             log::warn!("[ProtocolGray] 记判断失败: {e}");
         }
+    }
+}
+
+/// 有把握 = 选中项概率 ≥ 0.8 且把握度 ≥ 0.75
+fn is_sure(o: &ChoiceOutcome) -> bool {
+    let p = o.answer.probabilities.get(&o.answer.choice).copied().unwrap_or(0.0);
+    p >= SURE_PROBABILITY && o.answer.confidence >= SURE_CONFIDENCE
+}
+
+/// 截当前窗口，用看图的决策模型再判一次；没配 Key、截不了图、判断失败都返回 None
+async fn judge_by_screenshot(db: &Database, state: &str) -> Option<ChoiceOutcome> {
+    let cfg = db.jev_config_for(jev::FEATURE_GRAY_VISION).await.ok().filter(|c| !c.api_key.is_empty())?;
+    let jpeg = capture_foreground()?;
+    let shot = DecideState::WithImage { text: state, jpeg: &jpeg };
+    match jev::decide_choice(db, jev::FEATURE_GRAY_VISION, &cfg, &shot, &jev::relation_question()).await {
+        Ok(o) => Some(o),
+        Err(e) => {
+            log::warn!("[ProtocolGray] 看图判断失败: {e}");
+            None
+        }
+    }
+}
+
+fn capture_foreground() -> Option<Vec<u8>> {
+    #[cfg(windows)]
+    {
+        match crate::perception::capture_active_window_jpeg(SHOT_SIDE, SHOT_QUALITY) {
+            Ok(shot) => {
+                log::debug!("[ProtocolGray] 截图 {}KB：抓 {} + 转 {} + 缩 {}ms", shot.jpeg.len() / 1024, shot.grab_ms, shot.convert_ms, shot.shrink_ms);
+                Some(shot.jpeg)
+            }
+            Err(e) => {
+                log::warn!("[ProtocolGray] 截图失败: {e}");
+                None
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        None
     }
 }
 
