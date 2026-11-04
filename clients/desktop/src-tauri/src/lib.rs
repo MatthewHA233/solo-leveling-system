@@ -10,6 +10,7 @@ mod notes;
 mod notes_api;
 mod jev;
 mod protocol;
+mod network;
 mod protocol_gray;
 mod protocol_watch;
 mod protocols_api;

@@ -1349,6 +1349,7 @@ impl Database {
         crate::notes::init_note_tables(&conn)?;
         crate::protocol::init_protocol_tables(&conn)?;
         crate::jev::init_jev_tables(&conn)?;
+        crate::network::init_network_tables(&conn)?;
 
         // 首次启动写入百炼模型库与默认绑定种子（已存在则跳过，幂等）
         seed_model_registry(&conn)?;

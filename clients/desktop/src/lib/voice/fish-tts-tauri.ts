@@ -1,10 +1,11 @@
 // ══════════════════════════════════════════════
 // Fish TTS 客户端 — Tauri 后端版
-// 通过 Rust 后端连接 WebSocket（支持代理）
+// 通过 Rust 后端连接 WebSocket（走齿轮页「网络代理」设置的端口）
 // ══════════════════════════════════════════════
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { fetchProxyPort } from '../network-api'
 
 export interface FishTTSConfig {
   apiKey: string
@@ -62,7 +63,8 @@ export function createFishTTSTauri(
       referenceId: config.referenceId,
       model: config.model,
       sampleRate: config.sampleRate ?? 24000,
-      proxyPort: config.proxyPort ?? 7890,
+      // 代理端口在齿轮页「网络代理」里设置；调用方没指定就用设置里的
+      proxyPort: config.proxyPort ?? await fetchProxyPort(),
       eventId,
     })
 

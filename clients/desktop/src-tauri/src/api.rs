@@ -1775,6 +1775,7 @@ pub fn create_router(
         .route("/api/anchors/{id}", patch(update_anchor))
         .merge(crate::notes_api::routes())
         .merge(crate::protocols_api::routes())
+        .merge(crate::network::routes())
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

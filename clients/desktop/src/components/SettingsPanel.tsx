@@ -5,7 +5,7 @@
 
 import { useState, useCallback, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { X, ChevronRight, ChevronUp, ChevronDown, Mic, Lock, Database, Bot, Eye, EyeOff, Copy, Check, Cpu, Camera, FolderOpen, RefreshCw, Trash2, Settings as SettingsIcon, Ban, Activity } from 'lucide-react'
+import { X, ChevronRight, ChevronUp, ChevronDown, Mic, Lock, Database, Bot, Eye, EyeOff, Copy, Check, Cpu, Camera, FolderOpen, RefreshCw, Trash2, Settings as SettingsIcon, Ban, Activity, Globe } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { theme, hud, tiSurface, tiInput, tiTitle, ti, tiKey } from '../theme'
@@ -15,6 +15,7 @@ import { MagneticButton } from './NeonUI'
 import Tooltip from './Tooltip'
 import HudSelect from './HudSelect'
 import { useConfirm } from '../hooks/useConfirm'
+import { fetchNetworkSettings, saveNetworkSettings } from '../lib/network-api'
 
 interface Props {
   readonly open: boolean
@@ -586,6 +587,8 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
         </Section>
         )}
 
+        {activeSection === 'network' && <NetworkProxyForm />}
+
         {activeSection === 'privacy' && (
         <Section title="隐私" icon={Lock}>
           <label style={labelStyle}>排除关键词（每行一个）</label>
@@ -992,6 +995,7 @@ const SECTION_LIST: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'persona',    label: 'AI 人设',  icon: Bot },
   { id: 'fairy',      label: 'Fairy',    icon: Eye },
   { id: 'voice',      label: '语音',     icon: Mic },
+  { id: 'network',    label: '网络代理', icon: Globe },
   { id: 'privacy',    label: '隐私',     icon: Lock },
   { id: 'tracking',   label: '追踪',     icon: Activity },
   { id: 'screenshot', label: '屏幕截图', icon: Camera },
@@ -1437,4 +1441,51 @@ const textareaStyle: React.CSSProperties = {
   ...inputStyle,
   resize: 'vertical',
   lineHeight: 1.5,
+}
+
+/** 网络代理：Anthropic 和 Fish 语音都从这个本机端口出去（127.0.0.1） */
+function NetworkProxyForm() {
+  const [port, setPort] = useState('')
+  const [loaded, setLoaded] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    fetchNetworkSettings()
+      .then((s) => { if (alive) { setPort(String(s.proxyPort)); setLoaded(true) } })
+      .catch((e: unknown) => { if (alive) { setError(e instanceof Error ? e.message : String(e)); setLoaded(true) } })
+    return () => { alive = false }
+  }, [])
+
+  const save = async () => {
+    const n = Number(port)
+    if (!Number.isInteger(n) || n < 1 || n > 65535) {
+      setError('端口要是 1~65535 之间的整数')
+      return
+    }
+    setError(null)
+    try {
+      await saveNetworkSettings(n)
+      setSaved(true)
+      window.setTimeout(() => setSaved(false), 1500)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <Section title="网络代理" icon={Globe}>
+      <div style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 10, lineHeight: 1.7 }}>
+        Anthropic 和 Fish 语音都从这个本机代理端口出去（127.0.0.1）。端口和你的代理软件保持一致，默认 7890。
+      </div>
+      <Field label="代理端口" value={port} onChange={setPort} placeholder="7890" />
+      {error && <div style={{ fontSize: 12, color: theme.warningOrange, marginTop: 6 }}>{error}</div>}
+      <div style={{ marginTop: 4 }}>
+        <MagneticButton onClick={() => { void save() }} color={theme.expGreen} disabled={!loaded}>
+          {saved ? '已保存 ✓' : '保存'}
+        </MagneticButton>
+      </div>
+    </Section>
+  )
 }
