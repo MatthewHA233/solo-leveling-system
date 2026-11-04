@@ -35,6 +35,8 @@ pub enum CaptureEvent {
     Ready(CaptureInfo),
     /// 16 kHz 单声道 PCM16 一块，附 0~1 的音量（RMS）
     Chunk { pcm: Vec<i16>, level: f32 },
+    /// 掉帧这类小毛病：流还在继续录，只记一次数
+    Glitch,
     Error(String),
 }
 
@@ -89,8 +91,11 @@ fn run(tx: &UnboundedSender<CaptureEvent>, stop: &Arc<AtomicBool>) -> Result<(),
     let flushed = Arc::new(AtomicBool::new(false));
     let chunker = Chunker::new(config.sample_rate, config.channels, tx.clone(), stop.clone(), flushed.clone());
     let err_tx = tx.clone();
+    // cpal 把「掉了一帧」「没拿到实时优先级」也走错误回调，流其实还在继续录。
+    // 以前一律当致命错误停录：驱动抖一下（蓝牙设备一多就常见）录音就静默断了，界面还在「倾听中」
     let on_error = move |e: cpal::Error| {
-        let _ = err_tx.send(CaptureEvent::Error(describe(e)));
+        let ev = if is_transient(&e) { CaptureEvent::Glitch } else { CaptureEvent::Error(describe(e)) };
+        let _ = err_tx.send(ev);
     };
 
     let stream = match format {
@@ -219,6 +224,12 @@ impl Chunker {
     }
 }
 
+/// 不影响继续录音的错误：掉帧、实时优先级被拒、系统已把流自动改道到别的设备
+fn is_transient(e: &cpal::Error) -> bool {
+    use cpal::ErrorKind::*;
+    matches!(e.kind(), Xrun | RealtimeDenied | DeviceChanged)
+}
+
 /// cpal 错误 → 给用户看的中文说明
 fn describe(e: cpal::Error) -> String {
     use cpal::ErrorKind::*;
@@ -261,6 +272,7 @@ mod tests {
                         handle.request_stop();
                     }
                 }
+                Ok(CaptureEvent::Glitch) => {}
                 Ok(CaptureEvent::Error(e)) => panic!("录音出错: {e}"),
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
                 Err(_) => std::thread::sleep(Duration::from_millis(5)),

@@ -31,6 +31,8 @@ use capture::{CaptureEvent, TARGET_RATE};
 
 const MAX_RECORD: Duration = Duration::from_secs(90);
 const MAX_ATTEMPTS: u32 = 2;
+/// 录音中途麦克风出错（设备被重置等）时，按着键期间最多重开几次
+const MAX_CAPTURE_RESTARTS: u32 = 3;
 /// 录音结束后等识别收尾的上限（识别任务自身另有 8 秒收尾超时）
 const FINALIZE_TIMEOUT: Duration = Duration::from_secs(12);
 /// voice_stop 等整个会话出结果的上限（含兜底批量识别）
@@ -86,6 +88,10 @@ pub struct VoiceResult {
     /// 流式识别两次都失败，改用批量识别得到的结果
     pub fallback: bool,
     pub device: Option<String>,
+    /// 录音掉帧次数（不影响继续录，排查断录用）
+    pub glitches: u32,
+    /// 录音中途麦克风出错后重开的次数
+    pub capture_restarts: u32,
     pub timings: VoiceTimings,
 }
 
@@ -218,7 +224,7 @@ async fn run_session(
 ) -> Result<VoiceResult, String> {
     let t0 = Instant::now();
     let (cap_tx, mut cap_rx) = unbounded_channel();
-    let capture = capture::start(cap_tx);
+    let mut capture = capture::start(cap_tx);
 
     let cfg = AsrConfig {
         api_key: req.api_key.clone(),
@@ -239,6 +245,8 @@ async fn run_session(
     let mut device: Option<String> = None;
     let mut timings = VoiceTimings::default();
     let mut capture_error: Option<String> = None;
+    let mut glitches = 0u32;
+    let mut capture_restarts = 0u32;
     let mut asr_error: Option<String> = None;
     let mut stopping = false;
     let mut stop_at: Option<Instant> = None;
@@ -267,7 +275,7 @@ async fn run_session(
             }
             ev = cap_rx.recv(), if !capture_done => match ev {
                 Some(CaptureEvent::Ready(info)) => {
-                    timings.mic_open_ms = Some(ms(t0));
+                    timings.mic_open_ms.get_or_insert(ms(t0));
                     log::info!(
                         "[Voice] 会话#{session} 麦克风就绪 {}ms（线程内 {}ms）: {} {}Hz {}ch {}",
                         ms(t0), info.open_ms, info.device, info.sample_rate, info.channels, info.format
@@ -281,9 +289,22 @@ async fn run_session(
                     let _ = asr_tx.send(AsrInput::Audio(pcm_bytes(&pcm)));
                     audio.extend_from_slice(&pcm);
                 }
+                Some(CaptureEvent::Glitch) => glitches += 1,
+                Some(CaptureEvent::Error(e)) if !stopping && capture_restarts < MAX_CAPTURE_RESTARTS => {
+                    // 主人还按着键：重开麦克风接着录，只丢中断那一下（旧线程随旧 handle 一起停）
+                    capture_restarts += 1;
+                    log::warn!("[Voice] 会话#{session} 录音中断（{e}），第 {capture_restarts} 次重开麦克风");
+                    let (tx, rx) = unbounded_channel();
+                    capture = capture::start(tx);
+                    cap_rx = rx;
+                }
                 Some(CaptureEvent::Error(e)) => {
                     log::error!("[Voice] 会话#{session} 录音出错: {e}");
                     capture.request_stop();
+                    if !stopping {
+                        // 还按着键却录不了了：通知前端收尾，别让「倾听中」一直骗人
+                        let _ = app.emit("voice://auto_stop", json!({ "session": session, "message": format!("录音中断了，已结束这一段：{e}") }));
+                    }
                     stopping = true;
                     stop_at.get_or_insert_with(Instant::now);
                     capture_error = Some(e);
@@ -388,7 +409,7 @@ async fn run_session(
     timings.total_ms = ms(t0);
     let duration_ms = audio.len() as u64 * 1_000 / TARGET_RATE as u64;
     log::info!(
-        "[Voice] 会话#{session} 完成：录音 {duration_ms}ms，开麦 {:?}ms，识别就绪 {:?}ms，首字 {:?}ms，松手到定稿 {:?}ms，尝试 {attempts} 次{}，{} 字",
+        "[Voice] 会话#{session} 完成：录音 {duration_ms}ms，开麦 {:?}ms，识别就绪 {:?}ms，首字 {:?}ms，松手到定稿 {:?}ms，尝试 {attempts} 次{}，{} 字，掉帧 {glitches} 次，重开麦克风 {capture_restarts} 次",
         timings.mic_open_ms, timings.asr_start_ms, timings.first_partial_ms, timings.finalize_ms,
         if fallback { "（批量兜底）" } else { "" },
         text.chars().count()
@@ -405,6 +426,8 @@ async fn run_session(
         attempts,
         fallback,
         device,
+        glitches,
+        capture_restarts,
         timings,
     })
 }

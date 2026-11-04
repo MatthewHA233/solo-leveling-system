@@ -35,6 +35,9 @@ export interface VoiceAsrResult {
   readonly attempts: number
   readonly fallback: boolean
   readonly device: string | null
+  /** 录音掉帧次数、中途重开麦克风次数（排查断录用） */
+  readonly glitches?: number
+  readonly captureRestarts?: number
   readonly timings: {
     readonly micOpenMs: number | null
     readonly asrConnectMs: number | null
@@ -140,13 +143,13 @@ export function createVoiceService(
     callbacks.onTranscript?.(text, pending.msgId)
   })
 
-  // 音量（给 getAudioLevel）；录音超过 90 秒 Rust 自动停止 → 按松手处理
+  // 音量（给 getAudioLevel）；录音超过 90 秒或麦克风中断时 Rust 自动停止 → 按松手处理
   void listen<{ session: number; level: number }>('voice://level', ({ payload }) => {
     if (payload.session === cascadeSession) lastLevel = payload.level
   })
-  void listen<{ session: number }>('voice://auto_stop', ({ payload }) => {
+  void listen<{ session: number; message?: string }>('voice://auto_stop', ({ payload }) => {
     if (cascadeActive && payload.session === cascadeSession && phase === 'listening') {
-      callbacks.onError('单次录音最长 90 秒，已自动结束')
+      callbacks.onError(payload.message ?? '单次录音最长 90 秒，已自动结束')
       void stopAndProcess()
     }
   })

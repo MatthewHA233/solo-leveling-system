@@ -1552,6 +1552,7 @@ export default function App() {
             metadata: {
               timings: r.timings, attempts: r.attempts, fallback: r.fallback,
               device: r.device, audioMs: r.durationMs, hadSpeech: r.hadSpeech,
+              glitches: r.glitches, captureRestarts: r.captureRestarts,
             },
           })
         },
@@ -1964,7 +1965,15 @@ export default function App() {
   // ── Right Alt Long-Press → Voice Chat（全局热键，无需窗口聚焦）──
   useEffect(() => {
     let lastDownMs = 0
+    // 松手后先等一小段时间再真正结束录音：蓝牙键盘可能发出假的 keyup，窗口内又按下就视为同一次按住
+    let releaseTimer: ReturnType<typeof setTimeout> | null = null
+    const RELEASE_DEBOUNCE_MS = 600
     const onDown = () => {
+      if (releaseTimer) {
+        clearTimeout(releaseTimer)
+        releaseTimer = null
+        return
+      }
       if (pressingRef.current) return
       // 两路（DOM + Rust）可能在同一帧触发，去重
       const now = Date.now()
@@ -2002,17 +2011,17 @@ export default function App() {
     }
 
     let lastUpMs = 0
-    const onUp = () => {
-      if (!pressingRef.current) return
-      const now = Date.now()
-      if (now - lastUpMs < 50) return
-      lastUpMs = now
+    // releasedAt 取松开的时刻，去抖等待不计入按住时长
+    const finishRelease = (releasedAt: number) => {
+      releaseTimer = null
       pressingRef.current = false
-      const holdDuration = Date.now() - altDownTimeRef.current
+      const holdDuration = releasedAt - altDownTimeRef.current
 
       if (holdDuration >= LONG_PRESS_MS && fairyStateRef.current === 'listening') {
         const svc = getVoiceService()
         svc.stopAndProcess()
+      } else if (holdDuration >= LONG_PRESS_MS && voiceServiceRef.current?.getPhase() === 'thinking') {
+        // 录音已经自己结束（满 90 秒 / 麦克风中断）并交给了回复，松手时别把它取消掉
       } else {
         const svc = voiceServiceRef.current
         if (svc) svc.cancel()
@@ -2020,11 +2029,23 @@ export default function App() {
         emitFairy('idle')
       }
     }
+    const onUp = () => {
+      if (!pressingRef.current || releaseTimer) return
+      const now = Date.now()
+      if (now - lastUpMs < 50) return
+      lastUpMs = now
+      const releasedAt = Date.now()
+      releaseTimer = setTimeout(() => finishRelease(releasedAt), RELEASE_DEBOUNCE_MS)
+    }
 
     // 打断键：RAlt 按住时按 RCtrl → 取消录音/请求
     const onCancel = () => {
       if (!pressingRef.current) return
       console.log('[RAlt] cancel via RCtrl')
+      if (releaseTimer) {
+        clearTimeout(releaseTimer)
+        releaseTimer = null
+      }
       pressingRef.current = false
       replyControlRef.current?.interrupt()
       replyControlRef.current = null
@@ -2067,6 +2088,8 @@ export default function App() {
       disposed = true
       window.removeEventListener('keydown', onDomDown)
       window.removeEventListener('keyup',   onDomUp)
+      if (releaseTimer) clearTimeout(releaseTimer)
+      releaseTimer = null
       eventUnlisteners.forEach((fn) => fn())
       eventUnlisteners.length = 0
     }
