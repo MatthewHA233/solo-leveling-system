@@ -15,7 +15,6 @@ const NAMES: Record<MainViewMode, string> = {
   daynight: '昼夜表',
   torrent: '洪流域',
   torrent_static: '洪流域 · 静态示范',
-  focus: '专注锁',
 }
 
 function pad2(n: number): string {

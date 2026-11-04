@@ -88,7 +88,6 @@ import { PLAN_NODES_CHANGED } from './components/protocol/checklist/use-checklis
 import ProtocolDemoPanel from './components/ProtocolDemoPanel'
 import TorrentFieldPanel from './components/TorrentFieldPanel'
 import TorrentFieldDemoPanel from './components/TorrentFieldDemoPanel'
-import FocusPanel from './components/FocusPanel'
 import ViewSwitcher, { type MainViewMode } from './components/ViewSwitcher'
 import IconButton from './components/ui/IconButton'
 import WindowControls from './components/ui/WindowControls'
@@ -336,7 +335,6 @@ const StageProtocolView = memo(ProtocolView)
 const StageProtocolDemoPanel = memo(ProtocolDemoPanel)
 const StageTorrentFieldPanel = memo(TorrentFieldPanel)
 const StageTorrentFieldDemoPanel = memo(TorrentFieldDemoPanel)
-const StageFocusPanel = memo(FocusPanel)
 // 右侧聊天栏也一直挂着（看详情时只是藏起来），同样按 props 记忆
 const StageChatPanel = memo(ChatPanel)
 const NOOP = () => {}
@@ -2850,7 +2848,6 @@ export default function App() {
       daynight: 2,
       torrent: 3,
       torrent_static: 4,
-      focus: 5,
     }
     const active = mainView === mode
     const distance = Math.abs(panelOrder[mode] - panelOrder[mainView])
@@ -3170,11 +3167,13 @@ export default function App() {
           </div>
           <div style={{ ...mainPanelStyle('motivation'), display: 'flex' }}>
             <ScreenBezel view="motivation">
-              {/* 协议志：清单（滴答清单式任务树，和昼夜表计划层同一份数据）/ 动机云 */}
+              {/* 协议志：协议 / 专注锁 / 清单（滴答清单式任务树，和昼夜表计划层同一份数据）/ 动机云 */}
               <StageProtocolView
                 palette={activityPalette}
                 onPaletteChange={refreshActivityPalette}
                 onPlanNodesChange={handlePlanNodesChange}
+                selectedDate={selectedDate}
+                perceptionSpans={perceptionSpans}
               />
             </ScreenBezel>
           </div>
@@ -3191,11 +3190,6 @@ export default function App() {
           <div style={{ ...mainPanelStyle('torrent_static'), display: 'flex' }}>
             <ScreenBezel view="torrent_static">
               <StageTorrentFieldDemoPanel />
-            </ScreenBezel>
-          </div>
-          <div style={{ ...mainPanelStyle('focus'), display: 'flex' }}>
-            <ScreenBezel view="focus">
-              <StageFocusPanel selectedDate={selectedDate} perceptionSpans={perceptionSpans} />
             </ScreenBezel>
           </div>
         </div>
