@@ -1,0 +1,38 @@
+/* 协议志 · 开局 · 责任之镜：冷的镜面，贴着暖的便利贴；字和手记用 notebook.css 的共用件 */
+
+/* ── 镜子：钛框（notebook.css 的 .nb-frame），里面是冷的镜面 ── */
+.mr-mirror { padding: 34px 22px 54px; }
+.mr-glass {
+  background:
+    linear-gradient(112deg, transparent 0 15%, rgba(214, 232, 242, 0.075) 20%, transparent 28%, transparent 60%, rgba(214, 232, 242, 0.055) 65%, rgba(214, 232, 242, 0.02) 71%, transparent 75%),
+    radial-gradient(90% 70% at 20% 8%, rgba(158, 216, 242, 0.13), transparent 62%),
+    radial-gradient(110% 80% at 85% 115%, rgba(0, 0, 0, 0.6), transparent 60%),
+    linear-gradient(180deg, #2b3237 0%, #1a2125 55%, #121618 100%);
+}
+.mr-board { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 28px 18px; }
+
+/* ── 便利贴 ── */
+.mr-note {
+  position: relative; box-sizing: border-box; width: fit-content; min-width: 168px; max-width: 290px; min-height: 132px; padding: 23px 18px 18px;
+  background:
+    var(--ink-grain),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.045) 0 14%, transparent 14%),
+    linear-gradient(165deg, rgba(255, 255, 255, 0.22), transparent 45%),
+    var(--paper);
+  color: #2a2520;
+  transform: translateY(var(--dy)) rotate(var(--rot));
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.4), 6px 16px 16px -12px rgba(0, 0, 0, 0.85), 0 3px 8px rgba(0, 0, 0, 0.28);
+  transition: transform 0.22s ease, box-shadow 0.22s ease;
+  outline: none; cursor: default;
+}
+.mr-note:hover, .mr-note:focus-visible {
+  z-index: 3;
+  transform: translateY(calc(var(--dy) - 6px)) rotate(0deg) scale(1.03);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.4), 8px 26px 26px -14px rgba(0, 0, 0, 0.9), 0 6px 14px rgba(0, 0, 0, 0.35);
+}
+.mr-no { position: absolute; top: 7px; right: 10px; font-family: var(--ti-font-mono); font-size: 10px; letter-spacing: 0.06em; color: rgba(42, 37, 32, 0.36); }
+.mr-short { margin: 0; font-size: 16px; line-height: 1.8; letter-spacing: 0.02em; }
+.mr-raw {
+  font-size: 13.5px; line-height: 1.7; opacity: 0.7;
+  display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden;
+}

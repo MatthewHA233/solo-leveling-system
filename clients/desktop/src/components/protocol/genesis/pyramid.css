@@ -1,0 +1,80 @@
+/* 协议志 · 开局 · 人生金字塔：点阵纸上一座铅笔画的三层塔（照熊谷正寿的参考图），三层各上一层淡彩；
+   目标直接写进格子，字顺着斜边排（shape-outside），健康那格用红笔框起来 */
+
+.py-page {
+  position: relative; padding: 30px 34px 30px; color: #2a2520; transform: rotate(-0.3deg);
+  background:
+    var(--ink-grain),
+    radial-gradient(circle, rgba(58, 70, 92, 0.17) 1px, transparent 1.3px) 0 0 / 18px 18px,
+    linear-gradient(172deg, #F5F0E3, #ECE4D1);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.35), 0 18px 28px -14px rgba(0, 0, 0, 0.85), 0 3px 8px rgba(0, 0, 0, 0.25);
+}
+.py-tape { top: -11px; left: 50%; margin-left: -43px; transform: rotate(-2deg); }
+
+/* ── 塔上方：人生理念，按逗号分行，红笔划线 ── */
+.py-mission-block { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 18px; text-align: center; }
+.py-caption { font-family: var(--ti-font-mono); font-size: 10px; letter-spacing: 0.3em; color: rgba(42, 37, 32, 0.42); }
+.py-mission { margin: 0; font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; font-size: 20px; line-height: 1.8; letter-spacing: 0.12em; }
+textarea.py-mission { max-width: 78%; }
+
+/* ── 塔：4:3 的画，格子按百分比摆在画上 ── */
+.py-tower { position: relative; width: 100%; aspect-ratio: 4 / 3; }
+.py-drawing { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.py-wash { stroke: none; }
+.py-wash-3 { fill: #E5BC58; fill-opacity: 0.5; }
+.py-wash-2 { fill: #8FAED3; fill-opacity: 0.45; }
+.py-wash-1 { fill: #9FC28F; fill-opacity: 0.5; }
+.py-pencil { fill: none; stroke: #39342e; stroke-opacity: 0.85; stroke-width: 1.3; stroke-linejoin: round; stroke-linecap: round; }
+.py-pencil-2 { stroke-opacity: 0.35; stroke-width: 0.8; }
+/* 层线伸到塔外，像参考图那样把整页横着分成三层 */
+.py-reach { fill: none; stroke: #39342e; stroke-opacity: 0.32; stroke-width: 0.7; stroke-dasharray: 3 3; }
+.py-red { fill: none; stroke: #B8322A; stroke-opacity: 0.88; stroke-width: 1.5; stroke-linejoin: round; }
+.py-red-2 { stroke-opacity: 0.45; stroke-width: 0.9; }
+
+/* 层名：写在每层左上角、塔外的空白里 */
+.py-tier {
+  position: absolute; left: 0; margin-top: 6px; display: flex; flex-direction: column; gap: 1px; pointer-events: none;
+  font-family: var(--ti-font-mono); font-size: 11px; letter-spacing: 0.2em; color: rgba(42, 37, 32, 0.55);
+}
+.py-tier b { font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; font-size: 14px; font-weight: 700; letter-spacing: 0.16em; color: rgba(42, 37, 32, 0.68); }
+
+/* ── 一格：两边的斜边用浮动 + shape-outside 挡住，字只在塔里排；顶上太窄的那截先空出来 ── */
+.py-cell {
+  position: absolute; box-sizing: border-box; padding: 0 5px 4px; overflow: hidden; text-align: center;
+  font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; font-size: var(--fs, 15px); line-height: 1.45;
+}
+.py-slant { height: 100%; width: var(--slope); shape-margin: 0.6em; }
+.py-slant-l { float: left; shape-outside: polygon(0 0, 100% 0, 0 100%); }
+.py-slant-r { float: right; shape-outside: polygon(0 0, 100% 0, 100% 100%); }
+.py-skip { display: block; height: var(--skip); }
+
+/* 格名不折行：塔尖太窄放不下时，整行往下挪到放得下的地方 */
+.py-area { margin: 0 0 0.15em; font-size: 1.2em; font-weight: 700; letter-spacing: 0.1em; white-space: nowrap; }
+.py-cell[data-area="health"] .py-area { color: #9A2C24; }
+.py-no {
+  display: inline-block; box-sizing: border-box; width: 1.45em; height: 1.45em; margin-right: 0.3em; vertical-align: 0.15em;
+  border: 1px solid currentColor; border-radius: 50%; opacity: 0.7;
+  font-family: var(--ti-font-mono); font-size: 0.6em; font-weight: 400; line-height: 1.35em; letter-spacing: 0; text-align: center;
+}
+.py-goals { margin: 0; padding: 0; list-style: none; }
+.py-goals li { margin-top: 0.2em; }
+.py-goals li::before {
+  content: ''; display: inline-block; width: 0.62em; height: 0.62em; margin-right: 0.35em; vertical-align: -0.02em;
+  border: 1.4px solid rgba(42, 37, 32, 0.55); border-radius: 2px; transform: rotate(-5deg);
+}
+/* 空着的格子：只写这一格管什么，底下一道虚线像待填的空（用文字下划线，才跟着斜边居中） */
+.py-scope {
+  margin: 0.2em 0 0; font-size: 0.86em; color: rgba(42, 37, 32, 0.42);
+  text-decoration: underline dotted rgba(42, 37, 32, 0.38) 1.5px; text-underline-offset: 0.55em;
+}
+
+/* ── 改：塔下面六个手写栏，按编号排两行 ── */
+.py-edit {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 20px; margin-top: 22px; padding-top: 18px;
+  border-top: 1px dashed rgba(42, 37, 32, 0.22);
+}
+.py-edit-area { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.py-edit-name { font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; font-size: 15px; font-weight: 700; letter-spacing: 0.08em; }
+.py-edit-name .py-no { font-size: 10px; }
+.py-edit-name small { margin-left: 0.6em; font-family: var(--ti-font-mono); font-size: 10px; font-weight: 400; letter-spacing: 0.12em; color: rgba(42, 37, 32, 0.42); }
+.py-edit-field { min-height: 4.8em; font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; font-size: 14px; line-height: 1.6; text-align: left; }

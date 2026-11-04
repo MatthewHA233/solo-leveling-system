@@ -277,3 +277,32 @@ export async function testJev(sample: { intent?: string; app?: string; title?: s
     inputTokens: r.input_tokens,
   }
 }
+
+// ── 开局：两份清单 → 照一遍 → 以终为始 → 未来年表（文档结构见 components/protocol/genesis/genesis-model.ts）──
+
+export interface GenesisRecord<D> {
+  readonly id: string
+  readonly doc: D
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+interface RawGenesis<D> {
+  id: string
+  doc: D
+  created_at: string
+  updated_at: string
+}
+
+const mapGenesis = <D>(r: RawGenesis<D>): GenesisRecord<D> => ({ id: r.id, doc: r.doc, createdAt: r.created_at, updatedAt: r.updated_at })
+
+/** 最近一次开局；还没开过 = null。doc 原样返回，由调用方校验 */
+export async function fetchGenesis(): Promise<GenesisRecord<unknown> | null> {
+  const r = await call<RawGenesis<unknown> | null>('/api/protocol-genesis')
+  return r ? mapGenesis(r) : null
+}
+
+/** 存开局：给了 id 覆盖那一份，没给新开一份 */
+export async function saveGenesis<D>(id: string | null, doc: D): Promise<GenesisRecord<D>> {
+  return mapGenesis(await call<RawGenesis<D>>('/api/protocol-genesis', jsonInit('PUT', { id, doc })))
+}

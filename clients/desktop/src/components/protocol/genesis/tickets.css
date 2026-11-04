@@ -1,0 +1,73 @@
+/* 协议志 · 开局 · 未来车票：一条铁轨从今天出发，车票一张张排下去（一左一右错开一点）；
+   票面两头在撕线处有半圆缺口，日期用点阵字（像针式打印机打的），印章是红印泥 */
+
+.tk-line { position: relative; padding: 2px 0 4px 46px; }
+.tk-rail {
+  position: absolute; left: 12px; top: 12px; bottom: 34px; width: 18px; pointer-events: none;
+  background:
+    linear-gradient(90deg, transparent 3px, rgba(206, 196, 176, 0.42) 3px 5px, transparent 5px 13px, rgba(206, 196, 176, 0.42) 13px 15px, transparent 15px),
+    repeating-linear-gradient(180deg, rgba(150, 128, 102, 0.34) 0 3px, transparent 3px 13px);
+}
+/* 站：铁轨上的一个圈；车票往右错开时站点跟着算回铁轨上 */
+.tk-station {
+  position: absolute; left: calc(-31px - var(--shift, 0px)); top: 50%; width: 12px; height: 12px; margin-top: -6px; box-sizing: border-box;
+  border-radius: 50%; background: #1b1a17; border: 2px solid rgba(232, 222, 200, 0.75);
+}
+.tk-origin {
+  position: relative; display: flex; align-items: center; height: 26px; margin-bottom: 12px;
+  font-family: var(--ti-font-mono); font-size: 11px; letter-spacing: 0.16em; color: var(--ti-sys);
+}
+.tk-origin .tk-station { background: var(--ti-sys); border-color: var(--ti-sys); box-shadow: 0 0 8px rgba(150, 215, 245, 0.7); }
+
+.tk-tickets { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.tk-ticket {
+  position: relative; display: flex; max-width: 580px; margin-left: var(--shift, 0px);
+  transform: rotate(var(--rot));
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.4)) drop-shadow(0 10px 12px rgba(0, 0, 0, 0.45));
+}
+.tk-ticket:nth-child(even) { --shift: 30px; }
+
+/* ── 票面：票根 | 撕线 | 正文；撕线两头各咬一个半圆缺口 ── */
+.tk-face {
+  --notch: 116px;
+  flex: 1; display: flex; min-height: 78px; color: #2a2520;
+  background: var(--ink-grain), linear-gradient(172deg, #F4EDDD, #EAE0CB);
+  -webkit-mask:
+    radial-gradient(circle 7px at var(--notch) 0, transparent 97%, #000) top / 100% 51% no-repeat,
+    radial-gradient(circle 7px at var(--notch) 100%, transparent 97%, #000) bottom / 100% 51% no-repeat;
+  mask:
+    radial-gradient(circle 7px at var(--notch) 0, transparent 97%, #000) top / 100% 51% no-repeat,
+    radial-gradient(circle 7px at var(--notch) 100%, transparent 97%, #000) bottom / 100% 51% no-repeat;
+}
+.tk-stub {
+  position: relative; box-sizing: border-box; flex: none; width: var(--notch); padding: 10px 12px 10px 14px;
+  display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  background: var(--ink-grain), var(--stub);
+}
+/* 撕线：一串小圆孔 */
+.tk-stub::after {
+  content: ''; position: absolute; right: -1px; top: 11px; bottom: 11px; width: 2px;
+  background: radial-gradient(circle, rgba(42, 37, 32, 0.42) 0.9px, transparent 1.3px) 0 0 / 2px 6px repeat-y;
+}
+.tk-year { font-family: var(--ti-font-mono); font-size: 10.5px; letter-spacing: 0.22em; color: rgba(42, 37, 32, 0.55); }
+.tk-date { font-family: var(--ti-font-led); font-weight: 900; font-size: 25px; line-height: 1.05; letter-spacing: 0.04em; }
+.tk-no { font-family: var(--ti-font-mono); font-size: 9.5px; letter-spacing: 0.12em; color: rgba(42, 37, 32, 0.42); }
+.tk-when-field { font-family: var(--ti-font-mono); font-size: 12.5px; }
+
+.tk-body { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 10px 84px 10px 20px; }
+.tk-label { font-family: var(--ti-font-mono); font-size: 10px; letter-spacing: 0.3em; color: rgba(42, 37, 32, 0.45); }
+.tk-what { font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; font-size: 17px; line-height: 1.5; letter-spacing: 0.04em; }
+
+/* ── 印章：还剩几天；过了的褪成灰 ── */
+.tk-stamp {
+  position: absolute; right: 18px; top: 50%; width: 58px; height: 58px; margin-top: -29px;
+  border-radius: 50%; border-width: 2px; transform: rotate(var(--stamp-rot));
+  box-shadow: inset 0 0 0 3px transparent, inset 0 0 0 4.5px currentColor;
+  font-family: var(--ti-font-mono); font-size: 12.5px; letter-spacing: 0.02em;
+  opacity: 0.88;
+}
+.tk-stamp[data-past="1"] { color: rgba(96, 90, 82, 0.7); }
+
+.tk-remove { position: absolute; right: 8px; top: 6px; }
+.tk-add { margin-top: 14px; color: var(--ti-text-muted); }
+.tk-add:hover { color: var(--ti-text); background: rgba(255, 255, 255, 0.05); }

@@ -1,0 +1,92 @@
+/* 梦想记事本的共用手感：手写字（霞鹜文楷）、蜡笔手记（横写 / 竖写）、掀开看原话、就地改的手写栏、胶带、印章。
+   蜡笔素材 --ink-* 由 GenesisView 挂在 .gn-root 上（notebook-ink.ts） */
+
+.nb-hand { font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; }
+
+/* ── 钛框切角的一扇窗（镜子、夜空都装在里面）；切角用 clip-path 画在底层，纸掀起来可以伸出框外 ── */
+.nb-frame { position: relative; isolation: isolate; }
+.nb-frame::before {
+  content: ''; position: absolute; inset: 0; z-index: -2;
+  clip-path: polygon(18px 0, calc(100% - 18px) 0, 100% 18px, 100% calc(100% - 18px), calc(100% - 18px) 100%, 18px 100%, 0 calc(100% - 18px), 0 18px);
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.02) 0 1px, transparent 1px 3px),
+    linear-gradient(180deg, #45423c 0%, #24231f 50%, #34322d 100%);
+}
+.nb-window {
+  position: absolute; inset: 8px; z-index: -1;
+  clip-path: polygon(13px 0, calc(100% - 13px) 0, 100% 13px, 100% calc(100% - 13px), calc(100% - 13px) 100%, 13px 100%, 0 calc(100% - 13px), 0 13px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), inset 0 0 0 1px rgba(0, 0, 0, 0.7), inset 0 0 50px rgba(0, 0, 0, 0.45);
+}
+.nb-frame-caption {
+  position: absolute; left: 0; right: 0; bottom: 20px; text-align: center; pointer-events: none;
+  font-size: 12px; letter-spacing: 0.24em; color: var(--ti-sys); opacity: 0.72;
+}
+
+/* ── 一段誊好的字：AI 排好的行一行一块（竖写就是一列） ── */
+.nb-ink { margin: 0; font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; text-wrap: pretty; }
+.nb-line { display: block; }
+.nb-tcy { text-combine-upright: all; }
+
+/* ── 蜡笔手记：换行时每一行各自带一段痕迹 ── */
+.nb-mark { -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.nb-highlight { background: var(--ink-hl) 0 58% / 100% 80% no-repeat; padding: 0 0.14em; margin: 0 -0.07em; }
+.nb-underline { background: var(--ink-ul) 0 100% / 100% 0.44em no-repeat; padding-bottom: 0.12em; }
+.nb-circle { position: relative; display: inline-block; white-space: nowrap; padding: 0 0.2em; }
+.nb-circle::after {
+  content: ''; position: absolute; inset: -0.3em -0.4em -0.26em; pointer-events: none;
+  background: var(--ink-circle) center / 100% 100% no-repeat;
+}
+/* 竖写：涂抹竖着涂，划线画在字的右边，圈照样圈 */
+/* 竖写的行内框横向只有一个字宽：左右各撑开一点（不占版面），涂抹才盖得住整个字 */
+.nb-vertical .nb-highlight { background: var(--ink-hl-v) center / 100% 100% no-repeat; padding: 0.14em 0.2em; margin: -0.07em 0; }
+.nb-vertical .nb-underline { background: var(--ink-side) 100% 0 / 0.44em 100% no-repeat; padding: 0 0.12em 0 0; }
+.nb-vertical .nb-circle { padding: 0.2em 0; }
+.nb-vertical .nb-circle::after { inset: -0.4em -0.3em -0.4em -0.26em; }
+
+/* ── 掀起来看原话：同一张纸铺开，宽一点，盖在上面（横写） ── */
+.nb-origin {
+  position: absolute; left: 50%; top: -4px; z-index: 2; box-sizing: border-box;
+  width: max(100%, 288px); min-height: calc(100% + 8px);
+  transform: translateX(-50%); padding: 16px 18px 18px; writing-mode: horizontal-tb;
+  background: var(--ink-grain), var(--paper);
+  box-shadow: 0 20px 36px -14px rgba(0, 0, 0, 0.9), 0 2px 8px rgba(0, 0, 0, 0.35);
+  font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; font-size: 14.5px; line-height: 1.8; color: rgba(42, 37, 32, 0.92);
+  text-align: left; white-space: normal; letter-spacing: normal;
+  opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 0.16s ease, visibility 0s linear 0.16s;
+}
+.nb-paper:hover .nb-origin, .nb-paper:focus-visible .nb-origin { opacity: 1; visibility: visible; transition: opacity 0.16s ease 0.12s, visibility 0s linear 0s; }
+.nb-origin-label { display: block; margin-bottom: 6px; font-family: var(--ti-font-mono); font-size: 10px; letter-spacing: 0.24em; color: rgba(42, 37, 32, 0.45); }
+
+/* ── 就地改：纸上的字直接变成手写栏，虚线是格子 ── */
+.nb-field {
+  box-sizing: border-box; width: 100%; min-width: 0; margin: 0; padding: 0 2px;
+  background: transparent; border: none; border-bottom: 1px dashed rgba(42, 37, 32, 0.32); border-radius: 0;
+  font: inherit; color: inherit; letter-spacing: inherit; text-align: inherit; line-height: inherit;
+  outline: none; resize: none; field-sizing: content;
+}
+.nb-field::placeholder { color: rgba(42, 37, 32, 0.35); }
+/* 存不进去的写法（日期格式不对、车票只写了一半）：红虚线 */
+.nb-field[data-bad="1"] { border-bottom: 1px dashed rgba(194, 54, 43, 0.9); }
+.nb-field:focus { border-bottom: 1px solid rgba(255, 116, 41, 0.85); background: rgba(255, 255, 255, 0.18); }
+/* 纸上的小按钮：铅笔写的「+ 加一个」「×」 */
+.nb-pencil-btn {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; cursor: pointer;
+  background: transparent; border: none; border-radius: 3px;
+  font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; font-size: 13px; color: rgba(42, 37, 32, 0.5);
+}
+.nb-pencil-btn:hover { color: rgba(184, 50, 42, 0.95); background: rgba(184, 50, 42, 0.07); }
+
+/* ── 和纸胶带：半透明、两头撕开的锯齿 ── */
+.nb-tape {
+  position: absolute; z-index: 2; width: 86px; height: 22px; pointer-events: none;
+  background: var(--ink-grain), rgba(226, 214, 176, 0.62);
+  clip-path: polygon(0 8%, 4% 0, 8% 10%, 12% 0, 88% 0, 92% 10%, 96% 0, 100% 8%, 100% 92%, 96% 100%, 92% 90%, 88% 100%, 12% 100%, 8% 90%, 4% 100%, 0 92%);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+/* ── 印章：红印泥，磨损的一块没一块 ── */
+.nb-stamp {
+  display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
+  color: #C2362B; border: 2.5px solid currentColor; font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; font-weight: 700;
+  -webkit-mask-image: var(--ink-wear); mask-image: var(--ink-wear); -webkit-mask-size: 120px; mask-size: 120px;
+}

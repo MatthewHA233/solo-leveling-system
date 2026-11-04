@@ -1,9 +1,12 @@
-// 协议志 · 协议左栏：协议列表（进行中的那份亮一颗灯）+ 灰色地带的 AI 判断设置 + 新建
+// 协议志 · 协议左栏：协议列表（进行中的那份亮一颗灯）+ 开局（以终为始）+ 灰色地带的 AI 判断设置 + 新建
 
 import { useState } from 'react'
-import { Plus, ScanEye } from 'lucide-react'
+import { Compass, Plus, ScanEye } from 'lucide-react'
 import type { LockProtocol, LockSession } from '../../../lib/protocol-api'
 import { STRENGTH_META } from './lock-model'
+
+/** 右边可以换成的工具面板（null = 协议本身） */
+export type ToolPanel = 'genesis' | 'jev'
 
 export interface ProtocolListProps {
   readonly protocols: readonly LockProtocol[]
@@ -11,12 +14,12 @@ export interface ProtocolListProps {
   readonly selectedId: string | null
   readonly onSelect: (id: string) => void
   readonly onCreate: (name: string) => Promise<void>
-  /** 右边正在显示「灰色地带 · AI 判断」设置 */
-  readonly jevOpen: boolean
-  readonly onOpenJev: () => void
+  /** 右边正在显示的工具面板 */
+  readonly tool: ToolPanel | null
+  readonly onOpenTool: (tool: ToolPanel) => void
 }
 
-export default function ProtocolList({ protocols, session, selectedId, onSelect, onCreate, jevOpen, onOpenJev }: ProtocolListProps) {
+export default function ProtocolList({ protocols, session, selectedId, onSelect, onCreate, tool, onOpenTool }: ProtocolListProps) {
   const [draft, setDraft] = useState('')
 
   const create = async () => {
@@ -37,7 +40,7 @@ export default function ProtocolList({ protocols, session, selectedId, onSelect,
               key={p.id}
               type="button"
               className="pl-row"
-              data-selected={!jevOpen && p.id === selectedId ? '1' : undefined}
+              data-selected={tool === null && p.id === selectedId ? '1' : undefined}
               onClick={() => onSelect(p.id)}
             >
               <span className={live ? 'ti-dot ti-dot-led' : 'ti-dot ti-dot-off'} aria-hidden />
@@ -53,7 +56,11 @@ export default function ProtocolList({ protocols, session, selectedId, onSelect,
         )}
       </div>
       <div className="pl-side-foot">
-        <button type="button" className="pl-row" data-selected={jevOpen ? '1' : undefined} onClick={onOpenJev} style={{ width: '100%' }}>
+        <button type="button" className="pl-row" data-selected={tool === 'genesis' ? '1' : undefined} onClick={() => onOpenTool('genesis')} style={{ width: '100%' }}>
+          <Compass size={14} aria-hidden />
+          <span className="pl-row-name" style={{ fontWeight: 500 }}>开局 · 以终为始</span>
+        </button>
+        <button type="button" className="pl-row" data-selected={tool === 'jev' ? '1' : undefined} onClick={() => onOpenTool('jev')} style={{ width: '100%' }}>
           <ScanEye size={14} aria-hidden />
           <span className="pl-row-name" style={{ fontWeight: 500 }}>灰色地带 · AI 判断</span>
         </button>

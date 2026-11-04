@@ -108,6 +108,7 @@ const FEATURE_SPECS: readonly FeatureSpec[] = [
   { feature: 'fairy_voice_asr', label: 'Fairy 语音识别', category: 'asr', hint: '按住右 Alt 说话的流式识别（带热词与对话上下文）', allowedCategories: ['asr'] },
   { feature: 'anchor_cluster_name', label: '锚点域簇命名', category: 'text', hint: '给认知地图聚簇起 2~6 字主题名（建议低价模型）' },
   { feature: 'motive_blueprint', label: '协议志·动机蓝图', category: 'text', hint: '把一条动机展开成行动方向与具体步骤（建议中高质量模型）' },
+  { feature: 'protocol_genesis', label: '协议志·开局', category: 'text', hint: '两份清单之后：系统照一遍、愿望金字塔、未来年表（建议高质量模型，默认千问 3.8 Max）' },
   { feature: 'protocol_gray', label: '协议·灰色地带判断', category: 'decision', hint: '白名单里标「灰」的内容在前台时，按协议用意和窗口标题判断是学习还是娱乐', allowedCategories: ['decision'] },
   { feature: 'protocol_gray_vision', label: '协议·灰色地带判断（看图）', category: 'decision', hint: '标题看不出来时看截图判断；必须能看图（截图会发给模型，注意它的数据留存）', requiredModalities: ['image'], allowedCategories: ['decision'] },
 ]

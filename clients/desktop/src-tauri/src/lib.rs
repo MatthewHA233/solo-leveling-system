@@ -10,6 +10,7 @@ mod notes;
 mod notes_api;
 mod jev;
 mod protocol;
+mod protocol_genesis;
 mod anthropic;
 mod anthropic_stream;
 mod network;

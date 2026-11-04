@@ -1,0 +1,55 @@
+/* 协议志 · 开局（梦想记事本）的版式：一章一章往下排，章与章之间一条刻线；系统的话是冰蓝。
+   各章的纸面在各自的样式表里（mirror / wishes / reflection / pyramid / tickets），共用手感在 notebook.css
+   分隔只用刻线（不用左侧竖线、不用四角括号） */
+
+.gn-root { max-width: 760px; margin: 0 auto; padding-bottom: 48px; display: flex; flex-direction: column; gap: 26px; }
+.gn-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 26px; }
+.gn-restart-confirm { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ti-text-muted); }
+
+/* ── 一章 ── */
+.gn-step { display: flex; flex-direction: column; gap: 14px; padding-top: 22px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.gn-step:first-of-type { border-top: none; padding-top: 0; }
+.gn-step-head { display: flex; align-items: baseline; gap: 12px; }
+.gn-step-no { font-family: var(--ti-font-mono); font-size: 11px; color: var(--ti-text-faint); letter-spacing: 0.08em; }
+.gn-step-title { font-family: 'LXGW WenKai Screen', 'Noto Serif SC', serif; font-size: 19px; font-weight: 700; color: var(--ti-text); letter-spacing: 0.1em; }
+.gn-step-sub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--ti-text-faint); letter-spacing: 0.08em; }
+.gn-step-actions { display: flex; align-items: center; gap: 2px; }
+.gn-head-btn {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; cursor: pointer;
+  background: transparent; border: none; font: inherit; font-size: 12px; color: var(--ti-text-muted);
+}
+.gn-head-btn:hover { color: var(--ti-text); background: rgba(255, 255, 255, 0.05); }
+.gn-head-btn[data-on="1"] { color: var(--ti-led-hi); }
+.gn-head-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* ── 系统的话：冰蓝，前面一颗小菱形 ── */
+.gn-system { position: relative; padding-left: 20px; font-size: 14px; line-height: 1.85; color: var(--ti-sys); letter-spacing: 0.02em; }
+.gn-sys-mark {
+  position: absolute; left: 3px; top: 0.72em; width: 7px; height: 7px; transform: rotate(45deg);
+  background: var(--ti-sys); box-shadow: 0 0 8px rgba(150, 215, 245, 0.8);
+}
+.gn-busy { color: var(--ti-text-muted); animation: gn-breathe 1.6s ease-in-out infinite; }
+@keyframes gn-breathe { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .gn-busy { animation: none; } }
+
+/* ── 写清单 ── */
+.gn-input { display: flex; flex-direction: column; gap: 8px; }
+.gn-input .pl-textarea { width: 100%; box-sizing: border-box; resize: vertical; line-height: 1.75; font-size: 14px; }
+.gn-input-foot { display: flex; align-items: center; justify-content: space-between; }
+.gn-count { font-family: var(--ti-font-mono); font-size: 11px; color: var(--ti-text-faint); }
+.gn-count[data-over="1"] { color: var(--ti-led); }
+.gn-go { height: 30px; padding: 0 16px; font-size: 13px; letter-spacing: 0.08em; }
+.gn-go:disabled { opacity: 0.4; cursor: not-allowed; }
+.gn-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gn-actions .pl-chip-btn, .gn-title-row .pl-chip-btn { display: inline-flex; align-items: center; gap: 5px; }
+.gn-next { justify-content: center; margin-top: 6px; }
+/* 改的时候哪里存不进去：一行橙字说清楚 */
+.gn-hint { margin: 6px 0 0; font-size: 12px; color: var(--ti-led); }
+
+/* ── 收下：一方红印 ── */
+.gn-coda { display: flex; align-items: center; gap: 24px; padding-top: 22px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.gn-seal {
+  flex: none; flex-direction: column; width: 62px; height: 62px; border-width: 3px; border-radius: 6px; transform: rotate(-8deg);
+  font-size: 20px; line-height: 1.08;
+  box-shadow: inset 0 0 0 3px transparent, inset 0 0 0 4.5px currentColor;
+}

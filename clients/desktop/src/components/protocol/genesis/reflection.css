@@ -1,0 +1,28 @@
+/* 协议志 · 开局 · 照见：一封钢笔蓝写的信，横格纸，胶带贴在桌上；字压在格线上 */
+
+.rf-letter { position: relative; width: min(100%, 640px); margin: 6px auto 4px; transform: rotate(-0.5deg); }
+.rf-tape { top: -11px; left: 50%; margin-left: -43px; transform: rotate(2.5deg); }
+.rf-paper {
+  --rule: 30px;
+  box-sizing: border-box; padding: 34px 42px 30px;
+  background:
+    var(--ink-grain),
+    repeating-linear-gradient(180deg, transparent 0 23px, rgba(44, 79, 134, 0.16) 23px 24px, transparent 24px var(--rule)) 0 34px / 100% calc(100% - 64px) no-repeat,
+    linear-gradient(170deg, #F1EFE8 0%, #E9E6DD 100%);
+  color: #2C4F86;
+  font-size: 15.5px; line-height: var(--rule); letter-spacing: 0.03em;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.35), 0 22px 36px -18px rgba(0, 0, 0, 0.9), 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+.rf-paper p { margin: 0; }
+.rf-gap { height: var(--rule); }
+
+/* 一条落差 = 一个坐标：前面画个钢笔十字 */
+.rf-coord { position: relative; padding-left: 28px; }
+.rf-coord::before {
+  content: ''; position: absolute; left: 1px; top: 5px; width: 18px; height: 18px;
+  background: var(--ink-cross) center / contain no-repeat;
+}
+
+/* 信尾：靠右，落款 */
+.rf-coda { text-align: right; }
+.rf-coda::after { content: '—— 系统'; display: block; font-size: 13px; letter-spacing: 0.2em; opacity: 0.66; }
