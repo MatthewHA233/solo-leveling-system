@@ -4,9 +4,11 @@
 //   面板标题「协议志」已在主面板凸台上，这里只放视图切换。
 //   动机云逐帧跑膜模拟，不在它那页时卸载，省 CPU / 内存。
 //   专注锁不卸载、只隐藏：屏蔽组的定时到期在它里面每秒检查，卸载了就到点解不了锁。
+//   视图栏右侧「觉醒」：全幅播放开局时生成的觉醒片（AwakenFilm；本机有这部片子才出现）。
 // ══════════════════════════════════════════════
 
 import { useState } from 'react'
+import { Play } from 'lucide-react'
 import type { ActivityPalette } from '../../types'
 import type { PerceptionSpan } from '../../lib/local-api'
 import FocusPanel from '../FocusPanel'
@@ -15,6 +17,8 @@ import Segmented from '../ui/Segmented'
 import MotiveCloud from '../motive-cloud/MotiveCloud'
 import ChecklistView from './checklist/ChecklistView'
 import LockView from './lock/LockView'
+import AwakenFilm from './AwakenFilm'
+import { useAwakenFilmAvailable } from './use-awaken-film'
 
 type ProtocolSubview = 'lock' | 'focus' | 'checklist' | 'motives'
 const SUBVIEWS: readonly ProtocolSubview[] = ['lock', 'focus', 'checklist', 'motives']
@@ -41,6 +45,8 @@ export interface ProtocolViewProps {
 
 export default function ProtocolView(props: ProtocolViewProps) {
   const [subview, setSubview] = useState<ProtocolSubview>(loadSubview)
+  const filmAvailable = useAwakenFilmAvailable()
+  const [filmOpen, setFilmOpen] = useState(false)
 
   const change = (v: ProtocolSubview) => {
     setSubview(v)
@@ -48,7 +54,7 @@ export default function ProtocolView(props: ProtocolViewProps) {
   }
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', color: theme.textPrimary, fontFamily: theme.fontBody }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', color: theme.textPrimary, fontFamily: theme.fontBody }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, height: 30, flexShrink: 0, padding: '0 12px',
         position: 'relative', zIndex: 2,
@@ -65,6 +71,17 @@ export default function ProtocolView(props: ProtocolViewProps) {
             { value: 'motives', label: '动机云', led: ti.sys, tip: '动机长出行动方向的蓝图' },
           ]}
         />
+        {filmAvailable && (
+          <button
+            type="button"
+            className="ti-key"
+            title="觉醒 · 责任之镜"
+            onClick={() => setFilmOpen(true)}
+            style={{ marginLeft: 'auto', height: 22, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, letterSpacing: '0.2em' }}
+          >
+            <Play size={11} aria-hidden />觉醒
+          </button>
+        )}
         <div className="ti-groove-h" style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }} />
       </div>
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
@@ -77,6 +94,7 @@ export default function ProtocolView(props: ProtocolViewProps) {
         )}
         {subview === 'motives' && <MotiveCloud />}
       </div>
+      {filmOpen && <AwakenFilm onClose={() => setFilmOpen(false)} />}
     </div>
   )
 }
