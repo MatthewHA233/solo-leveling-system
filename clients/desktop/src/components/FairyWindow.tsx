@@ -113,7 +113,7 @@ function isPanelElement(target: EventTarget | null): boolean {
 function FairyMenuButton({
   children,
   meta,
-  color = theme.electricBlue,
+  color = theme.paper,
   onClick,
 }: {
   readonly children: ReactNode
@@ -121,6 +121,7 @@ function FairyMenuButton({
   readonly color?: string
   readonly onClick: () => void
 }) {
+  // 普通钛键，别把底色改成透明：透明键在 Fairy 的透明窗口里会透出后面别的窗口
   return (
     <MagneticButton
       color={color}
@@ -134,7 +135,6 @@ function FairyMenuButton({
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 8,
-        background: 'transparent',
         fontSize: 12,
         textAlign: 'left',
       }}
@@ -1003,14 +1003,14 @@ function ScaleButtons({
       {SCALE_PRESETS.map((nextScale) => (
         <MagneticButton
           key={nextScale}
-          color={Math.abs(scale - nextScale) < 0.01 ? theme.expGreen : theme.electricBlue}
+          // 当前档 = 橙色主键，其余普通钛键
+          color={Math.abs(scale - nextScale) < 0.01 ? theme.electricBlue : theme.paper}
           onClick={() => onScale(nextScale)}
           style={{
             width: 40,
             height: 25,
             padding: '0 6px',
             fontSize: 10,
-            background: Math.abs(scale - nextScale) < 0.01 ? `${theme.expGreen}12` : 'transparent',
           }}
         >
           {Math.round(nextScale * 100)}%
