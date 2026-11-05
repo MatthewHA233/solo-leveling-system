@@ -25,6 +25,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::{mpsc, Mutex};
@@ -39,6 +40,8 @@ const WS_BASE: &str = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime";
 
 pub struct OmniSession {
     tx: mpsc::UnboundedSender<Message>,
+    // 换连接或停止后置位：接收任务不再发事件，旧连接迟到的文字和音频串不进下一轮
+    stopped: Arc<AtomicBool>,
 }
 
 impl OmniSession {
@@ -92,6 +95,7 @@ impl OmniSession {
     }
 
     pub fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
         let _ = self.tx.send(Message::Close(None));
     }
 }
@@ -164,6 +168,8 @@ pub async fn connect(
     });
 
     // 接收任务：WebSocket stream → Tauri 事件
+    let stopped = Arc::new(AtomicBool::new(false));
+    let stopped_recv = stopped.clone();
     let tx_clone = tx.clone();
     let model_for_recv = model.clone();
     tokio::spawn(async move {
@@ -173,7 +179,22 @@ pub async fn connect(
         // item_id → accumulated arguments（部分实现只发 delta，不发 done 的 arguments 字段）
         let mut call_args: HashMap<String, String> = HashMap::new();
 
-        while let Some(Ok(msg)) = stream.next().await {
+        while let Some(item) = stream.next().await {
+            if stopped_recv.load(Ordering::SeqCst) {
+                return;
+            }
+            let msg = match item {
+                Ok(msg) => msg,
+                Err(e) => {
+                    // 网络断开这类错误没有 Close 帧，不发事件的话前端只能干等
+                    log::warn!("[OmniRealtime] 连接出错: {e}");
+                    let _ = app_handle.emit("omni://status", json!({
+                        "status": "error",
+                        "message": format!("连接中断: {e}")
+                    }));
+                    return;
+                }
+            };
             match msg {
                 Message::Text(text) => {
                     let v: Value = match serde_json::from_str(&text) {
@@ -342,18 +363,20 @@ pub async fn connect(
 
                 Message::Close(_) => {
                     log::info!("[OmniRealtime] 连接关闭");
-                    let _ = app_handle.emit("omni://status", json!({
-                        "status": "disconnected"
-                    }));
                     break;
                 }
 
                 _ => {}
             }
         }
+        if !stopped_recv.load(Ordering::SeqCst) {
+            let _ = app_handle.emit("omni://status", json!({
+                "status": "disconnected"
+            }));
+        }
     });
 
-    Ok(OmniSession { tx })
+    Ok(OmniSession { tx, stopped })
 }
 
 fn send_session_update(

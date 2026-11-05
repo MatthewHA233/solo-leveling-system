@@ -4,8 +4,6 @@
 //
 // 和桌面端的差异：
 //   · 音频在 native 播：不解码 PCM、不管 AudioContext；播完靠 omniPlaybackState，整段 WAV 靠 omniTakeAiAudio
-//   · audio_done 之后等播完期间主人又开口：不再发 idle（桌面端会把「在听」盖掉）
-//   · 中途断线也回到 idle。桌面端这种情况 Fairy 会一直停在思考
 // ══════════════════════════════════════════════
 
 import { randomUUID } from '../llm/uuid'
@@ -19,6 +17,7 @@ import {
   subscribeOmni,
 } from '../omni'
 import { saveAudioFile } from '../voice'
+import { createOmniWatchdog, OMNI_REPLY_TIMEOUT_MS } from '../voice/omni-turn'
 import type { OmniDebugInfo } from '../../components/fairy/types'
 import { waveformFromWavBase64 } from '../../components/fairy/fairy-format'
 import type { SessionMessage } from './agent-memory'
@@ -39,6 +38,8 @@ export interface OmniFlow {
   readonly syncSubscription: () => void
   /** 主人开口：之前那轮等播完的不再发 idle */
   readonly onPressStart: () => void
+  /** 录音已提交，开始等回复 */
+  readonly onCommitted: () => void
   /** 切会话：丢掉正在进行的这一轮 */
   readonly reset: () => void
   readonly markUsageStart: () => void
@@ -61,8 +62,9 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
   let lastUserInput = ''                      // Omni 本轮用户输入（转写）
   let userInputPersisted = false
   let idleWaitToken = 0                       // 等播完期间主人又开口 / 切会话：旧的等待作废
-  let waitingPlayback = false
   let awaitingConnection = false              // 主人开口后、新连接就绪前：事件队列里剩下的都是被打断那一轮的，丢掉
+  let turnEpoch = 0                           // 这一轮作废就加一：旧一轮的工具跑完后，结果不能发给新连接
+  let toolsRunning = 0
 
   const snapshot = (): OmniDebugInfo => {
     const cfg = core.config
@@ -87,10 +89,10 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
   }
 
   /**
-   * 这一轮等不到 audio_done 了（主人开口打断 / 切走实时模式）：native 换连接时旧连接不再发事件，
+   * 这一轮等不到 audio_done 了（主人开口打断 / 切走实时模式 / 断线 / 超时）：native 换连接时旧连接不再发事件，
    * 这里给气泡收尾、把已有的文字落库；不清掉的话下一轮的文字会接到这个旧气泡上。
    */
-  const closeInterruptedTurn = () => {
+  const closeTurn = (mark: string) => {
     const msgId = agentMsgId
     textAcc = ''
     agentMsgId = null
@@ -98,44 +100,59 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
     const bubble = core.messages.find((m) => m.id === msgId)
     const partial = (bubble?.content ?? '').trim()
     core.patchMessage(msgId, (m) => ({
-      ...m, streaming: false, ...(m.content ? { content: `${m.content}……（被打断）` } : {}),
+      ...m, streaming: false, ...(m.content ? { content: `${m.content}……（${mark}）` } : {}),
     }))
     if (partial) {
       sessions.persistRows(core.sessionId, [{
         ...makeSessionMessage('assistant', partial),
         id: msgId,
         timestamp: bubble?.timestamp ?? new Date().toISOString(),
-      }]).catch((e) => console.warn('[Omni] 被打断的回复写入失败', e))
+      }]).catch((e) => console.warn('[Omni] 没说完的回复写入失败', e))
     }
   }
+
+  /** 这一轮不要了：等播完、等回复都作废，还在跑的工具跑完也不回传 */
+  const abandonTurn = () => {
+    idleWaitToken += 1
+    turnEpoch += 1
+    toolsRunning = 0
+    watchdog.disarm()
+  }
+
+  const watchdog = createOmniWatchdog(OMNI_REPLY_TIMEOUT_MS, () => toolsRunning > 0, () => {
+    abandonTurn()
+    closeTurn('没说完')
+    lastUserInput = ''
+    userInputPersisted = false
+    core.addSystemNote(`Omni 超过 ${OMNI_REPLY_TIMEOUT_MS / 1000} 秒没有回应，这一轮先结束了`)
+    core.setProcessing(false)
+    void omniStop()
+    core.emitFairy('idle')
+  })
 
   /** 用真实播放状态等候：audio_done 之后可能还有音频在队列里 */
   const waitPlaybackThenIdle = () => {
     const token = ++idleWaitToken
     const startedAt = Date.now()
-    waitingPlayback = true
     const check = () => {
       if (token !== idleWaitToken) return
-      const finish = () => {
-        waitingPlayback = false
-        core.emitFairy('idle')
-      }
       if (Date.now() - startedAt >= PLAYBACK_TIMEOUT_MS) {
-        finish()
+        core.emitFairy('idle')
         return
       }
       omniPlaybackState().then((st) => {
         if (token !== idleWaitToken) return
-        if (!st.hasAudio || st.drainedMs >= PLAYBACK_TAIL_MS) finish()
+        if (!st.hasAudio || st.drainedMs >= PLAYBACK_TAIL_MS) core.emitFairy('idle')
         else setTimeout(check, PLAYBACK_POLL_MS)
       }).catch(() => {
-        if (token === idleWaitToken) finish()
+        if (token === idleWaitToken) core.emitFairy('idle')
       })
     }
     check()
   }
 
   const onAudioDone = () => {
+    watchdog.disarm()
     const msgId = agentMsgId
     const userInput = lastUserInput.trim()
     const alreadyPersisted = userInputPersisted
@@ -221,6 +238,7 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
   const callbacks: Parameters<typeof subscribeOmni>[0] = {
     onText: (delta) => {
       if (awaitingConnection) return
+      watchdog.touch()
       textAcc += delta
       core.emitFairy('speaking')
 
@@ -244,9 +262,16 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
       }
     },
 
+    onAudioChunk: () => {
+      if (!awaitingConnection) watchdog.touch()
+    },
+
     // Omni 原生工具调用：WS 端触发 → 这里执行 → omniToolResult 回传
     onToolCall: (payload) => {
       if (awaitingConnection) return
+      const epoch = turnEpoch
+      toolsRunning += 1
+      watchdog.arm()
       void (async () => {
         console.log('[Omni] tool_call', payload.name)
         core.emitFairy('thinking')
@@ -262,6 +287,10 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
         }
         const preview = result.length > 300 ? result.slice(0, 300) + '…' : result
         core.patchMessage(toolMsgId, (m) => ({ ...m, content: m.content + `\n→ ${preview}` }))
+        // 工具跑的时候这一轮已经作废（连接换过了）：这个 call_id 新连接不认识
+        if (epoch !== turnEpoch) return
+        toolsRunning -= 1
+        watchdog.arm()
         try {
           await omniToolResult(payload.call_id, result)
         } catch (err) {
@@ -300,20 +329,21 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
       } else if (status === 'audio_done') {
         if (!awaitingConnection) onAudioDone()
       } else if (status === 'error') {
-        const msgId = agentMsgId
+        watchdog.disarm()
+        closeTurn('没说完')
         resetTurnState()
-        finishBubble(msgId)
         core.addSystemNote(`Omni 错误: ${message ?? '未知'}`)
         idleWaitToken += 1
-        waitingPlayback = false
         core.setProcessing(false)
         core.emitFairy('idle')
       } else if (status === 'disconnected') {
-        // 回复途中断线（没等到 audio_done）。等播完期间、录音期间的断开是正常的换连接
-        if (waitingPlayback || core.fairyState === 'listening' || core.fairyState === 'idle') return
-        const msgId = agentMsgId
+        // 没有回复在进行（等播完、录音中、回复早结束了）：这是正常的换连接或服务端清理空闲连接，
+        // 这时可能正在打字走常规模型，不能动它的状态
+        if (!watchdog.isArmed()) return
+        watchdog.disarm()
+        closeTurn('没说完')
         resetTurnState()
-        finishBubble(msgId)
+        core.addSystemNote('Omni 连接断开了，这一轮没有说完')
         core.setProcessing(false)
         core.emitFairy('idle')
       }
@@ -328,24 +358,22 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
         unsubscribe()
         unsubscribe = null
         // 回复途中切走：退订后收不到 audio_done，气泡和 Fairy 都会停在半路。连接也停掉，别继续播
-        idleWaitToken += 1
-        waitingPlayback = false
-        closeInterruptedTurn()
+        abandonTurn()
+        closeTurn('被打断')
         void omniStop()
         if (!core.isProcessing && core.fairyState !== 'listening') core.emitFairy('idle')
       }
     },
     onPressStart: () => {
-      idleWaitToken += 1
-      waitingPlayback = false
+      abandonTurn()
       debugInfo = null
-      closeInterruptedTurn()
+      closeTurn('被打断')
       // 只有实时模式才会有新连接（connected 清这个标志）；级联模式下没有监听，不用管
       awaitingConnection = core.config.aiMode === 'omni'
     },
+    onCommitted: () => watchdog.arm(),
     reset: () => {
-      idleWaitToken += 1
-      waitingPlayback = false
+      abandonTurn()
       const msgId = agentMsgId
       resetTurnState()
       finishBubble(msgId)

@@ -52,6 +52,8 @@ export interface VoiceCallbacks {
   readonly onTranscript?: (text: string, sessionMsgId: string) => void
   /** 一次识别的结果与用量（记模型审计） */
   readonly onAsrResult?: (result: VoiceAsrResult, startedAt: string) => void
+  /** 实时模式：录音已提交，开始等回复 */
+  readonly onOmniCommitted?: () => void
 }
 
 export interface VoiceService {
@@ -237,8 +239,9 @@ export function createVoiceService(
         languageHints: ASR_LANGUAGE_HINTS,
       })
       if (mySeq !== sessionSeq) {
-        // 启动途中被取消：native 那边的新会话也作废
-        requireVoiceNative().voiceCancel().catch(() => {})
+        // 启动途中被取消：native 那边的新会话也作废。又开始了新一次录音就不用管：
+        // voiceStart 自己会换掉旧会话，这里取消的反而是新的
+        if (!cascadeActive) requireVoiceNative().voiceCancel().catch(() => {})
         clearStarting(mySeq)
         return
       }
@@ -306,14 +309,15 @@ export function createVoiceService(
       if (mySeq !== sessionSeq || streamRecorder !== sr) {
         clearStarting(mySeq)
         await sr.stop().catch(() => null)
-        void omniStop()
+        // 新一次录音已经在用连接了：这里再停，停掉的是它的会话
+        if (streamRecorder === null) void omniStop()
         return
       }
       finishStart(mySeq)
     } catch (err) {
       await sr.stop().catch(() => null)
       if (streamRecorder === sr) streamRecorder = null
-      void omniStop()
+      if (streamRecorder === null) void omniStop()
       failStart(mySeq, `Omni ASR 启动失败: ${errorText(err)}`)
     }
   }
@@ -347,6 +351,7 @@ export function createVoiceService(
       setPhase('idle')
       return
     }
+    if (mySeq === sessionSeq) callbacks.onOmniCommitted?.()
 
     // idle 由回复流程的 omni://status 处理器在音频真正播完后统一发出
     await waitOmniAudioDone(30_000)

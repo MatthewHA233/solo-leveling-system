@@ -186,6 +186,7 @@ export function createVoiceFlow(
             void handleSend(text, true)
           }
         },
+        onOmniCommitted: () => omni.onCommitted(),
         onAudioLevel: () => {
           // 音量走 voice://level 事件直接给 FairyOrb / ListeningBar，这里不用处理
         },

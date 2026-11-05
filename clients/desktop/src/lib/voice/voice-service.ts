@@ -60,6 +60,8 @@ export interface VoiceCallbacks {
   readonly onTranscript?: (text: string, sessionMsgId: string) => void
   /** 一次识别的结果与用量（记模型审计） */
   readonly onAsrResult?: (result: VoiceAsrResult, startedAt: string) => void
+  /** 实时模式：录音已提交，开始等回复 */
+  readonly onOmniCommitted?: () => void
 }
 
 export interface VoiceService {
@@ -228,6 +230,10 @@ export function createVoiceService(
         getFeatureModel('fairy_voice_asr', DEFAULT_ASR_MODEL),
         Promise.resolve(getAsrHints()),
       ])
+      if (mySeq !== sessionSeq) {
+        clearStarting(mySeq)
+        return
+      }
       const session = await invoke<number>('voice_start', {
         req: {
           apiKey,
@@ -238,8 +244,9 @@ export function createVoiceService(
         },
       })
       if (mySeq !== sessionSeq) {
-        // 启动途中被取消：Rust 那边的新会话也作废
-        invoke('voice_cancel').catch(() => {})
+        // 启动途中被取消：Rust 那边的新会话也作废。又开始了新一次录音就不用管：
+        // voice_start 自己会换掉旧会话，这里取消的反而是新的
+        if (!cascadeActive) invoke('voice_cancel').catch(() => {})
         clearStarting(mySeq)
         return
       }
@@ -330,14 +337,15 @@ export function createVoiceService(
       if (mySeq !== sessionSeq || streamRecorder !== sr) {
         clearStarting(mySeq)
         await sr.stop().catch(() => {})
-        invoke('omni_stop').catch(() => {})
+        // 新一次录音已经在用连接了：这里再停，停掉的是它的会话
+        if (streamRecorder === null) invoke('omni_stop').catch(() => {})
         return
       }
       finishStart(mySeq)
     } catch (err) {
       await sr.stop().catch(() => {})
       if (streamRecorder === sr) streamRecorder = null
-      invoke('omni_stop').catch(() => {})
+      if (streamRecorder === null) invoke('omni_stop').catch(() => {})
       failStart(mySeq, `Omni ASR 启动失败: ${errorText(err)}`)
     }
   }
@@ -380,6 +388,7 @@ export function createVoiceService(
       setPhase('idle')
       return
     }
+    if (mySeq === sessionSeq) callbacks.onOmniCommitted?.()
 
     // idle 由 App.tsx 的 omni://status 处理器在音频真正播完后统一发出
     await waitOmniAudioDone(30_000)

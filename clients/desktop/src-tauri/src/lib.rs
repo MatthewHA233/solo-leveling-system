@@ -54,6 +54,8 @@ use base64::Engine as _;
 struct AppState {
     fish_tts: Arc<Mutex<Option<FishTTSConnection>>>,
     omni: qwen_omni::OmniState,
+    // 连接要等握手，期间可能又有新连接或停止：晚回来的那条不能顶掉后来的
+    omni_seq: std::sync::atomic::AtomicU64,
     db: Arc<RwLock<Option<Arc<Database>>>>,
     db_path: Arc<RwLock<String>>,
 }
@@ -1294,6 +1296,7 @@ async fn omni_connect(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
+    let seq = state.omni_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     // 关闭旧连接
     {
         let mut guard = state.omni.lock().await;
@@ -1306,6 +1309,10 @@ async fn omni_connect(
     let session = qwen_omni::connect(api_key, model, voice, system_prompt, tools_val, app_handle).await?;
 
     let mut guard = state.omni.lock().await;
+    if state.omni_seq.load(std::sync::atomic::Ordering::SeqCst) != seq {
+        session.stop();
+        return Err("连接已被新的会话取代".to_string());
+    }
     *guard = Some(session);
     Ok(())
 }
@@ -1356,11 +1363,15 @@ async fn omni_send_text(
 
 #[tauri::command]
 async fn omni_stop(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
+    state.omni_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut guard = state.omni.lock().await;
     if let Some(session) = guard.take() {
         session.stop();
+        // 停止后接收任务不再发事件，等回复的地方靠这一条收尾
+        let _ = app_handle.emit("omni://status", serde_json::json!({ "status": "disconnected" }));
     }
     Ok(())
 }
@@ -1779,6 +1790,7 @@ pub fn run() {
     let state = Arc::new(AppState {
         fish_tts: Arc::new(Mutex::new(None)),
         omni: Arc::new(Mutex::new(None)),
+        omni_seq: std::sync::atomic::AtomicU64::new(0),
         db: Arc::new(RwLock::new(db.clone())),
         db_path: Arc::new(RwLock::new(db_path)),
     });

@@ -83,6 +83,8 @@ import { createVoiceService } from './lib/voice'
 import type { VoiceService } from './lib/voice'
 import { createFishTTSTauri } from './lib/voice/fish-tts-tauri'
 import { pcm16ChunksToWavBlob } from './lib/voice/voice-recorder'
+import { createOmniWatchdog, OMNI_PLAYBACK_GRACE_MS, OMNI_REPLY_TIMEOUT_MS, type OmniWatchdog } from './lib/voice/omni-turn'
+import { createPcm16Aligner } from './lib/voice/pcm16'
 
 // UI
 import DayNightChart from './components/DayNightChart'
@@ -1648,6 +1650,7 @@ export default function App() {
             handleSend(text, true)
           }
         },
+        onOmniCommitted: () => omniReplyWatchdogRef.current?.arm(),
         onAudioLevel: () => {
           // 音量走 voice://level 事件直接广播给 Fairy 悬浮窗，这里不用处理
         },
@@ -1672,29 +1675,37 @@ export default function App() {
   const omniNextStartRef = useRef<number>(0)
   const omniLastSourceRef = useRef<AudioBufferSourceNode | null>(null)
   const omniLastSourceEndedRef = useRef<boolean>(true)
+  const omniPlayingSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())  // 排队中的音频块，打断时一起停
+  const omniAlignPcmRef = useRef(createPcm16Aligner())
   const omniTextAccRef = useRef<string>('')
   const omniAiPcmChunksRef = useRef<Uint8Array[]>([])
   const omniAgentMsgIdRef = useRef<string | null>(null)   // 当前 AI 回复气泡的消息 ID
   const omniDebugInfoRef = useRef<OmniDebugInfo | null>(null)  // 本轮 Omni 上下文快照（随气泡写入）
   const omniLastUsageRef = useRef<ModelCallLog | null>(null)   // 本轮 Omni 模型审计快照（随气泡持久化）
   const omniUsageStartedAtRef = useRef<number>(0)         // 本轮 Omni 调用起点，独立于 RAlt 按压时间
+  const omniAwaitingConnectionRef = useRef(false)         // 主人开口后、新连接就绪前：收到的都是被打断那一轮的，丢掉
+  const omniIdleWaitRef = useRef(0)                       // 等播完期间主人又开口 / 切走：旧的等待作废
+  const omniTurnEpochRef = useRef(0)                      // 这一轮作废就加一：旧一轮的工具跑完后，结果不能发给新连接
+  const omniToolsRunningRef = useRef(0)
+  const omniReplyWatchdogRef = useRef<OmniWatchdog | null>(null)
+  const omniPressStartRef = useRef<() => void>(() => {})  // 只有实时模式才挂上
   const refreshSystemPromptRef = useRef<() => Promise<string>>(() => Promise.resolve(''))
 
   useEffect(() => {
     if (config.aiMode !== 'omni') return
 
-    const playOmniPcm = (b64: string) => {
+    const playOmniPcm = (chunk: Uint8Array) => {
       if (!omniAudioCtxRef.current) {
         omniAudioCtxRef.current = new AudioContext({ sampleRate: 24000 })
         omniNextStartRef.current = omniAudioCtxRef.current.currentTime
       }
       const ctx = omniAudioCtxRef.current
-      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+      const bytes = omniAlignPcmRef.current(chunk)
       const samples = bytes.length / 2
       if (samples === 0) return
       const buf = ctx.createBuffer(1, samples, 24000)
       const ch = buf.getChannelData(0)
-      const view = new DataView(bytes.buffer)
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
       for (let i = 0; i < samples; i++) ch[i] = view.getInt16(i * 2, true) / 32768
       const src = ctx.createBufferSource()
       src.buffer = buf
@@ -1705,12 +1716,78 @@ export default function App() {
       // 用真实 onended 事件判断播放完成（绕开 sample rate / 调度误差）
       omniLastSourceRef.current = src
       omniLastSourceEndedRef.current = false
+      omniPlayingSourcesRef.current.add(src)
       src.onended = () => {
+        omniPlayingSourcesRef.current.delete(src)
         if (omniLastSourceRef.current === src) {
           omniLastSourceEndedRef.current = true
           console.log('[FairyDbg] last src onended', { ctxNow: ctx.currentTime.toFixed(3), queueEnd: omniNextStartRef.current.toFixed(3) })
         }
       }
+    }
+
+    const stopOmniPlayback = () => {
+      omniPlayingSourcesRef.current.forEach((src) => src.stop())
+      omniPlayingSourcesRef.current.clear()
+      omniNextStartRef.current = 0
+      omniLastSourceRef.current = null
+      omniLastSourceEndedRef.current = true
+      omniAlignPcmRef.current = createPcm16Aligner()
+    }
+
+    // 这一轮等不到 audio_done 了（主人开口打断 / 切走实时模式 / 断线 / 超时）：
+    // 给气泡收尾、把已有的文字落库；不清掉的话下一轮的文字会接到这个旧气泡上
+    const closeOmniTurn = (mark: string) => {
+      const msgId = omniAgentMsgIdRef.current
+      const partial = omniTextAccRef.current.trim()
+      omniTextAccRef.current = ''
+      omniAgentMsgIdRef.current = null
+      omniAiPcmChunksRef.current = []
+      if (!msgId) return
+      setChatMessages((prev) =>
+        prev.map((m) => m.id === msgId && m.content ? { ...m, content: `${m.content}……（${mark}）` } : m)
+      )
+      const sid = sessionIdRef.current
+      if (sid && partial) {
+        const bubble = chatMessagesRef.current.find((m) => m.id === msgId)
+        const row = {
+          ...makeSessionMessage('assistant', partial),
+          ...(bubble ? { timestamp: bubble.timestamp } : null),
+        }
+        persistedBufferRef.current = [...persistedBufferRef.current, row]
+        persistMessages(sid, [row]).catch((e) => console.warn('[Omni] 没说完的回复写入失败', e))
+      }
+    }
+
+    // 这一轮不要了：等播完、等回复都作废，还在跑的工具跑完也不回传
+    const abandonOmniTurn = () => {
+      omniIdleWaitRef.current += 1
+      omniTurnEpochRef.current += 1
+      omniToolsRunningRef.current = 0
+      omniReplyWatchdogRef.current?.disarm()
+    }
+
+    const watchdog = createOmniWatchdog(OMNI_REPLY_TIMEOUT_MS, () => omniToolsRunningRef.current > 0, () => {
+      abandonOmniTurn()
+      closeOmniTurn('没说完')
+      lastOmniUserInputRef.current = ''
+      omniUserInputPersistedRef.current = false
+      setChatMessages((prev) => [...prev, {
+        id: crypto.randomUUID(), role: 'system' as const,
+        content: `Omni 超过 ${OMNI_REPLY_TIMEOUT_MS / 1000} 秒没有回应，这一轮先结束了`,
+        timestamp: new Date().toISOString(),
+      }])
+      voiceServiceRef.current?.cancel()  // 断开连接、语音服务回到 idle
+      emitFairy('idle')
+    })
+    omniReplyWatchdogRef.current = watchdog
+
+    omniPressStartRef.current = () => {
+      abandonOmniTurn()
+      omniDebugInfoRef.current = null
+      closeOmniTurn('被打断')
+      stopOmniPlayback()
+      omniAwaitingConnectionRef.current = true
     }
 
     // StrictMode-safe 监听器注册：同步标记 disposed + 收集 unlisten，
@@ -1729,6 +1806,8 @@ export default function App() {
     }
 
     registerListen<{ text: string }>('omni://text_chunk', ({ payload }) => {
+          if (omniAwaitingConnectionRef.current) return
+          watchdog.touch()
           omniTextAccRef.current += payload.text
           emitFairy('speaking', omniTextAccRef.current)
 
@@ -1764,9 +1843,11 @@ export default function App() {
     })
 
     registerListen<{ data: string }>('omni://audio_chunk', ({ payload }) => {
+      if (omniAwaitingConnectionRef.current) return
+      watchdog.touch()
       const pcm = Uint8Array.from(atob(payload.data), (c) => c.charCodeAt(0))
       omniAiPcmChunksRef.current.push(pcm)
-      playOmniPcm(payload.data)
+      playOmniPcm(pcm)
       const ctx = omniAudioCtxRef.current
       if (ctx) {
         console.log('[FairyDbg] audio_chunk', {
@@ -1780,6 +1861,10 @@ export default function App() {
 
     // Omni 原生工具调用：WS 端触发 → 前端执行 → omni_tool_result 回传
     registerListen<{ call_id: string; name: string; arguments: string }>('omni://tool_call', async ({ payload }) => {
+          if (omniAwaitingConnectionRef.current) return
+          const epoch = omniTurnEpochRef.current
+          omniToolsRunningRef.current += 1
+          watchdog.arm()
           console.log('[Omni] tool_call', payload.name, payload.arguments)
           emitFairy('thinking')
           let argsPreview = payload.arguments
@@ -1800,6 +1885,10 @@ export default function App() {
           setChatMessages((prev) => prev.map((m) =>
             m.id === toolMsgId ? { ...m, content: m.content + `\n→ ${preview}` } : m
           ))
+          // 工具跑的时候这一轮已经作废（连接换过了）：这个 call_id 新连接不认识
+          if (epoch !== omniTurnEpochRef.current) return
+          omniToolsRunningRef.current -= 1
+          watchdog.arm()
           try {
             await invoke('omni_tool_result', { callId: payload.call_id, output: result })
           } catch (err) {
@@ -1836,9 +1925,14 @@ export default function App() {
     })
 
     registerListen<{ status: string; message?: string }>('omni://status', ({ payload }) => {
-          if (payload.status === 'audio_done') {
+          if (payload.status === 'connected') {
+            omniAwaitingConnectionRef.current = false
+          } else if (payload.status === 'audio_done') {
+            if (omniAwaitingConnectionRef.current) return
+            watchdog.disarm()
             const chunks = omniAiPcmChunksRef.current
             omniAiPcmChunksRef.current = []
+            omniAlignPcmRef.current = createPcm16Aligner()
             omniTextAccRef.current = ''
             const msgId = omniAgentMsgIdRef.current
             omniAgentMsgIdRef.current = null
@@ -1873,10 +1967,16 @@ export default function App() {
               lastEnded: omniLastSourceEndedRef.current,
             })
             // 用真实 onended 事件等候：如果 audio_done 后还有迟到 chunk，会更新 lastSource，此处也能等到
+            // AudioContext 被挂起时 onended 不会来：排队的音频播完再多等一会儿就不等了
+            const idleWait = ++omniIdleWaitRef.current
+            const queuedMs = ctxAtDone ? Math.max(0, omniNextStartRef.current - ctxAtDone.currentTime) * 1000 : 0
+            const idleDeadline = Date.now() + queuedMs + OMNI_PLAYBACK_GRACE_MS
             let pollCount = 0
             const waitAudioEnded = () => {
+              // 等播完期间主人又开口：不再发 idle，否则把「在听」盖掉
+              if (idleWait !== omniIdleWaitRef.current) return
               pollCount++
-              if (omniLastSourceEndedRef.current) {
+              if (omniLastSourceEndedRef.current || Date.now() >= idleDeadline) {
                 const ctx = omniAudioCtxRef.current
                 console.log('[FairyDbg] idle (onended)', { polls: pollCount, ctxNow: ctx?.currentTime.toFixed(3) })
                 emitFairy('idle')
@@ -1943,14 +2043,17 @@ export default function App() {
                 })
                 .catch(() => {})
                 .finally(() => {
-                  lastOmniUserInputRef.current = ''
-                  omniUserInputPersistedRef.current = false
+                  // 主人已经开始下一句：这里存的是新一轮的输入，不能清
+                  if (lastOmniUserInputRef.current.trim() === userInput) {
+                    lastOmniUserInputRef.current = ''
+                    omniUserInputPersistedRef.current = false
+                  }
                 })
             }
           } else if (payload.status === 'error') {
-            omniAiPcmChunksRef.current = []
-            omniTextAccRef.current = ''
-            omniAgentMsgIdRef.current = null
+            watchdog.disarm()
+            omniIdleWaitRef.current += 1
+            closeOmniTurn('没说完')
             lastOmniUserInputRef.current = ''
             omniUserInputPersistedRef.current = false
             setChatMessages((prev) => [...prev, {
@@ -1959,6 +2062,20 @@ export default function App() {
               timestamp: new Date().toISOString(),
             }])
             emitFairy('idle')  // 这一轮不会再有 audio_done，不回 idle 就一直停在思考
+          } else if (payload.status === 'disconnected') {
+            // 没有回复在进行（等播完、录音中、回复早结束了）：这是正常的换连接或服务端清理空闲连接，
+            // 这时可能正在打字走常规模型，不能动它的状态
+            if (!watchdog.isArmed()) return
+            watchdog.disarm()
+            closeOmniTurn('没说完')
+            lastOmniUserInputRef.current = ''
+            omniUserInputPersistedRef.current = false
+            setChatMessages((prev) => [...prev, {
+              id: crypto.randomUUID(), role: 'system' as const,
+              content: 'Omni 连接断开了，这一轮没有说完',
+              timestamp: new Date().toISOString(),
+            }])
+            emitFairy('idle')
           }
     })
 
@@ -1967,6 +2084,15 @@ export default function App() {
     return () => {
       disposed = true
       unlisteners.forEach((fn) => fn())
+      // 回复途中切走实时模式：再也收不到 audio_done，气泡和 Fairy 都会停在半路。连接也停掉，别继续播
+      abandonOmniTurn()
+      closeOmniTurn('被打断')
+      stopOmniPlayback()
+      omniPressStartRef.current = () => {}
+      omniReplyWatchdogRef.current = null
+      omniAwaitingConnectionRef.current = false
+      invoke('omni_stop').catch(() => {})
+      if (fairyStateRef.current !== 'listening' && !replyControlRef.current) emitFairy('idle')
     }
   }, [config.aiMode, emitFairy])
 
@@ -1993,6 +2119,7 @@ export default function App() {
       // Fairy 正在想或正在说：主人一开口就停下（打断），轻按一下右 Alt 也能让她闭嘴
       replyControlRef.current?.interrupt()
       replyControlRef.current = null
+      omniPressStartRef.current()
       // 按下就开始录音、连识别服务，长按阈值只用于松手时区分误触；
       // 不满 LONG_PRESS_MS 就松开时，onUp 的 cancel() 会把它们一并关掉
       getVoiceService().startRecording()
@@ -2382,14 +2509,17 @@ export default function App() {
         finishResolve: null,
         timeout: null,
       }
+      const alignFishPcm = createPcm16Aligner()
       state.client = createFishTTSTauri(
         { apiKey: fishApiKey, referenceId: config.fishReferenceId, model: config.fishModel },
         (pcm) => {
           state.pcmChunks.push(pcm)
-          const samples = pcm.length / 2
+          const aligned = alignFishPcm(pcm)
+          const samples = aligned.length / 2
+          if (samples === 0) return
           const buf = audioCtx.createBuffer(1, samples, 24000)
           const ch = buf.getChannelData(0)
-          const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength)
+          const view = new DataView(aligned.buffer, aligned.byteOffset, aligned.byteLength)
           for (let i = 0; i < samples; i++) ch[i] = view.getInt16(i * 2, true) / 32768
           const src = audioCtx.createBufferSource()
           src.buffer = buf
