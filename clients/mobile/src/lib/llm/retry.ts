@@ -70,11 +70,13 @@ export function shouldRetry(err: RetryableError): boolean {
  * @param fn - 每次尝试调用的函数，接受 attempt 序号（从1开始）
  * @param maxRetries - 最大重试次数（不含首次尝试）
  * @param signal - AbortSignal，取消时立即停止等待
+ * @param canRetry - 失败时问一下还能不能重来（比如主人已经看到了部分回复）
  */
 export async function withRetry<T>(
   fn: (attempt: number) => Promise<T>,
   maxRetries = MAX_RETRIES,
   signal?: AbortSignal,
+  canRetry?: () => boolean,
 ): Promise<T> {
   let consecutiveOverloadErrors = 0
 
@@ -84,6 +86,8 @@ export async function withRetry<T>(
       consecutiveOverloadErrors = 0  // 成功后重置熔断计数
       return result
     } catch (err) {
+      if (canRetry && !canRetry()) throw err
+
       const retryable = toRetryableError(err)
 
       // 过载错误熔断器
@@ -91,7 +95,7 @@ export async function withRetry<T>(
         consecutiveOverloadErrors++
         if (consecutiveOverloadErrors >= MAX_OVERLOAD_RETRIES) {
           throw new Error(
-            `服务连续 ${MAX_OVERLOAD_RETRIES} 次过载（${retryable.status}），已停止重试`,
+            `服务连续 ${MAX_OVERLOAD_RETRIES} 次过载，已停止重试。${retryable.message ?? ''}`,
           )
         }
       } else {
@@ -123,8 +127,8 @@ function toRetryableError(err: unknown): RetryableError {
     if (err.name === 'TypeError' && /fetch|Network request failed|网络请求失败/.test(err.message)) {
       return { isNetworkError: true, message: err.message }
     }
-    // 格式化的 API 错误（由 queryModel 的 error chunk 转换而来）
-    const match = err.message.match(/API 错误 (\d+):/)
+    // 格式化的 API 错误（由 queryModel 的 error chunk 转换而来）；Claude 通道的文案是「Anthropic 返回 429：」
+    const match = err.message.match(/(?:API 错误|Anthropic 返回) (\d+)[:：]/)
     if (match) {
       return { status: parseInt(match[1], 10), message: err.message }
     }

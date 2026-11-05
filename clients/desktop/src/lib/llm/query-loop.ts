@@ -80,6 +80,75 @@ type State = {
   readonly turnCount: number
 }
 
+// ── 调一次模型 ──
+
+/** 主聊天失败时最多再试几次（不含首次），和 runSimpleQuery 原来的取值相同 */
+const MAX_API_RETRIES = 3
+
+interface ModelReply {
+  text: string
+  pendingCalls: Map<number, { id: string; name: string; args: string }>
+  stopReason: StopReason
+}
+
+/** 把一次流消费完。流里报错就抛出，由 withRetry 决定要不要重来；主人打断时流只是提前结束，不算错误 */
+async function consumeModelStream(
+  messages: Message[],
+  options: QueryOptions,
+  messageId: string,
+  onEvent: QueryParams['onEvent'],
+  onOutput: () => void,
+): Promise<ModelReply> {
+  let text = ''
+  const pendingCalls = new Map<number, { id: string; name: string; args: string }>()
+  let stopReason: StopReason = 'end_turn'
+  let failure: string | null = null
+
+  // Stream 消费（对应 Claude Code 中的 for await (const part of streamResponse)）
+  for await (const chunk of queryModel(messages, options)) {
+    switch (chunk.type) {
+      case 'textDelta':
+        text += chunk.delta
+        onOutput()
+        onEvent?.({ type: 'textDelta', delta: chunk.delta, messageId })
+        break
+
+      case 'reasoningDelta':
+        // 推理流只供 UI 展示；不计入 text（思考不属于对话历史/TTS）
+        onOutput()
+        onEvent?.({ type: 'reasoningDelta', delta: chunk.delta, messageId })
+        break
+
+      case 'toolCallDelta': {
+        const existing = pendingCalls.get(chunk.index)
+        if (!existing) {
+          pendingCalls.set(chunk.index, {
+            id: chunk.id ?? `call_${crypto.randomUUID().slice(0, 8)}`,
+            name: chunk.name ?? '',
+            args: '',
+          })
+        }
+        const entry = pendingCalls.get(chunk.index)!
+        if (chunk.id) entry.id = chunk.id
+        if (chunk.name) entry.name = chunk.name
+        if (chunk.argsDelta) entry.args += chunk.argsDelta
+        break
+      }
+
+      case 'done':
+        stopReason = (chunk.stopReason as StopReason) ?? 'end_turn'
+        break
+
+      case 'error':
+        failure = chunk.message
+        break
+    }
+  }
+
+  if (failure !== null) throw new Error(failure)
+  return { text, pendingCalls, stopReason }
+}
+
 // ── 主函数 ──
 
 /**
@@ -141,65 +210,34 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
     }
 
     // ── API 调用 ──
-    let accText = ''
-    const pendingCalls = new Map<number, { id: string; name: string; args: string }>()
-    let stopReason: StopReason = 'end_turn'
-    let apiError: string | null = null
     const currentMsgId = turnCount === 0 ? assistantMsgId : crypto.randomUUID()
+    let reply: ModelReply = { text: '', pendingCalls: new Map(), stopReason: 'end_turn' }
+    // 主人已经看到字就不能重来：屏幕和历史里都会重复一遍。工具调用参数还没执行，丢掉重来没有影响
+    let showedOutput = false
 
     try {
-      const stream = queryModel(messages, {
-        ...apiOptions,
-        systemPrompt,
-        _iteration: turnCount,
-      })
-
-      // Stream 消费（对应 Claude Code 中的 for await (const part of streamResponse)）
-      for await (const chunk of stream) {
-        switch (chunk.type) {
-          case 'textDelta':
-            accText += chunk.delta
-            onEvent?.({ type: 'textDelta', delta: chunk.delta, messageId: currentMsgId })
-            break
-
-          case 'reasoningDelta':
-            // 推理流只供 UI 展示；不计入 accText（思考不属于对话历史/TTS）
-            onEvent?.({ type: 'reasoningDelta', delta: chunk.delta, messageId: currentMsgId })
-            break
-
-          case 'toolCallDelta': {
-            const existing = pendingCalls.get(chunk.index)
-            if (!existing) {
-              pendingCalls.set(chunk.index, {
-                id: chunk.id ?? `call_${crypto.randomUUID().slice(0, 8)}`,
-                name: chunk.name ?? '',
-                args: '',
-              })
-            }
-            const entry = pendingCalls.get(chunk.index)!
-            if (chunk.id) entry.id = chunk.id
-            if (chunk.name) entry.name = chunk.name
-            if (chunk.argsDelta) entry.args += chunk.argsDelta
-            break
-          }
-
-          case 'done':
-            stopReason = (chunk.stopReason as StopReason) ?? 'end_turn'
-            break
-
-          case 'error':
-            apiError = chunk.message
-            break
-        }
-      }
+      reply = await withRetry(
+        () => consumeModelStream(
+          messages,
+          { ...apiOptions, systemPrompt, _iteration: turnCount },
+          currentMsgId,
+          onEvent,
+          () => { showedOutput = true },
+        ),
+        MAX_API_RETRIES,
+        apiOptions.signal,
+        () => !showedOutput,
+      )
     } catch (err) {
-      apiError = err instanceof Error ? err.message : String(err)
+      // 打断落在退避等待里：和流提前结束一样收尾，不算错误
+      if (!apiOptions.signal?.aborted) {
+        const apiError = err instanceof Error ? err.message : String(err)
+        onEvent?.({ type: 'error', message: apiError })
+        return [...messages, createSystemMessage(apiError, 'error')]
+      }
     }
 
-    if (apiError) {
-      onEvent?.({ type: 'error', message: apiError })
-      return [...messages, createSystemMessage(apiError, 'error')]
-    }
+    const { text: accText, pendingCalls, stopReason } = reply
 
     // ── 构建 AssistantMessage ──
     // 主人打断时流只是提前结束、不报错：已收到的工具调用（可能只有半截参数）不能再执行，也不进历史
@@ -315,22 +353,17 @@ export async function runSimpleQuery(
   const userMsg = createUserMessage(userInput)
   const messages: Message[] = [...conversationHistory, userMsg]
 
-  const result = await withRetry(
-    () =>
-      runQueryLoop({
-        messages,
-        systemPrompt: options.systemPrompt,
-        apiOptions: options,
-        maxIterations: 1,  // 简单聊天不需要工具循环
-        onEvent: (event) => {
-          if (event.type === 'textDelta' && onTextDelta) {
-            onTextDelta(event.delta, event.messageId)
-          }
-        },
-      }),
-    3,  // 最多重试3次
-    options.signal,
-  )
+  const result = await runQueryLoop({
+    messages,
+    systemPrompt: options.systemPrompt,
+    apiOptions: options,
+    maxIterations: 1,  // 简单聊天不需要工具循环
+    onEvent: (event) => {
+      if (event.type === 'textDelta' && onTextDelta) {
+        onTextDelta(event.delta, event.messageId)
+      }
+    },
+  })
 
   const lastAssistant = result.filter(
     (m): m is AssistantMessage => m.type === 'assistant',

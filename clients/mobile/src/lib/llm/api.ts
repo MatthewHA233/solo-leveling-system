@@ -389,7 +389,8 @@ export function queryModel(
       xhr.onabort = () => {
         clearIdle()
         finished = true
-        if (timedOut) stream.error(new TypeError('网络请求失败：模型超过 2 分钟没有返回新内容'))
+        // 超时不抛 TypeError：主人已经等了 2 分钟，不再自动重试（重试 3 次要再等 6 分钟）
+        if (timedOut) stream.error(new Error('网络请求失败：模型超过 2 分钟没有返回新内容'))
         else stream.done() // 主动取消，不算错误
       }
 
