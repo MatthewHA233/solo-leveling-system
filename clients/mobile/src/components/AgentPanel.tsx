@@ -10,11 +10,14 @@ import { Animated, PanResponder, Pressable, StyleSheet, View, useWindowDimension
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { theme } from '../theme'
 import type { ChatSessionInfo } from '../lib/agent/agent-memory'
+import { MAX_CHAT_IMAGES, pickChatImages, type PickedImage } from '../lib/chatimage'
+import type { ChatImageAttachment } from '../types'
 import { useChatController } from '../lib/agent/use-chat-controller'
 import { useStableKeyboardInset } from '../lib/use-keyboard-inset'
 import FairyChatPanel from './fairy/FairyChatPanel'
 import FairySettingsSheet from './fairy/FairySettingsSheet'
 import SessionPicker from './fairy/SessionPicker'
+import { showTip } from './fairy/tip'
 import { stopFairyAudio } from './fairy/useAudioPlayback'
 import ModelCenter from './ModelCenter'
 
@@ -134,9 +137,28 @@ export default function AgentPanel({ visible, onClose }: Props) {
     void ctrl.deleteSession(id)
   }, [ctrl])
 
+  const [pendingImages, setPendingImages] = useState<readonly PickedImage[]>([])
+
   const onSend = useCallback((text: string) => {
-    void ctrl.sendText(text)
-  }, [ctrl])
+    void ctrl.sendText(text, pendingImages)
+    setPendingImages([])
+  }, [ctrl, pendingImages])
+
+  const onPressAttach = useCallback(() => {
+    const room = MAX_CHAT_IMAGES - pendingImages.length
+    if (room <= 0) {
+      showTip(`一次最多发 ${MAX_CHAT_IMAGES} 张`)
+      return
+    }
+    pickChatImages(room).then(({ images, failed }) => {
+      if (failed > 0) showTip(`有 ${failed} 张图片读不了`)
+      if (images.length > 0) setPendingImages((prev) => [...prev, ...images].slice(0, MAX_CHAT_IMAGES))
+    }).catch((e) => showTip(`选图失败：${e instanceof Error ? e.message : String(e)}`))
+  }, [pendingImages.length])
+
+  const onRemoveImage = useCallback((image: ChatImageAttachment) => {
+    setPendingImages((prev) => prev.filter((p) => p.id !== image.id))
+  }, [])
 
   return (
     <>
@@ -155,6 +177,9 @@ export default function AgentPanel({ visible, onClose }: Props) {
                 messages={ctrl.messages}
                 isProcessing={ctrl.isProcessing}
                 onSend={onSend}
+                pendingImages={pendingImages}
+                onPressAttach={onPressAttach}
+                onRemoveImage={onRemoveImage}
                 agentName={ctrl.config.agentName}
                 userCallsign={ctrl.config.agentCallUser}
                 gazeTarget={ctrl.gazeTarget}

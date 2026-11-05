@@ -14,6 +14,13 @@ export interface TextBlock {
   readonly text: string
 }
 
+/** 用户发的图片。data 是 base64，不带 data: 前缀；发给哪家由 api.ts / anthropic-stream.ts 转格式 */
+export interface ImageBlock {
+  readonly type: 'image'
+  readonly mediaType: string
+  readonly data: string
+}
+
 export interface ToolUseBlock {
   readonly type: 'tool_use'
   readonly id: string
@@ -27,7 +34,7 @@ export interface ToolResultBlock {
   readonly content: string
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock
+export type ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock
 
 // ── ToolDefinition (OpenAI function calling wire format) ──
 
@@ -141,6 +148,12 @@ export function isAssistantMessage(m: Message): m is AssistantMessage {
 
 // ── Helpers ──
 
+/** 带图片的用户消息内容：图片放在文字前面；只有图片时不留空文字 */
+export function userContentWithImages(text: string, images: readonly ImageBlock[]): string | ContentBlock[] {
+  if (images.length === 0) return text
+  return text.trim() ? [...images, { type: 'text', text }] : [...images]
+}
+
 export function createUserMessage(
   content: string,
   opts: {
@@ -148,13 +161,17 @@ export function createUserMessage(
     origin?: MessageOrigin
     isMeta?: true
     isVirtual?: true
+    images?: readonly ImageBlock[]
   } = {},
 ): UserMessage {
   return {
     type: 'user',
     uuid: opts.uuid ?? randomUUID(),
     timestamp: new Date().toISOString(),
-    message: { role: 'user', content: content || '(empty)' },
+    message: {
+      role: 'user',
+      content: opts.images?.length ? userContentWithImages(content, opts.images) : content || '(empty)',
+    },
     isMeta: opts.isMeta,
     isVirtual: opts.isVirtual,
     origin: opts.origin,

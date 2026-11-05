@@ -1533,6 +1533,57 @@ fn get_audio_dir() -> String {
     audio_root().to_string_lossy().into_owned()
 }
 
+// ── 聊天图片（规则见 src/lib/agent/chat-images.ts；手机端在 ChatImageModule.kt） ──
+
+fn chat_image_root() -> std::path::PathBuf {
+    Database::default_data_dir().join("chat-images")
+}
+
+/// id 会拼进路径，只收前端生成的格式
+fn is_chat_image_id(id: &str) -> bool {
+    id.len() == 16 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+#[tauri::command]
+async fn save_chat_image(id: String, jpeg_bytes: Vec<u8>) -> Result<(), String> {
+    if !is_chat_image_id(&id) {
+        return Err("图片 id 不对".into());
+    }
+    let dir = chat_image_root();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
+    std::fs::write(dir.join(format!("{}.jpg", id)), &jpeg_bytes).map_err(|e| format!("写入失败: {}", e))
+}
+
+#[tauri::command]
+fn get_chat_image_dir() -> String {
+    chat_image_root().to_string_lossy().into_owned()
+}
+
+/// 启动时清掉没有消息引用的旧文件（删了会话、选了没发）。
+/// 一天内的不动：桌面端要等这轮回复结束才把消息落库
+async fn sweep_chat_images(db: &Database) {
+    const GRACE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+    let keep = match db.chat_image_ids().await {
+        Ok(ids) => ids,
+        Err(e) => {
+            log::warn!("[ChatImage] 读引用失败，跳过清理: {}", e);
+            return;
+        }
+    };
+    let Ok(entries) = std::fs::read_dir(chat_image_root()) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let referenced = path.file_stem().and_then(|s| s.to_str()).is_some_and(|s| keep.contains(s));
+        let recent = entry.metadata().ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .map_or(true, |age| age < GRACE);
+        if !referenced && !recent {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 // ── 文件操作命令（供 Fairy 的 Read / Write / Edit 工具调用；权限规则见 fairy_fs.rs） ──
 
 #[tauri::command]
@@ -1801,6 +1852,8 @@ pub fn run() {
 
             // 启动 HTTP 服务器（在 Tauri runtime 内）
             if let Some(db_clone) = db.clone() {
+                let db_for_images = db_clone.clone();
+                tauri::async_runtime::spawn(async move { sweep_chat_images(&db_for_images).await });
                 let bili_clone = bili_state.clone();
                 let bailian_clone = bailian_state.clone();
                 let bili_dl_clone = bili_dl_state.clone();
@@ -2023,6 +2076,8 @@ pub fn run() {
             get_fairy_workspace,
             save_audio_file,
             get_audio_dir,
+            save_chat_image,
+            get_chat_image_dir,
             setup_fairy,
             update_fairy_cursor_radius,
             set_fairy_cursor_menu_open,

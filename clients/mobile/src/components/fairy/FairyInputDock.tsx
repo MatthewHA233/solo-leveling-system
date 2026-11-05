@@ -102,12 +102,26 @@ export default function FairyInputDock({
   const canSend = hasContent
   const showMic = !hasContent && !!onVoicePressIn
 
+  const refuseImages = useCallback(() => {
+    showTip(`${picker.chatModelLabel} 看不了图片，先换一个能看图的模型`)
+  }, [picker.chatModelLabel])
+
   const handleSend = useCallback(() => {
     const trimmed = input.trim()
     if (!trimmed && pendingImages.length === 0) return
+    // 选完图又换了模型：图和字都留着，换回来还能发
+    if (pendingImages.length > 0 && !picker.chatModelSeesImages) {
+      refuseImages()
+      return
+    }
     onSend(trimmed)
     setInput('')
-  }, [input, pendingImages.length, onSend])
+  }, [input, pendingImages.length, onSend, picker.chatModelSeesImages, refuseImages])
+
+  const handleAttach = useCallback(() => {
+    if (picker.chatModelSeesImages) onPressAttach?.()
+    else refuseImages()
+  }, [picker.chatModelSeesImages, onPressAttach, refuseImages])
 
   const openModelSheet = useCallback(() => {
     picker.refreshQuotas()
@@ -157,7 +171,7 @@ export default function FairyInputDock({
             disabled={isProcessing}
             accessibilityRole="button"
             accessibilityLabel="添加图片"
-            onPress={onPressAttach}
+            onPress={handleAttach}
           >
             <Text style={styles.plus}>＋</Text>
           </Pressable>

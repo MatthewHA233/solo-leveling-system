@@ -45,12 +45,10 @@ export interface ActivityPalette {
 export type ChatRole = 'user' | 'agent' | 'system'
 export type AiMode = 'regular' | 'omni'
 
-/** 图片附件（mock 阶段用占位色块，接入后端后换真实 uri） */
+/** 气泡和输入框上的图片。uri 指向本机文件；别的设备发的图，文件不在这台上（规则见 lib/agent/chat-images.ts） */
 export interface ChatImageAttachment {
   id: string
-  label: string
-  tint: string
-  uri?: string
+  uri: string
 }
 
 /** 语音附件（对应 desktop ChatMessage 的 audioUrl / durationMs / transcript） */

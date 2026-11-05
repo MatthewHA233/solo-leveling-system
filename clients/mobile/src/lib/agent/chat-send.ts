@@ -16,8 +16,9 @@ import { isAnthropicModel } from '../llm/anthropic-stream'
 import type { ApiRequestSnapshot, ModelCallLog } from '../llm/api'
 import { compactHistory, withSystemReminder } from '../llm/context-window'
 import { runQueryLoop } from '../llm/query-loop'
-import { createUserMessage, getMessageText, isAssistantMessage, type Message } from '../llm/types'
+import { createUserMessage, getMessageText, isAssistantMessage, userContentWithImages, type Message } from '../llm/types'
 import { randomUUID } from '../llm/uuid'
+import type { PickedImage } from '../chatimage'
 import { getFeatureModel } from '../models/model-audit'
 import { solevupGetActiveModelApiKey } from '../solevupdb'
 import { createReplyTts, resolveFishApiKey, saveAudioFile, type ReplyTts } from '../voice'
@@ -25,6 +26,7 @@ import { waveformFromWavBase64 } from '../../components/fairy/fairy-format'
 import { getDashScopeApiKey } from './agent-config'
 import type { SessionMessage } from './agent-memory'
 import { runThoughtDistill } from './chat-distill'
+import { withImageMarker } from './chat-images'
 import type { ChatCore } from './chat-core'
 import type { PromptFlow } from './chat-prompt'
 import { makeSessionMessage, type SessionFlow } from './chat-sessions'
@@ -41,11 +43,11 @@ function lastReplyText(history: readonly Message[]): string {
   return ''
 }
 
-export type HandleSend = (text: string, fromVoice?: boolean) => Promise<void>
+export type HandleSend = (text: string, fromVoice?: boolean, images?: readonly PickedImage[]) => Promise<void>
 
 export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: PromptFlow): HandleSend {
-  return async function handleSend(text, fromVoice = false) {
-    if (!text.trim()) return
+  return async function handleSend(text, fromVoice = false, images = []) {
+    if (!text.trim() && images.length === 0) return
 
     // 发送中再发送：先停掉上一轮
     core.replyControl?.interrupt()
@@ -55,15 +57,16 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
     core.turnSettled = new Promise((resolve) => { settle = resolve })
 
     // 语音那句在转写定稿时已经数过（onTranscript），这里只数打字
-    if (!fromVoice) sessions.titleFlow.onUserMessage(text)
+    if (!fromVoice) sessions.titleFlow.onUserMessage(text || '发了图片')
 
     const turnSid = core.sessionId
 
     // 文字输入：添加用户气泡并落库（语音输入的气泡和落库在 chat-voice 的 onUserAudio / onTranscript）
     if (!fromVoice) {
-      const userRow = makeSessionMessage('user', text.trim())
+      const userRow = makeSessionMessage('user', withImageMarker(text.trim(), images.map((i) => i.id)))
       core.setMessages((prev) => [...prev, {
         id: userRow.id!, role: 'user', content: text, timestamp: userRow.timestamp,
+        ...(images.length > 0 ? { images: images.map(({ id, uri }) => ({ id, uri })) } : {}),
       }])
       sessions.persistRows(turnSid, [userRow]).catch((e) => console.warn('[Chat] 用户消息写入失败', e))
     }
@@ -90,7 +93,8 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
 
     const agentMsgId = randomUUID()
     let agentTimestamp = ''
-    const userMsg = createUserMessage(text)
+    const imageBlocks = images.map((i) => i.block)
+    const userMsg = createUserMessage(text, { images: imageBlocks })
     const capturedSnapshots: ApiRequestSnapshot[] = []
     let capturedUsage: ModelCallLog | null = null
     let capturedReasoning = ''   // 思考模型的推演流（随消息一起持久化，回看用）
@@ -139,7 +143,10 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
 
       // 本轮实时背景只附在发给模型的这条消息上；存进历史的是不带背景的原话，让前缀跨轮不变
       const { staticPrompt, dynamicContext } = core.promptParts
-      const apiUserMsg = { ...userMsg, message: { ...userMsg.message, content: withSystemReminder(text, dynamicContext) } }
+      const apiUserMsg = {
+        ...userMsg,
+        message: { ...userMsg.message, content: userContentWithImages(withSystemReminder(text, dynamicContext), imageBlocks) },
+      }
 
       // 被打断的旧轮可能比新轮晚走到这里（取数慢、新轮等超时先走了）：不能把归属改回去，否则新轮的历史写不进来
       core.conversationOwner = Math.max(core.conversationOwner, turnId)

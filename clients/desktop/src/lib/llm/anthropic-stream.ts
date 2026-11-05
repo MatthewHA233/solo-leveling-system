@@ -17,6 +17,7 @@ export function isAnthropicModel(modelId: string): boolean {
 
 type AnthropicBlock =
   | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; tool_use_id: string; content: string }
 
@@ -48,6 +49,11 @@ function toAnthropicMessages(messages: (UserMessage | AssistantMessage)[]): Anth
         push('user', [{ type: 'tool_result', tool_use_id: m.sourceToolCallId ?? 'unknown', content: m.toolUseResult }])
       } else {
         const text = textOf(m.message.content)
+        if (Array.isArray(m.message.content)) {
+          for (const b of m.message.content) {
+            if (b.type === 'image') push('user', [{ type: 'image', source: { type: 'base64', media_type: b.mediaType, data: b.data } }])
+          }
+        }
         if (text.trim()) push('user', [{ type: 'text', text }])
       }
     } else {

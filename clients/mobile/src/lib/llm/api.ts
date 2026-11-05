@@ -65,9 +65,13 @@ export interface QueryOptions {
 
 // ── OpenAI 格式消息（发给 API 的） ──
 
+type OpenAIContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
 interface OpenAIMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | null
+  content: string | null | OpenAIContentPart[]
   tool_calls?: {
     id: string
     type: 'function'
@@ -87,6 +91,27 @@ function contentBlocksToText(content: string | ContentBlock[]): string {
     .join('')
 }
 
+function userContentToOpenAI(content: string | ContentBlock[]): string | OpenAIContentPart[] {
+  if (typeof content === 'string' || !content.some((b) => b.type === 'image')) return contentBlocksToText(content)
+  const parts: OpenAIContentPart[] = []
+  for (const b of content) {
+    if (b.type === 'image') parts.push({ type: 'image_url', image_url: { url: `data:${b.mediaType};base64,${b.data}` } })
+    else if (b.type === 'text') parts.push({ type: 'text', text: b.text })
+  }
+  return parts
+}
+
+/** 调试快照一直留在气泡上：图片只记大小，不留 base64 */
+function snapshotMessages(messages: OpenAIMessage[]): ApiRequestSnapshot['messages'] {
+  return messages.map((m) => {
+    if (!Array.isArray(m.content)) return { ...m, content: m.content }
+    const content = m.content
+      .map((p) => (p.type === 'text' ? p.text : `[图片 ${Math.round((p.image_url.url.length * 3) / 4 / 1024)} KB]`))
+      .join('\n')
+    return { ...m, content }
+  })
+}
+
 function userMessageToOpenAI(m: UserMessage): OpenAIMessage | OpenAIMessage[] {
   const content = m.message.content
 
@@ -102,7 +127,7 @@ function userMessageToOpenAI(m: UserMessage): OpenAIMessage | OpenAIMessage[] {
   // 普通用户消息
   return {
     role: 'user',
-    content: contentBlocksToText(content),
+    content: userContentToOpenAI(content),
   }
 }
 
@@ -213,7 +238,7 @@ export function queryModel(
       iteration: options._iteration ?? 0,
       model: options.model,
       maxTokens,
-      messages: openAIMessages,
+      messages: snapshotMessages(openAIMessages),
       tools: options.tools ? [...options.tools] : undefined,
       timestamp: new Date().toISOString(),
     })

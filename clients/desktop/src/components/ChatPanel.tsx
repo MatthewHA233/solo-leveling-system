@@ -10,13 +10,14 @@
 // ══════════════════════════════════════════════
 
 import { useCallback, useMemo, useRef, useEffect, useState } from 'react'
-import { MessageSquare, Camera, Eye, Volume2, VolumeX, Bug, Radio, History, X, Play, Pause } from 'lucide-react'
+import { MessageSquare, Camera, Eye, Volume2, VolumeX, Bug, Radio, History, X, Play, Pause, ImagePlus } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { createPortal } from 'react-dom'
 import { theme, ti } from '../theme'
 import type { ChatMessage, OmniDebugInfo } from '../App'
 import type { ApiRequestSnapshot } from '../lib/llm/api'
+import { MAX_CHAT_IMAGES, prepareChatImage, type PendingImage } from '../lib/agent/chat-images'
 import type { ModelCallLog, ModelDef, ModelFreeQuota } from '../lib/local-api'
 import { MODEL_SELECT_POPUP_WIDTH, modelSelectOption } from '../lib/model-display'
 import { getFeatureModel, listModelFreeQuotas, setFeatureModel } from '../lib/model-audit'
@@ -94,7 +95,7 @@ function useVoiceLevels(active: boolean, keep: number): number[] {
 interface Props {
   readonly messages: readonly ChatMessage[]
   readonly isProcessing: boolean
-  readonly onSend: (text: string) => void
+  readonly onSend: (text: string, images: readonly PendingImage[]) => void
   /** 呼号来自 AI 人设配置（名称 / 称呼用户为），不硬编码 */
   readonly agentName?: string
   readonly userCallsign?: string
@@ -118,8 +119,21 @@ interface Props {
   readonly contextRatio?: number
 }
 
+function parseModalityList(raw: string | null | undefined): string[] {
+  try {
+    const list = JSON.parse(raw ?? '[]')
+    return Array.isArray(list) ? list : []
+  } catch {
+    return []
+  }
+}
+
 export default function ChatPanel({ messages, isProcessing, onSend, agentName = 'Fairy', userCallsign = '主人', gazeTarget = null, aiMode = 'regular', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen, sessionTitle, fairyState = 'idle', contextRatio = 0 }: Props) {
   const [input, setInput] = useState('')
+  const [pendingImages, setPendingImages] = useState<readonly PendingImage[]>([])
+  const pendingImagesRef = useRef<readonly PendingImage[]>([])
+  const [imageNote, setImageNote] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [models, setModels] = useState<ModelDef[]>([])
   const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
   const [featureModels, setFeatureModels] = useState<Record<'fairy_chat' | 'fairy_omni_chat', string>>({
@@ -211,11 +225,52 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
     } catch {}
   }, [currentFeature])
 
+  // 发图走聊天模型（实时语音模式下打字也是）。不在模型库里的让它试，不支持时接口会报错
+  const chatModelDef = models.find((m) => m.id === featureModels.fairy_chat)
+  const chatModelSeesImages = !chatModelDef || parseModalityList(chatModelDef.modalities).includes('image')
+  const noImageNote = `${chatModelDef?.display_name ?? featureModels.fairy_chat} 看不了图片，先换一个能看图的模型`
+
+  const addImages = useCallback(async (files: readonly File[]) => {
+    if (files.length === 0) return
+    if (!chatModelSeesImages) {
+      setImageNote(noImageNote)
+      return
+    }
+    setImageNote('')
+    const room = MAX_CHAT_IMAGES - pendingImagesRef.current.length
+    if (files.length > room) setImageNote(`一次最多发 ${MAX_CHAT_IMAGES} 张`)
+    const results = await Promise.allSettled(files.slice(0, Math.max(0, room)).map(prepareChatImage))
+    const ready = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+    if (results.some((r) => r.status === 'rejected')) setImageNote('有图片读不了（这个格式可能不支持）')
+    pendingImagesRef.current = [...pendingImagesRef.current, ...ready].slice(0, MAX_CHAT_IMAGES)
+    setPendingImages(pendingImagesRef.current)
+  }, [chatModelSeesImages, noImageNote])
+
+  const removeImage = useCallback((id: string) => {
+    pendingImagesRef.current = pendingImagesRef.current.filter((p) => p.id !== id)
+    setPendingImages(pendingImagesRef.current)
+  }, [])
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const files = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'))
+    if (files.length === 0) return
+    e.preventDefault()
+    void addImages(files)
+  }
+
   const handleSend = () => {
     const trimmed = input.trim()
-    if (!trimmed || isProcessing) return
-    onSend(trimmed)
+    if ((!trimmed && pendingImages.length === 0) || isProcessing) return
+    // 选完图又换了模型：图和字都留着，换回来还能发
+    if (pendingImages.length > 0 && !chatModelSeesImages) {
+      setImageNote(noImageNote)
+      return
+    }
+    onSend(trimmed, pendingImages)
     setInput('')
+    setImageNote('')
+    pendingImagesRef.current = []
+    setPendingImages([])
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -225,7 +280,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
     }
   }
 
-  const canSend = input.trim().length > 0 && !isProcessing
+  const canSend = (input.trim().length > 0 || pendingImages.length > 0) && !isProcessing
   const ctxPct = Math.round(Math.min(1, contextRatio) * 100)
 
   return (
@@ -436,6 +491,25 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
           boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)',
         }}>
           <div className="ti-well chat-input-wrap" style={{ padding: '9px 11px 6px', borderRadius: 5, transition: 'box-shadow 0.15s' }}>
+            {pendingImages.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                {pendingImages.map((img) => (
+                  <Tooltip key={img.id} content="移除这张图片">
+                    <button
+                      type="button"
+                      aria-label="移除这张图片"
+                      onClick={() => removeImage(img.id)}
+                      style={{ position: 'relative', width: 52, height: 52, padding: 0, border: 'none', borderRadius: 3, overflow: 'hidden', cursor: 'pointer', background: 'transparent' }}
+                    >
+                      <img src={img.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                      <span style={{ position: 'absolute', top: 1, right: 1, display: 'flex', padding: 1, borderRadius: 2, background: 'rgba(0,0,0,0.7)', color: theme.paper }}>
+                        <X size={10} />
+                      </span>
+                    </button>
+                  </Tooltip>
+                ))}
+              </div>
+            )}
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
               <span className="ti-led" aria-hidden style={{ fontSize: 15, lineHeight: '22px' }}>&gt;</span>
               <textarea
@@ -444,6 +518,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
                 placeholder="说点什么……"
                 rows={2}
                 style={{
@@ -456,6 +531,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
               />
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 6, fontSize: 11, color: ti.textMuted }}>
+              {imageNote && <span style={{ flex: 1, minWidth: 0, color: theme.dangerRed }}>{imageNote}</span>}
               按住 <span className="ti-keycap">右 Alt</span> 说话
             </div>
           </div>
@@ -476,6 +552,20 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
               </div>
             </Tooltip>
             <span style={{ flex: 1 }} />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                void addImages([...(e.target.files ?? [])])
+                e.target.value = ''
+              }}
+            />
+            <IconButton tip="添加图片（也可以直接粘贴）" disabled={isProcessing} onClick={() => fileInputRef.current?.click()} size={28}>
+              <ImagePlus size={13} />
+            </IconButton>
             {onToggleAiMode && (
               <IconButton
                 tip={isOmniMode
@@ -807,6 +897,48 @@ function ReasoningBlock({ text, answered }: { text: string; answered: boolean })
   )
 }
 
+// ── 气泡里的图片：点开看大图；别的设备发的图，文件不在这台上（规则见 lib/agent/chat-images.ts）──
+
+function BubbleImages({ images }: { images: NonNullable<ChatMessage['images']> }) {
+  const [preview, setPreview] = useState<string | null>(null)
+  const [missing, setMissing] = useState<readonly string[]>([])
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+      {images.map((img) => (missing.includes(img.id) || !img.url ? (
+        <div key={img.id} style={{ width: 96, height: 96, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 6, boxSizing: 'border-box', fontSize: 11, lineHeight: 1.4, textAlign: 'center', color: theme.paperMuted, border: '1px solid rgba(255,255,255,0.1)', borderRadius: 3 }}>
+          图片不在这台设备上
+        </div>
+      ) : (
+        <button
+          key={img.id}
+          type="button"
+          aria-label="查看大图"
+          onClick={() => setPreview(img.url)}
+          style={{ width: 96, height: 96, padding: 0, border: 'none', borderRadius: 3, overflow: 'hidden', cursor: 'zoom-in', background: 'transparent' }}
+        >
+          <img
+            src={img.url}
+            alt=""
+            onError={() => setMissing((prev) => [...prev, img.id])}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          />
+        </button>
+      )))}
+      {preview && createPortal(
+        <div
+          role="button"
+          aria-label="关闭大图"
+          onClick={() => setPreview(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'rgba(0,0,0,0.85)', cursor: 'zoom-out' }}
+        >
+          <img src={preview} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+        </div>,
+        document.body,
+      )}
+    </div>
+  )
+}
+
 // ── 单条消息 ──
 
 function Bubble({ message, agentName, userCallsign, onDebug, onOmniDebug }: {
@@ -877,6 +1009,7 @@ function Bubble({ message, agentName, userCallsign, onDebug, onOmniDebug }: {
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
           }}>
+            {message.images && message.images.length > 0 && <BubbleImages images={message.images} />}
             {message.content}
           </div>
         </div>

@@ -540,6 +540,10 @@ pub struct SessionSearchHit {
 /// 在原文中找到关键词位置，返回关键词前后 ctx 字符的片段（截断时加 ...）
 /// 大小写不敏感匹配，但返回原文片段（保留原始大小写）
 fn build_excerpt(content: &str, query: &str, ctx: usize) -> String {
+    // 开头的图片标记不算正文（规则见 src/lib/agent/chat-images.ts）
+    let content = content.strip_prefix("[图片:")
+        .and_then(|s| s.split_once(']'))
+        .map_or(content, |(_, rest)| rest.trim_start_matches('\n'));
     if query.is_empty() || content.is_empty() {
         return content.chars().take(ctx * 2).collect();
     }
@@ -3067,6 +3071,21 @@ impl Database {
     }
 
     /// 获取会话的所有消息
+    /// 消息正文开头 [图片:id1,id2] 里引用的所有图片 id（清理本机图片文件用，规则见 src/lib/agent/chat-images.ts）
+    pub async fn chat_image_ids(&self) -> Result<std::collections::HashSet<String>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare("SELECT content FROM chat_messages WHERE content LIKE '[图片:%'")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        let mut ids = std::collections::HashSet::new();
+        for content in rows {
+            let content = content.map_err(|e| e.to_string())?;
+            let marker = content.strip_prefix("[图片:").and_then(|s| s.split(']').next()).unwrap_or("");
+            ids.extend(marker.split(',').map(str::to_string));
+        }
+        Ok(ids)
+    }
+
     pub async fn get_chat_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(

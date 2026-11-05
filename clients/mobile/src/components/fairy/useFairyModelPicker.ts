@@ -16,7 +16,7 @@ import {
   type ModelFreeQuota,
 } from '../../lib/models/model-audit'
 import { modelSelectOption } from '../../lib/models/model-display'
-import { ensureModelCatalog, listCachedModels, type ModelDef } from '../../lib/models/registry'
+import { ensureModelCatalog, hasAllModalities, listCachedModels, type ModelDef } from '../../lib/models/registry'
 
 export type FairyChatFeature = 'fairy_chat' | 'fairy_omni_chat'
 
@@ -35,6 +35,9 @@ export interface FairyModelPicker {
   readonly currentLabel: string
   /** 当前模型免费额度剩余百分比；没有额度信息时 undefined */
   readonly currentMeter: number | undefined
+  /** 发图走聊天模型（实时语音模式下打字也是）。不在模型库里的让它试，不支持时接口会报错 */
+  readonly chatModelSeesImages: boolean
+  readonly chatModelLabel: string
   /** QuickModelSheet 选完后同步本地显示（落库和广播它已经做了） */
   readonly setPicked: (modelId: string) => void
   readonly refreshQuotas: () => void
@@ -82,6 +85,8 @@ export function useFairyModelPicker(aiMode: 'regular' | 'omni'): FairyModelPicke
     return modelSelectOption(def, freeQuotas.find((q) => q.model_id === currentModel))
   }, [models, freeQuotas, currentModel])
 
+  const chatDef = models.find((m) => m.id === featureModels.fairy_chat)
+
   const setPicked = useCallback((modelId: string) => {
     setFeatureModels((prev) => ({ ...prev, [currentFeature]: modelId }))
   }, [currentFeature])
@@ -91,6 +96,8 @@ export function useFairyModelPicker(aiMode: 'regular' | 'omni'): FairyModelPicke
     currentModel,
     currentLabel: option?.label ?? currentModel,
     currentMeter: option?.meter,
+    chatModelSeesImages: !chatDef || hasAllModalities(chatDef, ['image']),
+    chatModelLabel: chatDef?.display_name ?? featureModels.fairy_chat,
     setPicked,
     refreshQuotas,
   }

@@ -34,7 +34,10 @@ import { runQueryLoop } from './lib/llm/query-loop'
 import { compactHistory, estimateChars, HIGH_WATER_CHARS, withSystemReminder } from './lib/llm/context-window'
 import { withBrowserArgs } from './lib/webview-args'
 import { buildAsrContext, buildAsrVocabulary } from './lib/voice/asr-hints'
-import { createUserMessage, createAssistantMessage, getMessageText, isAssistantMessage } from './lib/llm/types'
+import { createUserMessage, createAssistantMessage, getMessageText, isAssistantMessage, userContentWithImages } from './lib/llm/types'
+import {
+  chatImageUrl, describeImagesForModel, initChatImages, parseImageMarker, withImageMarker, type PendingImage,
+} from './lib/agent/chat-images'
 import type { Message } from './lib/llm/types'
 import type { ApiRequestSnapshot } from './lib/llm/api'
 
@@ -146,6 +149,7 @@ export interface ChatMessage {
   readonly debugSnapshots?: ApiRequestSnapshot[]  // 本轮发给 AI 的请求快照（普通模式）
   readonly omniDebugInfo?: OmniDebugInfo          // 本轮发给 Omni 的上下文快照
   readonly usage?: ModelCallLog                   // 该 AI 回复对应的模型调用审计快照
+  readonly images?: readonly { id: string; url: string }[]  // 主人发的图片（规则见 lib/agent/chat-images.ts）
 }
 
 type FairyActionPayload =
@@ -157,7 +161,7 @@ type ChatMode = AgentConfig['aiMode']
 type FairyChatSubmitPayload = { text?: string; mode?: ChatMode }
 type ModelFeatureBindingPayload = { feature?: string; modelId?: string }
 type TauriEventHandler<T> = (event: { payload: T }) => void
-type HandleSend = (text: string, fromVoice?: boolean, modeOverride?: ChatMode) => Promise<void>
+type HandleSend = (text: string, fromVoice?: boolean, modeOverride?: ChatMode, images?: readonly PendingImage[]) => Promise<void>
 
 function listenTauriEventStrict<T>(event: string, handler: TauriEventHandler<T>): () => void {
   let disposed = false
@@ -193,10 +197,10 @@ function sessionMessagesToChatMessages(msgs: readonly SessionMessage[], audioDir
   const out: ChatMessage[] = []
   for (const m of msgs) {
     if (m.role === 'tool') continue
-    const content = (m.content ?? '').trim()
+    const { ids: imageIds, text: content } = parseImageMarker((m.content ?? '').trim())
     // 音频气泡：即使没有文字也要还原（content 可能是 transcript）
     const hasAudio = !!(m.audioPath && audioDir)
-    if (!content && !hasAudio) continue
+    if (!content && !hasAudio && imageIds.length === 0) continue
 
     const audioUrl = hasAudio
       ? convertFileSrc(`${audioDir}/${m.audioPath}`)
@@ -212,6 +216,7 @@ function sessionMessagesToChatMessages(msgs: readonly SessionMessage[], audioDir
       ...(audioUrl && content ? { transcript: content } : {}),
       ...(m.usage ? { usage: m.usage } : {}),
       ...(m.reasoning ? { reasoning: m.reasoning } : {}),
+      ...(imageIds.length > 0 ? { images: imageIds.map((id) => ({ id, url: chatImageUrl(id) })) } : {}),
     })
   }
   return out
@@ -224,7 +229,7 @@ function sessionMessagesToLLMHistory(msgs: readonly SessionMessage[]): Message[]
     const content = (m.content ?? '').trim()
     if (!content) continue
     if (m.role === 'user') {
-      out.push(createUserMessage(content))
+      out.push(createUserMessage(describeImagesForModel(content)))
     } else if (m.role === 'assistant') {
       out.push(createAssistantMessage(content))
     }
@@ -571,7 +576,7 @@ export default function App() {
   if (!titleFlowRef.current) {
     titleFlowRef.current = createTitleFlow({
       getConfig: () => configRef.current,
-      getMessages: () => persistedBufferRef.current,
+      getMessages: () => persistedBufferRef.current.map((m) => (m.content ? { ...m, content: parseImageMarker(m.content).text } : m)),
       apply: (sid, title) => {
         patchSession(sid, { title }).catch(() => {})
         setSessions((prev) => prev.map((s) => (s.id === sid ? { ...s, title } : s)))
@@ -752,6 +757,8 @@ export default function App() {
         // 先拿音频根目录（后续 save_audio_file / asset URL 都依赖它）
         const audioDir = await invoke<string>('get_audio_dir')
         audioDirRef.current = audioDir
+        // 恢复会话时要拼图片地址，也先拿目录
+        await initChatImages().catch(() => {})
 
         const { sessionId, state } = await initChatSession()
         sessionIdRef.current = sessionId
@@ -2313,18 +2320,19 @@ export default function App() {
   // ── Send Message ──
   // 打字和语音（级联）都走这里：同一个主循环、同一个 Fairy（一个大脑）。
   // 实时（实验）语音模式的回复另走 Omni WS，不经过这里。
-  const handleSend = useCallback(async (text: string, fromVoice = false) => {
-    if (!text.trim()) return
+  const handleSend = useCallback(async (text: string, fromVoice = false, _modeOverride?: ChatMode, images: readonly PendingImage[] = []) => {
+    if (!text.trim() && images.length === 0) return
     // 这一轮属于发起时的会话：切走之后，迟到的回复写回原会话，不能进新会话，也不能盖掉新会话的历史
     const turnSessionId = sessionIdRef.current
     // 语音那句在转写定稿时已经数过（onTranscript），这里只数打字
-    if (!fromVoice) titleFlowRef.current?.onUserMessage(text)
+    if (!fromVoice) titleFlowRef.current?.onUserMessage(text || '发了图片')
 
     // 文字输入：添加用户气泡（语音输入的气泡在 onUserAudio 已添加，不重复）
     if (!fromVoice) {
       setChatMessages((prev) => [...prev, {
         id: crypto.randomUUID(), role: 'user' as const,
         content: text, timestamp: new Date().toISOString(),
+        ...(images.length > 0 ? { images: images.map(({ id, url }) => ({ id, url })) } : {}),
       }])
     }
 
@@ -2339,7 +2347,8 @@ export default function App() {
     const systemPrompt = await refreshSystemPrompt(text)
 
     const agentMsgId = crypto.randomUUID()
-    const userMsg = createUserMessage(text)
+    const imageBlocks = images.map((i) => i.block)
+    const userMsg = createUserMessage(text, { images: imageBlocks })
     const capturedSnapshots: ApiRequestSnapshot[] = []
     let capturedUsage: ModelCallLog | null = null
     let capturedReasoning = ''   // 思考模型的推演流（随消息一起持久化，回看用）
@@ -2443,7 +2452,10 @@ export default function App() {
 
     // 本轮实时背景只附在发给模型的这条消息上；存进历史的是不带背景的原话，让前缀跨轮不变
     const { staticPrompt, dynamicContext } = promptPartsRef.current
-    const apiUserMsg = { ...userMsg, message: { ...userMsg.message, content: withSystemReminder(text, dynamicContext) } }
+    const apiUserMsg = {
+      ...userMsg,
+      message: { ...userMsg.message, content: userContentWithImages(withSystemReminder(text, dynamicContext), imageBlocks) },
+    }
 
     try {
       const newHistory = await runQueryLoop({
@@ -2659,7 +2671,9 @@ export default function App() {
       // ── 只持久化本轮 user + 最终 assistant，不能用全量历史长度去裁剪最近上下文窗口 ──
       const newPairs: SessionMessage[] = []
       const userText = text.trim()
-      if (!fromVoice && userText) newPairs.push(makeSessionMessage('user', userText))
+      if (!fromVoice && (userText || images.length > 0)) {
+        newPairs.push(makeSessionMessage('user', withImageMarker(userText, images.map((i) => i.id))))
+      }
       if (replyText.trim()) {
         newPairs.push({
           ...makeSessionMessage('assistant', replyText.trim()),
@@ -2902,6 +2916,9 @@ export default function App() {
   }
 
   // 聊天栏的回调（稳定引用，StageChatPanel 才跳得过去）
+  const sendFromPanel = useCallback((text: string, images: readonly PendingImage[]) => {
+    void handleSend(text, false, undefined, images)
+  }, [handleSend])
   const toggleAiMode = useCallback(() => {
     handleConfigUpdate({ aiMode: config.aiMode === 'omni' ? 'regular' : 'omni' })
   }, [handleConfigUpdate, config.aiMode])
@@ -3461,7 +3478,7 @@ export default function App() {
                   <StageChatPanel
                     messages={chatMessages}
                     isProcessing={isProcessing}
-                    onSend={handleSend}
+                    onSend={sendFromPanel}
                     agentName={config.agentName}
                     userCallsign={config.agentCallUser}
                     gazeTarget={gazeTarget}

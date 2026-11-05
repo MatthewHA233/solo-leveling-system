@@ -6,6 +6,7 @@ import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
 import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
+import com.solevup.mobile.chatimage.ChatImagePackage
 import com.solevup.mobile.fairyfs.FairyFsPackage
 import com.solevup.mobile.perception.PerceptionPackage
 import com.solevup.mobile.solevupdb.SolevupDbPackage
@@ -31,6 +32,7 @@ class MainApplication : Application(), ReactApplication {
           add(OmniPackage())
           add(VoicePackage())
           add(FairyFsPackage())
+          add(ChatImagePackage())
         },
     )
   }

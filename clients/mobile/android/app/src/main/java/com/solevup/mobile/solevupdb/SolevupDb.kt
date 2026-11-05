@@ -2450,6 +2450,20 @@ class SolevupDb(context: Context) :
   }
 
   /** 会话是否已被删除（墓碑）。界面开着的会话被同步删掉时靠它发现；不存在的 id 算没删。 */
+  /** 消息正文开头 [图片:id1,id2] 里引用的所有图片 id（清理本机图片文件用，规则见 src/lib/agent/chat-images.ts） */
+  fun chatImageIds(): Set<String> {
+    val ids = HashSet<String>()
+    readableDatabase.rawQuery(
+      "SELECT content FROM chat_messages WHERE content LIKE '[图片:%'", null,
+    ).use { c ->
+      while (c.moveToNext()) {
+        val marker = c.getString(0)?.substringAfter("[图片:", "")?.substringBefore(']') ?: continue
+        ids.addAll(marker.split(','))
+      }
+    }
+    return ids
+  }
+
   fun isChatSessionDeleted(sessionId: String): Boolean =
     readableDatabase.rawQuery(
       "SELECT 1 FROM chat_sessions WHERE id = ? AND deleted_at IS NOT NULL",
@@ -2560,7 +2574,9 @@ class SolevupDb(context: Context) :
   }
 
   /** 关键词前后 ctx 个字符的片段，截断处加 ...（对齐 desktop build_excerpt）。按码点算窗口，不切开 emoji。 */
-  private fun buildExcerpt(content: String, query: String, ctx: Int): String {
+  private fun buildExcerpt(rawContent: String, query: String, ctx: Int): String {
+    // 开头的图片标记不算正文（规则见 src/lib/agent/chat-images.ts）
+    val content = if (rawContent.startsWith("[图片:")) rawContent.substringAfter(']').trimStart('\n') else rawContent
     val total = content.codePointCount(0, content.length)
     fun head(): String =
       if (total <= ctx * 2) content else content.substring(0, content.offsetByCodePoints(0, ctx * 2))

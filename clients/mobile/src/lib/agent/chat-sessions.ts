@@ -12,6 +12,7 @@ import { DeviceEventEmitter } from 'react-native'
 
 import type { ChatMessage } from '../../types'
 import { createTitleFlow, DEFAULT_SESSION_TITLE, type TitleFlow } from '../ai/session-title-flow'
+import { chatImageUri } from '../chatimage'
 import { compactHistory } from '../llm/context-window'
 import { createAssistantMessage, createUserMessage, type Message } from '../llm/types'
 import { randomUUID } from '../llm/uuid'
@@ -30,6 +31,7 @@ import {
   type ChatSessionInfo,
   type SessionMessage,
 } from './agent-memory'
+import { describeImagesForModel, parseImageMarker } from './chat-images'
 import type { ChatCore } from './chat-core'
 
 const REROUTED_NOTE = '这个会话已在另一台设备上删除，刚才的消息存到了新会话。'
@@ -41,10 +43,10 @@ export function sessionMessagesToChatMessages(msgs: readonly SessionMessage[]): 
   const out: ChatMessage[] = []
   for (const m of msgs) {
     if (m.role === 'tool') continue
-    const content = (m.content ?? '').trim()
+    const { ids: imageIds, text: content } = parseImageMarker((m.content ?? '').trim())
     // 音频气泡：即使没有文字也要还原（content 可能是 transcript）
     const hasAudio = !!m.audioPath
-    if (!content && !hasAudio) continue
+    if (!content && !hasAudio && imageIds.length === 0) continue
     // 旧版手机端把界面提示也写进过库，别当成 Fairy 说的话
     const role = (m.role as string) === 'system' ? 'system' : m.role === 'user' ? 'user' : 'agent'
     // 过一遍 parseModelCallLog：桌面端写的 usage_json 字段可能不全（success 是 0/1 等）
@@ -59,6 +61,7 @@ export function sessionMessagesToChatMessages(msgs: readonly SessionMessage[]): 
       ...(hasAudio
         ? { audio: { path: m.audioPath, durationMs: m.durationMs ?? undefined, ...(content ? { transcript: content } : {}) } }
         : {}),
+      ...(imageIds.length > 0 ? { images: imageIds.map((id) => ({ id, uri: chatImageUri(id) })) } : {}),
       ...(usage ? { usage } : {}),
       ...(m.reasoning ? { reasoning: m.reasoning } : {}),
     })
@@ -73,7 +76,7 @@ export function sessionMessagesToLLMHistory(msgs: readonly SessionMessage[]): Me
     const content = (m.content ?? '').trim()
     if (!content) continue
     if (m.role === 'user') {
-      out.push(createUserMessage(content))
+      out.push(createUserMessage(describeImagesForModel(content)))
     } else if (m.role === 'assistant') {
       out.push(createAssistantMessage(content))
     }
@@ -151,7 +154,7 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
 
   const titleFlow = createTitleFlow({
     getConfig: () => core.config,
-    getMessages: () => core.persistedBuffer,
+    getMessages: () => core.persistedBuffer.map((m) => (m.content ? { ...m, content: parseImageMarker(m.content).text } : m)),
     apply: (sid, title) => {
       patchSession(sid, { title }).catch(() => {})
       core.sessions = core.sessions.map((s) => (s.id === sid ? { ...s, title } : s))

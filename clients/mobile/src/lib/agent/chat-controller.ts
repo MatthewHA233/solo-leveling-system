@@ -13,6 +13,7 @@
 // ══════════════════════════════════════════════
 
 import { startThoughtOutbox } from '../ai/anchor-outbox'
+import { initChatImages, type PickedImage } from '../chatimage'
 import { ensureModelCatalog } from '../models/registry'
 import { saveFishApiKey } from '../voice'
 import { loadConfig, type AgentConfig } from './agent-config'
@@ -65,6 +66,8 @@ class ChatControllerImpl {
 
     const core = this.core
     core.config = await loadConfig()
+    // 恢复会话时要拼图片地址，先拿目录
+    await initChatImages().catch((e) => console.warn('[Chat] 图片目录不可用', e))
     // 旧版 Fish Key 存在配置里，不同步：搬进 Key 库，其他设备才拿得到
     if (core.config.fishApiKey) {
       await saveFishApiKey(core.config.fishApiKey)
@@ -102,7 +105,7 @@ class ChatControllerImpl {
 
   // ── 发送（发送中再发送、按住说话、切会话都会打断正在进行的回复）──
 
-  sendText = (text: string): Promise<void> => this.handleSend(text, false)
+  sendText = (text: string, images?: readonly PickedImage[]): Promise<void> => this.handleSend(text, false, images)
 
   clearGaze = (): void => {
     this.core.focusedCard = null

@@ -25,6 +25,11 @@ const TOOL_FOLD_CHARS = 600
 const TOOL_FOLD_KEEP = 300
 const SUMMARY_LINE_CHARS = 60
 const SUMMARY_MAX_LINES = 24
+/**
+ * 一张图按多少字符算。实际约 1000~2500 token，这里故意算高：图片按原样留在历史里每轮都要重发，
+ * 算高了攒到七八张就会触发压缩，请求体和内存里的 base64 才有上限
+ */
+const IMAGE_CHARS = 6000
 
 const REMINDER_OPEN = '<system-reminder>'
 const REMINDER_CLOSE = '</system-reminder>'
@@ -41,6 +46,7 @@ export function withSystemReminder(text: string, reminder: string): string {
 
 function blockChars(b: ContentBlock): number {
   if (b.type === 'text') return b.text.length
+  if (b.type === 'image') return IMAGE_CHARS
   if (b.type === 'tool_use') return b.name.length + JSON.stringify(b.input).length
   return b.content.length
 }
@@ -82,7 +88,7 @@ function firstText(m: Message): string {
   const content = m.message.content
   const text = typeof content === 'string'
     ? content
-    : content.filter((b) => b.type === 'text').map((b) => (b.type === 'text' ? b.text : '')).join('')
+    : content.map((b) => (b.type === 'text' ? b.text : b.type === 'image' ? '[图片]' : '')).join('')
   return text.replace(/\s+/g, ' ').trim()
 }
 
