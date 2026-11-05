@@ -1,0 +1,246 @@
+## clients/desktop/src-tauri/src/lib.rs（共 91 段，未收录 55 段）
+1-18  注释 → use tauri 等 14 项
+19-35  mod protocols_api 等 16 项
+36-51  mod gpu_pref 等 11 项
+71-77  fn sanitize_fairy_cursor_radius
+79-96  fn dev_browser_args
+98-116  fn with_dev_browser_args 等 3 项
+199-221  fn open_bili_login
+223-240  struct BiliSyncResult + struct BiliSyncItem
+242-253  struct BiliNavInfo + struct BailianAccountInfo
+255-308  fn bili_get_nav
+310-325  框架行 → fn fetch_bili_history › let win = app.get_webview_window("bili-login") 等 6 项
+326-333  fn fetch_bili_history › {
+335-350  fn fetch_bili_history › let js = format!( + fn fetch_bili_history › if let Err(e) = win.eval(&js) {
+352-368  fn fetch_bili_history › let raw = match tokio::time::timeout(std::time:: 等 5 项
+370-388  fn fetch_bili_history › let items: Vec<BiliSyncItem> = list_arr + fn fetch_bili_history › Ok(BiliSyncResult { upserted, cursor_max: cursor
+449-467  框架行 → fn bailian_get_account › let win = app.get_webview_window("bailian-login" 等 6 项
+468-547  fn bailian_get_account › let js = r#"(async()=>{ （第 1 块）
+548-566  fn bailian_get_account › let js = r#"(async()=>{ （第 2 块） 等 3 项
+568-586  fn bailian_get_account › let is_login = raw.get("is_login").and_then('v'  等 5 项
+804-806  框架行 → fn get_db_info
+808-824  fn get_db_info
+826-842  struct DbInfo 等 3 项
+844-862  fn get_screenshot_storage_info 等 4 项
+864-882  fn add_window_blacklist 等 4 项
+884-909  fn open_url_in_browser
+911-945  fn migrate_database
+947-965  注释 → fn get_bili_assets_by_bvid 等 3 项
+967-979  fn bili_derivative_paths
+981-1019  fn delete_bili_download
+1021-1032  fn set_bili_favorite
+1034-1044  fn get_bili_transcripts
+1046-1070  fn update_bili_transcript
+1227-1242  fn query_call_log
+1244-1259  fn aggregate_call_log
+1382-1398  fn cursor_pos_phys + fn get_gpu_pref_status
+1400-1405  fn set_gpu_pref_high_performance
+1407-1420  fn restart_app
+1422-1438  fn update_fairy_cursor_radius 等 3 项
+1439-1448  fn setup_fairy › let win = app.get_webview_window("fairy-window") 等 5 项
+1450-1497  fn setup_fairy › {
+1499-1507  fn setup_fairy › Ok(()) 等 3 项
+1509-1527  fn save_audio_file
+1529-1546  fn get_audio_dir 等 4 项
+1548-1563  fn edit_file 等 3 项
+1565-1577  /// 写一行到 panic.log（不依赖 logger，崩溃语境下也安全）
+1579-1613  fn capture_raw_backtrace
+1615-1618  fn capture_raw_backtrace #2
+1620-1660  fn install_panic_hook
+1662-1705  fn install_seh_handler
+1707-1725  fn install_seh_handler 等 7 项
+1740-1749  fn run › if let Some(db_for_dl) = db.clone() {
+1751-1825  fn run › tauri::Builder::default() （第 1 块）
+1826-1903  fn run › tauri::Builder::default() （第 2 块）
+1904-1983  fn run › tauri::Builder::default() （第 3 块）
+1984-2037  fn run › tauri::Builder::default() （第 4 块）
+
+## clients/desktop/src/lib/local-api.ts（共 81 段，未收录 17 段）
+1-15  注释 → 导入 等 3 项
+17-27  interface ApiResponse 等 3 项
+29-46  interface RawCategory + interface RawTag
+48-54  interface RawBlock
+56-69  interface RawPlanNode
+71-88  interface RawPlannedBlock + function mapCategory
+90-100  function mapTag
+102-110  function mapBlock
+112-127  function mapPlanNode
+179-197  function renameActivityPath
+726-743  interface BiliDayCount + function fetchDataDays
+764-781  interface DbBiliItem + interface BiliHistoryPage
+822-834  interface Goal + function parseGoalTags
+1028-1042  interface BlueprintDirection 等 3 项
+1051-1066  function parseBlueprint
+1155-1167  interface PresenceSpanRecord + function fetchPresenceSpans
+1310-1321  interface GpuPrefStatus
+
+## clients/desktop/src-tauri/src/db.rs（共 306 段，未收录 91 段）
+1-17  注释 → use rusqlite 等 9 项
+18-35  const APP_CATALOG_TABLE 等 4 项
+36-53  const APP_CATALOG_TABLE 等 4 项 #2
+55-73  struct ActivityTag + struct ActivityBlock
+75-95  struct PlanNode
+97-99  const PLAN_NODE_COLUMNS
+101-116  fn map_plan_node
+118-125  struct PlannedBlock
+361-377  struct ActivityPalette 等 3 项
+379-393  struct UpdateCategoryRequest + struct RenamePathRequest
+395-406  struct PaintBlocksRequest + struct EraseBlocksRequest
+408-418  struct AddPlanNodeRequest
+420-434  struct UpdatePlanNodeRequest
+436-452  struct MovePlanNodeRequest + struct PaintPlannedBlocksRequest
+454-464  struct PerceptionHeartbeat
+569-580  struct BiliHistoryRow
+582-599  struct BiliSpan
+601-619  struct BiliDayCount + struct UpsertBiliItem
+621-621  注释 → struct BiliVideoAsset
+623-651  struct BiliVideoAsset
+653-662  struct BiliTranscriptCache
+664-678  struct BiliTranscriptRun + 注释 → struct Database
+680-692  struct Database 等 3 项
+694-718  impl Database › fn new
+720-730  impl Database › fn get_db_path + impl Database › fn get_db_size
+732-769  impl Database › fn migrate_to
+771-824  impl Database › fn run_migrations
+826-830  框架行 → impl Database › fn init_tables › let conn = self.conn.blocking_lock(); 等 3 项
+831-899  impl Database › fn init_tables › conn.execute_batch(r#" （第 1 块）
+916-923  impl Database › fn init_tables › let planned_columns = {
+924-961  impl Database › fn init_tables › if planned_columns.iter().any('c' c == "tag_id")
+963-980  impl Database › fn init_tables › conn.execute_batch("CREATE INDEX IF NOT EXISTS i 等 4 项
+999-1006  impl Database › fn init_tables › let _ = conn.execute_batch("ALTER TABLE bili_vid + impl Database › fn init_tables › let _ = conn.execute_batch("ALTER TABLE bili_his
+1008-1080  impl Database › fn init_tables › conn.execute_batch(r#" （第 1 块） #2
+1154-1225  impl Database › fn init_tables › conn.execute_batch(r#" （第 3 块）
+1226-1305  impl Database › fn init_tables › conn.execute_batch(r#" （第 4 块）
+1306-1372  impl Database › fn init_tables › conn.execute_batch(r#" （第 5 块）
+1564-1607  impl Database › fn update_activity_category › if let Some(new_name) = req.name.as_deref() {
+1609-1610  impl Database › fn update_activity_category › Ok(())
+1675-1736  impl Database › fn rename_activity_path
+1976-1988  impl Database › fn move_plan_node › let subtree: Vec<i64> = {
+1990-2002  impl Database › fn move_plan_node › if let Some(parent_id) = req.parent_id {
+2004-2021  impl Database › fn move_plan_node › let mut siblings: Vec<i64> = { 等 4 项
+2022-2035  impl Database › fn move_plan_node › for node_id in &subtree { 等 3 项
+3447-3470  impl Database › fn upsert_bili_history
+3548-3552  框架行 → impl Database › fn get_bili_spans_for_date › let conn = self.conn.lock().await; + impl Database › fn get_bili_spans_for_date › let conn = self.conn.lock().await;
+3553-3592  impl Database › fn get_bili_spans_for_date › let sql = r#"
+3593-3593  impl Database › fn get_bili_spans_for_date › let mut stmt = conn.prepare(sql).map_err('e' e.t
+3594-3616  impl Database › fn get_bili_spans_for_date › let rows = stmt.query_map(params![date], 'row' {
+3617-3621  impl Database › fn get_bili_spans_for_date › Ok(rows.filter_map('r' r.ok()).collect()) + 框架行 → impl Database › fn get_data_days
+4299-4307  框架行 → impl Database › fn record_perception_heartbeat › let conn = self.conn.lock().await; 等 5 项
+4309-4318  impl Database › fn record_perception_heartbeat › let upsert_bucket_sql = format!(r#"INSERT INTO {
+4319-4329  impl Database › fn record_perception_heartbeat › conn.execute(
+4331-4350  impl Database › fn record_perception_heartbeat › if heartbeat.bucket_kind == "window" {
+4352-4368  impl Database › fn record_perception_heartbeat › let select_last_sql = format!(r#"SELECT id, end_ + impl Database › fn record_perception_heartbeat › let last = conn.query_row(
+4370-4383  impl Database › fn record_perception_heartbeat › if let Some((id, last_end, last_json, last_hash)
+4385-4400  impl Database › fn record_perception_heartbeat › let insert_event_sql = format!(r#"INSERT INTO {e 等 7 项
+4402-4414  impl Database › fn get_perception_spans_for_date › let app_colors: std::collections::HashMap<String
+4416-4425  impl Database › fn get_perception_spans_for_date › let spans_sql = format!(r#"SELECT e.id, b.kind,  + impl Database › fn get_perception_spans_for_date › let mut stmt = conn.prepare(&spans_sql).map_err(
+4427-4437  impl Database › fn get_perception_spans_for_date › let rows = stmt.query_map(params![&day_end, &day + impl Database › fn get_perception_spans_for_date › let mut spans = Vec::new();
+4438-4491  impl Database › fn get_perception_spans_for_date › for row in rows.filter_map('r' r.ok()) {
+4493-4495  impl Database › fn get_perception_spans_for_date › spans.sort_by('a, b' a.start_at.cmp(&b.start_at) + impl Database › fn get_perception_spans_for_date › Ok(spans)
+4591-4637  impl Database › fn create_bili_asset
+4719-4732  impl Database › fn delete_bili_assets_by_bvid
+4763-4782  fn migrate_legacy_perception_tables
+4784-4794  fn local_now_string + fn table_columns
+4796-4803  fn ensure_column
+4984-5004  fn should_apply_slot_row
+5077-5096  fn merge_tag_children
+5098-5115  fn stable_hash_hex + fn within_pulsetime
+5117-5129  fn parse_local_dt 等 3 项
+5131-5149  fn clip_dt + fn ensure_visible_end
+5151-5159  fn color_for_status
+5161-5171  fn color_for_app
+5173-5201  impl BiliVideoAsset
+5210-5224  impl Database › fn get_bili_transcripts_by_path › let row: Option<Row> = conn
+5225-5234  impl Database › fn get_bili_transcripts_by_path › let mut stmt = conn
+5235-5252  impl Database › fn get_bili_transcripts_by_path › let history = stmt
+5253-5264  impl Database › fn get_bili_transcripts_by_path › Ok(match row {
+5265-5279  框架行 → impl Database › fn update_bili_transcript_by_path › let now = Utc::now().to_rfc3339(); 等 3 项
+5280-5296  impl Database › fn update_bili_transcript_by_path › let sql = match kind { 等 3 项
+5297-5305  impl Database › fn update_bili_transcript_by_path › let _ = conn.execute( + impl Database › fn update_bili_transcript_by_path › if !save_history '' text.trim().is_empty() {
+5307-5316  impl Database › fn update_bili_transcript_by_path › let asset: (String, String, String) = conn
+5317-5328  impl Database › fn update_bili_transcript_by_path › let run = BiliTranscriptRun {
+5329-5347  impl Database › fn update_bili_transcript_by_path › conn.execute(
+5348-5360  impl Database › fn update_bili_transcript_by_path › Ok(Some(run)) 等 3 项
+5362-5373  impl PresenceSpan + 注释 → struct Goal
+5375-5383  struct Goal
+5385-5399  impl Goal + 注释 → struct ContextFeedItem
+5456-5471  fn transcript_plain_text
+6607-6617  框架行 → fn normalize_due_date + fn normalize_due_date
+
+## clients/desktop/src-tauri/src/api.rs（共 115 段，未收录 76 段）
+1-18  注释 → use axum 等 7 项
+19-35  use tower_http 等 3 项
+37-51  struct BiliState 等 3 项
+53-67  struct BailianState 等 3 项
+69-77  impl BailianState
+79-95  struct ApiState + 注释 → struct ApiResponse
+97-114  struct ApiResponse 等 3 项
+116-129  struct DateQuery 等 3 项
+131-148  struct SessionSearchQuery 等 3 项
+150-162  struct BailianAccountPayload + struct BiliHistoryQuery
+164-175  struct BiliSearchQuery + struct BiliDayCountQuery
+177-194  struct BiliHistoryPageResult 等 3 项
+213-225  struct AddLinkPayload + fn health
+227-248  fn get_perception_screenshot
+250-270  fn get_ocr_frame
+272-289  struct OcrFrameQuery + fn image_mime_for_path
+291-308  struct ScreenshotQuery + fn get_perception_app_icon
+310-324  struct AppIconQuery + fn get_perception_spans
+326-336  fn get_data_days
+338-348  fn get_activity_palette
+350-359  fn add_activity_category
+361-370  fn delete_activity_category
+372-383  fn update_activity_category
+385-394  fn rename_activity_path
+396-405  fn add_activity_tag
+407-416  fn delete_activity_tag
+418-427  fn get_activity_blocks
+429-438  fn paint_activity_blocks
+440-449  fn erase_activity_blocks
+451-460  fn get_plan_nodes
+462-470  fn get_all_plan_nodes
+472-483  fn move_plan_node
+485-494  fn add_plan_node
+496-507  fn update_plan_node
+509-518  fn delete_plan_node
+520-529  fn get_planned_blocks
+531-540  fn paint_planned_blocks
+542-551  fn erase_planned_blocks
+902-915  框架行 → fn serve_local_video › use axum 等 5 项
+917-934  fn serve_local_video › let ok_ext = path.extension() 等 4 项
+936-952  fn serve_local_video › let content_type = path.extension() + fn serve_local_video › let range_str = headers.get(header::RANGE).and_t
+953-966  fn serve_local_video › let (start, end, status) = match range_str.and_t 等 6 项
+968-984  fn serve_local_video › let mut resp = Response::builder() 等 3 项
+985-999  框架行 → fn parse_byte_range + fn parse_byte_range
+1001-1024  fn extract_bili_items
+1026-1040  fn recv_bili_nav_result
+1042-1068  fn recv_bili_result
+1070-1070  注释 → fn recv_bailian_quota_result
+1072-1102  fn recv_bailian_quota_result
+1104-1129  fn recv_bailian_account_result
+1131-1153  fn recv_bailian_quota_progress
+1155-1172  struct PlayUrlResultPayload + fn recv_bili_playurl_result
+1174-1191  struct QualitiesResultPayload + fn recv_bili_qualities_result
+1193-1202  fn get_bili_spans_day
+1204-1218  fn get_bili_day_counts + struct BiliTranscriptQuery
+1220-1233  fn get_bili_transcripts
+1235-1248  fn get_bili_history
+1250-1261  fn search_bili_history
+1263-1279  fn link_bili_to_event 等 3 项
+1281-1339  fn proxy_bili_cover
+1341-1356  注释 → struct GoalStatusQuery 等 4 项
+1358-1366  fn get_goals
+1368-1385  fn create_goal
+1387-1397  fn update_goal
+1458-1467  struct AddBindingBody
+1469-1484  fn add_binding
+1628-1643  struct ClusterNameRow + fn get_cluster_names
+1645-1659  struct UpsertClusterNameBody + fn upsert_cluster_name
+1661-1671  fn list_motive_protocols
+1673-1682  struct UpsertMotiveProtocolBody
+1703-1717  struct PresenceDateQuery 等 3 项
+1719-1728  fn get_presence_spans
+1730-1744  fn upsert_presence_span
+1866-1881  fn recv_focus_heartbeat 等 4 项
+1883-1889  fn recv_active_tab
+1891-1937  fn start_server

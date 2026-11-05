@@ -198,9 +198,9 @@ http://127.0.0.1:9222/json/version
 
 ### Mobile 客户端
 
-位于 `clients/mobile/`。React Native 0.85，自家 native module（SoloDb / Updater / Perception / Sync），不引第三方"非必要"的 native 包；可视化基础设施类的（`react-native-svg`、`react-native-safe-area-context` 等）按需引入。Android + iOS 共享 TS 代码。开发分支 `feat/mobile`，主开发目标先做 Android，iOS 后续补。
+位于 `clients/mobile/`。React Native 0.85，自家 native module（SolevupDb / SyncServer / SyncClient / Updater / Perception / Omni / Voice / FairyFs），不引第三方"非必要"的 native 包；可视化基础设施类的（`react-native-svg`、`react-native-safe-area-context` 等）按需引入。Android + iOS 共享 TS 代码。开发分支 `feat/mobile`，主开发目标先做 Android，iOS 后续补。
 
-**包名：** `com.sololevelingsystemmobile`（入口 `MainActivity`）
+**包名：** `com.solevup.mobile`（入口 `MainActivity`）
 
 #### 开发环境
 
@@ -277,8 +277,8 @@ adb logcat -c                      # 先清掉旧日志
 adb logcat -d -s ReactNativeJS:V   # 倒出本次日志
 
 # 重启 app（保留模拟器，不清前端 Metro）
-adb shell am force-stop com.sololevelingsystemmobile
-adb shell am start -n com.sololevelingsystemmobile/.MainActivity
+adb shell am force-stop com.solevup.mobile
+adb shell am start -n com.solevup.mobile/.MainActivity
 
 # 查看包名
 adb shell pm list packages | grep solo
@@ -395,9 +395,26 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 - 用户首次需要在系统设置允许"未知来源安装"；Android 不允许完全无感更新
 - 权限：manifest 加了 `REQUEST_INSTALL_PACKAGES`，FileProvider authorities=`${applicationId}.fileprovider`，paths 配 `external-files-path name="updates" path="updates/"`
 
-#### LAN 数据层（已预留，未启用）
+#### 局域网同步
 
-`src/lib/api.ts` 已写成"先打局域网 HTTP，失败 fallback 到 mock"的形态，端口对齐 desktop 的 `49733`（详见 `clients/desktop/src-tauri/src/api.rs`）。当前手机端总是走 mock —— `setLanHost(null)`。后续 LAN 共享数据库框架定下来后，调用 `setLanHost('192.168.x.x:49733')` 即可切到真实数据。
+同步服务随进程启动（`android/.../sync/SyncRuntime.kt`），不依赖打开感知层页面；感知层页面只做配对（`src/components/sync/PairingCard.tsx`）。端口 `39733`，和 desktop 一致（`clients/desktop/src-tauri/src/api.rs`）。
+
+- 全量 `/api/sync/{hello,export,import}`：活动数据、Key、模型用量，按 LWW 合并。
+- 聊天增量 `/api/sync/chat`：触发器写 `chat_sync_log`，按对端存游标，不进全量导出。
+- 合并规则两端各有一份（`db.rs chat_sync_import`、`SolevupDb.kt importChatPage`）。改规则要同时改两端，并更新和运行 `python3 clients/mobile/alignment/chat_sync_sim.py`。
+- 想法卡、锚点等表没有 `updated_at`，不在同步协议里，桌面端是唯一数据源。手机端经 `src/lib/desktop-api.ts` 直接读写已配对的桌面端，连不上时写入进待发送队列（`src/lib/ai/anchor-outbox.ts`）。
+
+#### 桌面端对齐清单
+
+Fairy 相关的桌面端源码按语法切成连续不重叠的段落，记录在 `clients/mobile/alignment/batches/`，每段有状态、手机端落点和内容哈希。规则见 `clients/mobile/alignment/README.md`。
+
+```bash
+node clients/mobile/alignment/tool.mjs check     # 桌面端改过的段落会报「桌面端已改动」，要重新核对
+node clients/mobile/alignment/tool.mjs status    # 各批次进度
+node clients/mobile/alignment/tool.mjs generate  # 桌面端增删代码后刷新行号，已填的状态会保留
+```
+
+拉取桌面端改动后先跑 `generate` 和 `check`，把报告的段落移植或标注后再继续。
 
 ### 归档：早期 macOS 原型
 
@@ -426,7 +443,7 @@ python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
 - `lib.rs` / `main.rs` — Tauri 命令注册、应用入口、single-instance
 - `db.rs` — SQLite 持久化（用户数据目录：`%LOCALAPPDATA%/solo-leveling-system/`）
 - `perception.rs` + `perception_windows.rs` — 自研感知层（替代 ManicTime），Windows 走 `_windows.rs`
-- `api.rs` — 本地 HTTP API 端点（端口 49733）
+- `api.rs` — 本地 HTTP API 端点（端口 39733）
 - `qwen_asr.rs` / `qwen_omni.rs` / `qwen_video.rs` — 阿里百炼语音/多模态
 - `fish_tts.rs` — Fish Audio TTS
 - `bili_download.rs` — B 站视频下载/转录
@@ -449,15 +466,22 @@ python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
 
 `clients/mobile/`（RN + TS，自家 native module + `react-native-svg` / `react-native-safe-area-context` 等可视化基础包）
 
-- `App.tsx` — SafeAreaProvider + StatusBar + TabBar，切换 `DayNightScreen` / `ChatScreen`
+- `App.tsx` — SafeAreaProvider + StatusBar + TabBar，切换 `DayNightScreen` / `TorrentScreen` / `ProtocolScreen` / `PerceptionScreen`；Fairy 是全局层（`AgentPanel` + `VoiceGestureOverlay`），不占页面
 - `src/theme.ts` — 浅色克制主题；`categoryColors` 给活动分类配色；`alpha()` 助手
 - `src/types.ts` — `ActivityBlock` / `ActivityTag` / `ChatMessage` 等共享类型
 - `src/components/TabBar.tsx` — 底部 Tab 极简栏
 - `src/screens/DayNightScreen.tsx` — 鱼眼焦点网格：18 完整行（12×5min）+ 上下缩进行；编辑模式 PanResponder 区间拖拽涂色；色块按 horizontal run 绝对定位渲染（解决凹凸 / 列对齐）
-- `src/screens/ChatScreen.tsx` — 暗影聊天：图片附件 modal、录音覆盖层、omni/regular 模式切换
 - `src/lib/time.ts` — 日期/分钟格式化
-- `src/lib/mock.ts` — 本地 mock 数据：按日期 hash 稳定生成 `BASE_SPANS` + 内存 overrides 编辑覆盖层
-- `src/lib/api.ts` — LAN HTTP 优先（`/api/activities/*` 对齐 desktop 49733 端口），失败 fallback 到 mock；`setLanHost(host|null)` 切换源
+- `src/lib/api.ts` — 昼夜表数据层，读写 SolevupDb
+
+### Fairy（对应 desktop 的 `App.tsx` 聊天部分、`ChatPanel`、`FairyWindow`、`lib/agent`、`lib/ai`、`lib/llm`、`lib/voice`）
+
+- `src/lib/agent/chat-controller.ts` — 全局单例，只做组装；流程在 `chat-core`（状态和订阅）、`chat-sessions`（会话）、`chat-prompt`（提示词取数）、`chat-send`（发送主流程）、`chat-distill`（想法沉淀）、`chat-voice`（按住说话）、`chat-omni`（实时语音）。React 侧用 `use-chat-controller.ts`
+- `src/lib/agent/tools/` — 工具定义和实现，按领域分文件；提示词在 `src/lib/ai/prompt-templates.ts`
+- `src/lib/llm/` — 流式调用、Anthropic 通道、`context-window`（静态前缀 + 每轮 reminder + 压缩）、`query-loop`（工具循环）
+- `src/lib/models/registry.ts` — 模型库种子，和 `db.rs seed_model_registry` 结构一一对应，桌面端改种子要同步
+- `src/lib/voice/` + `android/.../voice/` — 录音、流式识别、Fish TTS；`android/.../omni/` 是实时语音
+- `src/components/fairy/` — 聊天面板、气泡、Markdown、会话选择器、设置；`src/components/models/` + `ModelCenter.tsx` — 模型中心
 
 ### 昼夜表设计要点
 
