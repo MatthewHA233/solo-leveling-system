@@ -981,7 +981,7 @@ export default function App() {
       const { listen } = await import('@tauri-apps/api/event')
       if (cancelled) return
       // 拆解 SyncImportResult / SyncRoundResult 成简洁中文行
-      const fmtImport = (r: { activity_categories?: number; activity_tags?: number; activity_blocks?: number; plan_nodes?: number; planned_blocks?: number; model_call_log?: number; model_api_keys?: number; model_free_quota?: number; feature_bindings?: number; skipped?: number } | null | undefined): string => {
+      const fmtImport = (r: { activity_categories?: number; activity_tags?: number; activity_blocks?: number; plan_nodes?: number; planned_blocks?: number; model_call_log?: number; model_api_keys?: number; model_free_quota?: number; feature_bindings?: number; chat_sessions?: number; chat_messages?: number; skipped?: number } | null | undefined): string => {
         if (!r) return '0 条'
         const parts: string[] = []
         if (r.activity_categories) parts.push(`分类×${r.activity_categories}`)
@@ -993,13 +993,15 @@ export default function App() {
         if (r.model_api_keys) parts.push(`API key×${r.model_api_keys}`)
         if (r.model_free_quota) parts.push(`免费额度×${r.model_free_quota}`)
         if (r.feature_bindings) parts.push(`功能绑定×${r.feature_bindings}`)
+        if (r.chat_sessions) parts.push(`聊天会话×${r.chat_sessions}`)
+        if (r.chat_messages) parts.push(`聊天消息×${r.chat_messages}`)
         if (parts.length === 0) return r.skipped ? `0 条（跳过 ${r.skipped}）` : '0 条'
         const skipNote = r.skipped ? ` · 跳过 ${r.skipped}` : ''
         return parts.join(' + ') + skipNote
       }
       const us = await Promise.all([
-        listen<{ device_id?: string; changed?: number; result?: any }>('sync:imported', (e) => {
-          const alias = linkAliasOf(e.payload?.device_id) ?? '对端'
+        listen<{ from_device_id?: string; changed?: number; result?: any }>('sync:imported', (e) => {
+          const alias = linkAliasOf(e.payload?.from_device_id) ?? '对端'
           const detail = fmtImport(e.payload?.result)
           pushSyncLog({
             kind: 'sync',
@@ -1949,6 +1951,7 @@ export default function App() {
               content: `Omni 错误: ${payload.message ?? '未知'}`,
               timestamp: new Date().toISOString(),
             }])
+            emitFairy('idle')  // 这一轮不会再有 audio_done，不回 idle 就一直停在思考
           }
     })
 
@@ -2304,6 +2307,8 @@ export default function App() {
   // 实时（实验）语音模式的回复另走 Omni WS，不经过这里。
   const handleSend = useCallback(async (text: string, fromVoice = false) => {
     if (!text.trim()) return
+    // 这一轮属于发起时的会话：切走之后，迟到的回复写回原会话，不能进新会话，也不能盖掉新会话的历史
+    const turnSessionId = sessionIdRef.current
     // 语音那句在转写定稿时已经数过（onTranscript），这里只数打字
     if (!fromVoice) titleFlowRef.current?.onUserMessage(text)
 
@@ -2520,7 +2525,7 @@ export default function App() {
         executeTool: (call) => executeAgentTool(call.name, call.arguments),
       })
       // 工具调用与结果留在历史里（下一轮还能引用刚查到的数据）；体量超高水位时才按整轮分批压缩
-      conversationRef.current = compactHistory(newHistory.map((m) => (m === apiUserMsg ? userMsg : m)))
+      if (sessionIdRef.current === turnSessionId) conversationRef.current = compactHistory(newHistory.map((m) => (m === apiUserMsg ? userMsg : m)))
       if (interrupted) {
         setChatMessages((prev) => prev.map((m) =>
           m.id === agentMsgId && m.content ? { ...m, content: `${m.content}……（被打断）` } : m))
@@ -2537,8 +2542,9 @@ export default function App() {
         )
       }
 
+      // 只看本轮新增的部分：接口报错时本轮没有 assistant，扫整段历史会取到上一轮的回复，再存一遍
       const replyText = (() => {
-        for (let i = newHistory.length - 1; i >= 0; i--) {
+        for (let i = newHistory.length - 1; i >= 0 && newHistory[i] !== apiUserMsg; i--) {
           const m = newHistory[i]
           if (isAssistantMessage(m)) return getMessageText(m)
         }
@@ -2703,11 +2709,11 @@ export default function App() {
               setChatMessages((prev) =>
                 prev.map((m) => m.id === agentMsgId ? { ...m, audioUrl, durationMs: aiAudioDurationMs } : m)
               )
-              if (sessionIdRef.current) {
+              if (turnSessionId) {
                 try {
                   const wavBytes = new Uint8Array(await wavBlob.arrayBuffer())
                   aiAudioPath = await invoke<string>('save_audio_file', {
-                    sessionId: sessionIdRef.current,
+                    sessionId: turnSessionId,
                     wavBytes,
                     timestamp: new Date().toISOString(),
                   })
@@ -2732,8 +2738,8 @@ export default function App() {
       }
 
       // ── 持久化本轮对话（在 TTS 之后，最终 assistant 顺手带上 audioPath/durationMs）──
-      if (sessionIdRef.current) {
-        const sid = sessionIdRef.current
+      if (turnSessionId) {
+        const sid = turnSessionId
         if (aiAudioPath) {
           for (let i = newPairs.length - 1; i >= 0; i--) {
             if (newPairs[i].role === 'assistant') {
@@ -2748,7 +2754,7 @@ export default function App() {
         }
         const deduplicated = newPairs
         if (deduplicated.length > 0) {
-          persistedBufferRef.current = [...persistedBufferRef.current, ...deduplicated]
+          if (sessionIdRef.current === sid) persistedBufferRef.current = [...persistedBufferRef.current, ...deduplicated]
           persistMessages(sid, deduplicated).catch(() => {})
         }
 
@@ -2760,6 +2766,7 @@ export default function App() {
           content: `错误: ${err instanceof Error ? err.message : String(err)}`,
           timestamp: new Date().toISOString(),
         }])
+        if (ownsUi()) emitFairy('idle')
       }
     }
 
@@ -2785,7 +2792,7 @@ export default function App() {
   }, [])
 
   // ── 切换 / 新建会话 ──
-  const switchSession = useCallback(async (sessionId: string, jumpToTimestamp?: string) => {
+  const switchSession = useCallback(async (sessionId: string, jumpToTimestamp?: string, knownTitle?: string) => {
     const performJump = () => {
       if (!jumpToTimestamp) return
       // 等 React commit + layout 完成（两个 rAF），再定位 + scroll + 闪
@@ -2804,11 +2811,18 @@ export default function App() {
     }
     try {
       const msgs = await fetchSessionMessages(sessionId)
+      // 正在回复就先停掉（生成和朗读）：切走之后它不该继续出声
+      if (replyControlRef.current) {
+        replyControlRef.current.interrupt()
+        replyControlRef.current = null
+        emitFairy('idle')
+      }
       sessionIdRef.current = sessionId
       persistedBufferRef.current = [...msgs]
-      const info = sessions.find((s) => s.id === sessionId)
-      applySessionTitle(info?.title || DEFAULT_SESSION_TITLE)
-      titleFlow.reset(sessionId, info?.title || DEFAULT_SESSION_TITLE, countUserMessages(msgs))
+      // 搜索能跳到 sessions（最近 50 条）之外的旧会话，查不到时用选择器带来的标题，否则下一轮会把原标题覆盖掉
+      const title = knownTitle ?? sessions.find((s) => s.id === sessionId)?.title
+      applySessionTitle(title || DEFAULT_SESSION_TITLE)
+      titleFlow.reset(sessionId, title || DEFAULT_SESSION_TITLE, countUserMessages(msgs))
       conversationRef.current = compactHistory(sessionMessagesToLLMHistory(msgs))
       revokeTrackedBlobAudioUrls()
       setChatMessages(sessionMessagesToChatMessages(msgs, audioDirRef.current))
@@ -2819,6 +2833,12 @@ export default function App() {
   }, [sessions])
 
   const newSession = useCallback(async () => {
+    // 正在回复就先停掉（生成和朗读）：切走之后它不该继续出声
+    if (replyControlRef.current) {
+      replyControlRef.current.interrupt()
+      replyControlRef.current = null
+      emitFairy('idle')
+    }
     try {
       const s = await createChatSession()
       sessionIdRef.current = s.id
@@ -3491,7 +3511,7 @@ export default function App() {
           sessions={sessions}
           currentSessionId={sessionIdRef.current}
           dockRight={rightPanelWidth}
-          onSelect={(id, ts) => { switchSession(id, ts) }}
+          onSelect={(id, ts, title) => { switchSession(id, ts, title) }}
           onNewSession={() => { newSession() }}
           onDelete={async (id) => {
             try { await deleteChatSession(id) } catch {}

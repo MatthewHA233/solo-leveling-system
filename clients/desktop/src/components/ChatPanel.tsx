@@ -651,7 +651,7 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
     const el = audioRef.current
     if (!el) return
     if (playing) { el.pause(); setPlaying(false) }
-    else         { el.play();  setPlaying(true)  }
+    else         { el.play().then(() => setPlaying(true)).catch(() => setPlaying(false)) }
   }
 
   const fmtSec = (s: number) =>
@@ -666,7 +666,7 @@ function AudioBubble({ audioUrl, durationMs }: { audioUrl: string; durationMs?: 
         ref={audioRef}
         src={audioUrl}
         onLoadedMetadata={handleMeta}
-        onEnded={() => { setPlaying(false); setProgress(0) }}
+        onEnded={() => { setPlaying(false); setProgress(0) }} onError={() => { setPlaying(false); setProgress(0) }}
       />
       <button
         type="button"

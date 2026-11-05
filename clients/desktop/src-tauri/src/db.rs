@@ -482,14 +482,20 @@ fn build_excerpt(content: &str, query: &str, ctx: usize) -> String {
     if query.is_empty() || content.is_empty() {
         return content.chars().take(ctx * 2).collect();
     }
-    let lower_content = content.to_lowercase();
-    let lower_query = query.to_lowercase();
+    // 小写后字节数可能变（如 İ），小写串的下标不能用在原文上：记下每个原文字符在小写串里的起点
+    let mut lower_content = String::with_capacity(content.len());
+    let mut char_starts = Vec::new();
+    for c in content.chars() {
+        char_starts.push(lower_content.len());
+        lower_content.extend(c.to_lowercase());
+    }
+    let lower_query: String = query.chars().flat_map(char::to_lowercase).collect();
     let byte_idx = match lower_content.find(&lower_query) {
         Some(i) => i,
         None => return content.chars().take(ctx * 2).collect(),
     };
     // 转字节索引为字符索引（按字符数计算上下文窗口，避免切到 UTF-8 中段）
-    let char_idx_of_match = content[..byte_idx].chars().count();
+    let char_idx_of_match = char_starts.partition_point(|&s| s <= byte_idx) - 1;
     let total_chars: Vec<char> = content.chars().collect();
     let start = char_idx_of_match.saturating_sub(ctx);
     let end = (char_idx_of_match + query.chars().count() + ctx).min(total_chars.len());
@@ -6137,9 +6143,9 @@ impl Database {
         api_key_id: Option<String>,
     ) -> Result<Vec<CallLogBucket>, String> {
         let bucket_expr = match granularity.as_str() {
-            "minute" => "substr(started_at, 1, 16) || ':00'",
-            "hour"   => "substr(started_at, 1, 13) || ':00:00'",
-            _        => "substr(started_at, 1, 10)",
+            "minute" => "strftime('%Y-%m-%dT%H:%M:00', started_at, 'localtime')",
+            "hour"   => "strftime('%Y-%m-%dT%H:00:00', started_at, 'localtime')",
+            _        => "strftime('%Y-%m-%d', started_at, 'localtime')", // started_at 是 UTC，日历按本地日期取，直接截字符串会把凌晨的调用算到前一天
         };
 
         let conn = self.conn.lock().await;

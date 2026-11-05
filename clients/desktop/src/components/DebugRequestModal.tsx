@@ -185,7 +185,7 @@ export default function DebugRequestModal({ snapshots, onClose }: Props) {
           <span style={{ fontSize: 10, color: '#374151' }}>max_tokens {snap.maxTokens}</span>
           <span style={{ fontSize: 10, color: '#374151' }}>{snap.messages.length} 条消息</span>
           {snap.tools && <span style={{ fontSize: 10, color: '#374151' }}>{snap.tools.length} 个工具</span>}
-          <span style={{ fontSize: 10, color: '#1f2937' }}>{snap.timestamp.slice(11, 19)}</span>
+          <span style={{ fontSize: 10, color: '#1f2937' }}>{new Date(snap.timestamp).toLocaleTimeString('zh-CN', { hourCycle: 'h23' })}</span>
           <div style={{ flex: 1 }} />
           {snapshots.length > 1 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>

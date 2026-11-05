@@ -1767,6 +1767,7 @@ pub fn run() {
         .manage(voice::VoiceState::default())
         .setup(move |app| {
             // 独显偏好：赶在 WebView2 显卡进程启动前补上当前版本路径（WebView2 自动更新后路径会变）
+            #[cfg(windows)]
             let gpu_notes = gpu_pref::refresh_on_startup();
 
             // 主窗口在配置里 create: false，这里按配置创建，才能带上开发构建的浏览器参数
@@ -1860,6 +1861,7 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            #[cfg(windows)]
             for note in &gpu_notes {
                 log::info!("{}", note);
             }

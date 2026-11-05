@@ -24,8 +24,8 @@ interface Props {
   readonly sessions: readonly ChatSessionInfo[]
   readonly currentSessionId: string | null
   readonly dockRight?: number
-  /** jumpToTimestamp：搜索命中片段时传入，用于切会话后定位到对应气泡 */
-  readonly onSelect: (id: string, jumpToTimestamp?: string) => void
+  /** jumpToTimestamp：搜索命中片段时传入，用于切会话后定位到对应气泡；title：搜索能命中 sessions 之外的旧会话，父级查不到标题 */
+  readonly onSelect: (id: string, jumpToTimestamp?: string, title?: string) => void
   readonly onNewSession: () => void
   readonly onDelete: (id: string) => void
   readonly onClose: () => void
@@ -183,14 +183,9 @@ export default function SessionPicker({
 
   const regenTitle = useCallback(async (s: ChatSessionInfo) => {
     setMenu(null)
-    let alreadyRunning = false
-    setRegenIds((prev) => {
-      if (prev.has(s.id)) { alreadyRunning = true; return prev }
-      const next = new Set(prev)
-      next.add(s.id)
-      return next
-    })
-    if (alreadyRunning) return
+    // 不能在 setState 的 updater 里判断：上面的 setMenu 已排队，updater 要等下次渲染才跑，判断永远不成立
+    if (regenIds.has(s.id)) return
+    setRegenIds((prev) => new Set(prev).add(s.id))
     try {
       const msgs = await fetchSessionMessages(s.id)
       if (msgs.length === 0) return
@@ -208,7 +203,7 @@ export default function SessionPicker({
         return next
       })
     }
-  }, [onRefresh])
+  }, [onRefresh, regenIds])
 
   // 抽屉贴在通讯栏左边缘上；量不到宿主时退回旧的停靠参数
   const dock: React.CSSProperties = anchor
@@ -362,7 +357,7 @@ export default function SessionPicker({
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
           }}>
             <MessageSquare size={18} style={{ opacity: 0.4 }} />
-            {sessions.length === 0 ? '还没有历史会话' : '没有匹配的会话'}
+            {sessions.length === 0 ? '还没有历史会话' : searching ? '搜索中…' : '没有匹配的会话'}
           </div>
         )}
 
@@ -376,8 +371,8 @@ export default function SessionPicker({
             confirming={confirmId === hit.session.id}
             editing={editingId === hit.session.id}
             regenerating={regenIds.has(hit.session.id)}
-            onClick={() => onSelect(hit.session.id)}
-            onJumpToSnippet={(timestamp) => onSelect(hit.session.id, timestamp)}
+            onClick={() => onSelect(hit.session.id, undefined, hit.session.title)}
+            onJumpToSnippet={(timestamp) => onSelect(hit.session.id, timestamp, hit.session.title)}
             onRequestDelete={() => setConfirmId(hit.session.id)}
             onConfirmDelete={() => { onDelete(hit.session.id); setConfirmId(null) }}
             onCancelDelete={() => setConfirmId(null)}

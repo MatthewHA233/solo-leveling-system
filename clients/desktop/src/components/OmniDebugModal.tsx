@@ -104,7 +104,7 @@ export default function OmniDebugModal({ info, onClose }: Props) {
           <span style={{ fontSize: 11, color: theme.textSecondary, fontFamily: theme.fontMono }}>{info.model}</span>
           {info.voice && <span style={{ fontSize: 11, color: theme.textMuted }}>音色 {info.voice}</span>}
           <span className="ti-well" style={{ padding: '2px 7px', borderRadius: 4 }}>
-            <span className="ti-led" style={{ fontSize: 11 }}>{info.ts.slice(11, 19)}</span>
+            <span className="ti-led" style={{ fontSize: 11 }}>{new Date(info.ts).toLocaleTimeString('zh-CN', { hourCycle: 'h23' })}</span>
           </span>
           <div style={{ flex: 1 }} />
           <button type="button" className="ti-key" style={{ width: 28, height: 28 }} onClick={onClose} aria-label="关闭"><X size={14} /></button>
@@ -149,7 +149,7 @@ export default function OmniDebugModal({ info, onClose }: Props) {
                 <span style={{ fontSize: 11, fontWeight: 800, color: item.type === 'text' ? ti.led : ti.sys, letterSpacing: 0.8 }}>
                   {item.type === 'text' ? '文字' : '语音'}
                 </span>
-                <span style={{ fontSize: 10.5, color: theme.textMuted, fontFamily: theme.fontMono }}>{item.ts.slice(11, 19)}</span>
+                <span style={{ fontSize: 10.5, color: theme.textMuted, fontFamily: theme.fontMono }}>{new Date(item.ts).toLocaleTimeString('zh-CN', { hourCycle: 'h23' })}</span>
                 {item.type === 'audio' && item.durationMs !== undefined && (
                   <span style={{ fontSize: 10.5, color: theme.textSecondary, fontFamily: theme.fontMono }}>{(item.durationMs / 1000).toFixed(1)}s</span>
                 )}

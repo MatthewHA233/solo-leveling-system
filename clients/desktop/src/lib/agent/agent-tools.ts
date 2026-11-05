@@ -21,7 +21,8 @@ interface Tool {
 /** YYYY-MM-DD → Date（当地时间 0:00），无效/缺省返回今天 */
 function parseDateArg(dateArg: unknown): Date {
   if (typeof dateArg === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateArg)) {
-    return new Date(dateArg + 'T00:00:00')
+    const day = new Date(dateArg + 'T00:00:00')
+    if (!Number.isNaN(day.getTime())) return day
   }
   return new Date()
 }
@@ -94,11 +95,13 @@ function filterByKeyword<T>(
 function resolveDatesToFetch(args: Record<string, unknown>): Date[] {
   const startDT = typeof args.start_datetime === 'string' ? args.start_datetime : null
   const endDT   = typeof args.end_datetime   === 'string' ? args.end_datetime   : null
-
-  if (startDT && endDT) {
-    // 精确范围模式：从 start 日期到 end 日期，逐天列出
-    const startDay = new Date(startDT.slice(0, 10) + 'T00:00:00')
-    const endDay   = new Date(endDT.slice(0, 10) + 'T00:00:00')
+  if (startDT || endDT) {
+    const startDay = new Date((startDT || endDT || '').slice(0, 10) + 'T00:00:00')
+    const endDay   = endDT ? new Date(endDT.slice(0, 10) + 'T00:00:00') : new Date()
+    // 精确范围模式：从 start 日期到 end 日期，逐天列出。只给起点查到今天，只给终点查那一天。格式不对时一天都不查，工具会回"无匹配"，模型就告诉主人没有记录
+    // filterByTime 按 "YYYY-MM-DD HH:MM" 比较字符串，别的写法（T 分隔、只有日期、斜杠）比出来全错，同样要报错
+    const wellFormed = [startDT, endDT].every((dt) => !dt || /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(dt))
+    if (!wellFormed || Number.isNaN(startDay.getTime()) || Number.isNaN(endDay.getTime())) throw new Error('start_datetime / end_datetime 格式应为 "YYYY-MM-DD HH:MM"')
     const dates: Date[] = []
     const cursor = new Date(startDay)
     while (cursor <= endDay) {

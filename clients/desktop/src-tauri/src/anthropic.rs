@@ -22,7 +22,7 @@ use crate::network::proxy_url;
 
 pub(crate) const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 pub(crate) const API_VERSION: &str = "2023-06-01";
-const TIMEOUT: Duration = Duration::from_secs(120);
+const TIMEOUT: Duration = Duration::from_secs(120); // 连接 / 读取的空闲上限，不是总时长：流式长回复可以超过它
 /// 测试连接用最便宜的模型
 pub const TEST_MODEL: &str = "claude-haiku-5-5";
 const ERROR_BODY_CHARS: usize = 300;
@@ -40,7 +40,7 @@ pub(crate) fn build_client(port: u16) -> Result<reqwest::Client, String> {
     let proxy = reqwest::Proxy::all(proxy_url(port)).map_err(|e| format!("代理地址不对：{e}"))?;
     reqwest::Client::builder()
         .proxy(proxy)
-        .timeout(TIMEOUT)
+        .connect_timeout(TIMEOUT).read_timeout(TIMEOUT)
         .build()
         .map_err(|e| format!("建立网络客户端失败：{e}"))
 }

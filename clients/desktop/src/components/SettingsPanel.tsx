@@ -68,11 +68,8 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`
 }
 
-export default function SettingsPanel({ open: isOpen, initialSection, initialSectionTick = 0, config, onUpdate, onClose }: Props) {
-  // 应用内确认框 / 报错提示（不用 Windows 原生 confirm / alert）
-  const [confirm, confirmDialog, notify] = useConfirm()
-  // ── Local draft state (不实时写入，点确认才生效) ──
-  const [draft, setDraft] = useState({
+function draftFromConfig(config: AgentConfig) {
+  return {
     aiMode: config.aiMode,
     // 常规模式
     openaiApiKey: config.openaiApiKey ?? '',
@@ -100,7 +97,14 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
     agentPersona: config.agentPersona,
     agentCallUser: config.agentCallUser,
     mainQuest: config.mainQuest ?? '',
-  })
+  }
+}
+
+export default function SettingsPanel({ open: isOpen, initialSection, initialSectionTick = 0, config, onUpdate, onClose }: Props) {
+  // 应用内确认框 / 报错提示（不用 Windows 原生 confirm / alert）
+  const [confirm, confirmDialog, notify] = useConfirm()
+  // ── Local draft state (不实时写入，点确认才生效) ──
+  const [draft, setDraft] = useState(() => draftFromConfig(config))
 
   const [dirty, setDirty] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -136,6 +140,9 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
 
   useEffect(() => {
     if (!isOpen) return
+    // 面板常驻挂载，草稿只在启动时取过一次。顶栏切模式、模型面板切 Key、Fairy 窗口改过的配置
+    // 不在这里取回的话，保存时整份草稿写回，会把它们盖回旧值。有未保存的修改时保留草稿
+    if (!dirty) setDraft(draftFromConfig(config))
     invoke<DbInfo>('get_db_info').then(setDbInfo).catch(console.error)
     invoke<GpuPrefStatus>('get_gpu_pref_status').then(setGpuPref).catch(() => {})
     invoke<ScreenshotSettings>('get_screenshot_settings').then(setScreenshotDraft).catch(console.error)

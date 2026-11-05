@@ -115,7 +115,7 @@ const FEATURE_SPECS: readonly FeatureSpec[] = [
 
 const FEATURE_LABEL = new Map(FEATURE_SPECS.map((f) => [f.feature, f.label]))
 /** 模态的中文名（库里存英文键） */
-const MODALITY_ZH: Record<string, string> = { text: '文本', image: '图像', video: '视频', audio: '音频', embedding: '向量' }
+const MODALITY_ZH: Record<string, string> = { text: '文本', image: '图像', video: '视频', audio: '音频', audio_in: '音频输入', audio_out: '音频输出', embedding: '向量' }
 
 const MODEL_ICON_URL = 'https://img.alicdn.com/imgextra/i3/O1CN01Kmx9dR1wcHOaMMXAk_!!6000000006328-55-tps-28-28.svg'
 
@@ -291,7 +291,7 @@ function cloneModel(model: ModelDef): ModelDef {
   }
 }
 
-export default function ModelDialog({ open, onUpdate, onClose }: Props) {
+export default function ModelDialog({ open, config, onUpdate, onClose }: Props) {
   const [tab, setTab] = useState<TabKey>('usage')
   const [models, setModels] = useState<ModelDef[]>([])
   const [bindings, setBindings] = useState<FeatureBinding[]>([])
@@ -347,16 +347,16 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
     try {
       const featureArg = feature === 'all' ? null : feature
       const modelArg = modelId === 'all' ? null : modelId
-      const apiKeyArg = apiKeys.find((k) => k.is_active && k.provider === 'dashscope')?.id ?? null
+      const hiddenKeyIds = new Set(apiKeys.some((k) => k.is_active && k.provider === 'dashscope') ? apiKeys.filter((k) => !k.is_active && k.provider === 'dashscope').map((k) => k.id) : []) // 只按百炼 Key 分账：Anthropic 和未归属（Vercel 决策）的调用不能被当前百炼 Key 过滤掉
       const callRows = await invoke<ModelCallLog[]>('query_call_log', {
         timeFrom: from,
         timeTo: to,
         feature: featureArg,
         modelId: modelArg,
-        apiKeyId: apiKeyArg,
+        apiKeyId: null,
         limit: null,
       })
-      setCalls(callRows)
+      setCalls(callRows.filter((c) => !c.api_key_id || !hiddenKeyIds.has(c.api_key_id)))
     } catch (e) {
       setErr(String(e))
     } finally {
@@ -637,7 +637,7 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
     setErr(null)
     try {
       await setActiveModelApiKey(key.id)
-      onUpdate({
+      if (key.provider === 'dashscope') onUpdate({
         dashscopeApiKey: key.api_key || null,
         openaiApiKey: key.api_key || null,
         omniApiKey: null,
@@ -697,10 +697,20 @@ export default function ModelDialog({ open, onUpdate, onClose }: Props) {
       setTimeout(() => setSaved(null), 1800)
       await loadBase()
       await loadUsage()
+      // 配置里还留着被删的那把时换成顶上来的 Key，否则聊天兜底会继续用已删除的 Key
+      if (key.provider === 'dashscope' && config.dashscopeApiKey === key.api_key) {
+        const next = (await listModelApiKeys()).find((k) => k.is_active && k.provider === 'dashscope')
+        onUpdate({
+          dashscopeApiKey: next?.api_key || null,
+          openaiApiKey: next?.api_key || null,
+          omniApiKey: null,
+          asrApiKey: null,
+        })
+      }
     } catch (e) {
       setErr(String(e))
     }
-  }, [loadBase, loadUsage, pendingDeleteKey])
+  }, [config.dashscopeApiKey, loadBase, loadUsage, onUpdate, pendingDeleteKey])
 
   const saveModel = useCallback(async (model: ModelDef) => {
     setErr(null)
@@ -1453,11 +1463,11 @@ function UsageCalendar({ viewMode, anchorDate, onSelect }: {
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
 
-  // 打开时拉取当前展示月的每日成本
+  // 打开时拉取当前展示月的每日成本（按月视图的 12 格要整年的数据）
   useEffect(() => {
     if (!open) return
-    const from = new Date(calMonth.y, calMonth.m, 1).toISOString()
-    const to = new Date(calMonth.y, calMonth.m + 1, 1).toISOString()
+    const from = new Date(calMonth.y, viewMode === 'month' ? 0 : calMonth.m, 1).toISOString()
+    const to = new Date(viewMode === 'month' ? calMonth.y + 1 : calMonth.y, viewMode === 'month' ? 0 : calMonth.m + 1, 1).toISOString()
     invoke<CallLogBucket[]>('aggregate_call_log', {
       timeFrom: from, timeTo: to, granularity: 'day',
       feature: null, modelId: null, apiKeyId: null,
@@ -1466,7 +1476,7 @@ function UsageCalendar({ viewMode, anchorDate, onSelect }: {
       for (const r of rows) m.set(r.bucket.slice(0, 10), r.cost_cny_total)
       setDayCosts(m)
     }).catch(() => {})
-  }, [open, calMonth])
+  }, [open, calMonth, viewMode])
 
   // anchorDate 变了同步月份
   useEffect(() => {
@@ -2285,7 +2295,7 @@ function ModelCard({
         })}
       </div>
       <div style={{ color: theme.textPrimary, opacity: 0.78, fontFamily: theme.fontMono, fontSize: 10, marginBottom: 10, letterSpacing: 0.3 }}>
-        单位：元 / 百万 token{isVercel ? '（美元价按 1:7.1 折算）' : ''}
+        {model.currency === 'USD' ? '单位：美元 / 百万 token' : `单位：元 / 百万 token${isVercel ? '（美元价按 1:7.1 折算）' : ''}`}
       </div>
       {/* 决策模型的实测成绩 / 数据留存说明（种子里写在 notes，用「｜」分段） */}
       {isVercel && model.notes && (

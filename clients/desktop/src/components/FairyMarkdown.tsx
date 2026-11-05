@@ -8,7 +8,7 @@
 // ══════════════════════════════════════════════
 
 import { memo } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { type Components, type Options } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
 import remarkCjkFriendly from 'remark-cjk-friendly'
@@ -17,8 +17,8 @@ import './fairy-markdown.css'
 
 const SAFE_LINK = /^https?:\/\//i
 
-// remark-cjk-friendly：标准 markdown 里「是**"引号"**」这种（星号贴着中文标点）不算加粗，中文回复里很常见
-const PLUGINS = [remarkGfm, remarkCjkFriendly, remarkBreaks]
+// remark-cjk-friendly：标准 markdown 里「是**"引号"**」这种（星号贴着中文标点）不算加粗，中文回复里很常见；singleTilde 关掉：否则单波浪线也算删除线，「3~5 天，7~9 天」中间会被划掉
+const PLUGINS: NonNullable<Options['remarkPlugins']> = [[remarkGfm, { singleTilde: false }], remarkCjkFriendly, remarkBreaks]
 
 const components: Components = {
   a: ({ href, children }) => (
