@@ -33,6 +33,10 @@ export async function saveProxyPort(text: string): Promise<number> {
   return port
 }
 
+export function hasProxyPort(): boolean {
+  return proxyPort > 0
+}
+
 export function isConnectError(detail: string): boolean {
   return /resolve host|failed to connect|unable to connect|connection refused|unreachable|handshake|no address/i.test(detail)
 }

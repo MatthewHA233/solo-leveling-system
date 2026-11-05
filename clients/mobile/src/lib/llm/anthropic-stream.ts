@@ -14,7 +14,7 @@
 // ══════════════════════════════════════════════
 
 import { Stream } from './stream'
-import { explainProxyFailure, isConnectError } from '../network'
+import { explainProxyFailure, hasProxyPort, isConnectError } from '../network'
 import { normalizeMessagesForAPI } from './normalize'
 import { logModelUsage } from './model-usage'
 import { isSolevupDbAvailable, solevupGetActiveModelApiKey } from '../solevupdb'
@@ -137,10 +137,15 @@ function openRequest(apiKey: string): XMLHttpRequest {
 
 /** 配了代理端口时说代理，没配时提示的是系统层的 VPN / 代理 */
 function explainSendError(detail: string, timedOut = false): string {
-  if (timedOut) return 'Anthropic 超时没响应（线路通了但对面慢，或者线路不稳）'
+  // RN 把 OkHttp 的总时长超时报成 onerror，内容就是 timeout，不走 ontimeout
+  if (timedOut || detail === 'timeout') {
+    return hasProxyPort()
+      ? 'Anthropic 超时没响应（线路通了但对面慢，或者线路不稳）'
+      : 'Anthropic 超时没响应。这台手机直连不了的话，到 Fairy 设置 → 网络 填代理端口'
+  }
   const proxyFailure = explainProxyFailure(detail)
   if (proxyFailure) return proxyFailure
-  if (isConnectError(detail)) return `连不上 Anthropic。确认手机的 VPN 或系统代理开着：${detail}`
+  if (isConnectError(detail)) return `连不上 Anthropic。确认手机的 VPN 或系统代理开着，或者到 Fairy 设置 → 网络 填代理端口：${detail}`
   return `请求 Anthropic 失败：${detail}`
 }
 
