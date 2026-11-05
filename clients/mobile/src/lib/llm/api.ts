@@ -1,20 +1,27 @@
 // ══════════════════════════════════════════════
 // queryModel — LLM API 调用层（mobile 版）
-// 与 desktop 的 src/lib/llm/api.ts 保持同一接口形状：
-//   queryModel(messages, options) → Stream<ApiStreamChunk>
+// 精简移植自 Claude Code services/api/claude.ts
 //
-// 两处平台适配：
-//   1. RN 的 fetch 不支持流式 response.body → 用 XMLHttpRequest
-//      onprogress 增量读 responseText 解析 SSE
-//   2. desktop 的 logModelUsage 依赖 Tauri command → mobile 通过
-//      onUsageLogged 回传轻量 UsageInfo，由上层决定怎么记
+// 适配 OpenAI-compatible API（Qwen/dashscope）
+// 输入：新 Message 类型系统
+// 输出：Stream<ApiStreamChunk>（含 textDelta / toolCallDelta / done）
+//
+// 与 desktop lib/llm/api.ts 逐段对应，一处平台适配：
+//   RN 的 fetch 不支持流式 response.body → 用 XMLHttpRequest
+//   onprogress 增量读 responseText 解析 SSE
 // ══════════════════════════════════════════════
 
 import { Stream } from './stream'
+import { isAnthropicModel, streamAnthropic } from './anthropic-stream'
 import { normalizeMessagesForAPI } from './normalize'
+import { logModelUsage, type DashScopeUsage, type ModelCallLog } from './model-usage'
 import type { Message, UserMessage, AssistantMessage, ContentBlock, ToolDefinition } from './types'
 
-// ── 流式事件类型（与 desktop 完全一致） ──
+export type { DashScopeUsage, ModelCallLog } from './model-usage'
+
+const IDLE_TIMEOUT_MS = 120_000
+
+// ── 流式事件类型 ──
 
 export type ApiStreamChunk =
   | { type: 'textDelta'; delta: string }
@@ -22,22 +29,6 @@ export type ApiStreamChunk =
   | { type: 'toolCallDelta'; index: number; id: string | null; name: string | null; argsDelta: string | null }
   | { type: 'done'; stopReason: string; inputTokens: number; outputTokens: number }
   | { type: 'error'; status: number; message: string }
-
-// ── DashScope usage（与 desktop model-audit 的 DashScopeUsage 同形） ──
-
-export interface DashScopeUsage {
-  prompt_tokens?: number
-  completion_tokens?: number
-  total_tokens?: number
-}
-
-export interface UsageInfo {
-  feature: string
-  modelId: string
-  startedAt: string
-  durationMs: number
-  usage: DashScopeUsage
-}
 
 // ── API 请求选项 ──
 
@@ -60,17 +51,19 @@ export interface QueryOptions {
   apiBase: string      // e.g. 'https://dashscope.aliyuncs.com/compatible-mode'
   model: string        // e.g. 'qwen-plus'
   systemPrompt?: string
-  maxTokens?: number   // 默认 8000
+  maxTokens?: number   // 默认 8000（Claude Code 的 CAPPED_DEFAULT_MAX_TOKENS 设计：保守槽位保留）
   signal?: AbortSignal
-  tools?: readonly ToolDefinition[]
+  tools?: readonly ToolDefinition[]  // function calling tools
   feature?: string
+  // 调试：每次实际发出 API 请求前调用，传入完整 payload 快照
   onRequestSnapshot?: (snapshot: ApiRequestSnapshot) => void
-  onUsageLogged?: (info: UsageInfo) => void
+  // 模型审计：本轮 logModelUsage 完成后回传 ModelCallLog（供调用方贴到 agent 气泡）
+  onUsageLogged?: (call: ModelCallLog) => void
   // 内部：当前 queryLoop 迭代编号（由 query-loop.ts 注入）
   _iteration?: number
 }
 
-// ── OpenAI 格式消息 ──
+// ── OpenAI 格式消息（发给 API 的） ──
 
 interface OpenAIMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -84,6 +77,8 @@ interface OpenAIMessage {
   name?: string
 }
 
+// ── Message 类型 → OpenAI 格式转换 ──
+
 function contentBlocksToText(content: string | ContentBlock[]): string {
   if (typeof content === 'string') return content
   return content
@@ -95,6 +90,7 @@ function contentBlocksToText(content: string | ContentBlock[]): string {
 function userMessageToOpenAI(m: UserMessage): OpenAIMessage | OpenAIMessage[] {
   const content = m.message.content
 
+  // 工具结果消息（toolUseResult 字段不为空）→ OpenAI role:'tool'
   if (m.toolUseResult !== undefined) {
     return {
       role: 'tool',
@@ -103,6 +99,7 @@ function userMessageToOpenAI(m: UserMessage): OpenAIMessage | OpenAIMessage[] {
     }
   }
 
+  // 普通用户消息
   return {
     role: 'user',
     content: contentBlocksToText(content),
@@ -112,6 +109,7 @@ function userMessageToOpenAI(m: UserMessage): OpenAIMessage | OpenAIMessage[] {
 function assistantMessageToOpenAI(m: AssistantMessage): OpenAIMessage {
   const textContent = contentBlocksToText(m.message.content)
 
+  // 如果有 tool_use blocks，转为 tool_calls
   const toolUseBlocks = Array.isArray(m.message.content)
     ? m.message.content.filter(
         (b): b is Extract<ContentBlock, { type: 'tool_use' }> => b.type === 'tool_use',
@@ -177,12 +175,23 @@ interface SSEChunk {
   usage?: DashScopeUsage
 }
 
-// ── 核心：queryModel（XHR 流式版） ──
+// ── 核心：queryModel ──
 
+/**
+ * 发起 streaming API 请求，返回 Stream<ApiStreamChunk>。
+ *
+ * max_tokens 默认 8000（而非模型最大值）：
+ * 原则来自 Claude Code context.ts CAPPED_DEFAULT_MAX_TOKENS = 8_000：
+ * 服务端为 max_tokens 预留槽位，过大的值在高并发时会占用其他请求的限额。
+ * 8k 是"够用但不浪费"的保守估计。
+ */
 export function queryModel(
   messages: Message[],
   options: QueryOptions,
 ): Stream<ApiStreamChunk> {
+  // Anthropic（claude-*）走自己的通道，见 anthropic-stream.ts
+  if (isAnthropicModel(options.model)) return streamAnthropic(messages, options)
+
   let currentXhr: XMLHttpRequest | null = null
   let finished = false
 
@@ -192,12 +201,14 @@ export function queryModel(
   })
 
   try {
+    // 规范化消息（合并连续同角色、过滤 system/virtual）
     const normalized = normalizeMessagesForAPI(messages)
     const openAIMessages = messagesToOpenAI(normalized, options.systemPrompt)
 
     const url = `${options.apiBase}/v1/chat/completions`
     const maxTokens = options.maxTokens ?? 8000
 
+    // 调试快照：发请求前暴露完整 payload（不含 apiKey）
     options.onRequestSnapshot?.({
       iteration: options._iteration ?? 0,
       model: options.model,
@@ -211,7 +222,7 @@ export function queryModel(
     const startedMs = Date.now()
 
     // enable_thinking=false 给普通 Qwen3.x 降首 token 延迟与成本；
-    // 思考特化模型（qwen3.7-max 等）只许 true，发 false 会 400 —— 收到该错误剥掉参数重试一次
+    // 但思考特化模型（如 qwen3.7-max）只允许 true，发 false 会 400 —— 收到该错误就剥掉参数重试一次
     const startAttempt = (withThinkingOff: boolean) => {
       const xhr = new XMLHttpRequest()
       currentXhr = xhr
@@ -224,32 +235,57 @@ export function queryModel(
       let usageLogged = false
       let sawDone = false
 
+      // RN 给 OkHttp 的读超时是 0（不限时）。Wi-Fi 切蜂窝这类静默断线收不到任何事件，这轮会一直卡在处理中，
+      // 所以按「多久没收到新数据」算超时，值和 anthropic-stream.ts 相同
+      let timedOut = false
+      let idleTimer: ReturnType<typeof setTimeout> | null = null
+      const clearIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer)
+        idleTimer = null
+      }
+      const armIdle = () => {
+        clearIdle()
+        idleTimer = setTimeout(() => {
+          timedOut = true
+          xhr.abort()
+        }, IDLE_TIMEOUT_MS)
+      }
+
       const handleSSELine = (trimmed: string) => {
+        if (sawDone) return // desktop 在 [DONE] 处直接 return 出读循环，之后的行都不看
         if (!trimmed || !trimmed.startsWith('data: ')) return
         const data = trimmed.slice(6)
         if (data === '[DONE]') {
-          if (!sawDone) {
-            sawDone = true
-            stream.enqueue({ type: 'done', stopReason, inputTokens, outputTokens })
-            stream.done()
-          }
+          sawDone = true
+          clearIdle()
+          stream.enqueue({ type: 'done', stopReason, inputTokens, outputTokens })
+          stream.done()
           return
         }
         try {
           const parsed = JSON.parse(data) as SSEChunk
           const choice = parsed.choices?.[0]
 
+          // 更新 token 计数（部分 API 在每个 chunk 都返回）
           if (parsed.usage) {
             inputTokens = parsed.usage.prompt_tokens ?? inputTokens
             outputTokens = parsed.usage.completion_tokens ?? outputTokens
-            if (!usageLogged && (parsed.usage.prompt_tokens || parsed.usage.completion_tokens)) {
+            if (!usageLogged) {
               usageLogged = true
-              options.onUsageLogged?.({
+              void logModelUsage({
                 feature: options.feature ?? 'fairy_chat',
                 modelId: options.model,
                 startedAt,
                 durationMs: Date.now() - startedMs,
                 usage: parsed.usage,
+                success: true,
+                metadata: {
+                  iteration: options._iteration ?? 0,
+                  maxTokens,
+                  toolCount: options.tools?.length ?? 0,
+                },
+              }).then((call) => {
+                if (call) options.onUsageLogged?.(call)
               })
             }
           }
@@ -279,6 +315,7 @@ export function queryModel(
 
           if (choice.finish_reason) {
             stopReason = choice.finish_reason
+            console.log('[API] finish_reason=', choice.finish_reason, 'tool_calls=', !!(delta?.tool_calls?.length))
           }
         } catch {
           // 跳过格式异常的 SSE 行
@@ -301,16 +338,26 @@ export function queryModel(
       // RN 的 XHR 需要显式 text 才能在 onprogress 读 responseText
       xhr.responseType = 'text'
 
+      const isOk = () => xhr.status >= 200 && xhr.status < 300 // 同 fetch 的 response.ok
+
       xhr.onprogress = () => {
-        if (xhr.status && xhr.status >= 400) return // 错误体留给 onload 统一处理
+        if (!sawDone) armIdle()
+        if (xhr.status && !isOk()) return // 错误体留给 onload 统一处理
         consumeNewText()
       }
 
       xhr.onload = () => {
-        if (xhr.status >= 400) {
+        clearIdle()
+        if (!isOk()) {
           const errText = xhr.responseText || ''
           // enable_thinking 自愈：剥掉参数重发一次（与 desktop api.ts 同语义）
           if (xhr.status === 400 && withThinkingOff && errText.includes('enable_thinking')) {
+            // desktop 第二次 fetch 带同一个 signal，已取消时直接抛错 → stream.done()
+            if (options.signal?.aborted) {
+              finished = true
+              stream.done()
+              return
+            }
             startAttempt(false)
             return
           }
@@ -325,24 +372,28 @@ export function queryModel(
         }
         finished = true
         consumeNewText()
-        if (lineBuffer.trim()) handleSSELine(lineBuffer.trim())
         if (!sawDone) {
-          // 流结束但未遇到 [DONE]（部分 API 省略）
+          // 流结束但未遇到 [DONE]（部分 API 省略 [DONE]）
           stream.enqueue({ type: 'done', stopReason, inputTokens, outputTokens })
           stream.done()
         }
       }
 
       xhr.onerror = () => {
+        clearIdle()
         finished = true
-        stream.error(new Error('网络请求失败'))
+        // 与 desktop 的 fetch 一样抛 TypeError，retry.ts 的 toRetryableError 据此认网络错误
+        stream.error(new TypeError('网络请求失败'))
       }
 
       xhr.onabort = () => {
+        clearIdle()
         finished = true
-        stream.done() // 主动取消，不算错误
+        if (timedOut) stream.error(new TypeError('网络请求失败：模型超过 2 分钟没有返回新内容'))
+        else stream.done() // 主动取消，不算错误
       }
 
+      armIdle()
       xhr.send(
         JSON.stringify({
           model: options.model,

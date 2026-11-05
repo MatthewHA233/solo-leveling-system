@@ -9,10 +9,15 @@
 //   thick-white d180 / inner d136 / boundary d106 / iris d100
 //   / outline d74 / void d70 / pupil d92+d64 / ball d44 轨道36 角142°
 // 球外透明（desktop 为透明窗口，无任何底色）。
+//
+// 状态机对齐 desktop FairyHUD 主循环（常量逐个照搬）：罗盘目标转速、音量→峰值、起音检测触发涟漪、
+// 水滴波形。差异：tick 是 50ms（约 3 帧），每帧的插值系数换算成每 tick；
+// 手机端整个眼组画在一个 SVG 里，涟漪按两组缩放（眼组 / 外圈），不是逐层错开；
+// 光晕透明度随状态变化不搬（外观），voice://level 只有录音时才有，朗读时只有定时涟漪（和桌面端一样）。
 // ══════════════════════════════════════════════
 
 import { useEffect, useRef } from 'react'
-import { Animated, Easing, View } from 'react-native'
+import { Animated, DeviceEventEmitter, View } from 'react-native'
 import Svg, { Circle, Path } from 'react-native-svg'
 
 export type FairyOrbState = 'idle' | 'listening' | 'thinking' | 'speaking'
@@ -24,6 +29,40 @@ interface Props {
   /** 受控注视方向（400 体系球心偏移）：提供时 listening 不再随机扫视，
    *  眼组 spring 看向该方向 —— 录音游走时「往哪跑就往哪看」用 */
   readonly gazeTarget?: { x: number; y: number } | null
+}
+
+// ── 状态机常量（desktop FairyHUD）──
+const GYRO_TARGET: Record<FairyOrbState, number> = { idle: 0.3, listening: -0.6, thinking: 4.5, speaking: 1.2 }
+const FRAMES_PER_TICK = 3 // 50ms tick ≈ 3 帧
+const perTick = (framePull: number) => 1 - (1 - framePull) ** FRAMES_PER_TICK
+const GYRO_PULL = perTick(0.05)
+const PEAK_RISE = perTick(0.6)
+const PEAK_DECAY = 0.95 ** FRAMES_PER_TICK
+const LEVEL_STALE_MS = 400 // 音量事件超过这么久没更新就当静音
+
+/** 录音 RMS → 动画用的 0~1 音量：先减底噪再放大 */
+function levelToVolume(rms: number): number {
+  return Math.min(1, Math.max(0, rms - 0.012) * 6)
+}
+
+/** 水滴波形：先收缩、再弹起、再衰减振荡 */
+function dropletWave(age: number, delay: number): number {
+  const t = (age - delay) / 1000
+  if (t < 0) return 0
+  if (t < 0.40) {
+    const p = t / 0.40
+    return -(1 - Math.cos(Math.PI * p)) * 0.5 * 0.40
+  }
+  if (t < 0.55) return -0.40
+  if (t < 0.75) {
+    const p = (t - 0.55) / 0.20
+    return -0.40 + 1.40 * Math.sin(Math.PI * 0.5 * p)
+  }
+  if (t < 1.50) {
+    const dt = t - 0.75
+    return Math.exp(-4.5 * dt) * Math.cos(2 * Math.PI * 1.3 * dt)
+  }
+  return 0
 }
 
 const VB = 400
@@ -46,33 +85,76 @@ export default function FairyOrb({ size = 46, state = 'idle', gazeTarget = null 
   const stateRef = useRef(state)
   stateRef.current = state
 
-  const breath = useRef(new Animated.Value(0)).current
+  const eyeWave = useRef(new Animated.Value(1)).current
+  const ringWave = useRef(new Animated.Value(1)).current
   const gyroDeg = useRef(new Animated.Value(0)).current
   const ballDeg = useRef(new Animated.Value(142)).current
   const eyeX = useRef(new Animated.Value(0)).current
   const eyeY = useRef(new Animated.Value(0)).current
 
+  // 录音方广播的实时音量
+  const levelRef = useRef({ value: 0, at: 0 })
   useEffect(() => {
-    const b = Animated.loop(
-      Animated.sequence([
-        Animated.timing(breath, { toValue: 1, duration: 1250, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(breath, { toValue: 0, duration: 1250, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      ]),
-    )
-    b.start()
-    return () => b.stop()
-  }, [breath])
+    const sub = DeviceEventEmitter.addListener('voice://level', (payload: { level?: number }) => {
+      if (typeof payload?.level === 'number') levelRef.current = { value: payload.level, at: Date.now() }
+    })
+    return () => sub.remove()
+  }, [])
 
-  // gyro：desktop gyroSpeed 0.3°/帧(60fps)；speaking + audioPeak 提速
+  // 主循环：罗盘转速（状态目标 + 说话时音量峰值）+ 起音涟漪
   useEffect(() => {
     let angle = 0
+    let gyroSpeed = GYRO_TARGET.idle
+    let audioPeak = 0
+    let prevRawVol = 0
+    let lastRippleTime = 0
+    let ripples: { time: number; intensity: number }[] = []
+
     const timer = setInterval(() => {
-      const speed = stateRef.current === 'speaking' ? 0.9 : 0.3
-      angle = (angle + speed * 3) % 360 // 50ms tick ≈ 3 帧
+      const current = stateRef.current
+      const now = Date.now()
+      gyroSpeed += (GYRO_TARGET[current] - gyroSpeed) * GYRO_PULL
+
+      let rawVol = 0
+      if ((current === 'listening' || current === 'speaking') && now - levelRef.current.at < LEVEL_STALE_MS) {
+        rawVol = levelToVolume(levelRef.current.value)
+      }
+      if (rawVol > audioPeak) audioPeak += (rawVol - audioPeak) * PEAK_RISE
+      else audioPeak *= PEAK_DECAY
+
+      // 起音检测 + 涟漪
+      const onset = rawVol > 0.08 && rawVol > prevRawVol * 1.15 + 0.015
+      prevRawVol = rawVol
+      if (current === 'listening' && onset && now - lastRippleTime > 180) {
+        ripples.push({ time: now, intensity: Math.min(rawVol * 3.5, 1) })
+        lastRippleTime = now
+      }
+      if (current === 'speaking' && onset && now - lastRippleTime > 120) {
+        ripples.push({ time: now, intensity: Math.min(rawVol * 4.5, 1) })
+        lastRippleTime = now
+      }
+      if ((current === 'listening' || current === 'speaking') && now - lastRippleTime > 2000) {
+        ripples.push({ time: now, intensity: 0.5 })
+        lastRippleTime = now
+      }
+      ripples = ripples.filter((r) => now - r.time < 2000)
+
+      const stateMul = current === 'listening' ? 2.0 : current === 'speaking' ? 3.0 : 1.0
+      const computeWave = (delay: number, amp: number): number => {
+        if (current === 'idle' || current === 'thinking') return dropletWave(now % 2500, delay) * amp
+        let total = 0
+        for (const rip of ripples) total += dropletWave(now - rip.time, delay) * rip.intensity
+        return total * amp * stateMul
+      }
+      eyeWave.setValue(1 + computeWave(70, 0.07))
+      ringWave.setValue(1 + computeWave(260, 0.03))
+
+      const effectiveSpeed = gyroSpeed + (current === 'speaking' ? audioPeak * 1.5 : 0)
+      angle = (angle + effectiveSpeed * FRAMES_PER_TICK) % 360
       gyroDeg.setValue(angle)
     }, 50)
     return () => clearInterval(timer)
-  }, [gyroDeg])
+  }, [gyroDeg, eyeWave, ringWave])
 
   // ball：142° + desktop 同款三正弦漂移
   useEffect(() => {
@@ -119,10 +201,6 @@ export default function FairyOrb({ size = 46, state = 'idle', gazeTarget = null 
     return () => { alive = false }
   }, [state, eyeX, eyeY, canvas, gazeTarget])
 
-  const scale = breath.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, state === 'listening' || state === 'speaking' ? 1.06 : 1.03],
-  })
   const gyroRotate = gyroDeg.interpolate({ inputRange: [0, 360], outputRange: ['0deg', '360deg'] })
   const ballRotate = ballDeg.interpolate({ inputRange: [0, 360], outputRange: ['0deg', '360deg'] })
 
@@ -133,18 +211,21 @@ export default function FairyOrb({ size = 46, state = 'idle', gazeTarget = null 
 
   return (
     <View style={{ width: size, height: size }}>
-      <Animated.View
+      <View
         style={{
           position: 'absolute',
           left: -off,
           top: -off,
           width: canvas,
           height: canvas,
-          transform: [{ scale }],
         }}
       >
         {/* 底层：glow 三层 + bg-disc + thin-ring（gradient stop 逐值对照 desktop） */}
-        <Svg width={canvas} height={canvas} viewBox={`0 0 ${VB} ${VB}`} style={{ position: 'absolute' }}>
+        <Animated.View
+          pointerEvents="none"
+          style={{ position: 'absolute', width: canvas, height: canvas, transform: [{ scale: ringWave }] }}
+        >
+        <Svg width={canvas} height={canvas} viewBox={`0 0 ${VB} ${VB}`}>
           {/* HUD 蓝色光环（干净单圈 + 窄柔边） */}
           <Circle cx={C} cy={C} r={147} fill="none" stroke="rgba(60,160,235,0.40)" strokeWidth={13} />
           <Circle cx={C} cy={C} r={146} fill="none" stroke="rgba(80,200,255,1)" strokeWidth={7} />
@@ -156,6 +237,7 @@ export default function FairyOrb({ size = 46, state = 'idle', gazeTarget = null 
           <Circle cx={C} cy={C} r={141.5} fill="none" stroke="rgba(50,120,175,0.85)" strokeWidth={5} />
           <Circle cx={C} cy={C} r={140} fill="none" stroke="#3d78b9" strokeWidth={2} />
         </Svg>
+        </Animated.View>
 
         {/* gyro 罗盘（340 体系 path 显示为 280px，旋转层） */}
         <Animated.View
@@ -176,7 +258,7 @@ export default function FairyOrb({ size = 46, state = 'idle', gazeTarget = null 
           pointerEvents="none"
           style={{
             position: 'absolute', width: canvas, height: canvas,
-            transform: [{ translateX: eyeX }, { translateY: eyeY }],
+            transform: [{ translateX: eyeX }, { translateY: eyeY }, { scale: eyeWave }],
           }}
         >
           <Svg width={canvas} height={canvas} viewBox={`0 0 ${VB} ${VB}`}>
@@ -216,7 +298,7 @@ export default function FairyOrb({ size = 46, state = 'idle', gazeTarget = null 
             />
           </Animated.View>
         </Animated.View>
-      </Animated.View>
+      </View>
     </View>
   )
 }

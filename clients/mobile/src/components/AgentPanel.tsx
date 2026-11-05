@@ -1,31 +1,21 @@
 // ══════════════════════════════════════════════
-// AgentPanel — 暗影体悬浮对话气泡（矮 ⇄ 高 自身原地延展）
-// 一套内容：head + 消息流 + 输入行。「展开」只是消息区窗口
-// 向上长高（maxHeight 插值），底部位置/输入行/气泡尖完全不动。
-// 消息流始终渲染全部历史并贴底，窗口变大自然露出更早的消息。
+// AgentPanel — Fairy 悬浮对话气泡（对应 desktop FairyWindow 的面板 + App.tsx 的 ChatPanel / SessionPicker 接线）
+// 内容是 fairy/FairyChatPanel；这里管定位、键盘避让、上下拖动调高和几个弹层的开关。
+// 桌面端是独立透明窗口，手机端是全局层：底部位置和气泡尖不动，消息区向上长高，
+// 点外部蒙版收起。
 // ══════════════════════════════════════════════
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  Animated,
-  PanResponder,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-  useWindowDimensions,
-} from 'react-native'
+import { Animated, PanResponder, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { theme, alpha } from '../theme'
+import { theme } from '../theme'
+import type { ChatSessionInfo } from '../lib/agent/agent-memory'
 import { useChatController } from '../lib/agent/use-chat-controller'
 import { useStableKeyboardInset } from '../lib/use-keyboard-inset'
-import { getModelDef } from '../lib/models/registry'
-import { solevupGetFeatureBinding } from '../lib/solevupdb'
-import type { AiMode } from '../types'
-import FairyStateIndicator from './FairyStateIndicator'
-import QuickModelSheet from './QuickModelSheet'
+import FairyChatPanel from './fairy/FairyChatPanel'
+import FairySettingsSheet from './fairy/FairySettingsSheet'
+import SessionPicker from './fairy/SessionPicker'
+import { stopFairyAudio } from './fairy/useAudioPlayback'
 import ModelCenter from './ModelCenter'
 
 interface Props {
@@ -35,14 +25,20 @@ interface Props {
 
 const BODY_MIN = 120
 const BODY_INIT = 180
+/** 消息区以外的结构（把手、头部、会话条、输入坞、内边距）大约占的高度 */
+const PANEL_CHROME = 250
+/** 按住不到这么久松手算误触 */
+const VOICE_MIN_HOLD_MS = 500
 
 export default function AgentPanel({ visible, onClose }: Props) {
   const insets = useSafeAreaInsets()
   const { height: H } = useWindowDimensions()
   const ctrl = useChatController()
-  const [input, setInput] = useState('')
   const keyboardInset = useStableKeyboardInset(visible)
-  const scrollRef = useRef<ScrollView>(null)
+
+  const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [modelCenterOpen, setModelCenterOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   // ── 顶部拖拽调高（bottom sheet 式）：bodyH 直接驱动消息区高度 ──
   const bodyH = useRef(new Animated.Value(BODY_INIT)).current
@@ -51,7 +47,6 @@ export default function AgentPanel({ visible, onClose }: Props) {
   const bodyMaxRef = useRef(400)
   const dragPan = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dy) > 4,
       onPanResponderGrant: () => {
         dragStartH.current = bodyHNow.current
@@ -65,150 +60,151 @@ export default function AgentPanel({ visible, onClose }: Props) {
     }),
   ).current
 
-  // ── 对话模式 + 模型绑定（与聊天页/desktop 顶栏同方案） ──
-  const [aiMode, setAiMode] = useState<AiMode>('omni')
-  const [boundModels, setBoundModels] = useState<{ fairy_chat: string; fairy_omni_chat: string }>({
-    fairy_chat: 'qwen3.6-flash',
-    fairy_omni_chat: 'qwen3.5-omni-flash-realtime',
-  })
-  const [quickModelOpen, setQuickModelOpen] = useState(false)
-  const [modelCenterOpen, setModelCenterOpen] = useState(false)
+  const bottom = keyboardInset > 0 ? keyboardInset + 8 : 104
+  // 拖拽上限：顶部留出安全区 + 一口呼吸，消息区以外的结构不动
+  const bodyMax = Math.max(BODY_MIN, H - insets.top - 44 - bottom - PANEL_CHROME)
+  bodyMaxRef.current = bodyMax
 
+  // 键盘弹起后放不下：先把消息区压矮，别顶出屏幕
+  useEffect(() => {
+    if (bodyHNow.current > bodyMax) {
+      bodyHNow.current = bodyMax
+      bodyH.setValue(bodyMax)
+    }
+  }, [bodyMax, bodyH])
+
+  // 关闭面板时停掉气泡回放（回复朗读不停：Fairy 是全局的，收起面板不等于让她闭嘴）
   useEffect(() => {
     if (!visible) return
-    void Promise.all([
-      solevupGetFeatureBinding('fairy_chat').catch(() => null),
-      solevupGetFeatureBinding('fairy_omni_chat').catch(() => null),
-    ]).then(([chat, omni]) => {
-      setBoundModels((prev) => ({
-        fairy_chat: chat || prev.fairy_chat,
-        fairy_omni_chat: omni || prev.fairy_omni_chat,
-      }))
+    return () => {
+      stopFairyAudio()
+      ctrl.clearJump()
+    }
+  }, [visible, ctrl])
+
+  // ── 输入坞的按住说话 ──
+  const [recording, setRecording] = useState(false)
+  const [recordMs, setRecordMs] = useState(0)
+  const recordStartRef = useRef(0)
+  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const stopRecordTimer = () => {
+    if (recordTimerRef.current) {
+      clearInterval(recordTimerRef.current)
+      recordTimerRef.current = null
+    }
+  }
+  useEffect(() => stopRecordTimer, [])
+
+  const onVoicePressIn = useCallback(() => {
+    stopFairyAudio()
+    recordStartRef.current = Date.now()
+    setRecordMs(0)
+    setRecording(true)
+    recordTimerRef.current = setInterval(() => setRecordMs(Date.now() - recordStartRef.current), 100)
+    ctrl.voicePressStart()
+  }, [ctrl])
+
+  const onVoicePressOut = useCallback(() => {
+    stopRecordTimer()
+    setRecording(false)
+    ctrl.voicePressEnd(Date.now() - recordStartRef.current >= VOICE_MIN_HOLD_MS)
+  }, [ctrl])
+
+  // ── 会话选择器（对应 desktop toggleSessionPicker）──
+  const toggleSessionPicker = useCallback(() => {
+    setSessionsOpen((open) => {
+      if (!open) ctrl.loadSessionsForPicker()
+      return !open
     })
-  }, [visible])
+  }, [ctrl])
 
-  const send = useCallback(() => {
-    const text = input.trim()
-    if (!text || ctrl.isProcessing) return
-    setInput('')
+  const closeSessionPicker = useCallback(() => setSessionsOpen(false), [])
+
+  const onSelectSession = useCallback((id: string, jumpToTimestamp: string | undefined, session: ChatSessionInfo) => {
+    setSessionsOpen(false)
+    void ctrl.selectSession(id, jumpToTimestamp, session)
+  }, [ctrl])
+
+  const onNewSession = useCallback(() => {
+    setSessionsOpen(false)
+    void ctrl.newSession()
+  }, [ctrl])
+
+  const onDeleteSession = useCallback((id: string) => {
+    void ctrl.deleteSession(id)
+  }, [ctrl])
+
+  const onSend = useCallback((text: string) => {
     void ctrl.sendText(text)
-  }, [input, ctrl])
-
-  if (!visible) return null
-
-  const msgs = ctrl.messages
-  const boundModelId = aiMode === 'omni' ? boundModels.fairy_omni_chat : boundModels.fairy_chat
-  const bottom = keyboardInset > 0 ? keyboardInset + 8 : 104
-  // 拖拽上限：顶部留出安全区 + 一口呼吸，底部结构（head/输入行/padding ~110）不动
-  bodyMaxRef.current = Math.max(BODY_INIT, H - insets.top - 44 - bottom - 110)
+  }, [ctrl])
 
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-      {/* 灰色蒙版：点击面板外部即收起 */}
-      <Pressable style={styles.mask} onPress={onClose} />
+    <>
+      {visible && (
+        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+          {/* 灰色蒙版：点击面板外部即收起 */}
+          <Pressable style={styles.mask} onPress={onClose} />
 
-      <View style={[styles.wrap, { bottom }]} pointerEvents="box-none">
-        <View style={styles.dock}>
-          <View style={styles.tail} />
-          {/* 顶部拖拽柄：grabber + 标题行，上下拖动调高 */}
-          <View style={styles.dragHandle} {...dragPan.panHandlers}>
-            <View style={styles.grabber} />
-            <View style={styles.head}>
-              <View style={styles.titleRow}>
-                <Text style={styles.title}>暗影体</Text>
-                {ctrl.isProcessing && (
-                  <FairyStateIndicator
-                    state={msgs[msgs.length - 1]?.streaming && msgs[msgs.length - 1]?.content ? 'speaking' : 'thinking'}
-                    color={theme.accent}
-                    scale={0.55}
-                  />
-                )}
+          <View style={[styles.wrap, { bottom }]} pointerEvents="box-none">
+            <View style={styles.dock}>
+              <View style={styles.tail} />
+              <View style={styles.dragHandle} {...dragPan.panHandlers}>
+                <View style={styles.grabber} />
               </View>
+              <FairyChatPanel
+                messages={ctrl.messages}
+                isProcessing={ctrl.isProcessing}
+                onSend={onSend}
+                agentName={ctrl.config.agentName}
+                userCallsign={ctrl.config.agentCallUser}
+                gazeTarget={ctrl.gazeTarget}
+                onClearGaze={ctrl.clearGaze}
+                aiMode={ctrl.config.aiMode}
+                onToggleAiMode={ctrl.toggleAiMode}
+                ttsEnabled={ctrl.config.ttsEnabled}
+                onToggleTts={ctrl.toggleTts}
+                onOpenSessions={toggleSessionPicker}
+                sessionsOpen={sessionsOpen}
+                sessionTitle={ctrl.sessionTitle}
+                fairyState={ctrl.fairyState}
+                contextRatio={ctrl.contextRatio}
+                jumpTo={ctrl.jumpTo}
+                onOpenModelCenter={() => setModelCenterOpen(true)}
+                onOpenSettings={() => setSettingsOpen(true)}
+                listContainerStyle={{ height: bodyH }}
+                headerPanHandlers={dragPan.panHandlers}
+                gutter={0}
+                placeholder="继续问…"
+                onVoicePressIn={onVoicePressIn}
+                onVoicePressOut={onVoicePressOut}
+                recording={recording}
+                recordMs={recordMs}
+              />
             </View>
           </View>
 
-          {/* 模式 + 模型 chips（desktop 顶栏同款） */}
-          <View style={styles.chipsRow}>
-            <Pressable
-              style={styles.chip}
-              disabled={ctrl.isProcessing}
-              onPress={() => setAiMode((m) => (m === 'omni' ? 'regular' : 'omni'))}
-            >
-              <Text style={styles.chipText}>{aiMode === 'omni' ? 'Omni 全模态' : '普通对话'}</Text>
-            </Pressable>
-            <Pressable style={[styles.chip, styles.chipShrink]} onPress={() => setQuickModelOpen(true)}>
-              <Text style={styles.chipText} numberOfLines={1}>
-                {getModelDef(boundModelId)?.display_name ?? boundModelId}
-              </Text>
-            </Pressable>
-          </View>
-
-          <Animated.View style={{ height: bodyH }}>
-            <ScrollView
-              ref={scrollRef}
-              contentContainerStyle={{ paddingBottom: 4 }}
-              onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
-            >
-              {msgs.map((m) => {
-                if (m.role === 'system') {
-                  return <Text key={m.id} style={styles.sysText}>{m.content}</Text>
-                }
-                const isUser = m.role === 'user'
-                const text = m.content || m.audio?.transcript || (m.audio ? '[语音]' : '')
-                return (
-                  <View key={m.id} style={[styles.line, isUser && styles.lineUser]}>
-                    <Text style={[styles.lineText, isUser && styles.lineTextUser]}>
-                      {text}{m.streaming && !m.content ? '…' : ''}
-                    </Text>
-                  </View>
-                )
-              })}
-            </ScrollView>
-          </Animated.View>
-
-          <View style={styles.inputRow}>
-            <Pressable style={styles.plusBtn}>
-              <Text style={styles.plusText}>＋</Text>
-            </Pressable>
-            <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder="继续问…"
-              placeholderTextColor={theme.inkFaint}
-              onSubmitEditing={send}
-              returnKeyType="send"
-            />
-            <Pressable
-              style={[styles.sendBtn, (!input.trim() || ctrl.isProcessing) && { opacity: 0.4 }]}
-              disabled={!input.trim() || ctrl.isProcessing}
-              onPress={send}
-            >
-              <Text style={styles.sendText}>↑</Text>
-            </Pressable>
-          </View>
+          <SessionPicker
+            visible={sessionsOpen}
+            sessions={ctrl.sessions}
+            currentSessionId={ctrl.sessionId}
+            onSelect={onSelectSession}
+            onNewSession={onNewSession}
+            onDelete={onDeleteSession}
+            onClose={closeSessionPicker}
+            onRefresh={ctrl.refreshSessions}
+          />
+          <ModelCenter
+            visible={modelCenterOpen}
+            config={ctrl.config}
+            onClose={() => setModelCenterOpen(false)}
+            onSaveConfig={ctrl.updateConfig}
+          />
         </View>
-      </View>
+      )}
 
-      <QuickModelSheet
-        visible={quickModelOpen}
-        feature={aiMode === 'omni' ? 'fairy_omni_chat' : 'fairy_chat'}
-        currentModel={boundModelId}
-        onClose={() => setQuickModelOpen(false)}
-        onPicked={(id) => {
-          setBoundModels((prev) =>
-            aiMode === 'omni' ? { ...prev, fairy_omni_chat: id } : { ...prev, fairy_chat: id },
-          )
-        }}
-        onOpenCenter={() => setModelCenterOpen(true)}
-      />
-      <ModelCenter
-        visible={modelCenterOpen}
-        config={ctrl.config}
-        onClose={() => setModelCenterOpen(false)}
-        onSaveConfig={(updates) => ctrl.updateConfig(updates)}
-      />
-    </View>
+      {/* 常驻挂载：面板收起时设置里没保存的草稿不能丢 */}
+      <FairySettingsSheet visible={settingsOpen} onClose={() => setSettingsOpen(false)} />
+    </>
   )
 }
 
@@ -229,7 +225,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingHorizontal: 14,
     paddingTop: 10,
-    paddingBottom: 10,
+    paddingBottom: 0,
     shadowColor: '#000',
     shadowOpacity: 0.14,
     shadowRadius: 12,
@@ -262,67 +258,5 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
     backgroundColor: theme.line,
-    marginBottom: 6,
   },
-  head: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  title: { fontSize: 12, fontWeight: '700', color: theme.inkSoft },
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  chipsRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 14,
-    backgroundColor: theme.accentSoft,
-  },
-  chipShrink: { flexShrink: 1 },
-  chipText: { fontSize: 12, color: theme.accent, fontWeight: '500' },
-  line: {
-    alignSelf: 'flex-start',
-    maxWidth: '92%',
-    backgroundColor: theme.sunk,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    marginBottom: 6,
-  },
-  lineUser: {
-    alignSelf: 'flex-end',
-    backgroundColor: alpha(theme.accent, 0.1),
-  },
-  lineText: { fontSize: 13, color: theme.ink, lineHeight: 19 },
-  lineTextUser: { color: theme.accent },
-  sysText: { fontSize: 11, color: theme.inkFaint, textAlign: 'center', marginBottom: 6 },
-  inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
-  plusBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: theme.sunk,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  plusText: { fontSize: 19, color: theme.inkSoft, lineHeight: 22 },
-  input: {
-    flex: 1,
-    backgroundColor: theme.sunk,
-    borderRadius: 18,
-    paddingHorizontal: 13,
-    paddingVertical: 8,
-    fontSize: 13,
-    color: theme.ink,
-  },
-  sendBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: theme.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sendText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
 })

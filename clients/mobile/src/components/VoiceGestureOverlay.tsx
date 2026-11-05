@@ -15,6 +15,8 @@ interface Props {
   readonly visible: boolean
   readonly zone: VoiceZone
   readonly recordMs: number
+  /** 边说边出字（voice://partial，级联模式）；没有就不显示 */
+  readonly partialText?: string
   /** 游走 fairy 跑回中央按钮原位后回调（TabBar 球此刻再现身） */
   readonly onReturnedHome?: () => void
 }
@@ -137,7 +139,7 @@ function RoamingFairy({
   )
 }
 
-export default function VoiceGestureOverlay({ visible, zone, recordMs, onReturnedHome }: Props) {
+export default function VoiceGestureOverlay({ visible, zone, recordMs, partialText, onReturnedHome }: Props) {
   const { width: W, height: H } = useWindowDimensions()
   // 松手后浮层 UI 立即消失，但 fairy 留下来跑回原位（mounted 延迟到回家完成）
   const [mounted, setMounted] = useState(visible)
@@ -170,6 +172,13 @@ export default function VoiceGestureOverlay({ visible, zone, recordMs, onReturne
 
       {!returning && (
         <>
+          {/* 边说边出字：说长了只留最新几行，开头省略 */}
+          {partialText ? (
+            <Text style={styles.partial} numberOfLines={4} ellipsizeMode="head">
+              {partialText}
+            </Text>
+          ) : null}
+
           {/* 提示文字（取消钮上方） */}
           <Text style={[styles.hint, cancelOn && styles.hintCancel]}>
             {cancelOn ? '松开 取消' : '松开 发送 · 上滑 取消'}
@@ -223,6 +232,16 @@ const styles = StyleSheet.create({
     position: 'absolute' as const,
     top: 0, left: 0, right: 0, bottom: 0,
     zIndex: 90,
+  },
+  partial: {
+    position: 'absolute',
+    bottom: '46%',
+    left: 28,
+    right: 28,
+    textAlign: 'center',
+    fontSize: 16,
+    lineHeight: 23,
+    color: 'rgba(255,255,255,0.92)',
   },
   hint: {
     position: 'absolute',

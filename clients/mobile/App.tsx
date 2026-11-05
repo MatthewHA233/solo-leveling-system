@@ -5,7 +5,7 @@
  * 长按 = 任意界面按住说话（上滑取消），松手发送后轻对话条浮出，不离开当前界面。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { StatusBar, StyleSheet, View, useWindowDimensions } from 'react-native'
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context'
 import TabBar from './src/components/TabBar'
@@ -17,9 +17,20 @@ import PerceptionScreen from './src/screens/PerceptionScreen'
 import TorrentScreen from './src/screens/TorrentScreen'
 import ProtocolScreen from './src/screens/ProtocolScreen'
 import { theme } from './src/theme'
+import { stopFairyAudio } from './src/components/fairy/useAudioPlayback'
 import { chatController } from './src/lib/agent/chat-controller'
-import { useChatController } from './src/lib/agent/use-chat-controller'
-import { ensureMicPermission } from './src/lib/omni'
+import { useChatSelector } from './src/lib/agent/use-chat-controller'
+// 触发 SyncServerModule 加载：它注册后 SolevupDbChanged 才能到 JS（inlineRequires 下不碰就不加载）
+import './src/lib/syncserver'
+
+// 页面没有 props：录音计时、面板开关让 AppContent 重渲染时直接跳过它们
+const StageDayNight = memo(DayNightScreen)
+const StageTorrent = memo(TorrentScreen)
+const StageProtocol = memo(ProtocolScreen)
+const StagePerception = memo(PerceptionScreen)
+
+/** 按住不到这么久松手算误触 */
+const VOICE_MIN_HOLD_MS = 500
 
 function App() {
   return (
@@ -32,8 +43,10 @@ function App() {
 
 function AppContent() {
   const insets = useSafeAreaInsets()
-  const ctrl = useChatController()
-  const { width: W, height: H } = useWindowDimensions()
+  // 只订阅这两个值：回复每流出一段字控制器都会变，这一层不跟着重算
+  const fairyState = useChatSelector((c) => c.fairyState)
+  const partialText = useChatSelector((c) => c.partialText)
+  const { height: H } = useWindowDimensions()
   const [tab, setTab] = useState<TabKey>('daynight')
 
   // ── 全局语音手势状态 ──
@@ -44,7 +57,6 @@ function AppContent() {
   const [panelOpen, setPanelOpen] = useState(false)
   const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recordMsRef = useRef(0)
-  const voiceStartedRef = useRef(false)
   const zoneRef = useRef<VoiceZone>('send')
 
   useEffect(() => {
@@ -65,30 +77,18 @@ function AppContent() {
 
   const voice: VoiceGestureHandlers = {
     onStart: () => {
+      stopFairyAudio()
       setVoiceActive(true)
       setOrbAway(true)
       setVoiceZone('send')
       zoneRef.current = 'send'
       setRecordMs(0)
       recordMsRef.current = 0
-      voiceStartedRef.current = false
       recordTimerRef.current = setInterval(() => {
         recordMsRef.current += 100
         setRecordMs(recordMsRef.current)
       }, 100)
-      void (async () => {
-        const ok = await ensureMicPermission()
-        if (!ok) {
-          chatController.pushSystemNote('未授予麦克风权限')
-          return
-        }
-        try {
-          await chatController.startVoice()
-          voiceStartedRef.current = true
-        } catch (e) {
-          chatController.pushSystemNote(`语音启动失败：${e instanceof Error ? e.message : String(e)}`)
-        }
-      })()
+      chatController.voicePressStart()
     },
     onMove: (x, y) => {
       const z = zoneAt(x, y)
@@ -100,24 +100,19 @@ function AppContent() {
     onEnd: (x, y) => {
       stopTimer()
       setVoiceActive(false)
-      const z = zoneAt(x, y)
-      const ms = recordMsRef.current
+      const commit = zoneAt(x, y) !== 'cancel' && recordMsRef.current >= VOICE_MIN_HOLD_MS
       setRecordMs(0)
       recordMsRef.current = 0
-      if (!voiceStartedRef.current || z === 'cancel' || ms < 500) {
-        chatController.cancelVoice()
-        return
-      }
-      // 松手发送 → 浮出临时面板（已展开则面板本身就是完整界面）
-      setPanelOpen(true)
-      chatController.stopVoiceCommit(ms)
+      chatController.voicePressEnd(commit)
+      // 松手发送 → 浮出临时面板（已展开则面板本身就是完整界面）；识别失败的提示也在里面
+      if (commit) setPanelOpen(true)
     },
     onCancel: () => {
       stopTimer()
       setVoiceActive(false)
       setRecordMs(0)
       recordMsRef.current = 0
-      chatController.cancelVoice()
+      chatController.voicePressCancel()
     },
   }
 
@@ -125,13 +120,13 @@ function AppContent() {
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.body}>
         {tab === 'daynight' ? (
-          <DayNightScreen />
+          <StageDayNight />
         ) : tab === 'torrent' ? (
-          <TorrentScreen />
+          <StageTorrent />
         ) : tab === 'protocol' ? (
-          <ProtocolScreen />
+          <StageProtocol />
         ) : (
-          <PerceptionScreen />
+          <StagePerception />
         )}
       </View>
 
@@ -144,15 +139,7 @@ function AppContent() {
           onCenterPress={() => setPanelOpen((v) => !v)}
           voice={voice}
           orbAway={orbAway}
-          orbState={
-            voiceActive
-              ? 'listening'
-              : ctrl.isProcessing
-                ? (ctrl.messages[ctrl.messages.length - 1]?.streaming && ctrl.messages[ctrl.messages.length - 1]?.content
-                    ? 'speaking'
-                    : 'thinking')
-                : 'idle'
-          }
+          orbState={voiceActive ? 'listening' : fairyState}
         />
       </View>
 
@@ -164,6 +151,7 @@ function AppContent() {
         visible={voiceActive}
         zone={voiceZone}
         recordMs={recordMs}
+        partialText={partialText}
         onReturnedHome={() => setOrbAway(false)}
       />
     </View>

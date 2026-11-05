@@ -1,14 +1,18 @@
 // ══════════════════════════════════════════════
-// 模型注册表（mobile 版）— 与 desktop db.rs seed_model_registry 同源
+// 模型注册表（mobile 版）— 种子与 desktop db.rs seed_model_registry / anthropic.rs / jev.rs 同源
 //
-// desktop 的 model_registry/model_pricing 不在 LWW 同步 payload 里
-// （种子由各端随 git 维护），mobile 用静态模块承载同一份数据。
-// ⚠ 对齐流程：desktop 改种子（db.rs seed_model_registry）后，
-//   把本文件 SEEDS/NOTES 与之逐条比对更新（结构刻意保持逐行可对照）。
-// 数据来源：cn-beijing 百炼价目（2026-04 人工核对，价为元/百万 token）。
+// 真正的模型库在 SQLite（model_registry / model_pricing）：desktop 全量同步时带过来，
+// 手机端只读镜像，比内容哈希决定是否整表替换（SolevupDb.replaceModelCatalog）。
+// 这里的静态种子在「还没和 desktop 同步过」时写进库垫底；同步过时只补库里缺的行，让费用能算、绑定能选。
+// ⚠ 对齐流程：desktop 改种子后，把本文件 SEEDS/NOTES 等与之逐条比对更新（结构刻意保持逐行可对照）。
+// 数据来源：cn-beijing 百炼价目（元/百万 token）；Anthropic 官网价目（美元/百万 token）；Vercel AI Gateway（美元折算成元）。
 // ══════════════════════════════════════════════
 
-export type ModelCategory = 'text' | 'omni' | 'realtime' | 'embedding' | 'asr'
+import { anthropicCatalogRows } from '../llm/anthropic-stream'
+import { solevupListModelCatalogJson, solevupSeedModelCatalogIfEmpty } from '../solevupdb'
+
+/** decision = 决策模型（只做选择题 / 打分题，走 Vercel AI Gateway） */
+export type ModelCategory = 'text' | 'omni' | 'realtime' | 'embedding' | 'asr' | 'decision'
 
 // 与 desktop local-api.ts 的 ModelPricingTier 同形
 export interface ModelPricingTier {
@@ -34,6 +38,7 @@ export interface ModelDef {
   notes: string | null
   deprecated: boolean
   updated_at: string
+  currency?: string              // 'CNY' | 'USD'
   pricing: ModelPricingTier[]
 }
 
@@ -211,6 +216,22 @@ const NOTES: ReadonlyArray<[string, string]> = [
   ['tongyi-embedding-vision-flash', '免费额度挂在 -2026-03-06 快照 id 上（100 万，至 2026-06-19），基础别名无额度'],
 ]
 
+// 对齐 desktop jev.rs：模型库统一按「元 / 百万 token」记价；Vercel 标的是美元，按这个汇率折算（备注里留着美元原价）
+const USD_TO_CNY = 7.1
+
+// 对齐 desktop jev.rs DECISION_MODELS：(id, 显示名, 能看图, 上下文, 美元 / 百万输入 token, 备注)
+const DECISION_SEEDS: ReadonlyArray<[string, string, boolean, number, number, string]> = [
+  ['microsoft/microsoft-decision-1', 'Microsoft Decision-1', false, 32_768, 0.042,
+    '推荐·基础判断｜灰色地带 10 题实测 10/10，有把握却判错 0｜最果断｜不留存、不拿去训练｜Vercel AI Gateway，$0.042/百万输入，输出免费'],
+  ['typesafe-ai/jev', 'Jev', false, 32_000, 0.042,
+    '灰色地带 10 题实测 9/10，有把握却判错 0｜最谨慎：拿不准时概率摊开，少误伤｜部分不留存、不拿去训练｜Vercel AI Gateway，$0.042/百万输入，输出免费'],
+  ['liquid/d1', 'Liquid d1', true, 65_536, 0.040,
+    '推荐·看图判断｜灰色地带 10 题实测 10/10，有把握却判错 0｜能看截图｜会留存、可能拿去训练（发截图要慎重）｜Vercel AI Gateway，$0.04/百万输入，输出免费'],
+]
+
+// 种子写库时的 updated_at；只是占位，desktop 同步过来的整表会覆盖
+const SEED_UPDATED_AT = '2026-10-10T00:00:00Z'
+
 // 展开逻辑对齐 desktop：别名独立成行，display_name 附日期段；thinking 价 = out_text
 function expandSeeds(): ModelDef[] {
   const notesById = new Map(NOTES)
@@ -231,7 +252,8 @@ function expandSeeds(): ModelDef[] {
         context_window: ctx > 0 ? ctx : null,
         notes: notesById.get(id) ?? null,
         deprecated: false,
-        updated_at: '2026-06-12T00:00:00Z',
+        updated_at: SEED_UPDATED_AT,
+        currency: 'CNY',
         pricing: tiers.map(([min, max, inText, inImage, inVideo, inAudio, outText, outAudio]) => ({
           tier_min_tokens: min,
           tier_max_tokens: max,
@@ -246,13 +268,92 @@ function expandSeeds(): ModelDef[] {
       })
     }
   }
+
+  // 对齐 desktop anthropic.rs seed_anthropic_models：入库保留美元原价（价目表在 llm/anthropic-stream.ts，同一份）
+  out.push(...anthropicCatalogRows(SEED_UPDATED_AT))
+
+  // 对齐 desktop jev.rs seed_decision_models：价格折成元，只记输入价，输出免费
+  for (const [id, name, vision, ctx, usd, note] of DECISION_SEEDS) {
+    const cny = Math.round(usd * USD_TO_CNY * 10_000) / 10_000
+    out.push({
+      id,
+      category: 'decision',
+      provider: 'vercel',
+      display_name: name,
+      modalities: JSON.stringify(vision ? ['text', 'image'] : ['text']),
+      context_window: ctx,
+      notes: note,
+      deprecated: false,
+      updated_at: SEED_UPDATED_AT,
+      currency: 'CNY',
+      pricing: [{
+        tier_min_tokens: 0,
+        tier_max_tokens: null,
+        price_input_text: cny,
+        price_input_image: vision ? cny : null,
+        price_input_video: null,
+        price_input_audio: null,
+        price_output_text: 0,
+        price_output_text_thinking: null,
+        price_output_audio: null,
+      }],
+    })
+  }
   return out
 }
 
-export const MODEL_REGISTRY: ModelDef[] = expandSeeds()
+/** 随包种子；费用以库里的为准，这份只用来垫底和开机前的同步读取 */
+export const MODEL_SEEDS: ModelDef[] = expandSeeds()
+
+// ── 库里的模型表 + 内存缓存（聊天气泡要同步拿模型定义，不能每次 await） ──
+
+let catalogCache: ModelDef[] = MODEL_SEEDS
+let catalogById = new Map(MODEL_SEEDS.map((m) => [m.id, m]))
+let ensurePromise: Promise<ModelDef[]> | null = null
+
+function setCatalogCache(models: ModelDef[]): ModelDef[] {
+  // 原生模块不可用或读出空表时留着种子，别让选择器和计费说明变空
+  if (models.length === 0) return catalogCache
+  catalogCache = models
+  catalogById = new Map(models.map((m) => [m.id, m]))
+  return catalogCache
+}
+
+/** 重新读库刷新缓存（同步导入了新的 model_registry 后调用） */
+export async function refreshModelCatalog(): Promise<ModelDef[]> {
+  try {
+    const json = await solevupListModelCatalogJson()
+    return setCatalogCache(JSON.parse(json) as ModelDef[])
+  } catch (e) {
+    console.warn('[ModelRegistry] list catalog failed:', e)
+    return catalogCache
+  }
+}
+
+/** 对齐 desktop 启动时跑种子：没同步过写整表，同步过只补缺的行（见 SolevupDb.seedModelCatalogIfEmpty），然后载入缓存；一次启动只跑一遍，失败时下次调用重试 */
+export function ensureModelCatalog(): Promise<ModelDef[]> {
+  if (!ensurePromise) {
+    ensurePromise = solevupSeedModelCatalogIfEmpty(JSON.stringify(MODEL_SEEDS))
+      .then(() => refreshModelCatalog())
+      .catch((e) => {
+        console.warn('[ModelRegistry] seed catalog failed:', e)
+        ensurePromise = null
+        return catalogCache
+      })
+  }
+  return ensurePromise
+}
+
+/** 最近一次载入的模型表（同步读取） */
+export function listCachedModels(): ModelDef[] {
+  return catalogCache
+}
+
+/** 兼容旧调用方的只读视图 */
+export const MODEL_REGISTRY: ReadonlyArray<ModelDef> = MODEL_SEEDS
 
 export function getModelDef(id: string): ModelDef | undefined {
-  return MODEL_REGISTRY.find((m) => m.id === id)
+  return catalogById.get(id)
 }
 
 /** 对齐 desktop db.rs::bills_text_with_audio：3.8 Omni 起输出语音时文本另计费 */
@@ -260,37 +361,70 @@ export function billsTextWithAudio(modelId: string): boolean {
   return modelId.startsWith('qwen3.8-omni')
 }
 
-export function parseModalities(m: ModelDef): string[] {
-  try { return JSON.parse(m.modalities ?? '[]') as string[] } catch { return [] }
+export function parseList(value: string | null | undefined): string[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    return []
+  }
 }
 
-// ── 功能绑定规格（与 desktop ModelDialog FEATURE_SPECS 同源；mobile 先用前三个） ──
+export function parseModalities(m: ModelDef): string[] {
+  return parseList(m.modalities)
+}
+
+export function hasAllModalities(model: ModelDef, required: readonly string[] | undefined): boolean {
+  if (!required || required.length === 0) return true
+  const modalities = new Set(parseList(model.modalities))
+  return required.every((m) => modalities.has(m))
+}
+
+// ── 功能绑定规格（与 desktop ModelDialog FEATURE_SPECS 同源） ──
 
 export interface FeatureSpec {
   feature: string
   label: string
   category: ModelCategory
   hint: string
-  requiredModalities?: string[]
-  allowedCategories?: ModelCategory[]
+  requiredModalities?: readonly string[]
+  allowedCategories?: readonly ModelCategory[]
 }
 
 export const FEATURE_SPECS: readonly FeatureSpec[] = [
-  { feature: 'fairy_chat', label: '常规聊天', category: 'text', hint: '主对话与文字思考' },
-  { feature: 'fairy_omni_chat', label: '全模态聊天', category: 'realtime', hint: '语音实时会话', allowedCategories: ['realtime'] },
+  { feature: 'fairy_chat', label: 'Fairy 常规聊天', category: 'text', hint: '主对话与文字思考' },
+  { feature: 'fairy_omni_chat', label: 'Fairy 全模态聊天', category: 'realtime', hint: '语音/摄像头实时会话' },
   { feature: 'session_title', label: '会话自动起标题', category: 'text', hint: '会话累计若干轮后生成 3-8 字标题（建议低价模型）' },
+  { feature: 'bili_omni_transcribe', label: 'B 站音视频全模态转录', category: 'omni', hint: '带音轨的视频文件转录；必须同时支持 video + audio_in', requiredModalities: ['video', 'audio_in'], allowedCategories: ['omni'] },
+  { feature: 'bili_visual_transcribe', label: 'B 站仅画面转录', category: 'text', hint: '只读视频画面/屏幕正文；qwen3.6-plus 这类视频模型只能放这里', requiredModalities: ['video'] },
+  { feature: 'bili_audio_transcribe', label: 'B 站仅音频转录', category: 'omni', hint: '提取音轨后走 input_audio；只显示支持音频输入的模型', requiredModalities: ['audio_in'], allowedCategories: ['omni'] },
+  { feature: 'ocr_article_stitch', label: 'B 站滚动文章·缝合', category: 'text', hint: '滚动文章逐帧 OCR（qwen-vl-ocr）后，把碎片去重缝合成带时间戳字幕的文本模型（建议中高质量）' },
+  { feature: 'context_anchor', label: '语境锚定', category: 'text', hint: '对着语境卡聊天时定位原文片段 + 提取锚点句' },
+  { feature: 'thought_distill', label: '想法沉淀', category: 'text', hint: '日常聊天判断值不值得记成想法卡（建议低价模型）' },
+  { feature: 'anchor_extract', label: '框选锚点提取', category: 'text', hint: '手动框选语境后从原话提取锚点句' },
+  { feature: 'anchor_embedding', label: '锚点语义嵌入', category: 'embedding', hint: '锚点域地图的球定位（语义近 = 空间近）', allowedCategories: ['embedding'] },
+  { feature: 'fairy_voice_asr', label: 'Fairy 语音识别', category: 'asr', hint: '按住说话的流式识别（带热词与对话上下文）', allowedCategories: ['asr'] },
+  { feature: 'anchor_cluster_name', label: '锚点域簇命名', category: 'text', hint: '给认知地图聚簇起 2~6 字主题名（建议低价模型）' },
+  { feature: 'motive_blueprint', label: '协议志·动机蓝图', category: 'text', hint: '把一条动机展开成行动方向与具体步骤（建议中高质量模型）' },
+  { feature: 'protocol_genesis', label: '协议志·开局', category: 'text', hint: '两份清单之后：系统照一遍、愿望金字塔、未来年表（建议高质量模型，默认千问 3.8 Max）' },
+  { feature: 'protocol_gray', label: '协议·灰色地带判断', category: 'decision', hint: '白名单里标「灰」的内容在前台时，按协议用意和窗口标题判断是学习还是娱乐', allowedCategories: ['decision'] },
+  { feature: 'protocol_gray_vision', label: '协议·灰色地带判断（看图）', category: 'decision', hint: '标题看不出来时看截图判断；必须能看图（截图会发给模型，注意它的数据留存）', requiredModalities: ['image'], allowedCategories: ['decision'] },
 ]
 
-/** 某 feature 可选的模型（按 allowedCategories/requiredModalities 过滤，对齐 desktop 选择器规则） */
-export function modelsForFeature(spec: FeatureSpec): ModelDef[] {
-  return MODEL_REGISTRY.filter((m) => {
-    if (m.deprecated) return false
-    if (spec.allowedCategories && !spec.allowedCategories.includes(m.category)) return false
-    if (!spec.allowedCategories && m.category === 'embedding') return false
-    if (spec.requiredModalities) {
-      const mods = parseModalities(m)
-      if (!spec.requiredModalities.every((r) => mods.includes(r))) return false
-    }
-    return true
-  })
+export const FEATURE_LABEL = new Map(FEATURE_SPECS.map((f) => [f.feature, f.label]))
+
+/** 对齐 desktop matchesFeatureSpec */
+export function matchesFeatureSpec(model: ModelDef, spec: FeatureSpec): boolean {
+  if (spec.allowedCategories && !spec.allowedCategories.includes(model.category)) return false
+  if (spec.requiredModalities) return hasAllModalities(model, spec.requiredModalities)
+  return model.category === spec.category
 }
+
+/** 某 feature 可选的模型；不传 models 时用缓存 */
+export function modelsForFeature(spec: FeatureSpec, models: ReadonlyArray<ModelDef> = catalogCache): ModelDef[] {
+  return models.filter((m) => matchesFeatureSpec(m, spec))
+}
+
+// 模块加载就垫底：第一条用量落库前价目就得在库里
+void ensureModelCatalog()

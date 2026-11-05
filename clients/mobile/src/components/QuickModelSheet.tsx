@@ -3,19 +3,24 @@
 // 按当前聊天模式的 feature（fairy_chat / fairy_omni_chat）过滤可选模型
 // ══════════════════════════════════════════════
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { theme, alpha } from '../theme'
 import {
   FEATURE_SPECS,
+  ensureModelCatalog,
+  listCachedModels,
   modelsForFeature,
+  refreshModelCatalog,
   type ModelDef,
 } from '../lib/models/registry'
 import {
-  solevupListModelFreeQuota,
-  solevupSetFeatureBinding,
-  type ModelFreeQuotaRow,
-} from '../lib/solevupdb'
+  emitFeatureBindingUpdated,
+  listModelFreeQuotas,
+  setFeatureModel,
+  type ModelFreeQuota,
+} from '../lib/models/model-audit'
+import { modelSelectOption } from '../lib/models/model-display'
 
 interface Props {
   readonly visible: boolean
@@ -26,35 +31,44 @@ interface Props {
   readonly onOpenCenter: () => void
 }
 
-function quotaPercent(q: ModelFreeQuotaRow | undefined): number | null {
-  if (!q || q.errorMessage || q.notSupported || q.totalTokens <= 0) return null
-  return Math.max(0, Math.min(100, (q.remainingTokens / q.totalTokens) * 100))
+/** 免费额度颜色（对应 desktop HudSelectRow 的 meter：>35 绿，>10 橙，否则红） */
+export function quotaRingColor(pct: number): string {
+  return pct > 35 ? '#3FA86A' : pct > 10 ? '#D98A3D' : theme.danger
 }
 
 function priceLine(def: ModelDef): string {
   const t = def.pricing[0]
   if (!t) return ''
+  const sign = def.currency === 'USD' ? '$' : '¥'
   const parts: string[] = []
-  if (t.price_input_text != null) parts.push(`¥${t.price_input_text}/M入`)
-  if (t.price_output_text != null) parts.push(`¥${t.price_output_text}/M出`)
-  if (t.price_output_audio != null) parts.push(`¥${t.price_output_audio}/M音`)
+  if (t.price_input_text != null) parts.push(`${sign}${t.price_input_text}/M入`)
+  if (t.price_output_text != null) parts.push(`${sign}${t.price_output_text}/M出`)
+  if (t.price_output_audio != null) parts.push(`${sign}${t.price_output_audio}/M音`)
   return parts.join(' · ')
 }
 
 export default function QuickModelSheet({ visible, feature, currentModel, onClose, onPicked, onOpenCenter }: Props) {
-  const [quotas, setQuotas] = useState<Map<string, ModelFreeQuotaRow>>(new Map())
+  const [quotas, setQuotas] = useState<Map<string, ModelFreeQuota>>(new Map())
+  const [catalog, setCatalog] = useState<readonly ModelDef[]>(() => listCachedModels())
   const spec = FEATURE_SPECS.find((s) => s.feature === feature)!
-  const models = modelsForFeature(spec)
+  // 对应 desktop FairyWindow modelOptions：按能力过滤为空（模型表缺字段等）时回退全部，别让选择器变空
+  const models = useMemo(() => {
+    const filtered = modelsForFeature(spec, catalog)
+    return filtered.length > 0 ? filtered : catalog
+  }, [spec, catalog])
 
   useEffect(() => {
     if (!visible) return
-    solevupListModelFreeQuota()
-      .then((rows) => setQuotas(new Map(rows.map((r) => [r.modelId, r]))))
+    void ensureModelCatalog().then(() => refreshModelCatalog()).then(setCatalog)
+    listModelFreeQuotas()
+      .then((rows) => setQuotas(new Map(rows.map((r) => [r.model_id, r]))))
       .catch(() => {})
   }, [visible])
 
   const pick = (id: string) => {
-    void solevupSetFeatureBinding(feature, id).catch(() => {})
+    void setFeatureModel(feature, id)
+      .then(() => emitFeatureBindingUpdated(feature, id))
+      .catch(() => {})
     onPicked(id)
     onClose()
   }
@@ -68,17 +82,18 @@ export default function QuickModelSheet({ visible, feature, currentModel, onClos
           <ScrollView style={styles.list}>
             {models.map((m) => {
               const active = m.id === currentModel
-              const pct = quotaPercent(quotas.get(m.id))
+              const option = modelSelectOption(m, quotas.get(m.id))
               return (
                 <Pressable key={m.id} style={[styles.row, active && styles.rowOn]} onPress={() => pick(m.id)}>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.name, active && { color: theme.accent }]}>
-                      {m.display_name ?? m.id}
+                      {option.label}
                     </Text>
                     <Text style={styles.meta}>{priceLine(m)}</Text>
-                    {pct != null && (
+                    {option.hint && <Text style={styles.quotaHint}>{option.hint}</Text>}
+                    {option.meter != null && (
                       <View style={styles.quotaWrap}>
-                        <View style={[styles.quotaBar, { width: `${pct}%` }]} />
+                        <View style={[styles.quotaBar, { width: `${option.meter}%`, backgroundColor: quotaRingColor(option.meter) }]} />
                       </View>
                     )}
                   </View>
@@ -88,7 +103,7 @@ export default function QuickModelSheet({ visible, feature, currentModel, onClos
             })}
           </ScrollView>
           <Pressable style={styles.centerBtn} onPress={() => { onClose(); onOpenCenter() }}>
-            <Text style={styles.centerBtnText}>打开模型中心</Text>
+            <Text style={styles.centerBtnText}>打开模型调用与审计</Text>
           </Pressable>
         </Pressable>
       </Pressable>
@@ -115,8 +130,9 @@ const styles = StyleSheet.create({
   rowOn: { backgroundColor: alpha(theme.accent, 0.07) },
   name: { fontSize: 14, fontWeight: '600', color: theme.ink },
   meta: { fontSize: 11, color: theme.inkFaint, marginTop: 2 },
+  quotaHint: { fontSize: 11, color: '#2F8F5B', marginTop: 2 },
   quotaWrap: { height: 3, backgroundColor: theme.sunk, borderRadius: 2, marginTop: 5, overflow: 'hidden' },
-  quotaBar: { height: 3, backgroundColor: '#3FA86A', borderRadius: 2 },
+  quotaBar: { height: 3, borderRadius: 2 },
   check: { fontSize: 14, color: theme.accent, fontWeight: '700' },
   centerBtn: { alignItems: 'center', paddingVertical: 12, marginTop: 6 },
   centerBtnText: { fontSize: 13, color: theme.accent, fontWeight: '600' },

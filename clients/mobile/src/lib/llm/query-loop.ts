@@ -203,7 +203,8 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
     }
 
     // ── 构建 AssistantMessage ──
-    const toolCalls: ToolCall[] = [...pendingCalls.entries()]
+    // 主人打断时流只是提前结束、不报错：已收到的工具调用（可能只有半截参数）不能再执行，也不进历史
+    const toolCalls: ToolCall[] = apiOptions.signal?.aborted ? [] : [...pendingCalls.entries()]
       .sort((a, b) => a[0] - b[0])
       .map(([, v]) => ({
         id: v.id || `call_${randomUUID().slice(0, 8)}`,
@@ -251,16 +252,19 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
     const toolResultMessages: UserMessage[] = []
 
     for (const call of toolCalls) {
-      onEvent?.({ type: 'toolCallStarted', call })
-
       let result: string
-      try {
-        result = await executeTool(call)
-      } catch (err) {
-        result = `工具执行错误: ${err instanceof Error ? err.message : String(err)}`
+      if (apiOptions.signal?.aborted) {
+        // 执行到一半被打断：剩下的不再执行，但每个 tool_use 都要有结果，否则下一轮接口报错
+        result = '已被主人打断，未执行'
+      } else {
+        onEvent?.({ type: 'toolCallStarted', call })
+        try {
+          result = await executeTool(call)
+        } catch (err) {
+          result = `工具执行错误: ${err instanceof Error ? err.message : String(err)}`
+        }
+        onEvent?.({ type: 'toolCallDone', call, result })
       }
-
-      onEvent?.({ type: 'toolCallDone', call, result })
 
       // tool result 作为 user message（OpenAI 格式：role='tool', tool_call_id=call.id）
       const toolResultMsg: UserMessage = {
@@ -277,6 +281,8 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
 
       toolResultMessages.push(toolResultMsg)
     }
+
+    if (apiOptions.signal?.aborted) return [...newMessages, ...toolResultMessages]
 
     // ── 更新 State → 下一轮（对应 Claude Code L1715-1727 的 state = next; continue） ──
     state = {

@@ -1170,6 +1170,9 @@ export default function DayNightScreen() {
   useEffect(() => {
     let alive = true
     setLoading(true)
+    // 撤回栈是当日 blocks 的快照，带到别的日期撤回会写错日期（对齐 desktop App.tsx）
+    setUndoStack([])
+    setRedoStack([])
     fetchBlocks(selectedDate).then((bs) => {
       if (!alive) return
       setBlocks(bs)
@@ -1205,6 +1208,9 @@ export default function DayNightScreen() {
         if (toLocalDateStr(selectedDateRef.current) === dateKey &&
             blocksSignature(nextBlocks) !== blocksSignature(blocksRef.current)) {
           setBlocks(nextBlocks)
+          // AUDIT-001（对齐 desktop）：旧快照按同步前的数据拍的，撤回会把同步进来的改动盖掉
+          setUndoStack([])
+          setRedoStack([])
         }
       } catch (e: any) {
         console.warn('[daynight-refresh] failed:', e?.message ?? e)

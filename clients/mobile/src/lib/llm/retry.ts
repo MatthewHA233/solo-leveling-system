@@ -119,7 +119,8 @@ export async function withRetry<T>(
 function toRetryableError(err: unknown): RetryableError {
   if (err instanceof Error) {
     // fetch 网络错误（连接失败、DNS 失败等）
-    if (err.name === 'TypeError' && err.message.includes('fetch')) {
+    // RN 的文案和浏览器不同：fetch 抛 'Network request failed'，api.ts 的 XHR 通道抛 '网络请求失败'
+    if (err.name === 'TypeError' && /fetch|Network request failed|网络请求失败/.test(err.message)) {
       return { isNetworkError: true, message: err.message }
     }
     // 格式化的 API 错误（由 queryModel 的 error chunk 转换而来）

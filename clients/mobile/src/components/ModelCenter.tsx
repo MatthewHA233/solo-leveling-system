@@ -1,41 +1,56 @@
 // ══════════════════════════════════════════════
-// ModelCenter — 移动端模型中心（desktop ModelDialog 的手机版）
-// 三 tab：绑定（双聊天模式各自选模型）/ 模型库 / 用量计费
-// 数据源：静态注册表(registry.ts) + 同步四表(bindings/call_log/free_quota/api_keys)
+// ModelCenter — 模型调用与审计（desktop ModelDialog 的手机版）
+// 三 tab：用量 / 模型库 / 功能绑定；顶部有 API Key 管理和刷新
+// 数据源：SolevupDb（model_registry 只读镜像 + 同步四表）；各 tab 拆在 components/models/ 下
 // ══════════════════════════════════════════════
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import {
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native'
-import { theme, alpha } from '../theme'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { theme } from '../theme'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import {
+  FEATURE_LABEL,
   FEATURE_SPECS,
-  MODEL_REGISTRY,
-  billsTextWithAudio,
-  getModelDef,
-  modelsForFeature,
-  parseModalities,
+  ensureModelCatalog,
+  refreshModelCatalog,
+  type ModelCategory,
   type ModelDef,
-  type ModelPricingTier,
 } from '../lib/models/registry'
 import {
-  solevupListFeatureBindings,
-  solevupListModelApiKeys,
-  solevupListModelFreeQuota,
-  solevupQueryModelCallLog,
-  solevupSetFeatureBinding,
-  type ModelApiKeyListItem,
-  type ModelCallLogRow,
-  type ModelFreeQuotaRow,
-} from '../lib/solevupdb'
+  deleteModelApiKey,
+  emitFeatureBindingUpdated,
+  listFeatureBindings,
+  listModelApiKeys,
+  listModelFreeQuotas,
+  openBailianLogin,
+  openBailianModelDetail,
+  queryCallLog,
+  setActiveModelApiKey,
+  setFeatureModel,
+  subscribeFeatureBindingUpdated,
+  subscribeModelUsageLogged,
+  upsertModelApiKey,
+  type FeatureBinding,
+  type ModelApiKey,
+  type ModelCallLog,
+  type ModelFreeQuota,
+} from '../lib/models/model-audit'
+import ConfirmDialog from './ConfirmDialog'
+import ApiKeySheet from './models/ApiKeySheet'
+import BindingsTab from './models/BindingsTab'
+import LibraryTab from './models/LibraryTab'
+import UsageTab from './models/UsageTab'
+import {
+  KEY_PROVIDER_META,
+  computeUsageTotals,
+  nextApiKeyLabel,
+  tone,
+  viewWindow,
+  type KeyProvider,
+  type TabKey,
+  type ViewMode,
+} from './models/model-utils'
+import { TabButton } from './models/parts'
 
 interface Props {
   readonly visible: boolean
@@ -44,111 +59,235 @@ interface Props {
   readonly onSaveConfig: (updates: Partial<AgentConfig>) => void
 }
 
-type TabKey = 'bindings' | 'library' | 'usage'
-
-const MODALITY_LABEL: Record<string, string> = {
-  text: '文', image: '图', video: '视', audio_in: '听', audio_out: '说',
-}
-
-const CATEGORY_LABEL: Record<string, string> = {
-  text: '文本', omni: '全模态', realtime: '实时', embedding: '嵌入',
-}
-
-// ── 计费（对齐 desktop breakdownCallCost：分档匹配 → token × 价 / 1M） ──
-
-function priceOf(tokens: number, p: number | null | undefined): number {
-  return tokens > 0 && p != null ? (tokens * p) / 1_000_000 : 0
-}
-
-function computeCallCost(row: ModelCallLogRow): number {
-  if (row.costCny != null) return row.costCny // desktop 已计成本（含免费额度抵扣）
-  const def = getModelDef(row.modelId)
-  if (!def) return 0
-  const promptTotal = row.promptTextTokens + row.promptImageTokens + row.promptVideoTokens + row.promptAudioTokens
-  const tier: ModelPricingTier | undefined = def.pricing.find(
-    (t) => promptTotal >= t.tier_min_tokens && (t.tier_max_tokens == null || promptTotal < t.tier_max_tokens),
-  ) ?? def.pricing[0]
-  if (!tier) return 0
-  const hasAudioOut = row.completionAudioTokens > 0
-  return (
-    priceOf(row.promptTextTokens, tier.price_input_text) +
-    priceOf(row.promptImageTokens, tier.price_input_image ?? tier.price_input_text) +
-    priceOf(row.promptVideoTokens, tier.price_input_video ?? tier.price_input_text) +
-    priceOf(row.promptAudioTokens, tier.price_input_audio) +
-    // 有音频输出时文本输出不计费（Omni 双模态口径，对齐 desktop；3.8 Omni 起文本另计）
-    (hasAudioOut && !billsTextWithAudio(row.modelId) ? 0 : priceOf(row.completionTextTokens, tier.price_output_text)) +
-    priceOf(row.completionAudioTokens, tier.price_output_audio)
-  )
-}
-
-function fmtCny(v: number): string {
-  if (v === 0) return '¥0'
-  if (v < 0.01) return `¥${v.toFixed(4)}`
-  return `¥${v.toFixed(2)}`
-}
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-  return String(n)
-}
-
-// 价格摘要："¥1.2-4.8/M入 · ¥7.2-28.8/M出"
-function pricingSummary(def: ModelDef): string {
-  if (!def.pricing.length) return '—'
-  const ins = def.pricing.map((t) => t.price_input_text).filter((v): v is number => v != null)
-  const outs = def.pricing.map((t) => t.price_output_text).filter((v): v is number => v != null)
-  const range = (vs: number[]) => {
-    if (!vs.length) return null
-    const lo = Math.min(...vs); const hi = Math.max(...vs)
-    return lo === hi ? `${lo}` : `${lo}-${hi}`
+// 换百炼 Key 时清掉单独填的 Omni / ASR Key，否则实时语音和识别还在用旧 Key（和桌面端 ModelDialog 一致）
+function dashscopeKeyConfig(apiKey: string | null | undefined): Partial<AgentConfig> {
+  return {
+    dashscopeApiKey: apiKey || null,
+    openaiApiKey: apiKey || null,
+    omniApiKey: null,
+    asrApiKey: null,
   }
-  const inS = range(ins); const outS = range(outs)
-  if (inS && outS) return `¥${inS}/M入 · ¥${outS}/M出`
-  if (inS) return `¥${inS}/M入`
-  return '—'
-}
-
-// 免费额度剩余百分比（对齐 desktop positiveFreeQuotaPercent）
-function quotaPercent(q: ModelFreeQuotaRow | undefined): number | null {
-  if (!q || q.errorMessage || q.notSupported || q.totalTokens <= 0) return null
-  return Math.max(0, Math.min(100, (q.remainingTokens / q.totalTokens) * 100))
 }
 
 export default function ModelCenter({ visible, config, onClose, onSaveConfig }: Props) {
-  const [tab, setTab] = useState<TabKey>('bindings')
-  const [bindings, setBindings] = useState<Record<string, string>>({})
-  const [quotas, setQuotas] = useState<ModelFreeQuotaRow[]>([])
-  const [callLog, setCallLog] = useState<ModelCallLogRow[]>([])
-  const [syncedKeys, setSyncedKeys] = useState<ModelApiKeyListItem[]>([])
-  const [expandedFeature, setExpandedFeature] = useState<string | null>(null)
-  const [manualKey, setManualKey] = useState('')
-  const [showKey, setShowKey] = useState(false)
+  const [tab, setTab] = useState<TabKey>('usage')
+  const [models, setModels] = useState<ModelDef[]>([])
+  const [bindings, setBindings] = useState<FeatureBinding[]>([])
+  const [calls, setCalls] = useState<ModelCallLog[]>([])
+  const [viewMode, setViewMode] = useState<ViewMode>('day')
+  const [anchorDate, setAnchorDate] = useState<Date>(() => new Date())
+  const [category, setCategory] = useState<ModelCategory>('text')
+  const [feature, setFeature] = useState<string>('all')
+  const [modelId, setModelId] = useState<string>('all')
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [saved, setSaved] = useState<string | null>(null)
+  const [apiKeys, setApiKeys] = useState<ModelApiKey[]>([])
+  const [apiKeyOpen, setApiKeyOpen] = useState(false)
+  const [creatingApiKey, setCreatingApiKey] = useState(false)
+  const [newApiKeyLabel, setNewApiKeyLabel] = useState('百炼 API Key')
+  const [newApiKeyValue, setNewApiKeyValue] = useState('')
+  const [keyProvider, setKeyProvider] = useState<KeyProvider>('dashscope')
+  const [pendingDeleteKey, setPendingDeleteKey] = useState<ModelApiKey | null>(null)
+  const [freeQuotas, setFreeQuotas] = useState<ModelFreeQuota[]>([])
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const quotaById = useMemo(() => new Map(quotas.map((q) => [q.modelId, q])), [quotas])
-
-  const reload = useCallback(() => {
-    solevupListFeatureBindings()
-      .then((rows) => setBindings(Object.fromEntries(rows.map((r) => [r.feature, r.modelId]))))
-      .catch(() => {})
-    solevupListModelFreeQuota().then(setQuotas).catch(() => {})
-    solevupListModelApiKeys().then(setSyncedKeys).catch(() => setSyncedKeys([]))
-    const since = new Date(Date.now() - 7 * 86_400_000).toISOString()
-    solevupQueryModelCallLog(since, 3000).then(setCallLog).catch(() => {})
+  const flashSaved = useCallback((text: string) => {
+    setSaved(text)
+    if (savedTimer.current) clearTimeout(savedTimer.current)
+    savedTimer.current = setTimeout(() => setSaved(null), 1800)
   }, [])
+
+  useEffect(() => () => {
+    if (savedTimer.current) clearTimeout(savedTimer.current)
+  }, [])
+
+  const loadBase = useCallback(async () => {
+    setErr(null)
+    try {
+      await ensureModelCatalog()
+      const [modelRows, bindingRows, keyRows, quotaRows] = await Promise.all([
+        refreshModelCatalog(),
+        listFeatureBindings(),
+        listModelApiKeys(),
+        listModelFreeQuotas(),
+      ])
+      setModels(modelRows)
+      setBindings(bindingRows)
+      setApiKeys(keyRows)
+      setFreeQuotas(quotaRows)
+    } catch (e) {
+      setErr(String(e))
+    }
+  }, [])
+
+  const loadUsage = useCallback(async () => {
+    const { from, to } = viewWindow(viewMode, anchorDate)
+    setLoading(true)
+    setErr(null)
+    try {
+      const featureArg = feature === 'all' ? null : feature
+      const modelArg = modelId === 'all' ? null : modelId
+      // 只按百炼 Key 分账：Anthropic 和未归属（Vercel 决策）的调用不能被当前百炼 Key 过滤掉
+      const hiddenKeyIds = new Set(
+        apiKeys.some((k) => k.is_active && k.provider === 'dashscope')
+          ? apiKeys.filter((k) => !k.is_active && k.provider === 'dashscope').map((k) => k.id)
+          : [],
+      )
+      const callRows = await queryCallLog({
+        timeFrom: from,
+        timeTo: to,
+        feature: featureArg,
+        modelId: modelArg,
+        apiKeyId: null,
+        limit: null,
+      })
+      setCalls(callRows.filter((c) => !c.api_key_id || !hiddenKeyIds.has(c.api_key_id)))
+    } catch (e) {
+      setErr(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [apiKeys, anchorDate, viewMode, feature, modelId])
 
   useEffect(() => {
     if (!visible) return
-    setManualKey(config.dashscopeApiKey ?? '')
-    setShowKey(false)
-    setExpandedFeature(null)
-    reload()
-  }, [visible, config, reload])
+    void loadBase()
+  }, [visible, loadBase])
 
-  const pickModel = useCallback((feature: string, modelId: string) => {
-    setBindings((prev) => ({ ...prev, [feature]: modelId }))
-    setExpandedFeature(null)
-    void solevupSetFeatureBinding(feature, modelId).catch(() => {})
+  useEffect(() => {
+    if (!visible) return
+    return subscribeFeatureBindingUpdated(() => { void loadBase() })
+  }, [visible, loadBase])
+
+  useEffect(() => {
+    if (!visible) return
+    void loadUsage()
+  }, [visible, loadUsage])
+
+  // 开着面板时有新调用落库就刷新明细（桌面端靠手动刷新，手机端聊天和面板会同屏切换）
+  useEffect(() => {
+    if (!visible) return
+    return subscribeModelUsageLogged(() => { void loadUsage() })
+  }, [visible, loadUsage])
+
+  const modelPricingMap = useMemo(() => new Map(models.map((m) => [m.id, m.pricing])), [models])
+  const usageTotals = useMemo(() => computeUsageTotals(calls, modelPricingMap), [calls, modelPricingMap])
+  const bindingByFeature = useMemo(() => new Map(bindings.map((b) => [b.feature, b.model_id])), [bindings])
+  const activeApiKey = useMemo(() => apiKeys.find((k) => k.is_active && k.provider === 'dashscope') ?? null, [apiKeys])
+  /** 当前弹层里这个提供商的 Key 列表 */
+  const providerKeys = useMemo(() => apiKeys.filter((k) => k.provider === keyProvider), [apiKeys, keyProvider])
+  const providerActiveId = useMemo(() => providerKeys.find((k) => k.is_active)?.id ?? null, [providerKeys])
+  const freeQuotaByModel = useMemo(() => new Map(freeQuotas.map((q) => [q.model_id, q])), [freeQuotas])
+  const categoryModels = useMemo(() => models.filter((m) => m.category === category), [models, category])
+
+  const openBailian = useCallback(() => {
+    setErr(null)
+    void openBailianLogin().catch((e) => setErr(String(e)))
+  }, [])
+
+  const startCreateApiKey = useCallback(() => {
+    setNewApiKeyLabel(nextApiKeyLabel(apiKeys.filter((k) => k.provider === keyProvider), KEY_PROVIDER_META[keyProvider].defaultLabel))
+    setNewApiKeyValue('')
+    setCreatingApiKey(true)
+  }, [apiKeys, keyProvider])
+
+  const changeKeyProvider = useCallback((next: KeyProvider) => {
+    setKeyProvider(next)
+    setCreatingApiKey(false)
+    setNewApiKeyValue('')
+  }, [])
+
+  const activateApiKey = useCallback(async (key: ModelApiKey) => {
+    setErr(null)
+    try {
+      await setActiveModelApiKey(key.id)
+      if (key.provider === 'dashscope') onSaveConfig(dashscopeKeyConfig(key.api_key))
+      flashSaved(`${key.label} 已切换`)
+      await loadBase()
+      await loadUsage()
+    } catch (e) {
+      setErr(String(e))
+    }
+  }, [flashSaved, loadBase, loadUsage, onSaveConfig])
+
+  const saveApiKey = useCallback(async (provider: KeyProvider, label: string, value: string) => {
+    const meta = KEY_PROVIDER_META[provider]
+    const key = await upsertModelApiKey({
+      label: label.trim() || nextApiKeyLabel(apiKeys.filter((k) => k.provider === provider), meta.defaultLabel),
+      api_key: value,
+      is_active: true,
+      provider,
+    })
+    if (provider === 'dashscope') onSaveConfig(dashscopeKeyConfig(key.api_key))
+    return key
+  }, [apiKeys, onSaveConfig])
+
+  const saveNewApiKey = useCallback(async () => {
+    setErr(null)
+    try {
+      const key = await saveApiKey(keyProvider, newApiKeyLabel, newApiKeyValue)
+      const meta = KEY_PROVIDER_META[keyProvider]
+      setNewApiKeyLabel(nextApiKeyLabel([...apiKeys, key].filter((k) => k.provider === keyProvider), meta.defaultLabel))
+      setNewApiKeyValue('')
+      setCreatingApiKey(false)
+      flashSaved(`${key.label} 已保存并切换`)
+      await loadBase()
+      await loadUsage()
+    } catch (e) {
+      setErr(String(e))
+    }
+  }, [apiKeys, flashSaved, keyProvider, loadBase, loadUsage, newApiKeyLabel, newApiKeyValue, saveApiKey])
+
+  // 旧版在设置里手填的百炼 Key：存进 Key 库后用量才有归属
+  const importLegacyKey = useCallback(async () => {
+    if (!config.dashscopeApiKey) return
+    setErr(null)
+    try {
+      const key = await saveApiKey('dashscope', '', config.dashscopeApiKey)
+      flashSaved(`${key.label} 已保存并切换`)
+      await loadBase()
+      await loadUsage()
+    } catch (e) {
+      setErr(String(e))
+    }
+  }, [config.dashscopeApiKey, flashSaved, loadBase, loadUsage, saveApiKey])
+
+  const confirmDeleteApiKey = useCallback(async () => {
+    const key = pendingDeleteKey
+    if (!key) return
+    setPendingDeleteKey(null)
+    setErr(null)
+    try {
+      await deleteModelApiKey(key.id)
+      flashSaved(`${key.label} 已删除`)
+      await loadBase()
+      await loadUsage()
+      // 配置里还留着被删的那把时换成顶上来的 Key，否则聊天兜底会继续用已删除的 Key
+      if (key.provider === 'dashscope' && config.dashscopeApiKey === key.api_key) {
+        const next = (await listModelApiKeys()).find((k) => k.is_active && k.provider === 'dashscope')
+        onSaveConfig(dashscopeKeyConfig(next?.api_key))
+      }
+    } catch (e) {
+      setErr(String(e))
+    }
+  }, [config.dashscopeApiKey, flashSaved, loadBase, loadUsage, onSaveConfig, pendingDeleteKey])
+
+  const setBinding = useCallback(async (featureName: string, nextModelId: string) => {
+    setErr(null)
+    try {
+      await setFeatureModel(featureName, nextModelId)
+      emitFeatureBindingUpdated(featureName, nextModelId)
+      flashSaved(`${FEATURE_LABEL.get(featureName) ?? featureName} 已绑定`)
+      await loadBase()
+    } catch (e) {
+      setErr(String(e))
+    }
+  }, [flashSaved, loadBase])
+
+  const openBailianDetail = useCallback((modelCode: string) => {
+    setErr(null)
+    void openBailianModelDetail(modelCode).catch((e) => setErr(String(e)))
   }, [])
 
   return (
@@ -156,374 +295,127 @@ export default function ModelCenter({ visible, config, onClose, onSaveConfig }: 
       <View style={styles.root}>
         {/* ── 顶栏 ── */}
         <View style={styles.topbar}>
-          <Pressable hitSlop={10} onPress={onClose}><Text style={styles.closeText}>关闭</Text></Pressable>
-          <Text style={styles.title}>模型中心</Text>
-          <View style={{ width: 36 }} />
+          <Pressable hitSlop={10} onPress={onClose}><Text style={styles.topAction}>关闭</Text></Pressable>
+          <Text style={styles.title}>模型调用与审计</Text>
+          <View style={styles.topRight}>
+            <Pressable hitSlop={10} onPress={() => { void loadBase(); void loadUsage() }}>
+              <Text style={styles.topAction}>刷新</Text>
+            </Pressable>
+            <Pressable hitSlop={10} onPress={() => setApiKeyOpen(true)}>
+              <Text style={[styles.topKey, { color: activeApiKey ? tone.green : tone.orange }]}>Key</Text>
+            </Pressable>
+          </View>
         </View>
 
         {/* ── Tab 切换 ── */}
         <View style={styles.tabs}>
-          {([['bindings', '绑定'], ['library', '模型库'], ['usage', '用量']] as [TabKey, string][]).map(([k, label]) => (
-            <Pressable key={k} style={[styles.tabBtn, tab === k && styles.tabBtnOn]} onPress={() => setTab(k)}>
-              <Text style={[styles.tabText, tab === k && styles.tabTextOn]}>{label}</Text>
-            </Pressable>
-          ))}
+          <TabButton active={tab === 'usage'} label="用量" onPress={() => setTab('usage')} />
+          <TabButton active={tab === 'library'} label="模型库" onPress={() => setTab('library')} />
+          <TabButton active={tab === 'bindings'} label="功能绑定" onPress={() => setTab('bindings')} />
         </View>
 
+        {(saved || err) && (
+          <View style={styles.status}>
+            {saved && <Text style={styles.statusOk} numberOfLines={1}>{saved}</Text>}
+            {err && <Text style={styles.statusErr} numberOfLines={2}>{err}</Text>}
+          </View>
+        )}
+
         <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
-          {tab === 'bindings' && (
-            <BindingsTab
-              bindings={bindings}
-              quotaById={quotaById}
-              expanded={expandedFeature}
-              onToggle={(f) => setExpandedFeature((cur) => (cur === f ? null : f))}
-              onPick={pickModel}
-              syncedKeys={syncedKeys}
-              manualKey={manualKey}
-              showKey={showKey}
-              onManualKey={setManualKey}
-              onToggleShow={() => setShowKey((v) => !v)}
-              onSaveManualKey={() => onSaveConfig({ dashscopeApiKey: manualKey.trim() || null })}
+          {tab === 'usage' && (
+            <UsageTab
+              activeKeyLabel={activeApiKey?.label ?? null}
+              calls={calls}
+              loading={loading}
+              totals={usageTotals}
+              viewMode={viewMode}
+              anchorDate={anchorDate}
+              feature={feature}
+              modelId={modelId}
+              models={models}
+              freeQuotaByModel={freeQuotaByModel}
+              modelPricingMap={modelPricingMap}
+              onViewMode={setViewMode}
+              onAnchorDate={setAnchorDate}
+              onFeature={setFeature}
+              onModel={setModelId}
             />
           )}
-          {tab === 'library' && <LibraryTab quotaById={quotaById} />}
-          {tab === 'usage' && <UsageTab callLog={callLog} />}
+
+          {tab === 'library' && (
+            <LibraryTab
+              category={category}
+              models={categoryModels}
+              freeQuotaByModel={freeQuotaByModel}
+              onCategory={setCategory}
+              onOpenBailian={openBailian}
+              onOpenBailianDetail={openBailianDetail}
+            />
+          )}
+
+          {tab === 'bindings' && (
+            <BindingsTab
+              specs={FEATURE_SPECS}
+              models={models}
+              freeQuotaByModel={freeQuotaByModel}
+              bindingByFeature={bindingByFeature}
+              onBind={(f, m) => { void setBinding(f, m) }}
+            />
+          )}
         </ScrollView>
+
+        <ApiKeySheet
+          visible={apiKeyOpen}
+          apiKeys={providerKeys}
+          activeId={providerActiveId}
+          provider={keyProvider}
+          onProviderChange={changeKeyProvider}
+          creating={creatingApiKey}
+          newLabel={newApiKeyLabel}
+          newValue={newApiKeyValue}
+          legacyKey={config.dashscopeApiKey}
+          onStartCreate={startCreateApiKey}
+          onCancelCreate={() => setCreatingApiKey(false)}
+          onNewLabel={setNewApiKeyLabel}
+          onNewValue={setNewApiKeyValue}
+          onSaveNew={() => { void saveNewApiKey() }}
+          onImportLegacy={() => { void importLegacyKey() }}
+          onActivate={(k) => { void activateApiKey(k) }}
+          onDelete={setPendingDeleteKey}
+          onClose={() => setApiKeyOpen(false)}
+        />
+
+        <ConfirmDialog
+          open={!!pendingDeleteKey}
+          title={`确定删除「${pendingDeleteKey?.label ?? ''}」吗？`}
+          body="删除此 API Key 后，会同时删除归属此 Key 的所有用量记录，此操作不可恢复。"
+          confirmText="确定删除"
+          danger
+          onCancel={() => setPendingDeleteKey(null)}
+          onConfirm={() => { void confirmDeleteApiKey() }}
+        />
       </View>
     </Modal>
   )
 }
 
-// ══════════════ 绑定 Tab ══════════════
-
-function BindingsTab({
-  bindings, quotaById, expanded, onToggle, onPick,
-  syncedKeys, manualKey, showKey, onManualKey, onToggleShow, onSaveManualKey,
-}: {
-  bindings: Record<string, string>
-  quotaById: Map<string, ModelFreeQuotaRow>
-  expanded: string | null
-  onToggle: (feature: string) => void
-  onPick: (feature: string, modelId: string) => void
-  syncedKeys: ModelApiKeyListItem[]
-  manualKey: string
-  showKey: boolean
-  onManualKey: (v: string) => void
-  onToggleShow: () => void
-  onSaveManualKey: () => void
-}) {
-  return (
-    <>
-      <Text style={styles.sectionTitle}>功能 → 模型绑定</Text>
-      <Text style={styles.sectionHint}>改动会随下一轮同步推回电脑</Text>
-      {FEATURE_SPECS.map((spec) => {
-        const bound = bindings[spec.feature]
-        const def = bound ? getModelDef(bound) : undefined
-        const open = expanded === spec.feature
-        return (
-          <View key={spec.feature} style={styles.bindCard}>
-            <Pressable style={styles.bindHead} onPress={() => onToggle(spec.feature)}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.bindLabel}>{spec.label}</Text>
-                <Text style={styles.bindHint}>{spec.hint}</Text>
-              </View>
-              <Text style={styles.bindModel}>{def?.display_name ?? bound ?? '未绑定'}</Text>
-              <Text style={styles.chev}>{open ? '▴' : '▾'}</Text>
-            </Pressable>
-            {open && (
-              <View style={styles.pickList}>
-                {modelsForFeature(spec).map((m) => (
-                  <ModelPickRow
-                    key={m.id}
-                    def={m}
-                    active={m.id === bound}
-                    quota={quotaById.get(m.id)}
-                    onPress={() => onPick(spec.feature, m.id)}
-                  />
-                ))}
-              </View>
-            )}
-          </View>
-        )
-      })}
-
-      <Text style={[styles.sectionTitle, { marginTop: 24 }]}>API Key</Text>
-      {syncedKeys.length > 0 ? (
-        syncedKeys.map((k) => (
-          <View key={k.id} style={styles.keyRow}>
-            <Text style={styles.keyLabel}>{k.label}</Text>
-            {k.isActive && k.hasKey
-              ? <Text style={styles.keyOn}>● 当前使用</Text>
-              : !k.hasKey ? <Text style={styles.keyOff}>已删除</Text> : null}
-          </View>
-        ))
-      ) : (
-        <Text style={styles.sectionHint}>还没有同步的 Key — 与电脑同步一次，或在下方手填</Text>
-      )}
-      <View style={styles.manualKeyRow}>
-        <TextInput
-          style={styles.manualKeyInput}
-          value={manualKey}
-          onChangeText={onManualKey}
-          placeholder="手动 Key（仅同步缺失时兜底）"
-          placeholderTextColor={theme.inkFaint}
-          secureTextEntry={!showKey}
-          autoCapitalize="none"
-          autoCorrect={false}
-          onBlur={onSaveManualKey}
-        />
-        <Pressable style={styles.eyeBtn} onPress={onToggleShow}>
-          <Text style={styles.eyeText}>{showKey ? '隐藏' : '显示'}</Text>
-        </Pressable>
-      </View>
-    </>
-  )
-}
-
-function ModelPickRow({ def, active, quota, onPress }: {
-  def: ModelDef; active: boolean; quota?: ModelFreeQuotaRow; onPress: () => void
-}) {
-  const pct = quotaPercent(quota)
-  return (
-    <Pressable style={[styles.pickRow, active && styles.pickRowOn]} onPress={onPress}>
-      <View style={{ flex: 1 }}>
-        <Text style={[styles.pickName, active && { color: theme.accent }]}>{def.display_name ?? def.id}</Text>
-        <Text style={styles.pickMeta}>{pricingSummary(def)}</Text>
-        {pct != null && (
-          <View style={styles.quotaBarWrap}>
-            <View style={[styles.quotaBar, { width: `${pct}%` }]} />
-          </View>
-        )}
-      </View>
-      {active && <Text style={styles.pickCheck}>✓</Text>}
-    </Pressable>
-  )
-}
-
-// ══════════════ 模型库 Tab ══════════════
-
-function LibraryTab({ quotaById }: { quotaById: Map<string, ModelFreeQuotaRow> }) {
-  // 主 id 行（无日期后缀别名）优先展示，别名折叠计数
-  const groups = useMemo(() => {
-    const mains = MODEL_REGISTRY.filter((m) => !/\d{4}-\d{2}-\d{2}$/.test(m.id))
-    const byCat = new Map<string, ModelDef[]>()
-    for (const m of mains) {
-      const list = byCat.get(m.category) ?? []
-      list.push(m)
-      byCat.set(m.category, list)
-    }
-    return (['text', 'omni', 'realtime', 'embedding'] as const)
-      .filter((c) => byCat.has(c))
-      .map((c) => ({ category: c, models: byCat.get(c)! }))
-  }, [])
-
-  return (
-    <>
-      {groups.map(({ category, models }) => (
-        <View key={category}>
-          <Text style={styles.sectionTitle}>{CATEGORY_LABEL[category]}（{models.length}）</Text>
-          {models.map((m) => {
-            const quota = quotaById.get(m.id)
-            const pct = quotaPercent(quota)
-            const mods = parseModalities(m)
-            return (
-              <View key={m.id} style={styles.libCard}>
-                <View style={styles.libHead}>
-                  <Text style={styles.libName}>{m.display_name ?? m.id}</Text>
-                  <View style={styles.modChips}>
-                    {mods.map((mod) => (
-                      <Text key={mod} style={styles.modChip}>{MODALITY_LABEL[mod] ?? mod}</Text>
-                    ))}
-                  </View>
-                </View>
-                <Text style={styles.libId}>{m.id}{m.context_window ? ` · ${fmtTokens(m.context_window)} ctx` : ''}</Text>
-                <Text style={styles.libPrice}>{pricingSummary(m)}{m.pricing.length > 1 ? `（${m.pricing.length} 档阶梯）` : ''}</Text>
-                {pct != null && quota && (
-                  <View style={styles.libQuotaRow}>
-                    <View style={styles.quotaBarWrap}>
-                      <View style={[styles.quotaBar, { width: `${pct}%` }]} />
-                    </View>
-                    <Text style={styles.libQuotaText}>
-                      免费 {fmtTokens(quota.remainingTokens)}/{fmtTokens(quota.totalTokens)}
-                      {quota.expireDate ? ` · 至 ${quota.expireDate.slice(0, 10)}` : ''}
-                    </Text>
-                  </View>
-                )}
-                {m.notes && <Text style={styles.libNotes}>{m.notes}</Text>}
-              </View>
-            )
-          })}
-        </View>
-      ))}
-      <Text style={styles.footNote}>模型库与电脑端同源（随版本更新）；免费额度由电脑端扫描后同步过来</Text>
-    </>
-  )
-}
-
-// ══════════════ 用量 Tab ══════════════
-
-function UsageTab({ callLog }: { callLog: ModelCallLogRow[] }) {
-  const stats = useMemo(() => {
-    let totalCost = 0
-    let totalCalls = 0
-    let totalTokens = 0
-    const byDay = new Map<string, { calls: number; tokens: number; cost: number }>()
-    const byFeature = new Map<string, { calls: number; tokens: number; cost: number }>()
-    for (const row of callLog) {
-      const cost = computeCallCost(row)
-      const tokens =
-        row.promptTextTokens + row.promptImageTokens + row.promptVideoTokens + row.promptAudioTokens +
-        row.completionTextTokens + row.completionAudioTokens
-      totalCost += cost; totalCalls += 1; totalTokens += tokens
-      const day = row.startedAt.slice(0, 10)
-      const d = byDay.get(day) ?? { calls: 0, tokens: 0, cost: 0 }
-      d.calls += 1; d.tokens += tokens; d.cost += cost
-      byDay.set(day, d)
-      const f = byFeature.get(row.feature) ?? { calls: 0, tokens: 0, cost: 0 }
-      f.calls += 1; f.tokens += tokens; f.cost += cost
-      byFeature.set(row.feature, f)
-    }
-    return {
-      totalCost, totalCalls, totalTokens,
-      days: [...byDay.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)),
-      features: [...byFeature.entries()].sort((a, b) => b[1].cost - a[1].cost),
-    }
-  }, [callLog])
-
-  const maxDayCost = Math.max(0.0001, ...stats.days.map(([, d]) => d.cost))
-
-  return (
-    <>
-      <Text style={styles.sectionTitle}>近 7 天</Text>
-      <View style={styles.statRow}>
-        <StatBox label="费用" value={fmtCny(stats.totalCost)} />
-        <StatBox label="调用" value={String(stats.totalCalls)} />
-        <StatBox label="Tokens" value={fmtTokens(stats.totalTokens)} />
-      </View>
-
-      <Text style={styles.sectionTitle}>按日</Text>
-      {stats.days.length === 0 && <Text style={styles.sectionHint}>近 7 天没有调用记录（与电脑同步后会包含两端用量）</Text>}
-      {stats.days.map(([day, d]) => (
-        <View key={day} style={styles.dayRow}>
-          <Text style={styles.dayLabel}>{day.slice(5)}</Text>
-          <View style={styles.dayBarWrap}>
-            <View style={[styles.dayBar, { width: `${Math.max(2, (d.cost / maxDayCost) * 100)}%` }]} />
-          </View>
-          <Text style={styles.dayMeta}>{d.calls} 次 · {fmtTokens(d.tokens)} · {fmtCny(d.cost)}</Text>
-        </View>
-      ))}
-
-      <Text style={styles.sectionTitle}>按功能</Text>
-      {stats.features.map(([feature, f]) => {
-        const spec = FEATURE_SPECS.find((s) => s.feature === feature)
-        return (
-          <View key={feature} style={styles.featRow}>
-            <Text style={styles.featLabel}>{spec?.label ?? feature}</Text>
-            <Text style={styles.dayMeta}>{f.calls} 次 · {fmtTokens(f.tokens)} · {fmtCny(f.cost)}</Text>
-          </View>
-        )
-      })}
-      <Text style={styles.footNote}>电脑端记录带实付成本（含免费额度抵扣）；手机端记录按价目表估算</Text>
-    </>
-  )
-}
-
-function StatBox({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.statBox}>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
-  )
-}
-
-// ══════════════ 样式 ══════════════
-
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.bg },
   topbar: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 18, paddingTop: 16, paddingBottom: 10,
+    paddingHorizontal: 16, paddingVertical: 12, backgroundColor: theme.surface,
   },
-  closeText: { fontSize: 14, color: theme.accent },
   title: { fontSize: 16, fontWeight: '700', color: theme.ink },
+  topRight: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  topAction: { fontSize: 14, color: theme.inkSoft },
+  topKey: { fontSize: 14, fontWeight: '700' },
   tabs: {
-    flexDirection: 'row', marginHorizontal: 18, marginBottom: 4,
-    backgroundColor: theme.sunk, borderRadius: 10, padding: 3,
+    flexDirection: 'row', backgroundColor: theme.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.line,
   },
-  tabBtn: { flex: 1, paddingVertical: 7, borderRadius: 8, alignItems: 'center' },
-  tabBtnOn: { backgroundColor: theme.surface },
-  tabText: { fontSize: 13, color: theme.inkSoft },
-  tabTextOn: { color: theme.ink, fontWeight: '600' },
+  status: { paddingHorizontal: 16, paddingVertical: 6, backgroundColor: theme.surface },
+  statusOk: { fontSize: 12, color: tone.green },
+  statusErr: { fontSize: 12, color: tone.danger },
   body: { flex: 1 },
-  bodyContent: { paddingHorizontal: 18, paddingBottom: 40 },
-
-  sectionTitle: { fontSize: 13, fontWeight: '700', color: theme.inkSoft, marginTop: 18, marginBottom: 8 },
-  sectionHint: { fontSize: 11, color: theme.inkFaint, marginBottom: 8 },
-  footNote: { fontSize: 11, color: theme.inkFaint, marginTop: 16, lineHeight: 16 },
-
-  // 绑定
-  bindCard: { backgroundColor: theme.surface, borderRadius: 12, marginBottom: 8, overflow: 'hidden' },
-  bindHead: { flexDirection: 'row', alignItems: 'center', padding: 13, gap: 8 },
-  bindLabel: { fontSize: 14, fontWeight: '600', color: theme.ink },
-  bindHint: { fontSize: 11, color: theme.inkFaint, marginTop: 2 },
-  bindModel: { fontSize: 12, color: theme.accent, maxWidth: 130 },
-  chev: { fontSize: 12, color: theme.inkFaint },
-  pickList: { borderTopWidth: 1, borderTopColor: theme.line },
-  pickRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 13, paddingVertical: 10, gap: 8 },
-  pickRowOn: { backgroundColor: alpha(theme.accent, 0.06) },
-  pickName: { fontSize: 13, fontWeight: '600', color: theme.ink },
-  pickMeta: { fontSize: 11, color: theme.inkFaint, marginTop: 1 },
-  pickCheck: { fontSize: 14, color: theme.accent, fontWeight: '700' },
-
-  // 免费额度条
-  quotaBarWrap: { height: 3, backgroundColor: theme.sunk, borderRadius: 2, marginTop: 5, overflow: 'hidden' },
-  quotaBar: { height: 3, backgroundColor: '#3FA86A', borderRadius: 2 },
-
-  // 模型库
-  libCard: { backgroundColor: theme.surface, borderRadius: 12, padding: 13, marginBottom: 8 },
-  libHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  libName: { fontSize: 14, fontWeight: '600', color: theme.ink, flex: 1 },
-  modChips: { flexDirection: 'row', gap: 3 },
-  modChip: {
-    fontSize: 10, color: theme.inkSoft, backgroundColor: theme.sunk,
-    paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, overflow: 'hidden',
-  },
-  libId: { fontSize: 11, color: theme.inkFaint, marginTop: 3 },
-  libPrice: { fontSize: 12, color: theme.inkSoft, marginTop: 4 },
-  libQuotaRow: { marginTop: 6 },
-  libQuotaText: { fontSize: 10, color: '#3FA86A', marginTop: 3 },
-  libNotes: { fontSize: 10, color: theme.inkFaint, marginTop: 6, lineHeight: 14 },
-
-  // 用量
-  statRow: { flexDirection: 'row', gap: 8 },
-  statBox: { flex: 1, backgroundColor: theme.surface, borderRadius: 12, padding: 12, alignItems: 'center' },
-  statValue: { fontSize: 17, fontWeight: '700', color: theme.ink },
-  statLabel: { fontSize: 11, color: theme.inkFaint, marginTop: 2 },
-  dayRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
-  dayLabel: { width: 42, fontSize: 11, color: theme.inkSoft, fontVariant: ['tabular-nums'] },
-  dayBarWrap: { flex: 1, height: 6, backgroundColor: theme.sunk, borderRadius: 3, overflow: 'hidden' },
-  dayBar: { height: 6, backgroundColor: alpha(theme.accent, 0.6), borderRadius: 3 },
-  dayMeta: { fontSize: 10, color: theme.inkFaint, fontVariant: ['tabular-nums'] },
-  featRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: theme.surface, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, marginBottom: 6,
-  },
-  featLabel: { fontSize: 13, color: theme.ink },
-
-  // API Key
-  keyRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: theme.surface, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 6,
-  },
-  keyLabel: { fontSize: 13, fontWeight: '600', color: theme.ink },
-  keyOn: { fontSize: 11, color: '#3FA86A', fontWeight: '600' },
-  keyOff: { fontSize: 11, color: theme.inkFaint },
-  manualKeyRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
-  manualKeyInput: {
-    flex: 1, backgroundColor: theme.sunk, borderRadius: 10,
-    paddingHorizontal: 12, paddingVertical: 10, fontSize: 13, color: theme.ink,
-  },
-  eyeBtn: { paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, backgroundColor: theme.sunk },
-  eyeText: { fontSize: 12, color: theme.inkSoft },
+  bodyContent: { padding: 16, paddingBottom: 32 },
 })
