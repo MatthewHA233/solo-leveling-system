@@ -7,6 +7,8 @@
 // 规则（借鉴 Claude Code 的权限模型：工作区内放行，工作区外每次询问）：
 //   · 工作区 %LOCALAPPDATA%/solevup/fairy-workspace 内：直接读写；相对路径一律落在这里
 //   · 工作区外：每次弹系统对话框，主人点「允许」才执行
+//   · 字面在工作区内、但经符号链接或目录联接指到外面的，算工作区外
+//   · 主人点「允许」之前不碰目标文件：文件在不在、字符串出现几次都不能先从错误信息漏给模型
 // ══════════════════════════════════════════════
 
 use std::path::{Component, Path, PathBuf};
@@ -42,11 +44,40 @@ fn resolve(path: &str) -> Result<PathBuf, String> {
     Ok(out)
 }
 
-fn in_workspace(path: &Path) -> bool {
+fn is_under(path: &Path, root: &Path) -> bool {
     // Windows 路径大小写不敏感
-    let root = workspace_dir().to_string_lossy().to_lowercase();
+    let root = root.to_string_lossy().to_lowercase();
     let p = path.to_string_lossy().to_lowercase();
     p == root || p.starts_with(&format!("{root}{}", std::path::MAIN_SEPARATOR))
+}
+
+/// 解析符号链接后的真实路径。目标可能还不存在：解析最近一级存在的祖先，再接上不存在的尾巴。
+/// 悬空的符号链接算存在（写入时会落到它指向的地方），解析不了就返回 None
+fn real_path(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut existing = path;
+    while std::fs::symlink_metadata(existing).is_err() {
+        missing.push(existing.file_name()?);
+        existing = existing.parent()?;
+    }
+    let mut real = std::fs::canonicalize(existing).ok()?;
+    real.extend(missing.iter().rev());
+    Some(real)
+}
+
+/// 工作区的真实路径。只解析它的上级：工作区自身要是符号链接，里面的路径就对不上这里，会被当成工作区外
+fn real_workspace(workspace: &Path) -> Option<PathBuf> {
+    Some(real_path(workspace.parent()?)?.join(workspace.file_name()?))
+}
+
+fn in_workspace(path: &Path, workspace: &Path) -> bool {
+    if !is_under(path, workspace) {
+        return false;
+    }
+    match (real_path(path), real_workspace(workspace)) {
+        (Some(real), Some(root)) => is_under(&real, &root),
+        _ => false,
+    }
 }
 
 fn preview(s: &str) -> String {
@@ -68,11 +99,22 @@ async fn ask(app: &AppHandle, message: String) -> bool {
 }
 
 async fn authorize(app: &AppHandle, action: &str, path: &Path, detail: &str) -> Result<(), String> {
-    if in_workspace(path) {
+    let workspace = workspace_dir();
+    // 还没建工作区时写根路径，会建出一个叫 fairy-workspace 的普通文件，之后工作区就废了
+    if path == workspace {
+        return Err(format!("「{}」是工作区目录本身，不是文件", path.display()));
+    }
+    if in_workspace(path, &workspace) {
         return Ok(());
     }
+    // 字面在工作区里还走到这，说明被链接带出去了，让主人看到真实去向
+    let via_link = if is_under(path, &workspace) {
+        real_path(path).map(|r| format!("\n实际指向：{}", r.display())).unwrap_or_default()
+    } else {
+        String::new()
+    };
     let message = format!(
-        "Fairy 想{action}工作区外的文件：\n\n{}\n{detail}\n\n只在你确实让它这么做时才点「允许」。",
+        "Fairy 想{action}工作区外的文件：\n\n{}{via_link}\n{detail}\n\n只在你确实让它这么做时才点「允许」。",
         path.display()
     );
     if ask(app, message).await {
@@ -105,13 +147,14 @@ pub async fn write(app: &AppHandle, path: &str, content: &str) -> Result<String,
     Ok(p.display().to_string())
 }
 
-/// 读 → 校验唯一 → 询问 → 替换写回，一次完成：
-/// 先校验再询问，别让主人为一次注定失败的修改点「允许」；工作区外也只弹一次窗
+/// 询问 → 读 → 校验唯一 → 替换写回，一次完成；工作区外也只弹一次窗
 pub async fn edit(app: &AppHandle, path: &str, old: &str, new: &str) -> Result<String, String> {
     let p = resolve(path)?;
     if old.is_empty() {
         return Err("old_string 不能为空".to_string());
     }
+    let detail = format!("\n把：\n{}\n\n改成：\n{}", preview(old), preview(new));
+    authorize(app, "修改", &p, &detail).await?;
     let content = std::fs::read_to_string(&p).map_err(|e| format!("读取失败: {e}"))?;
     let count = content.matches(old).count();
     if count == 0 {
@@ -120,8 +163,6 @@ pub async fn edit(app: &AppHandle, path: &str, old: &str, new: &str) -> Result<S
     if count > 1 {
         return Err(format!("字符串不唯一（出现 {count} 次），请提供更多上下文"));
     }
-    let detail = format!("\n把：\n{}\n\n改成：\n{}", preview(old), preview(new));
-    authorize(app, "修改", &p, &detail).await?;
     std::fs::write(&p, content.replacen(old, new, 1)).map_err(|e| format!("写入失败: {e}"))?;
     Ok(p.display().to_string())
 }
