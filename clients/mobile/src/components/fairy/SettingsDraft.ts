@@ -14,7 +14,6 @@ export interface SettingsDraft {
   readonly agentPersona: string
   readonly agentCallUser: string
   readonly mainQuest: string
-  readonly fishApiKey: string
   readonly fishReferenceId: string
   readonly fishModel: string
   readonly ttsEnabled: boolean
@@ -28,7 +27,7 @@ export interface SettingsDraft {
 
 const DRAFT_KEYS: readonly (keyof SettingsDraft)[] = [
   'aiMode', 'agentName', 'agentPersona', 'agentCallUser', 'mainQuest',
-  'fishApiKey', 'fishReferenceId', 'fishModel', 'ttsEnabled', 'omniVoice',
+  'fishReferenceId', 'fishModel', 'ttsEnabled', 'omniVoice',
   'omniApiKey', 'omniApiBase', 'omniModel', 'asrApiKey', 'asrModel',
 ]
 
@@ -39,7 +38,6 @@ export function draftFromConfig(config: AgentConfig): SettingsDraft {
     agentPersona: config.agentPersona,
     agentCallUser: config.agentCallUser,
     mainQuest: config.mainQuest ?? '',
-    fishApiKey: config.fishApiKey ?? '',
     fishReferenceId: config.fishReferenceId,
     fishModel: config.fishModel,
     ttsEnabled: config.ttsEnabled,
@@ -63,7 +61,6 @@ function draftToConfig(draft: SettingsDraft) {
     agentPersona: draft.agentPersona,
     agentCallUser: draft.agentCallUser || DEFAULT_CONFIG.agentCallUser,
     mainQuest: draft.mainQuest || null,
-    fishApiKey: keyOrNull(draft.fishApiKey),
     fishReferenceId: draft.fishReferenceId,
     fishModel: draft.fishModel || DEFAULT_CONFIG.fishModel,
     ttsEnabled: draft.ttsEnabled,
@@ -99,15 +96,4 @@ export function rebaseDraft(draft: SettingsDraft, baseline: SettingsDraft, confi
     if (draft[key] !== baseline[key]) merged[key] = draft[key]
   }
   return merged as unknown as SettingsDraft
-}
-
-/**
- * Fish Key 的来源说明，和 resolveFishApiKey 的先后一致：配置里有就用配置，否则用 Key 库里 provider=fish 的那条。
- * storedLabel 是那条的名称（只传名称，Key 本身不进界面状态）。
- */
-export function fishKeyHint(draftKey: string, storedLabel: string | null): string {
-  if (draftKey.trim()) {
-    return storedLabel ? `用这里填的 Key，Key 库里的「${storedLabel}」不会被用到。` : '只存在这台手机上，不会同步到电脑。'
-  }
-  return storedLabel ? `留空，用 Key 库里的「${storedLabel}」。` : '没有 Fish Key 时，Fairy 只回文字，不出声。'
 }

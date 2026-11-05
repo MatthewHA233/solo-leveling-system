@@ -14,6 +14,7 @@
 
 import { startThoughtOutbox } from '../ai/anchor-outbox'
 import { ensureModelCatalog } from '../models/registry'
+import { saveFishApiKey } from '../voice'
 import { loadConfig, type AgentConfig } from './agent-config'
 import type { ChatSessionInfo } from './agent-memory'
 import { ChatCore } from './chat-core'
@@ -64,6 +65,12 @@ class ChatControllerImpl {
 
     const core = this.core
     core.config = await loadConfig()
+    // 旧版 Fish Key 存在配置里，不同步：搬进 Key 库，其他设备才拿得到
+    if (core.config.fishApiKey) {
+      await saveFishApiKey(core.config.fishApiKey)
+        .then(() => core.applyConfigUpdate({ fishApiKey: null }))
+        .catch((e) => console.warn('[Chat] 迁移 Fish Key 失败', e))
+    }
     core.onConfigChanged = () => {
       this.omniFlow.syncSubscription()
       // 实时模式建连时热读提示词：模式、人设一变就重算

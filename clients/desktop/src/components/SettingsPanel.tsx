@@ -9,6 +9,7 @@ import { X, ChevronRight, ChevronUp, ChevronDown, Mic, Database, Bot, Eye, EyeOf
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { theme, hud, tiSurface, tiInput, tiTitle, ti, tiKey } from '../theme'
+import { getFishApiKey, saveFishApiKey } from '../lib/model-audit'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import type { GpuPrefStatus } from '../lib/local-api'
 import { MagneticButton } from './NeonUI'
@@ -81,7 +82,6 @@ function draftFromConfig(config: AgentConfig) {
     omniModel: config.omniModel,
     omniVoice: config.omniVoice,
     // 语音（常规模式）
-    fishApiKey: config.fishApiKey ?? '',
     fishReferenceId: config.fishReferenceId,
     asrApiKey: config.asrApiKey ?? '',
     asrModel: config.asrModel,
@@ -103,6 +103,10 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
   const [confirm, confirmDialog, notify] = useConfirm()
   // ── Local draft state (不实时写入，点确认才生效) ──
   const [draft, setDraft] = useState(() => draftFromConfig(config))
+
+  // Fish Key 存在 Key 库里（跟着同步到手机），不在配置里，打开面板时取
+  const [fishKey, setFishKey] = useState('')
+  const [fishKeySaved, setFishKeySaved] = useState('')
 
   const [dirty, setDirty] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -140,7 +144,10 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
     if (!isOpen) return
     // 面板常驻挂载，草稿只在启动时取过一次。顶栏切模式、模型面板切 Key、Fairy 窗口改过的配置
     // 不在这里取回的话，保存时整份草稿写回，会把它们盖回旧值。有未保存的修改时保留草稿
-    if (!dirty) setDraft(draftFromConfig(config))
+    if (!dirty) {
+      setDraft(draftFromConfig(config))
+      getFishApiKey().then((key) => { setFishKey(key ?? ''); setFishKeySaved(key ?? '') }).catch(console.error)
+    }
     invoke<DbInfo>('get_db_info').then(setDbInfo).catch(console.error)
     invoke<GpuPrefStatus>('get_gpu_pref_status').then(setGpuPref).catch(() => {})
     invoke<ScreenshotSettings>('get_screenshot_settings').then(setScreenshotDraft).catch(console.error)
@@ -264,7 +271,6 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
       omniApiBase: draft.omniApiBase,
       omniModel: draft.omniModel || 'qwen3.5-omni-flash-realtime',
       omniVoice: draft.omniVoice,
-      fishApiKey: draft.fishApiKey || null,
       fishReferenceId: draft.fishReferenceId,
       asrApiKey: draft.asrApiKey || null,
       asrModel: draft.asrModel || 'qwen3-asr-flash-realtime',
@@ -279,10 +285,13 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
       agentCallUser: draft.agentCallUser || '主人',
       mainQuest: draft.mainQuest || null,
     })
+    if (fishKey.trim() !== fishKeySaved) {
+      saveFishApiKey(fishKey).then(() => setFishKeySaved(fishKey.trim())).catch((e) => notify('保存 Fish Key 失败', String(e)))
+    }
     setDirty(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-  }, [draft, onUpdate])
+  }, [draft, onUpdate, fishKey, fishKeySaved, notify])
 
   const handleSelectDbPath = useCallback(async () => {
     const selected = await open({
@@ -556,9 +565,9 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
                 ASR 复用顶栏「模型」里的 DashScope API Key。
               </div>
               <Field label="Fish API Key" type="password"
-                value={draft.fishApiKey}
-                onChange={(v) => update('fishApiKey', v)}
-                placeholder="Fish Audio API Key（TTS）"
+                value={fishKey}
+                onChange={(v) => { setFishKey(v); setDirty(true); setSaved(false) }}
+                placeholder="Fish Audio API Key（TTS），会同步给已配对的设备"
               />
               <Field label="Fish 音色 ID"
                 value={draft.fishReferenceId}

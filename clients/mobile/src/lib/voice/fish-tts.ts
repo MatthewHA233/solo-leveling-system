@@ -13,7 +13,7 @@
 import { DeviceEventEmitter } from 'react-native'
 
 import { randomUUID } from '../llm/uuid'
-import { solevupGetActiveModelApiKey } from '../solevupdb'
+import { solevupDeleteModelApiKey, solevupGetActiveModelApiKey, solevupUpsertModelApiKey } from '../solevupdb'
 import { requireVoiceNative, type PcmPlaybackState, type WavAudio } from './voice-native'
 
 export interface FishTTSConfig {
@@ -35,11 +35,22 @@ export interface FishTTSClient {
   takeAudio: () => Promise<WavAudio | null>
 }
 
-/** Fish 的 Key：配置里有就用配置（和桌面端一致），否则看 model_api_keys 里 provider=fish 的那条 */
-export async function resolveFishApiKey(configKey: string | null | undefined): Promise<string | null> {
-  if (configKey) return configKey
+/** 所有设备共用这一行，同步时按 LWW 合并，不会各存一条（desktop model-audit.ts 用同一个 id） */
+const FISH_KEY_ID = 'fish-audio'
+
+export async function resolveFishApiKey(): Promise<string | null> {
   const stored = await solevupGetActiveModelApiKey('fish').catch(() => null)
   return stored?.apiKey || null
+}
+
+/** 空值 = 删除，删除也会同步到其他设备 */
+export async function saveFishApiKey(value: string | null): Promise<void> {
+  const key = value?.trim()
+  if (!key) {
+    await solevupDeleteModelApiKey(FISH_KEY_ID)
+    return
+  }
+  await solevupUpsertModelApiKey({ id: FISH_KEY_ID, label: 'Fish Audio', apiKey: key, provider: 'fish', activate: true })
 }
 
 /**

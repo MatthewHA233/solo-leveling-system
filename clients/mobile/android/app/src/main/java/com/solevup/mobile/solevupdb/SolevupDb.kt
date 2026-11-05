@@ -1583,12 +1583,15 @@ class SolevupDb(context: Context) :
 
   private fun normalizeProvider(raw: String?): String {
     val p = raw?.trim().orEmpty().ifEmpty { PROVIDER_DASHSCOPE }
-    require(p == PROVIDER_DASHSCOPE || p == PROVIDER_ANTHROPIC) { "不认识的提供商：$p" }
+    require(p == PROVIDER_DASHSCOPE || p == PROVIDER_ANTHROPIC || p == PROVIDER_FISH) { "不认识的提供商：$p" }
     return p
   }
 
-  private fun defaultKeyLabel(provider: String) =
-    if (provider == PROVIDER_ANTHROPIC) "Anthropic API Key" else "百炼 API Key"
+  private fun defaultKeyLabel(provider: String) = when (provider) {
+    PROVIDER_ANTHROPIC -> "Anthropic API Key"
+    PROVIDER_FISH -> "Fish Audio API Key"
+    else -> "百炼 API Key"
+  }
 
   fun upsertModelApiKey(id: String?, label: String, apiKey: String, rawProvider: String?, activate: Boolean): ModelApiKeyInfo {
     val keyId = id ?: UUID.randomUUID().toString()
@@ -2699,11 +2702,11 @@ class SolevupDb(context: Context) :
     val lastBase: String,
     val lastSyncedAt: String?,
     val createdAt: String,
+    /** 配对时换到的令牌，两台设备各存一份 */
+    val authToken: String,
   )
 
   fun listLinkedDevices(): List<LinkedDevice> {
-    /** 配对时换到的令牌，两台设备各存一份 */
-    val authToken: String,
     val out = ArrayList<LinkedDevice>()
     readableDatabase.rawQuery(
       """SELECT device_id, alias, last_base, last_synced_at, created_at, auth_token
@@ -2717,10 +2720,10 @@ class SolevupDb(context: Context) :
           lastBase = c.getString(2),
           lastSyncedAt = if (c.isNull(3)) null else c.getString(3),
           createdAt = c.getString(4),
+          authToken = c.getString(5),
         ))
       }
     }
-          authToken = c.getString(5),
     return out
   }
 
@@ -2814,6 +2817,8 @@ class SolevupDb(context: Context) :
 
     const val PROVIDER_DASHSCOPE = "dashscope"
     const val PROVIDER_ANTHROPIC = "anthropic"
+    /** Fish Audio（TTS）。不是聊天模型的提供商，模型中心不列；放这里是为了跟着同步 */
+    const val PROVIDER_FISH = "fish"
 
     private const val FEATURE_BINDING_SEED_TIME = "1970-01-01T00:00:00.000Z"
     private const val CATALOG_SOURCE_SEED = "seed"

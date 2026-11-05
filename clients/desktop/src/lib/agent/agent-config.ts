@@ -40,7 +40,7 @@ export interface AgentConfig {
   readonly screenshotInterval: number
 
   // ── Voice ──
-  readonly fishApiKey: string | null
+  readonly fishApiKey: string | null  // 旧版存这里（不同步），启动时搬进 Key 库后清空；读写都走 getFishApiKey / saveFishApiKey
   readonly fishReferenceId: string
   readonly fishModel: string  // s1 或 s2-pro
   readonly asrApiKey: string | null    // 单独的 ASR API Key（不填则复用 openaiApiKey）
@@ -111,7 +111,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   batchMinDuration: 150,
   screenshotInterval: 2,
 
-  fishApiKey: import.meta.env.VITE_FISH_API_KEY ?? null,
+  fishApiKey: null,
   fishReferenceId: import.meta.env.VITE_FISH_REFERENCE_ID ?? '235851fae0da43309a9973fe7285a823',
   fishModel: import.meta.env.VITE_FISH_MODEL ?? 's1',
   asrApiKey: null,

@@ -24,7 +24,7 @@ import { theme, hud, ti, tiSurface, tiTitle } from './theme'
 // Agent
 import { getDashScopeApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
-import { getFeatureModel, logModelUsage, realtimeUsageToDashScope, type RealtimeUsage } from './lib/model-audit'
+import { getFeatureModel, getFishApiKey, logModelUsage, realtimeUsageToDashScope, saveFishApiKey, type RealtimeUsage } from './lib/model-audit'
 import { buildStaticPrompt, buildDynamicContext, buildConversationSummary } from './lib/ai/prompt-templates'
 import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from './lib/ai/prompt-templates'
 import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
@@ -2125,6 +2125,14 @@ export default function App() {
     })
   }, [])
 
+  // 旧版 Fish Key 存在配置里，不同步：搬进 Key 库，手机才拿得到
+  useEffect(() => {
+    if (!config.fishApiKey) return
+    saveFishApiKey(config.fishApiKey)
+      .then(() => handleConfigUpdate({ fishApiKey: null }))
+      .catch((e) => console.error('[Config] 迁移 Fish Key 失败', e))
+  }, [config.fishApiKey, handleConfigUpdate])
+
   const toggleFairyWindow = useCallback(() => {
     handleConfigUpdate({ fairyWindowEnabled: !configRef.current.fairyWindowEnabled })
   }, [closeBiliDialog, handleConfigUpdate])
@@ -2351,7 +2359,8 @@ export default function App() {
     let tts: TtsState | null = null
 
     // 用语音问的，就用语音答；打字的按「语音播报」开关
-    if ((config.ttsEnabled || fromVoice) && config.fishApiKey) {
+    const fishApiKey = config.ttsEnabled || fromVoice ? await getFishApiKey().catch(() => null) : null
+    if (fishApiKey) {
       const audioCtx = new AudioContext({ sampleRate: 24000 })
       const state: TtsState = {
         client: null as any,
@@ -2365,7 +2374,7 @@ export default function App() {
         timeout: null,
       }
       state.client = createFishTTSTauri(
-        { apiKey: config.fishApiKey, referenceId: config.fishReferenceId, model: config.fishModel },
+        { apiKey: fishApiKey, referenceId: config.fishReferenceId, model: config.fishModel },
         (pcm) => {
           state.pcmChunks.push(pcm)
           const samples = pcm.length / 2

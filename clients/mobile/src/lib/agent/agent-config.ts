@@ -38,7 +38,7 @@ export interface AgentConfig {
   readonly omniModel: string
 
   // ── Voice ──
-  readonly fishApiKey: string | null
+  readonly fishApiKey: string | null  // 旧版存这里（不同步），启动时搬进 Key 库后清空；读写都走 resolveFishApiKey / saveFishApiKey
   readonly fishReferenceId: string
   readonly fishModel: string  // s1 或 s2-pro
   readonly asrApiKey: string | null    // 单独的 ASR API Key（不填则复用 openaiApiKey）

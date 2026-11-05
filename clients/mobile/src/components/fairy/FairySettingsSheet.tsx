@@ -23,7 +23,8 @@ import {
   View,
 } from 'react-native'
 import { chatController } from '../../lib/agent/chat-controller'
-import { solevupCopyText, solevupGetActiveModelApiKey } from '../../lib/solevupdb'
+import { solevupCopyText } from '../../lib/solevupdb'
+import { resolveFishApiKey, saveFishApiKey } from '../../lib/voice'
 import { fonts, theme } from '../../theme'
 import { Segmented } from '../models/parts'
 import { tone } from '../models/model-utils'
@@ -31,7 +32,6 @@ import { IconChevronDown, IconChevronUp, IconClose } from './icons'
 import {
   changedFields,
   draftFromConfig,
-  fishKeyHint,
   isDraftDirty,
   rebaseDraft,
   type SettingsDraft,
@@ -65,11 +65,12 @@ export default function FairySettingsSheet({ visible, onClose }: Props) {
   const [draft, setDraft] = useState<SettingsDraft>(baseline)
   const [saved, setSaved] = useState(false)
   const [activeSection, setActiveSection] = useState<SectionId>('persona')
-  // Key 库里 provider=fish 那条的名称（只留名称）
-  const [storedFishLabel, setStoredFishLabel] = useState<string | null>(null)
+  // Fish Key 存在 Key 库里（跟着同步），不在配置里，打开面板时取
+  const [fishKey, setFishKey] = useState('')
+  const [fishKeySaved, setFishKeySaved] = useState('')
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const dirty = isDraftDirty(draft, baseline)
+  const dirty = isDraftDirty(draft, baseline) || fishKey.trim() !== fishKeySaved
 
   useEffect(() => {
     if (!visible) return
@@ -77,9 +78,12 @@ export default function FairySettingsSheet({ visible, onClose }: Props) {
     setDraft((prev) => rebaseDraft(prev, baseline, config))
     setBaseline(draftFromConfig(config))
     let alive = true
-    solevupGetActiveModelApiKey('fish')
-      .then((key) => { if (alive) setStoredFishLabel(key?.apiKey ? key.label : null) })
-      .catch(() => { if (alive) setStoredFishLabel(null) })
+    resolveFishApiKey().then((key) => {
+      if (!alive) return
+      // 面板关着时留着的未保存草稿不覆盖
+      setFishKey((prev) => (prev.trim() !== fishKeySaved ? prev : key ?? ''))
+      setFishKeySaved(key ?? '')
+    }).catch(() => {})
     return () => { alive = false }
     // 只在打开时取一次；baseline 是这次打开前的起点，不需要跟着变
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -97,6 +101,9 @@ export default function FairySettingsSheet({ visible, onClose }: Props) {
   const handleApply = useCallback(() => {
     const updates = changedFields(draft, baseline)
     if (Object.keys(updates).length > 0) chatController.updateConfig(updates)
+    if (fishKey.trim() !== fishKeySaved) {
+      saveFishApiKey(fishKey).then(() => setFishKeySaved(fishKey.trim())).catch((e) => console.warn('[Settings] 保存 Fish Key 失败', e))
+    }
     // 回退规则可能改了值（名称留空回到 Fairy），输入框跟着显示实际存下的内容
     const fresh = draftFromConfig(chatController.config)
     setBaseline(fresh)
@@ -104,7 +111,7 @@ export default function FairySettingsSheet({ visible, onClose }: Props) {
     setSaved(true)
     if (savedTimer.current) clearTimeout(savedTimer.current)
     savedTimer.current = setTimeout(() => setSaved(false), 2000)
-  }, [draft, baseline])
+  }, [draft, baseline, fishKey, fishKeySaved])
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -134,7 +141,7 @@ export default function FairySettingsSheet({ visible, onClose }: Props) {
             >
               {activeSection === 'persona' && <PersonaSection draft={draft} update={update} />}
               {activeSection === 'voice' && (
-                <VoiceSection draft={draft} update={update} storedFishLabel={storedFishLabel} />
+                <VoiceSection draft={draft} update={update} fishKey={fishKey} onFishKeyChange={(v) => { setFishKey(v); setSaved(false) }} />
               )}
             </ScrollView>
 
@@ -195,10 +202,11 @@ function PersonaSection({ draft, update }: { draft: SettingsDraft; update: Updat
 
 // ── 语音 ──
 
-function VoiceSection({ draft, update, storedFishLabel }: {
+function VoiceSection({ draft, update, fishKey, onFishKeyChange }: {
   draft: SettingsDraft
   update: UpdateDraft
-  storedFishLabel: string | null
+  fishKey: string
+  onFishKeyChange: (value: string) => void
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
@@ -221,10 +229,10 @@ function VoiceSection({ draft, update, storedFishLabel }: {
           <Field
             label="Fish API Key"
             secret
-            value={draft.fishApiKey}
-            onChange={(v) => update('fishApiKey', v)}
+            value={fishKey}
+            onChange={onFishKeyChange}
             placeholder="Fish Audio API Key（TTS）"
-            hint={fishKeyHint(draft.fishApiKey, storedFishLabel)}
+            hint="和已配对的设备共用。没有 Fish Key 时，Fairy 只回文字，不出声。"
           />
           <Field
             label="Fish 音色 ID"

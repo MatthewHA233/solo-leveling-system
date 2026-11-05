@@ -98,6 +98,26 @@ export async function upsertModelApiKey(req: UpsertModelApiKeyRequest): Promise<
   return invoke<ModelApiKey>('upsert_model_api_key', { req })
 }
 
+/** 所有设备共用这一行，同步时按 LWW 合并，不会各存一条（手机端 fish-tts.ts 用同一个 id） */
+const FISH_KEY_ID = 'fish-audio'
+
+export async function getFishApiKey(): Promise<string | null> {
+  const keys = await listModelApiKeys()
+  return keys.find((k) => k.provider === 'fish' && k.is_active)?.api_key
+    || import.meta.env.VITE_FISH_API_KEY
+    || null
+}
+
+/** 空值 = 删除，删除也会同步到其他设备 */
+export async function saveFishApiKey(value: string | null): Promise<void> {
+  const key = value?.trim()
+  if (!key) {
+    await deleteModelApiKey(FISH_KEY_ID)
+    return
+  }
+  await upsertModelApiKey({ id: FISH_KEY_ID, label: 'Fish Audio', api_key: key, is_active: true, provider: 'fish' })
+}
+
 export async function setActiveModelApiKey(id: string): Promise<void> {
   await invoke('set_active_model_api_key', { id })
 }

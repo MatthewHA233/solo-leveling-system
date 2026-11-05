@@ -39,7 +39,8 @@ export function interruptReplyTts(): void {
   activeReply?.interrupt()
 }
 
-export function createReplyTts(config: FishTTSConfig): ReplyTts {
+/** onConnectFailed：连不上 Fish（手机直连 api.fish.audio，网络不通时不告诉主人就是一直没声音） */
+export function createReplyTts(config: FishTTSConfig, onConnectFailed?: (reason: string) => void): ReplyTts {
   let connected = false
   let finished = false
   let interrupted = false
@@ -62,9 +63,10 @@ export function createReplyTts(config: FishTTSConfig): ReplyTts {
     connected = true
     for (const s of pending) client.sendText(s).catch(() => {})
     pending = []
-  }).catch(() => {
+  }).catch((e) => {
     finished = true
     finishResolve?.()
+    if (!interrupted) onConnectFailed?.(e instanceof Error ? e.message : String(e))
   })
 
   const push = (chunk: string, force = false) => {

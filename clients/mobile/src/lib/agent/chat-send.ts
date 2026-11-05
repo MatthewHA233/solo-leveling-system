@@ -124,10 +124,13 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
       // ── TTS 流式管线（与 LLM 并行启动）──
       // 用语音问的，就用语音答；打字的按「语音播报」开关
       if ((config.ttsEnabled || fromVoice) && !interrupted) {
-        const fishApiKey = await resolveFishApiKey(config.fishApiKey).catch(() => null)
+        const fishApiKey = await resolveFishApiKey()
         if (fishApiKey && !interrupted) {
           try {
-            tts = createReplyTts({ apiKey: fishApiKey, referenceId: config.fishReferenceId, model: config.fishModel })
+            tts = createReplyTts(
+              { apiKey: fishApiKey, referenceId: config.fishReferenceId, model: config.fishModel },
+              (reason) => core.addSystemNote(`语音播报连不上，这轮只有文字：${reason}`),
+            )
           } catch (e) {
             console.warn('[Chat] TTS 不可用', e)
           }

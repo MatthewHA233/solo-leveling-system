@@ -5545,6 +5545,8 @@ pub struct FeatureBinding {
 /// 提供商标识（存进 ai_provider_keys.provider；以后再加别的家就加一个值）
 pub const PROVIDER_DASHSCOPE: &str = "dashscope";
 pub const PROVIDER_ANTHROPIC: &str = "anthropic";
+/// Fish Audio（TTS）。不是聊天模型的提供商，模型面板不列；放这里是为了跟着同步到手机
+pub const PROVIDER_FISH: &str = "fish";
 
 fn key_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelApiKey> {
     Ok(ModelApiKey {
@@ -5561,13 +5563,17 @@ fn key_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelApiKey> {
 fn normalize_provider(raw: Option<&str>) -> Result<String, String> {
     let p = raw.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(PROVIDER_DASHSCOPE);
     match p {
-        PROVIDER_DASHSCOPE | PROVIDER_ANTHROPIC => Ok(p.to_string()),
+        PROVIDER_DASHSCOPE | PROVIDER_ANTHROPIC | PROVIDER_FISH => Ok(p.to_string()),
         other => Err(format!("不认识的提供商：{other}")),
     }
 }
 
 fn default_key_label(provider: &str) -> &'static str {
-    if provider == PROVIDER_ANTHROPIC { "Anthropic API Key" } else { "百炼 API Key" }
+    match provider {
+        PROVIDER_ANTHROPIC => "Anthropic API Key",
+        PROVIDER_FISH => "Fish Audio API Key",
+        _ => "百炼 API Key",
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
