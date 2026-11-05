@@ -1,11 +1,11 @@
 // ══════════════════════════════════════════════
-// Settings Panel — AI / 语音 / 数据库 / 隐私 配置
+// Settings Panel — AI / 语音 / 数据库 配置
 // 移植自 macOS SidebarSettingsView
 // ══════════════════════════════════════════════
 
 import { useState, useCallback, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { X, ChevronRight, ChevronUp, ChevronDown, Mic, Lock, Database, Bot, Eye, EyeOff, Copy, Check, Cpu, Camera, FolderOpen, RefreshCw, Trash2, Settings as SettingsIcon, Ban, Activity, Globe } from 'lucide-react'
+import { X, ChevronRight, ChevronUp, ChevronDown, Mic, Database, Bot, Eye, EyeOff, Copy, Check, Cpu, Camera, FolderOpen, RefreshCw, Trash2, Settings as SettingsIcon, Ban, Activity, Globe } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { theme, hud, tiSurface, tiInput, tiTitle, ti, tiKey } from '../theme'
@@ -85,8 +85,6 @@ function draftFromConfig(config: AgentConfig) {
     fishReferenceId: config.fishReferenceId,
     asrApiKey: config.asrApiKey ?? '',
     asrModel: config.asrModel,
-    excludedApps: config.excludedApps.join('\n'),
-    excludedTitleKeywords: config.excludedTitleKeywords.join('\n'),
     biliIntervalSeconds: config.biliIntervalSeconds,
     biliAutoCreate: config.biliAutoCreate,
     biliDownloadPath: config.biliDownloadPath,
@@ -270,8 +268,6 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
       fishReferenceId: draft.fishReferenceId,
       asrApiKey: draft.asrApiKey || null,
       asrModel: draft.asrModel || 'qwen3-asr-flash-realtime',
-      excludedApps: draft.excludedApps.split('\n').map((s) => s.trim()).filter(Boolean),
-      excludedTitleKeywords: draft.excludedTitleKeywords.split('\n').map((s) => s.trim()).filter(Boolean),
       biliIntervalSeconds: draft.biliIntervalSeconds,
       biliAutoCreate: draft.biliAutoCreate,
       biliDownloadPath: draft.biliDownloadPath || 'E:\\BiliDownloads',
@@ -595,27 +591,6 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
         )}
 
         {activeSection === 'network' && <NetworkProxyForm />}
-
-        {activeSection === 'privacy' && (
-        <Section title="隐私" icon={Lock}>
-          <label style={labelStyle}>排除关键词（每行一个）</label>
-          <textarea
-            value={draft.excludedTitleKeywords}
-            onChange={(e) => update('excludedTitleKeywords', e.target.value)}
-            rows={4}
-            style={textareaStyle}
-          />
-          <div style={{ marginTop: 4 }}>
-            <MagneticButton
-              onClick={handleApply}
-              color={dirty ? theme.expGreen : theme.textSecondary}
-              disabled={!dirty}
-            >
-              保存
-            </MagneticButton>
-          </div>
-        </Section>
-        )}
 
         {activeSection === 'tracking' && trackingDraft && (
         <Section title="追踪" icon={Activity}>
@@ -1003,7 +978,6 @@ const SECTION_LIST: { id: string; label: string; icon: React.ElementType }[] = [
   { id: 'fairy',      label: 'Fairy',    icon: Eye },
   { id: 'voice',      label: '语音',     icon: Mic },
   { id: 'network',    label: '网络代理', icon: Globe },
-  { id: 'privacy',    label: '隐私',     icon: Lock },
   { id: 'tracking',   label: '追踪',     icon: Activity },
   { id: 'screenshot', label: '屏幕截图', icon: Camera },
   { id: 'ignore',     label: '忽略窗口', icon: Ban },

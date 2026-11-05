@@ -57,9 +57,6 @@ export interface AgentConfig {
   // ── Main Quest ──
   readonly mainQuest: string | null
 
-  // ── Privacy ──
-  readonly excludedApps: readonly string[]
-  readonly excludedTitleKeywords: readonly string[]
 }
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -106,12 +103,6 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
   mainQuest: null,
 
-  excludedApps: [],
-  excludedTitleKeywords: [
-    '密码', 'password', 'Password',
-    '银行', 'bank', 'Bank',
-    '支付', 'payment', 'Payment',
-  ],
 }
 
 // ── Load / Save ──
@@ -133,7 +124,7 @@ export async function loadConfig(onReadFail?: AgentConfig): Promise<AgentConfig>
       // Remove null values so defaults from DEFAULT_CONFIG are not overwritten
       const cleaned: Partial<AgentConfig> = {}
       for (const [k, v] of Object.entries(parsed)) {
-        if (v !== null && v !== undefined && !['voiceModel', 'voicePipeline', 'omniContextRounds', 'openaiModel', 'omniAsrEnabled', 'omniTtsEnabled', 'chatModel'].includes(k)) {
+        if (v !== null && v !== undefined && !['voiceModel', 'voicePipeline', 'omniContextRounds', 'openaiModel', 'omniAsrEnabled', 'omniTtsEnabled', 'chatModel', 'excludedApps', 'excludedTitleKeywords'].includes(k)) {
           (cleaned as Record<string, unknown>)[k] = v
         }
       }
