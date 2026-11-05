@@ -198,13 +198,13 @@ http://127.0.0.1:9222/json/version
 
 ### Mobile 客户端
 
-位于 `clients/mobile/`。React Native 0.85，自家 native module（SolevupDb / SyncServer / SyncClient / Updater / Perception / Omni / Voice / FairyFs），不引第三方"非必要"的 native 包；可视化基础设施类的（`react-native-svg`、`react-native-safe-area-context` 等）按需引入。Android + iOS 共享 TS 代码。开发分支 `feat/mobile`，主开发目标先做 Android，iOS 后续补。
+位于 `clients/mobile/`。React Native 0.85，自家 native module（SolevupDb / SyncServer / SyncClient / Updater / Perception / Omni / Voice / FairyFs / ChatImage），不引第三方"非必要"的 native 包；可视化基础设施类的（`react-native-svg`、`react-native-safe-area-context` 等）按需引入。Android + iOS 共享 TS 代码。开发分支 `feat/mobile`，主开发目标先做 Android，iOS 后续补。
 
 **包名：** `com.solevup.mobile`（入口 `MainActivity`）
 
 #### 开发环境
 
-- Node ≥ 20，JDK 17，Android SDK + emulator
+- Node ≥ 20，JDK 17，Android SDK + emulator。`minSdk` 是 30（Android 11），更低的设备装不上
 - 调试用 **MuMu 模拟器**（用户本机已装，adb 自动检测）— `adb devices` 应能看到一台 `127.0.0.1:xxxx`
 - 屏幕已锁竖屏：`android/app/src/main/AndroidManifest.xml` 的 `MainActivity` 加了 `android:screenOrientation="portrait"`，改了要重新 `assembleDebug`
 
@@ -399,9 +399,11 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 
 同步服务随进程启动（`android/.../sync/SyncRuntime.kt`），不依赖打开感知层页面；感知层页面只做配对（`src/components/sync/PairingCard.tsx`）。端口 `39733`，和 desktop 一致（`clients/desktop/src-tauri/src/api.rs`）。
 
-- 全量 `/api/sync/{hello,export,import}`：活动数据、Key、模型用量，按 LWW 合并。
+- 配对：一边显示 6 位配对码（5 分钟有效、用一次就失效、错 5 次作废），另一边用它调 `POST /api/sync/pair` 换长期令牌，两边都存进 `linked_devices.auth_token`。之后的请求带 `Authorization: Bearer`，发现到的新地址要通过挑战应答才用。只有 `hello`、`pair`（手机端还有 `ping`）不要令牌。流量仍是明文 HTTP。规则两端各有一份（`sync_auth.rs`、`SyncPairing.kt`），改规则要同时改两端。
+- 全量 `/api/sync/{hello,export,import}`：活动数据、Key、模型用量，按 LWW 合并。Fish Key 也在 Key 库里（`provider='fish'`、`id='fish-audio'`），音色和模型不同步。
 - 聊天增量 `/api/sync/chat`：触发器写 `chat_sync_log`，按对端存游标，不进全量导出。
 - 合并规则两端各有一份（`db.rs chat_sync_import`、`SolevupDb.kt importChatPage`）。改规则要同时改两端，并更新和运行 `python3 clients/mobile/alignment/chat_sync_sim.py`。
+- 聊天图片文件只存在发送设备的 `<数据目录>/chat-images/`，消息正文开头的 `[图片:id1,id2]` 标记随聊天同步，其他设备显示占位。标记规则两端各有一份（两端 `chat-images.ts`、`db.rs chat_image_ids`、`SolevupDb.kt chatImageIds`），改规则要同时改两端。
 - 想法卡、锚点等表没有 `updated_at`，不在同步协议里，桌面端是唯一数据源。手机端经 `src/lib/desktop-api.ts` 直接读写已配对的桌面端，连不上时写入进待发送队列（`src/lib/ai/anchor-outbox.ts`）。
 
 #### 桌面端对齐清单
@@ -480,7 +482,7 @@ python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
 - `src/lib/agent/tools/` — 工具定义和实现，按领域分文件；提示词在 `src/lib/ai/prompt-templates.ts`
 - `src/lib/llm/` — 流式调用、Anthropic 通道、`context-window`（静态前缀 + 每轮 reminder + 压缩）、`query-loop`（工具循环）
 - `src/lib/models/registry.ts` — 模型库种子，和 `db.rs seed_model_registry` 结构一一对应，桌面端改种子要同步
-- `src/lib/voice/` + `android/.../voice/` — 录音、流式识别、Fish TTS；`android/.../omni/` 是实时语音
+- `src/lib/voice/` + `android/.../voice/` — 录音、流式识别、Fish TTS；`android/.../omni/` 是实时语音。`lib/voice/omni-turn.ts`（等回复的看门狗）桌面端有同一份，改要同步
 - `src/components/fairy/` — 聊天面板、气泡、Markdown、会话选择器、设置；`src/components/models/` + `ModelCenter.tsx` — 模型中心
 
 ### 昼夜表设计要点

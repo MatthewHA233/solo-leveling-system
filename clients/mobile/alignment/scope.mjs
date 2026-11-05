@@ -87,6 +87,8 @@ export const SCOPE = [
       { file: `${D}lib/network-api.ts`, target: `${M}lib/voice/fish-tts.ts` },
       { file: `${R}network.rs`, target: `${K}voice/` },
       { file: LIB_RS, only: /fish_tts|omni_|voice_|voice::|asr_/, target: `${K}voice/` },
+      { file: `${D}lib/voice/omni-turn.ts`, target: `${M}lib/voice/omni-turn.ts` },
+      { file: `${D}lib/voice/pcm16.ts`, target: `${K}voice/PcmPlayer.kt` },
     ],
   },
   {
@@ -103,6 +105,8 @@ export const SCOPE = [
       { file: `${D}components/ui/IconButton.tsx`, target: '' },
       { file: `${D}components/ui/LedSegments.tsx`, target: '' },
       { file: `${D}theme.ts`, target: '' },
+      { file: `${D}lib/agent/chat-images.ts`, target: `${M}lib/agent/chat-images.ts` },
+      { file: LIB_RS, only: /chat_image/, target: `${K}chatimage/` },
     ],
   },
   {
@@ -138,6 +142,8 @@ export const SCOPE = [
       { file: `${R}db.rs`, only: /sync|Sync|linked|Linked|device_id|pair_code|generate_alias/, target: `${K}solevupdb/SolevupDb.kt` },
       { file: `${R}api.rs`, only: /sync_|SyncHello|create_router|SYNC_BODY/, target: `${K}syncserver/SyncHttpServer.kt` },
       { file: LOCAL_API, only: /[Ss]ync|Linked|linked|Peer|peer/, target: `${M}lib/syncclient.ts` },
+      { file: `${R}sync_auth.rs`, target: `${K}sync/SyncPairing.kt` },
+      { file: `${D}components/SyncPeerDialog.tsx`, target: `${M}components/sync/PairingCard.tsx` },
     ],
   },
   {
