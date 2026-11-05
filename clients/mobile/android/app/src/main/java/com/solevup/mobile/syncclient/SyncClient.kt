@@ -6,10 +6,12 @@ import com.solevup.mobile.solevupdb.SyncJson
 import com.solevup.mobile.sync.SyncPairing
 import com.solevup.mobile.sync.SyncProtocol
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Mobile 主动 HTTP client，跟 desktop sync_engine.rs bidirectional_sync 同形态：
@@ -29,6 +31,9 @@ object SyncClient {
   private const val MAX_BODY_LEN = 32 * 1024 * 1024  // 32MB 安全上限
   private const val CHAT_PAGE_BYTES = 1_500_000
   private const val CHAT_MAX_PAGES = 200
+  private const val CHAT_IMAGE_MAX_BYTES = 16 * 1024 * 1024
+  private const val CHAT_IMAGE_BATCH = 32
+  private const val CHAT_IMAGE_RETRY_MS = 600_000L // 对端也没有的图片（可能是第三台设备发的），隔这么久再问
   private const val PAIRING_REJECTED = "对方不认这次配对了，可能已经解除。请解除链接后重新配对"
 
   data class SyncRoundResult(
@@ -39,6 +44,8 @@ object SyncClient {
   )
 
   class SyncException(msg: String, cause: Throwable? = null) : Exception(msg, cause)
+
+  private val chatImageMisses = ConcurrentHashMap<String, Long>()
 
   data class PairedPeer(val token: String, val deviceId: String, val alias: String)
 
@@ -125,12 +132,75 @@ object SyncClient {
 
     // 5) 聊天记录走独立通道
     val (chatPulled, chatPushed) = syncChat(db, base, peerDeviceId, token)
+
+    // 6) 消息同步过来了，图片文件也要有。失败不影响这一轮，下一轮再试
+    val chatImages = pullChatImages(db, base, peerDeviceId, token)
     return SyncRoundResult(
-      pulled.copy(chatSessions = chatPulled.chatSessions, chatMessages = chatPulled.chatMessages),
+      pulled.copy(chatSessions = chatPulled.chatSessions, chatMessages = chatPulled.chatMessages, chatImages = chatImages),
       pushed.copy(chatSessions = chatPushed.chatSessions, chatMessages = chatPushed.chatMessages),
       peerDeviceId,
       peerAlias,
     )
+  }
+
+  /** 消息引用了、本机没有文件的图片，从这台对端拉（规则见 src/lib/agent/chat-images.ts） */
+  private fun pullChatImages(db: SolevupDb, base: String, peerDeviceId: String, token: String): Int {
+    val dir = db.chatImageDir
+    var pulled = 0
+    var tried = 0
+    try {
+      for (id in db.chatImageIds()) {
+        if (tried >= CHAT_IMAGE_BATCH) break
+        if (!SyncProtocol.isChatImageId(id) || File(dir, "$id.jpg").exists()) continue
+        val missKey = "$peerDeviceId:$id"
+        val missedAt = chatImageMisses[missKey]
+        if (missedAt != null && System.currentTimeMillis() - missedAt < CHAT_IMAGE_RETRY_MS) continue
+        tried++
+        val bytes = fetchChatImage("$base/api/sync/chat-image/$id", token)
+        if (bytes == null) {
+          chatImageMisses[missKey] = System.currentTimeMillis()
+          continue
+        }
+        savePulledImage(dir, id, bytes)
+        pulled++
+      }
+    } catch (t: Throwable) {
+      Log.i(TAG, "拉图片中断 ($base): ${t.message}")
+    }
+    return pulled
+  }
+
+  /** null = 对端没有这张（旧版对端没有这个接口，也算没有） */
+  private fun fetchChatImage(url: String, token: String): ByteArray? {
+    val conn = (URL(url).openConnection(Proxy.NO_PROXY) as HttpURLConnection).apply {
+      requestMethod = "GET"
+      connectTimeout = CONNECT_TIMEOUT_MS
+      readTimeout = READ_TIMEOUT_MS
+      setRequestProperty("Authorization", "Bearer $token")
+      useCaches = false
+    }
+    return try {
+      conn.connect()
+      val code = conn.responseCode
+      if (code == HttpURLConnection.HTTP_UNAUTHORIZED) throw SyncException(PAIRING_REJECTED)
+      if (code !in 200..299) return null
+      val bytes = conn.inputStream.use { it.readBytes() }
+      val isJpeg = bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte()
+      if (bytes.size > CHAT_IMAGE_MAX_BYTES || !isJpeg) null else bytes
+    } finally {
+      conn.disconnect()
+    }
+  }
+
+  /** 先写临时文件再改名：中途断了不会留下半张图 */
+  private fun savePulledImage(dir: File, id: String, bytes: ByteArray) {
+    dir.mkdirs()
+    val part = File(dir, "$id.part")
+    part.writeBytes(bytes)
+    if (!part.renameTo(File(dir, "$id.jpg"))) {
+      part.delete()
+      throw SyncException("保存图片失败")
+    }
   }
 
   /** 旧版对端没有 /api/sync/chat：游标不前进，等它升级后补齐。 */
@@ -191,10 +261,10 @@ object SyncClient {
   }
 
   /** GET <url>/api/sync/hello → 拿对端 device_id + alias。这个接口公开，不带令牌。 */
-  fun fetchHello(peerBase: String, query: String = ""): JSONObject {
+  fun fetchHello(peerBase: String, query: String = "", timeoutMs: Int? = null): JSONObject {
     val base = SyncProtocol.normalizeBase(peerBase)
     val url = if (query.isEmpty()) "$base/api/sync/hello" else "$base/api/sync/hello?$query"
-    val envelope = httpGetJson(url, null)
+    val envelope = httpGetJson(url, null, timeoutMs)
       ?: throw SyncException("hello 失败: 空响应")
     if (!envelope.optBoolean("success")) {
       throw SyncException("hello 错误: ${envelope.optString("error", "unknown")}")
@@ -203,11 +273,11 @@ object SyncClient {
       ?: throw SyncException("hello 数据为空")
   }
 
-  private fun httpGetJson(url: String, token: String?): JSONObject? {
+  private fun httpGetJson(url: String, token: String?, timeoutMs: Int? = null): JSONObject? {
     val conn = (URL(url).openConnection(Proxy.NO_PROXY) as HttpURLConnection).apply {
       requestMethod = "GET"
-      connectTimeout = CONNECT_TIMEOUT_MS
-      readTimeout = READ_TIMEOUT_MS
+      connectTimeout = timeoutMs ?: CONNECT_TIMEOUT_MS
+      readTimeout = timeoutMs ?: READ_TIMEOUT_MS
       setRequestProperty("Accept", "application/json")
       if (token != null) setRequestProperty("Authorization", "Bearer $token")
       useCaches = false

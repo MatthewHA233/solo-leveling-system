@@ -2,9 +2,9 @@
 // Fish TTS 客户端 — native 后端版（对应 desktop fish-tts-tauri.ts）
 // 通过 Kotlin 后端连接 WebSocket（android/.../voice/FishTtsClient.kt）
 //
-// 代理：桌面端走齿轮页「网络代理」设置的本机端口（network-api.ts / network.rs）。
-// 手机上没有本机代理端口这个概念：Clash 一类工具以系统 VPN 形式工作，对 App 透明，
-// 手动配置的系统 HTTP 代理 OkHttp 也会自动遵守，所以这里没有 proxyPort，也没有网络设置页。
+// 代理：和桌面端一样走「网络代理」设置的本机端口（lib/network.ts、AppProxy.kt）。
+// 手机上这个设置可以留空：Clash 一类工具以系统 VPN 形式工作，对 App 透明，手动配置的系统 HTTP 代理 OkHttp 也会自动遵守。
+// 端口在原生层生效，所以这里没有 proxyPort。
 //
 // 音频：桌面端把 PCM 发给前端，由 WebAudio 播放并收集成 WAV。
 // 手机端直接在 native 进 AudioTrack 并攒 WAV，前端只收进度；播放进度和整段音频按需查询。

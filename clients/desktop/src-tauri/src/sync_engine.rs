@@ -93,12 +93,13 @@ fn normalize_base(base: &str) -> String {
 #[derive(Debug, Deserialize)]
 struct HelloProof {
     device_id: String,
+    alias: Option<String>,
     proof: Option<String>,
 }
 
 /// 发现广播和地址都可能是假的：对面算得出应答，才说明它持有同一个令牌。
-/// 这一步不能带令牌，所以用普通 client
-async fn verify_peer(base: &str, self_id: &str, device_id: &str, token: &str) -> Result<(), String> {
+/// 这一步不能带令牌，所以用普通 client。通过时返回对面现在的别名
+async fn verify_peer(base: &str, self_id: &str, device_id: &str, token: &str) -> Result<Option<String>, String> {
     let challenge = sync_auth::new_challenge();
     let resp: ApiEnvelope<HelloProof> = http_client()?
         .get(format!("{}/api/sync/hello", base))
@@ -116,7 +117,7 @@ async fn verify_peer(base: &str, self_id: &str, device_id: &str, token: &str) ->
         return Err(format!("地址 {} 已不是这台设备", base));
     }
     match hello.proof {
-        Some(proof) if sync_auth::verify_proof(token, &challenge, device_id, &proof) => Ok(()),
+        Some(proof) if sync_auth::verify_proof(token, &challenge, device_id, &proof) => Ok(hello.alias),
         _ => Err("对方不认这次配对了，可能已经解除。请解除链接后重新配对".to_string()),
     }
 }
@@ -170,7 +171,11 @@ async fn bidirectional_sync_at(
     base: &str,
 ) -> Result<SyncRoundResult, String> {
     let self_id = db.sync_device_id().await?;
-    verify_peer(base, &self_id, &link.device_id, &link.auth_token).await?;
+    let peer_alias = verify_peer(base, &self_id, &link.device_id, &link.auth_token).await?;
+    // 对方可能改过名。校验通过才信
+    if let Some(alias) = peer_alias.filter(|a| !a.trim().is_empty() && *a != link.alias) {
+        db.set_link_alias(&link.device_id, &alias).await?;
+    }
     let client = authed_client(&link.auth_token)?;
 
     // 1) 拉对端快照
@@ -209,7 +214,78 @@ async fn bidirectional_sync_at(
         log::info!("[SyncEngine] 聊天记录同步跳过 ({}): {}", base, e);
     }
 
+    // 6) 消息同步过来了，图片文件也要有。失败不影响这一轮，下一轮再试
+    pulled.chat_images = pull_chat_images(&db, &client, base, &peer_device_id).await;
+
     Ok(SyncRoundResult { pulled, pushed })
+}
+
+const CHAT_IMAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
+const CHAT_IMAGE_BATCH: usize = 32;
+/// 对端也没有的图片（可能是第三台设备发的），隔这么久再问
+const CHAT_IMAGE_RETRY: Duration = Duration::from_secs(600);
+
+fn chat_image_misses() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
+    static MISSES: OnceLock<std::sync::Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    MISSES.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// 消息引用了、本机没有文件的图片，从这台对端拉（规则见 src/lib/agent/chat-images.ts）
+async fn pull_chat_images(db: &Database, client: &reqwest::Client, base: &str, peer_device_id: &str) -> usize {
+    let ids = match db.chat_image_ids().await {
+        Ok(ids) => ids,
+        Err(e) => {
+            log::warn!("[SyncEngine] 读图片引用失败: {}", e);
+            return 0;
+        }
+    };
+    let dir = crate::chat_image_root();
+    let mut pulled = 0;
+    let mut tried = 0;
+    for id in ids {
+        if tried >= CHAT_IMAGE_BATCH { break; }
+        if !crate::is_chat_image_id(&id) || dir.join(format!("{}.jpg", id)).exists() { continue; }
+        let miss_key = format!("{}:{}", peer_device_id, id);
+        if lock_map(chat_image_misses()).get(&miss_key).is_some_and(|at| at.elapsed() < CHAT_IMAGE_RETRY) {
+            continue;
+        }
+        tried += 1;
+        match fetch_chat_image(client, base, &id).await {
+            Ok(Some(bytes)) => match save_pulled_image(&dir, &id, &bytes) {
+                Ok(()) => pulled += 1,
+                Err(e) => log::warn!("[SyncEngine] 保存图片失败: {}", e),
+            },
+            Ok(None) => { lock_map(chat_image_misses()).insert(miss_key, Instant::now()); }
+            Err(e) => {
+                log::info!("[SyncEngine] 拉图片中断 ({}): {}", base, e);
+                break;
+            }
+        }
+    }
+    pulled
+}
+
+/// None = 对端没有这张（旧版对端没有这个接口，也算没有）
+async fn fetch_chat_image(client: &reqwest::Client, base: &str, id: &str) -> Result<Option<Vec<u8>>, String> {
+    let resp = client.get(format!("{}/api/sync/chat-image/{}", base, id)).send().await.map_err(|e| e.to_string())?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("令牌失效".to_string());
+    }
+    if !resp.status().is_success() { return Ok(None); }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.len() > CHAT_IMAGE_MAX_BYTES || !bytes.starts_with(&[0xFF, 0xD8]) { return Ok(None); }
+    Ok(Some(bytes.to_vec()))
+}
+
+/// 先写临时文件再改名：中途断了不会留下半张图
+fn save_pulled_image(dir: &std::path::Path, id: &str, bytes: &[u8]) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let part = dir.join(format!("{}.part", id));
+    std::fs::write(&part, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&part, dir.join(format!("{}.jpg", id))).map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        e.to_string()
+    })
 }
 
 /// 旧版对端没有 /api/sync/chat：游标不前进，等它升级后补齐

@@ -28,7 +28,7 @@ use crate::db::{
     AddCategoryRequest, AddTagRequest, PaintBlocksRequest, EraseBlocksRequest,
     AddPlanNodeRequest, UpdatePlanNodeRequest, MovePlanNodeRequest, PaintPlannedBlocksRequest,
     UpdateCategoryRequest, RenamePathRequest, PerceptionSpan, SyncExport, SyncImportResult,
-    ChatSyncPage, ChatSyncImportResult, LinkedDevice,
+    ChatSyncPage, ChatSyncImportResult, LinkedDevice, SyncSetting,
 };
 use crate::bili_download::{BiliDownloadState, PlayUrlMeta, QualityProbe, deliver_playurl_result, deliver_probe_result};
 use crate::sync_discovery::{SyncDiscoveryState, SyncPeer};
@@ -672,7 +672,8 @@ async fn sync_import(
                 + result.model_api_keys
                 + result.model_call_log
                 + result.model_free_quota
-                + result.feature_bindings;
+                + result.feature_bindings
+                + result.settings;
             if total > 0 {
                 let _ = state.app_handle.emit("sync:imported", serde_json::json!({
                     "from_device_id": from_device_id,
@@ -683,6 +684,44 @@ async fn sync_import(
             Json(ApiResponse::ok(result))
         }
         Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SaveSettingPayload {
+    key: String,
+    value: String,
+    #[serde(default)]
+    seed: bool,
+}
+
+/// GET /api/sync/settings — 在设备间共享的设置
+async fn sync_settings_list(State(state): State<ApiState>) -> Json<ApiResponse<Vec<SyncSetting>>> {
+    match state.db.list_synced_settings().await {
+        Ok(rows) => Json(ApiResponse::ok(rows)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// PUT /api/sync/settings — 本机改了设置
+async fn sync_settings_save(
+    State(state): State<ApiState>,
+    Json(payload): Json<SaveSettingPayload>,
+) -> Json<ApiResponse<()>> {
+    match state.db.save_synced_setting(&payload.key, &payload.value, payload.seed).await {
+        Ok(()) => Json(ApiResponse::ok(())),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// GET /api/sync/chat-image/{id} — 聊天图片文件（规则见 src/lib/agent/chat-images.ts）
+async fn sync_chat_image(Path(id): Path<String>) -> Response {
+    if !crate::is_chat_image_id(&id) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match tokio::fs::read(crate::chat_image_root().join(format!("{}.jpg", id))).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "image/jpeg")], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -1916,6 +1955,8 @@ pub fn create_router(
         .route("/api/sync/export", get(sync_export))
         .route("/api/sync/import", post(sync_import))
         .route("/api/sync/chat", get(sync_chat_page).post(sync_chat_import))
+        .route("/api/sync/chat-image/{id}", get(sync_chat_image))
+        .route("/api/sync/settings", get(sync_settings_list).put(sync_settings_save))
         .route("/api/sync/peers", get(sync_peers))
         .route("/api/sync/discover", post(sync_discover))
         .route("/api/sync/probe", get(sync_probe))

@@ -20,6 +20,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.solevup.mobile.solevupdb.SolevupDb
+import com.solevup.mobile.sync.SyncProtocol
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
@@ -40,7 +41,7 @@ class ChatImageModule(private val ctx: ReactApplicationContext) :
 
   override fun getName(): String = "ChatImage"
 
-  private val dir: File get() = File(ctx.filesDir, DIR_NAME)
+  private val dir: File get() = SolevupDb.shared(ctx).chatImageDir
 
   @ReactMethod
   fun getDirUri(promise: Promise) {
@@ -165,6 +166,21 @@ class ChatImageModule(private val ctx: ReactApplicationContext) :
   }
 
   /** 清掉没有消息引用的旧文件。刚选还没发的不动：消息还没落库 */
+  /** 重新打开会话时把图片再发给模型用；文件不在返回 null */
+  @ReactMethod
+  fun read(id: String, promise: Promise) {
+    Thread({
+      try {
+        val file = File(dir, "$id.jpg")
+        promise.resolve(
+          if (SyncProtocol.isChatImageId(id) && file.isFile) Base64.encodeToString(file.readBytes(), Base64.NO_WRAP) else null
+        )
+      } catch (t: Throwable) {
+        promise.reject("READ_FAILED", t.message, t)
+      }
+    }, "solevup-chat-image-read").start()
+  }
+
   @ReactMethod
   fun sweep(promise: Promise) {
     Thread({
@@ -184,7 +200,6 @@ class ChatImageModule(private val ctx: ReactApplicationContext) :
 
   private companion object {
     const val TAG = "ChatImage"
-    const val DIR_NAME = "chat-images"
     const val REQUEST_PICK = 0x5a11
     const val MAX_EDGE = 1568
     const val JPEG_QUALITY = 85

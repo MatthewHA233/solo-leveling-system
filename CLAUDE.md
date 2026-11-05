@@ -198,7 +198,7 @@ http://127.0.0.1:9222/json/version
 
 ### Mobile 客户端
 
-位于 `clients/mobile/`。React Native 0.85，自家 native module（SolevupDb / SyncServer / SyncClient / Updater / Perception / Omni / Voice / FairyFs / ChatImage），不引第三方"非必要"的 native 包；可视化基础设施类的（`react-native-svg`、`react-native-safe-area-context` 等）按需引入。Android + iOS 共享 TS 代码。开发分支 `feat/mobile`，主开发目标先做 Android，iOS 后续补。
+位于 `clients/mobile/`。React Native 0.85，自家 native module（SolevupDb / SyncServer / SyncClient / Updater / Perception / Omni / Voice / FairyFs / ChatImage / Network），不引第三方"非必要"的 native 包；可视化基础设施类的（`react-native-svg`、`react-native-safe-area-context` 等）按需引入。Android + iOS 共享 TS 代码。开发分支 `feat/mobile`，主开发目标先做 Android，iOS 后续补。
 
 **包名：** `com.solevup.mobile`（入口 `MainActivity`）
 
@@ -400,11 +400,13 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 同步服务随进程启动（`android/.../sync/SyncRuntime.kt`），不依赖打开感知层页面；感知层页面只做配对（`src/components/sync/PairingCard.tsx`）。端口 `39733`，和 desktop 一致（`clients/desktop/src-tauri/src/api.rs`）。
 
 - 配对：一边显示 6 位配对码（5 分钟有效、用一次就失效、错 5 次作废），另一边用它调 `POST /api/sync/pair` 换长期令牌，两边都存进 `linked_devices.auth_token`。之后的请求带 `Authorization: Bearer`，发现到的新地址要通过挑战应答才用。只有 `hello`、`pair`（手机端还有 `ping`）不要令牌。流量仍是明文 HTTP。规则两端各有一份（`sync_auth.rs`、`SyncPairing.kt`），改规则要同时改两端。
-- 全量 `/api/sync/{hello,export,import}`：活动数据、Key、模型用量，按 LWW 合并。Fish Key 也在 Key 库里（`provider='fish'`、`id='fish-audio'`），音色和模型不同步。
+- 全量 `/api/sync/{hello,export,import}`：活动数据、Key、模型用量，按 LWW 合并。Fish Key 也在 Key 库里（`provider='fish'`、`id='fish-audio'`）。
+- 设置：表 `synced_settings`，跟着全量同步，按 `updated_at` 取新。现在只有 Fish 音色和模型，其他配置每台设备各管各的。手动改才写表，同步进来的只更新配置，不写回。规则两端各有一份（两端 `lib/agent/synced-settings.ts`、`db.rs SYNCED_SETTING_KEYS`、`SolevupDb.kt SYNCED_SETTING_KEYS`），改规则要同时改两端。
 - 聊天增量 `/api/sync/chat`：触发器写 `chat_sync_log`，按对端存游标，不进全量导出。
 - 合并规则两端各有一份（`db.rs chat_sync_import`、`SolevupDb.kt importChatPage`）。改规则要同时改两端，并更新和运行 `python3 clients/mobile/alignment/chat_sync_sim.py`。
-- 聊天图片文件只存在发送设备的 `<数据目录>/chat-images/`，消息正文开头的 `[图片:id1,id2]` 标记随聊天同步，其他设备显示占位。标记规则两端各有一份（两端 `chat-images.ts`、`db.rs chat_image_ids`、`SolevupDb.kt chatImageIds`），改规则要同时改两端。
+- 聊天图片文件在 `<数据目录>/chat-images/`，消息正文开头的 `[图片:id1,id2]` 标记随聊天同步。每轮同步后，发起方经 `GET /api/sync/chat-image/{id}`（要令牌）拉本机缺的文件，还没拉到时显示占位。标记规则两端各有一份（两端 `chat-images.ts`、`db.rs chat_image_ids`、`SolevupDb.kt chatImageIds`），拉取规则也是（`sync_engine.rs pull_chat_images`、`SyncClient.kt pullChatImages`），改规则要同时改两端。
 - 想法卡、锚点等表没有 `updated_at`，不在同步协议里，桌面端是唯一数据源。手机端经 `src/lib/desktop-api.ts` 直接读写已配对的桌面端，连不上时写入进待发送队列（`src/lib/ai/anchor-outbox.ts`）。
+- 手机代理不走同步，每台设备自己的（Fairy 设置 → 网络，`android/.../net/AppProxy.kt`、`src/lib/network.ts`）。只有 Anthropic 和 Fish 走这个本机端口，留空时跟随系统代理或 VPN。
 
 #### 桌面端对齐清单
 

@@ -4,6 +4,7 @@
 // ══════════════════════════════════════════════
 
 import { NativeModules, Platform } from 'react-native'
+import { recentImageIds } from './agent/chat-images'
 import type { ImageBlock } from './llm/types'
 
 export const MAX_CHAT_IMAGES = 4
@@ -18,6 +19,7 @@ type NativeShape = {
   pick(max: number): Promise<{ images: { id: string; uri: string; base64: string; mediaType: string }[]; failed: number; skipped: number }>
   getDirUri(): Promise<string>
   sweep(): Promise<number>
+  read(id: string): Promise<string | null>
 }
 
 const Native: NativeShape | null = Platform.OS === 'android' ? (NativeModules.ChatImage as NativeShape) : null
@@ -48,4 +50,19 @@ export async function initChatImages(): Promise<void> {
 
 export function chatImageUri(id: string): string {
   return dirUri ? `${dirUri}/${id}.jpg` : ''
+}
+
+/** 重新打开会话时读回最近的图片。读不到的（没同步过来、被清理）不放进结果 */
+export async function loadRestoredImages(
+  msgs: readonly { readonly role: string; readonly content?: string | null }[],
+): Promise<Map<string, ImageBlock>> {
+  const loaded = new Map<string, ImageBlock>()
+  if (!Native) return loaded
+  const native = Native
+  const userContents = msgs.filter((m) => m.role === 'user').map((m) => (m.content ?? '').trim())
+  await Promise.all(recentImageIds(userContents).map(async (id) => {
+    const data = await native.read(id).catch(() => null)
+    if (data) loaded.set(id, { type: 'image', mediaType: 'image/jpeg', data })
+  }))
+  return loaded
 }

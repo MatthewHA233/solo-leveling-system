@@ -12,9 +12,9 @@ import { DeviceEventEmitter } from 'react-native'
 
 import type { ChatMessage } from '../../types'
 import { createTitleFlow, DEFAULT_SESSION_TITLE, type TitleFlow } from '../ai/session-title-flow'
-import { chatImageUri } from '../chatimage'
+import { chatImageUri, loadRestoredImages } from '../chatimage'
 import { compactHistory } from '../llm/context-window'
-import { createAssistantMessage, createUserMessage, type Message } from '../llm/types'
+import { createAssistantMessage, createUserMessage, type ImageBlock, type Message } from '../llm/types'
 import { randomUUID } from '../llm/uuid'
 import { parseModelCallLog } from '../models/model-audit'
 import { refreshModelCatalog } from '../models/registry'
@@ -69,14 +69,18 @@ export function sessionMessagesToChatMessages(msgs: readonly SessionMessage[]): 
   return out
 }
 
-export function sessionMessagesToLLMHistory(msgs: readonly SessionMessage[]): Message[] {
+export function sessionMessagesToLLMHistory(
+  msgs: readonly SessionMessage[],
+  images?: ReadonlyMap<string, ImageBlock>,
+): Message[] {
   const out: Message[] = []
   for (const m of msgs) {
     if (m.role === 'tool') continue
     const content = (m.content ?? '').trim()
     if (!content) continue
     if (m.role === 'user') {
-      out.push(createUserMessage(describeImagesForModel(content)))
+      const blocks = parseImageMarker(content).ids.flatMap((id) => images?.get(id) ?? [])
+      out.push(createUserMessage(describeImagesForModel(content, blocks.length), { images: blocks }))
     } else if (m.role === 'assistant') {
       out.push(createAssistantMessage(content))
     }
@@ -233,6 +237,7 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
     }
     try {
       const msgs = await fetchSessionMessages(sessionId)
+      const restoredImages = await loadRestoredImages(msgs)
       stopCurrentTurn()
       core.sessionId = sessionId
       core.persistedBuffer = [...msgs]
@@ -240,7 +245,7 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
       const info = title ?? core.sessions.find((s) => s.id === sessionId)?.title
       applySessionTitle(info || DEFAULT_SESSION_TITLE)
       titleFlow.reset(sessionId, info || DEFAULT_SESSION_TITLE, countUserMessages(msgs))
-      core.setConversation(compactHistory(sessionMessagesToLLMHistory(msgs)))
+      core.setConversation(compactHistory(sessionMessagesToLLMHistory(msgs, restoredImages)))
       core.setMessages(() => sessionMessagesToChatMessages(msgs))
       performJump()
     } catch {
@@ -308,7 +313,7 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
       titleFlow.reset(sessionId, restoredTitle, countUserMessages(state.messages))
 
       if (state.messages.length > 0) {
-        core.setConversation(compactHistory(sessionMessagesToLLMHistory(state.messages)))
+        core.setConversation(compactHistory(sessionMessagesToLLMHistory(state.messages, await loadRestoredImages(state.messages))))
         core.setMessages(() => sessionMessagesToChatMessages(state.messages))
       }
     } catch {
@@ -347,6 +352,9 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
   const onDbChanged = async (changed: Record<string, number | undefined>) => {
     // 导入了新的模型表：同步读取的缓存要刷新，否则计费和选择器还是旧的
     if ((changed.modelRegistry ?? 0) > 0) void refreshModelCatalog()
+    if ((changed.settings ?? 0) > 0) {
+      core.applySyncedSettings().catch((e) => console.warn('[Chat] 读取同步设置失败', e))
+    }
     if (!changed.chatSessions && !changed.chatMessages) return
     refreshSessions()
     const sid = core.sessionId

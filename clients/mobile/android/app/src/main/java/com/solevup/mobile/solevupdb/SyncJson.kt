@@ -74,6 +74,13 @@ object SyncJson {
     o.put("model_call_log", JSONArray().apply {
       for (r in ex.modelCallLog) put(modelCallLogToJson(r))
     })
+    o.put("settings", JSONArray().apply {
+      for (r in ex.settings) put(JSONObject().apply {
+        put("key", r.key)
+        put("value", r.value)
+        put("updated_at", r.updatedAt)
+      })
+    })
     o.put("model_free_quota", JSONArray().apply {
       for (r in ex.modelFreeQuota) put(JSONObject().apply {
         put("model_id", r.modelId)
@@ -226,6 +233,9 @@ object SyncJson {
       modelFreeQuota = parseModelFreeQuota(o),
       featureBindings = parseFeatureBindings(o),
       modelRegistry = parseModelRegistry(o),
+      settings = arr(o, "settings") {
+        SolevupDb.SyncSettingRow(it.getString("key"), it.getString("value"), it.getString("updated_at"))
+      },
     )
 
   fun importResultToJson(r: SolevupDb.ImportResult): JSONObject = JSONObject().apply {
@@ -241,6 +251,8 @@ object SyncJson {
     put("chat_sessions", r.chatSessions)
     put("chat_messages", r.chatMessages)
     put("model_registry", r.modelRegistry)
+    put("settings", r.settings)
+    put("chat_images", r.chatImages)
     put("skipped", r.skipped)
   }
 
@@ -257,6 +269,8 @@ object SyncJson {
     chatSessions = o.optInt("chat_sessions"),
     chatMessages = o.optInt("chat_messages"),
     modelRegistry = o.optInt("model_registry"),
+    settings = o.optInt("settings"),
+    chatImages = o.optInt("chat_images"),
     skipped = o.optInt("skipped"),
   )
 

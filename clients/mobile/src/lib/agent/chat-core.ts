@@ -6,6 +6,7 @@
 // React 侧经 chat-controller 订阅。
 // ══════════════════════════════════════════════
 
+import type { PickedImage } from '../chatimage'
 import type {
   FairyGazeTarget,
   FairyJumpTarget,
@@ -19,6 +20,8 @@ import { randomUUID } from '../llm/uuid'
 import { buildAsrVocabulary } from '../voice/asr-hints'
 import { DEFAULT_CONFIG, loadConfig, updateConfig, type AgentConfig } from './agent-config'
 import type { ChatSessionInfo, SessionMessage } from './agent-memory'
+import { solevupListSyncedSettings, solevupSaveSyncedSetting } from '../solevupdb'
+import { configUpdatesFromSettings, seedWrites, settingWrites } from './synced-settings'
 
 /** 流式增量最多这么久刷新一次界面（一批网络数据里有很多个 delta，不用每个都渲染） */
 const STREAM_EMIT_MS = 50
@@ -82,6 +85,8 @@ export class ChatCore {
   /** 最后读走对话历史的轮次：比它旧的轮次收尾时不能再写历史 */
   conversationOwner = 0
   replyControl: ReplyControl | null = null
+  /** 语音发送时取走待发的图片（输入框注册） */
+  takeVoiceImages: () => readonly PickedImage[] = () => []
   /** 上一轮回复收尾完成（新一轮先等它，否则历史会缺上一轮） */
   turnSettled: Promise<void> = Promise.resolve()
   /** 被另一台设备删除后改道：旧会话 id → 新会话 id */
@@ -171,10 +176,32 @@ export class ChatCore {
 
   /** 对应 desktop handleConfigUpdate：同步更新手里这份并存盘 */
   applyConfigUpdate(updates: Partial<AgentConfig>): void {
+    for (const { key, value } of settingWrites(this.config, updates)) {
+      solevupSaveSyncedSetting(key, value, false).catch((e) => console.warn('[Sync] 保存同步设置失败', e))
+    }
     this.configVersion += 1
     this.config = updateConfig(this.config, updates)
     this.onConfigChanged?.()
     this.emit()
+  }
+
+  /** 同步进来的设置只更新配置，不写回同步表（规则见 synced-settings.ts） */
+  async applySyncedSettings(): Promise<void> {
+    const updates = configUpdatesFromSettings(await solevupListSyncedSettings(), this.config)
+    if (Object.keys(updates).length === 0) return
+    this.configVersion += 1
+    this.config = updateConfig(this.config, updates)
+    this.onConfigChanged?.()
+    this.emit()
+  }
+
+  /** 启动时：用户改过默认值就写种子，再用同步表里的值 */
+  async initSyncedSettings(): Promise<void> {
+    const rows = await solevupListSyncedSettings()
+    await Promise.all(
+      seedWrites(rows, this.config, DEFAULT_CONFIG).map((w) => solevupSaveSyncedSetting(w.key, w.value, true)),
+    )
+    await this.applySyncedSettings()
   }
 
   /** 发送、开录前重读一次，别处直接存盘的配置也能生效（读的途中又改过就以手里这份为准） */

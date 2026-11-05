@@ -7,12 +7,15 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.solevup.mobile.solevupdb.SolevupDb
 import com.solevup.mobile.sync.SyncRuntime
+import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Mobile 主动同步 bridge，所有触发都走 SyncCoordinator：
  *   - listLinkedDevices()   → 已链接对端列表 + lastSyncedAt
  *   - linkPeer(baseUrl, code) → 用配对码换令牌 → addLinkedDevice → 立即 bidirectional 一次
  *   - verifyLinkedPeer(deviceId) → 确认对面持有同一个令牌（发私人内容前用）
+ *   - probeLinkedPeers()    → 配对页的在线状态和型号
  *   - unlinkPeer(deviceId)  → 解除
  *   - syncNow(deviceId)     → 手动触发一次
  *   - syncAll()             → 遍历所有 linked 跑一遍
@@ -90,6 +93,41 @@ class SyncClientModule(private val reactContext: ReactApplicationContext) :
     }.start()
   }
 
+  /** 每个已链接设备问一次 hello，只用来显示在线和型号，所以不校验令牌 */
+  @ReactMethod
+  fun probeLinkedPeers(promise: Promise) {
+    Thread {
+      try {
+        val links = db.listLinkedDevices()
+        val hellos = ConcurrentHashMap<String, JSONObject>()
+        links.map { link ->
+          Thread {
+            try {
+              val hello = SyncClient.fetchHello(link.lastBase, timeoutMs = PROBE_TIMEOUT_MS)
+              // 地址可能已被 DHCP 分给别的设备
+              if (hello.optString("device_id") == link.deviceId) hellos[link.deviceId] = hello
+            } catch (_: Throwable) {
+              // 离线
+            }
+          }.apply { start() }
+        }.forEach { it.join() }
+        val arr = Arguments.createArray()
+        for (link in links) {
+          val hello = hellos[link.deviceId]
+          arr.pushMap(Arguments.createMap().apply {
+            putString("deviceId", link.deviceId)
+            putBoolean("online", hello != null)
+            hello?.optString("device_type")?.let { putString("deviceType", it) }
+            hello?.optString("device_model")?.let { putString("deviceModel", it) }
+          })
+        }
+        promise.resolve(arr)
+      } catch (e: Throwable) {
+        promise.reject("PROBE_LINKS_FAILED", e.message, e)
+      }
+    }.start()
+  }
+
   @ReactMethod
   fun unlinkPeer(deviceId: String, promise: Promise) {
     try {
@@ -156,10 +194,13 @@ class SyncClientModule(private val reactContext: ReactApplicationContext) :
     putInt("chatSessions", r.chatSessions)
     putInt("chatMessages", r.chatMessages)
     putInt("modelRegistry", r.modelRegistry)
+    putInt("settings", r.settings)
+    putInt("chatImages", r.chatImages)
     putInt("skipped", r.skipped)
   }
 
   companion object {
     const val NAME = "SyncClient"
+    private const val PROBE_TIMEOUT_MS = 2_500
   }
 }

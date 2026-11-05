@@ -13,6 +13,7 @@
 
 import { logModelUsage } from '../models/model-audit'
 import { omniStop } from '../omni'
+import { withImageMarker } from './chat-images'
 import {
   buildAsrContext,
   createVoiceService,
@@ -159,10 +160,14 @@ export function createVoiceFlow(
           setPartial('')
           // 起标题按「主人说了几句」数；没转写出文字的那句不算
           if (text.trim()) sessions.titleFlow.onUserMessage(text)
+          // 待发的图片跟这句语音一起发。实时语音发不了图，留在输入框
+          const images = !isOmniMode && text.trim() ? core.takeVoiceImages() : []
+          const bubbleImages = images.map(({ id, uri }) => ({ id, uri }))
           // 更新用户气泡的转写文字
-          core.patchMessage(sessionMsgId, (m) => (
-            m.audio ? { ...m, audio: { ...m.audio, transcript: text } } : { ...m, content: text }
-          ))
+          core.patchMessage(sessionMsgId, (m) => ({
+            ...(m.audio ? { ...m, audio: { ...m.audio, transcript: text } } : { ...m, content: text }),
+            ...(bubbleImages.length > 0 ? { images: bubbleImages } : {}),
+          }))
 
           // 语音消息持久化：等录音落盘拿到 audioPath（落盘失败也照样存文字，别丢主人说的话）
           const sid = core.sessionId
@@ -173,7 +178,7 @@ export function createVoiceFlow(
             recordedAt.delete(sessionMsgId)
             if (isOmniMode) omni.markUserInputPersisted()
             void saving.then((saved) => sessions.persistRows(sid, [{
-              ...makeSessionMessage('user', text, saved?.audioPath, saved?.durationMs),
+              ...makeSessionMessage('user', withImageMarker(text, images.map((i) => i.id)), saved?.audioPath, saved?.durationMs),
               id: sessionMsgId,
               ...(timestamp ? { timestamp } : null),
             }])).catch((e) => console.warn('[Voice] 语音消息持久化失败', e))
@@ -183,7 +188,7 @@ export function createVoiceFlow(
           if (isOmniMode) {
             omni.setLastUserInput(text)   // 供 audio_done 持久化使用
           } else {
-            void handleSend(text, true)
+            void handleSend(text, true, images)
           }
         },
         onOmniCommitted: () => omni.onCommitted(),
@@ -202,6 +207,8 @@ export function createVoiceFlow(
     return service
   }
 
+  omni.setVoiceCancel(() => { service?.cancel() })
+
   const cancelService = () => {
     service?.cancel()
     omni.clearUsageStart()
@@ -215,6 +222,8 @@ export function createVoiceFlow(
       core.replyControl?.interrupt()
       core.replyControl = null
       omni.onPressStart()
+      // 实时模式的回复音频在 native 播：按下就停，不等新连接建立
+      if (core.config.aiMode === 'omni') void omniStop()
       partialMsgId = null
       setPartial('')
       core.emitFairy('listening')  // 立即给视觉反馈，不等 mic 权限

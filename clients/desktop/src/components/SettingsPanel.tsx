@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { theme, hud, tiSurface, tiInput, tiTitle, ti, tiKey } from '../theme'
 import { getFishApiKey, saveFishApiKey } from '../lib/model-audit'
+import { DEFAULT_CONFIG } from '../lib/agent/agent-config'
 import type { AgentConfig } from '../lib/agent/agent-config'
 import type { GpuPrefStatus } from '../lib/local-api'
 import { MagneticButton } from './NeonUI'
@@ -83,6 +84,7 @@ function draftFromConfig(config: AgentConfig) {
     omniVoice: config.omniVoice,
     // 语音（常规模式）
     fishReferenceId: config.fishReferenceId,
+    fishModel: config.fishModel,
     asrApiKey: config.asrApiKey ?? '',
     asrModel: config.asrModel,
     biliIntervalSeconds: config.biliIntervalSeconds,
@@ -272,6 +274,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
       omniModel: draft.omniModel || 'qwen3.5-omni-flash-realtime',
       omniVoice: draft.omniVoice,
       fishReferenceId: draft.fishReferenceId,
+      fishModel: draft.fishModel || DEFAULT_CONFIG.fishModel,
       asrApiKey: draft.asrApiKey || null,
       asrModel: draft.asrModel || 'qwen3-asr-flash-realtime',
       biliIntervalSeconds: draft.biliIntervalSeconds,
@@ -572,6 +575,11 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
               <Field label="Fish 音色 ID"
                 value={draft.fishReferenceId}
                 onChange={(v) => update('fishReferenceId', v)}
+              />
+              <Field label="Fish 模型"
+                value={draft.fishModel}
+                onChange={(v) => update('fishModel', v)}
+                placeholder="s1 或 s2-pro，和音色一起同步给已配对的设备"
               />
             </>
           ) : (

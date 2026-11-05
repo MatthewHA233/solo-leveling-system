@@ -144,6 +144,7 @@ export const SCOPE = [
       { file: LOCAL_API, only: /[Ss]ync|Linked|linked|Peer|peer/, target: `${M}lib/syncclient.ts` },
       { file: `${R}sync_auth.rs`, target: `${K}sync/SyncPairing.kt` },
       { file: `${D}components/SyncPeerDialog.tsx`, target: `${M}components/sync/PairingCard.tsx` },
+      { file: `${D}lib/agent/synced-settings.ts`, target: `${M}lib/agent/synced-settings.ts` },
     ],
   },
   {

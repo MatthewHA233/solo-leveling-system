@@ -204,10 +204,25 @@ pub struct SyncExport {
     pub model_free_quota: Vec<SyncModelFreeQuota>,
     #[serde(default)]
     pub feature_bindings: Vec<SyncFeatureBinding>,
+    #[serde(default)]
+    pub settings: Vec<SyncSetting>,
     /// 模型库快照，只在全量导出时带上：手机没有内置价目更新，靠它算费用。
     /// 桌面端各有自己的种子，收到后不写库。
     #[serde(default)]
     pub model_registry: Vec<ModelDef>,
+}
+
+/// 在设备间共享的设置（Fish 音色和模型）。规则两端相同，改了要同时改（手机端 SolevupDb.kt）：
+///   · 按 updated_at 取新；表很小，每轮全量导出
+///   · 旧配置种进表时用 SEED_SETTING_TIME，比任何一次真正的修改都旧，只有另一边什么都没有时才生效
+pub const SYNCED_SETTING_KEYS: &[&str] = &["fish_reference_id", "fish_model"];
+const SEED_SETTING_TIME: &str = "2000-01-01T00:00:00.000Z";
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncSetting {
+    pub key: String,
+    pub value: String,
+    pub updated_at: String,
 }
 
 fn default_sync_provider() -> String {
@@ -358,6 +373,11 @@ pub struct SyncImportResult {
     pub chat_sessions: usize,
     #[serde(default)]
     pub chat_messages: usize,
+    #[serde(default)]
+    pub settings: usize,
+    /// 这一轮拉到的聊天图片文件（不进数据库）
+    #[serde(default)]
+    pub chat_images: usize,
     pub skipped: usize,
 }
 
@@ -1412,6 +1432,12 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_call_feature ON model_call_log(feature, started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_call_model ON model_call_log(model_id, started_at DESC);
 
+            CREATE TABLE IF NOT EXISTS synced_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS model_free_quota (
                 model_id TEXT PRIMARY KEY,
                 has_free_quota INTEGER NOT NULL DEFAULT 0,
@@ -2284,6 +2310,15 @@ impl Database {
         Ok(())
     }
 
+    pub async fn set_link_alias(&self, device_id: &str, alias: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE linked_devices SET alias = ? WHERE device_id = ?",
+            params![alias, device_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub async fn touch_link_synced(&self, device_id: &str, last_base: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
         conn.execute(
@@ -2522,6 +2557,14 @@ impl Database {
           .filter(|r| changed(&r.updated_at, None))
           .collect::<Vec<_>>();
 
+        let mut stmt = conn.prepare("SELECT key, value, updated_at FROM synced_settings")
+            .map_err(|e| e.to_string())?;
+        let settings = stmt.query_map([], |row| Ok(SyncSetting {
+            key: row.get(0)?,
+            value: row.get(1)?,
+            updated_at: row.get(2)?,
+        })).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect::<Vec<_>>();
+
         Ok(SyncExport {
             device_id,
             exported_at: exported_at.clone(),
@@ -2535,6 +2578,7 @@ impl Database {
             model_call_log,
             model_free_quota,
             feature_bindings,
+            settings,
             model_registry,
         })
     }
@@ -2553,8 +2597,24 @@ impl Database {
             feature_bindings: 0,
             chat_sessions: 0,
             chat_messages: 0,
+            settings: 0,
+            chat_images: 0,
             skipped: 0,
         };
+
+        for row in payload.settings {
+            if !SYNCED_SETTING_KEYS.contains(&row.key.as_str()) {
+                result.skipped += 1;
+                continue;
+            }
+            let changed = conn.execute(
+                "INSERT INTO synced_settings (key, value, updated_at) VALUES (?, ?, ?)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                 WHERE excluded.updated_at > synced_settings.updated_at",
+                params![&row.key, &row.value, &row.updated_at],
+            ).map_err(|e| e.to_string())?;
+            if changed > 0 { result.settings += 1 } else { result.skipped += 1 }
+        }
 
         for row in payload.activity_categories {
             if !should_apply_sync_row(&conn, "activity_categories", &row.sync_id, &row.updated_at)? {
@@ -3068,6 +3128,40 @@ impl Database {
         }
 
         Ok(out)
+    }
+
+    pub async fn list_synced_settings(&self) -> Result<Vec<SyncSetting>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare("SELECT key, value, updated_at FROM synced_settings")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| Ok(SyncSetting {
+            key: row.get(0)?,
+            value: row.get(1)?,
+            updated_at: row.get(2)?,
+        })).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// seed：只在表里还没有这一项时写，时间比任何修改都旧
+    pub async fn save_synced_setting(&self, key: &str, value: &str, seed: bool) -> Result<(), String> {
+        if !SYNCED_SETTING_KEYS.contains(&key) {
+            return Err(format!("不认识的设置：{}", key));
+        }
+        let conn = self.conn.lock().await;
+        if seed {
+            conn.execute(
+                "INSERT OR IGNORE INTO synced_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                params![key, value, SEED_SETTING_TIME],
+            )
+        } else {
+            let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            conn.execute(
+                "INSERT INTO synced_settings (key, value, updated_at) VALUES (?, ?, ?)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                params![key, value, now],
+            )
+        }.map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// 消息正文开头 [图片:id1,id2] 里引用的所有图片 id（清理本机图片文件用，规则见 src/lib/agent/chat-images.ts）

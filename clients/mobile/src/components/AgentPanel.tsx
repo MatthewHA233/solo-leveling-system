@@ -138,6 +138,19 @@ export default function AgentPanel({ visible, onClose }: Props) {
   }, [ctrl])
 
   const [pendingImages, setPendingImages] = useState<readonly PickedImage[]>([])
+  const pendingImagesRef = useRef(pendingImages)
+  pendingImagesRef.current = pendingImages
+  const imageGateRef = useRef<() => boolean>(() => true)
+
+  useEffect(() => {
+    ctrl.setVoiceImageSource(() => {
+      const images = pendingImagesRef.current
+      if (images.length === 0 || !imageGateRef.current()) return []
+      pendingImagesRef.current = []
+      setPendingImages([])
+      return images
+    })
+  }, [ctrl])
 
   const onSend = useCallback((text: string) => {
     void ctrl.sendText(text, pendingImages)
@@ -179,6 +192,7 @@ export default function AgentPanel({ visible, onClose }: Props) {
                 isProcessing={ctrl.isProcessing}
                 onSend={onSend}
                 pendingImages={pendingImages}
+                imageGateRef={imageGateRef}
                 onPressAttach={onPressAttach}
                 onRemoveImage={onRemoveImage}
                 agentName={ctrl.config.agentName}

@@ -7,6 +7,8 @@ import com.solevup.mobile.sync.SyncProtocol
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileInputStream
 
 /**
  * Phase 2-C：LAN 同步 HTTP server。
@@ -29,7 +31,6 @@ import org.json.JSONObject
 class SyncHttpServer(
   port: Int,
   private val db: SolevupDb,
-  private val alias: String = "Solevup Mobile",
   private val pairing: SyncPairing,
   private val onLinksChanged: (deviceId: String) -> Unit,
   private val onImport: ((deviceId: String, remoteIp: String?, result: SolevupDb.ImportResult) -> Unit)? = null,
@@ -50,6 +51,7 @@ class SyncHttpServer(
         session.method == Method.POST && uri == "/api/sync/import" -> handleImport(session)
         session.method == Method.GET && uri == "/api/sync/chat" -> handleChatPage(session)
         session.method == Method.POST && uri == "/api/sync/chat" -> handleChatImport(session)
+        session.method == Method.GET && uri.startsWith(CHAT_IMAGE_PREFIX) -> handleChatImage(uri.removePrefix(CHAT_IMAGE_PREFIX))
         else -> envelopeError("not found: $uri")
       }
     } catch (e: Throwable) {
@@ -74,6 +76,15 @@ class SyncHttpServer(
   private fun callerDeviceId(session: IHTTPSession): String? =
     SyncPairing.bearerToken(session.headers["authorization"])?.let { db.linkedDeviceByToken(it) }
 
+  /** 聊天图片文件（规则见 src/lib/agent/chat-images.ts） */
+  private fun handleChatImage(id: String): Response {
+    val file = File(db.chatImageDir, "$id.jpg")
+    if (!SyncProtocol.isChatImageId(id) || !file.isFile) {
+      return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "")
+    }
+    return newFixedLengthResponse(Response.Status.OK, "image/jpeg", FileInputStream(file), file.length())
+  }
+
   private fun unauthorized(): Response {
     val body = JSONObject().apply {
       put("success", false)
@@ -95,7 +106,7 @@ class SyncHttpServer(
     return envelope(JSONObject().apply {
       put("token", token)
       put("device_id", db.deviceId())
-      put("alias", alias)
+      put("alias", db.syncAlias())
     })
   }
 
@@ -129,7 +140,7 @@ class SyncHttpServer(
         "model_api_keys", "model_call_log", "model_free_quota", "feature_bindings",
         "chat_sessions", "chat_messages",
       )))
-      put("alias", alias)
+      put("alias", db.syncAlias())
       put("device_type", "mobile")
       put("device_model", android.os.Build.MODEL ?: "Android")
     }
@@ -209,6 +220,7 @@ class SyncHttpServer(
   }
 
   private companion object {
+    const val CHAT_IMAGE_PREFIX = "/api/sync/chat-image/"
     const val DEFAULT_CHAT_PAGE_BYTES = 1_500_000
     const val MAX_BODY_LEN = 64 * 1024 * 1024
     // 配对接口不用令牌就能调，没必要给它留同步数据那么大的额度

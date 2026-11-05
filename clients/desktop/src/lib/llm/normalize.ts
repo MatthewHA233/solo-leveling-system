@@ -145,6 +145,18 @@ function sanitizeAssistantMessage(m: AssistantMessage): AssistantMessage | null 
  * - 无连续 assistant+assistant（合并）
  * - 无空内容消息
  */
+/** 当前模型看不了图：图片换成一句说明。只影响这次请求，历史里的图还在，换回能看图的模型接着用 */
+export function hideImagesFromModel(messages: Message[]): Message[] {
+  return messages.map((m) => {
+    if (m.type !== 'user' || typeof m.message.content === 'string') return m
+    const count = m.message.content.filter((b) => b.type === 'image').length
+    if (count === 0) return m
+    const note = `（主人发过 ${count} 张图片，当前模型看不了）`
+    const rest = m.message.content.filter((b) => b.type !== 'image')
+    return { ...m, message: { ...m.message, content: [{ type: 'text', text: note }, ...rest] } }
+  })
+}
+
 export function normalizeMessagesForAPI(
   messages: Message[],
 ): (UserMessage | AssistantMessage)[] {

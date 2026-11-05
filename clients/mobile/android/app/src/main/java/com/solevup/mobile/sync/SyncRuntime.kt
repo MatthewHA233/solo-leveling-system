@@ -5,6 +5,7 @@ import android.app.Application
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import com.solevup.mobile.solevupdb.SolevupDb
@@ -35,13 +36,17 @@ object SyncRuntime : SyncCoordinator.Listener {
     val error: String?,
     val alias: String,
     val deviceId: String,
+    val deviceModel: String,
     val pairCode: String,
+    // 下次自动同步的时间（毫秒）。不在前台时是 0
+    val nextAutoSyncAt: Long,
   )
 
   private const val TAG = "SyncRuntime"
   private const val SOCKET_TIMEOUT_MS = 30_000
   private const val STARTUP_SYNC_DELAY_MS = 1_500L
   private const val NETWORK_SETTLE_MS = 2_000L
+  private const val AUTO_SYNC_PERIOD_MS = 60_000L
 
   private val started = AtomicBoolean(false)
   private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
@@ -51,7 +56,6 @@ object SyncRuntime : SyncCoordinator.Listener {
   private lateinit var appContext: Context
 
   private val db: SolevupDb by lazy { SolevupDb.shared(appContext) }
-  private val alias: String by lazy { db.generateAlias(db.deviceId()) }
 
   val coordinator: SyncCoordinator by lazy { SyncCoordinator(db, this) }
 
@@ -62,6 +66,8 @@ object SyncRuntime : SyncCoordinator.Listener {
   @Volatile private var lastError: String? = null
   @Volatile private var sink: EventSink? = null
   @Volatile private var pendingNetworkSync: ScheduledFuture<*>? = null
+  @Volatile private var autoSync: ScheduledFuture<*>? = null
+  @Volatile private var nextAutoSyncAt = 0L
 
   fun start(application: Application) {
     if (!started.compareAndSet(false, true)) return
@@ -86,13 +92,25 @@ object SyncRuntime : SyncCoordinator.Listener {
       port = SyncProtocol.DEFAULT_PORT,
       ipv4s = SyncProtocol.lanIpv4Addresses(),
       error = lastError,
-      alias = alias,
+      alias = db.syncAlias(),
       deviceId = id,
+      deviceModel = Build.MODEL ?: "Android",
       pairCode = SyncProtocol.pairCode(id),
+      nextAutoSyncAt = nextAutoSyncAt,
     )
   }
 
   fun nearbyPeers(): List<SyncDiscovery.NearbyPeer> = discovery?.listPeers() ?: emptyList()
+
+  /** 主人点刷新。会阻塞几秒，调用方开线程 */
+  fun refreshPeers(): List<SyncDiscovery.NearbyPeer> = discovery?.discoverRound() ?: emptyList()
+
+  /** 改别名后马上广播，附近设备不用等下一轮。已链接设备下次同步时更新 */
+  fun setAlias(alias: String): Status {
+    db.setSyncAlias(alias)
+    discovery?.announceNow()
+    return status()
+  }
 
   /** 生成配对码给对方设备输入（5 分钟有效，用一次就作废） */
   fun createPairCode(): SyncPairing.PairCode = pairing.generate()
@@ -123,7 +141,7 @@ object SyncRuntime : SyncCoordinator.Listener {
     if (server == null) {
       try {
         val s = SyncHttpServer(
-          SyncProtocol.DEFAULT_PORT, db, alias, pairing,
+          SyncProtocol.DEFAULT_PORT, db, pairing,
           coordinator::onLinksChanged, coordinator::onInboundImport,
         )
         s.start(SOCKET_TIMEOUT_MS, false)
@@ -135,7 +153,7 @@ object SyncRuntime : SyncCoordinator.Listener {
     }
     if (discovery == null) {
       try {
-        val d = SyncDiscovery(appContext, db, SyncProtocol.DEFAULT_PORT, alias, coordinator::onPeerSeen)
+        val d = SyncDiscovery(appContext, db, SyncProtocol.DEFAULT_PORT, coordinator::onPeerSeen)
         d.start()
         discovery = d
       } catch (t: Throwable) {
@@ -170,6 +188,30 @@ object SyncRuntime : SyncCoordinator.Listener {
     }, NETWORK_SETTLE_MS, TimeUnit.MILLISECONDS)
   }
 
+  // 在前台时每分钟同步附近的已链接设备（和 desktop 一样）。后台靠 WorkManager
+  private fun startAutoSync() {
+    autoSync?.cancel(false)
+    nextAutoSyncAt = System.currentTimeMillis() + AUTO_SYNC_PERIOD_MS
+    autoSync = scheduler.scheduleWithFixedDelay({
+      nextAutoSyncAt = System.currentTimeMillis() + AUTO_SYNC_PERIOD_MS
+      try {
+        val peers = nearbyPeers().associateBy { it.deviceId }
+        for (link in db.listLinkedDevices()) {
+          val peer = peers[link.deviceId] ?: continue
+          coordinator.enqueue(link.copy(lastBase = peer.base), "auto", SyncCoordinator.FOREGROUND_COOLDOWN_MS)
+        }
+      } catch (t: Throwable) {
+        Log.w(TAG, "auto sync failed", t)
+      }
+    }, AUTO_SYNC_PERIOD_MS, AUTO_SYNC_PERIOD_MS, TimeUnit.MILLISECONDS)
+  }
+
+  private fun stopAutoSync() {
+    autoSync?.cancel(false)
+    autoSync = null
+    nextAutoSyncAt = 0L
+  }
+
   private val foregroundTracker = object : Application.ActivityLifecycleCallbacks {
     private var startedCount = 0
 
@@ -179,12 +221,14 @@ object SyncRuntime : SyncCoordinator.Listener {
         scheduler.execute {
           discovery?.announceNow()
           coordinator.enqueueAll("foreground", SyncCoordinator.FOREGROUND_COOLDOWN_MS)
+          startAutoSync()
         }
       }
     }
 
     override fun onActivityStopped(activity: Activity) {
       startedCount = (startedCount - 1).coerceAtLeast(0)
+      if (startedCount == 0) scheduler.execute { stopAutoSync() }
     }
 
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit

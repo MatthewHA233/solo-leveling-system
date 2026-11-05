@@ -17,7 +17,7 @@ import {
   subscribeOmni,
 } from '../omni'
 import { saveAudioFile } from '../voice'
-import { createOmniWatchdog, OMNI_REPLY_TIMEOUT_MS } from '../voice/omni-turn'
+import { createOmniWatchdog, OMNI_PLAYBACK_GRACE_MS, OMNI_REPLY_TIMEOUT_MS } from '../voice/omni-turn'
 import type { OmniDebugInfo } from '../../components/fairy/types'
 import { waveformFromWavBase64 } from '../../components/fairy/fairy-format'
 import type { SessionMessage } from './agent-memory'
@@ -29,7 +29,6 @@ import { executeAgentTool } from './tools'
 const PLAYBACK_POLL_MS = 100
 /** 连续播空这么久算播完（和 tts-pipeline 同一个余量） */
 const PLAYBACK_TAIL_MS = 200
-const PLAYBACK_TIMEOUT_MS = 60_000
 const USAGE_WAIT_MS = 1500
 const USAGE_POLL_MS = 80
 
@@ -40,6 +39,8 @@ export interface OmniFlow {
   readonly onPressStart: () => void
   /** 录音已提交，开始等回复 */
   readonly onCommitted: () => void
+  /** 语音流程注册：超时时断开连接、语音服务回到 idle */
+  readonly setVoiceCancel: (cancel: () => void) => void
   /** 切会话：丢掉正在进行的这一轮 */
   readonly reset: () => void
   readonly markUsageStart: () => void
@@ -65,6 +66,7 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
   let awaitingConnection = false              // 主人开口后、新连接就绪前：事件队列里剩下的都是被打断那一轮的，丢掉
   let turnEpoch = 0                           // 这一轮作废就加一：旧一轮的工具跑完后，结果不能发给新连接
   let toolsRunning = 0
+  let voiceCancel: () => void = () => { void omniStop() }
 
   const snapshot = (): OmniDebugInfo => {
     const cfg = core.config
@@ -125,23 +127,20 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
     lastUserInput = ''
     userInputPersisted = false
     core.addSystemNote(`Omni 超过 ${OMNI_REPLY_TIMEOUT_MS / 1000} 秒没有回应，这一轮先结束了`)
-    void omniStop()
+    voiceCancel()
     core.emitFairy('idle')
   })
 
   /** 用真实播放状态等候：audio_done 之后可能还有音频在队列里 */
   const waitPlaybackThenIdle = () => {
     const token = ++idleWaitToken
-    const startedAt = Date.now()
+    let deadline = 0 // 排队的音频播完再多等一会儿就不等了（第一次查到排队时长才定）
     const check = () => {
       if (token !== idleWaitToken) return
-      if (Date.now() - startedAt >= PLAYBACK_TIMEOUT_MS) {
-        core.emitFairy('idle')
-        return
-      }
       omniPlaybackState().then((st) => {
         if (token !== idleWaitToken) return
-        if (!st.hasAudio || st.drainedMs >= PLAYBACK_TAIL_MS) core.emitFairy('idle')
+        if (!deadline) deadline = Date.now() + st.queuedMs + OMNI_PLAYBACK_GRACE_MS
+        if (!st.hasAudio || st.drainedMs >= PLAYBACK_TAIL_MS || Date.now() >= deadline) core.emitFairy('idle')
         else setTimeout(check, PLAYBACK_POLL_MS)
       }).catch(() => {
         if (token === idleWaitToken) core.emitFairy('idle')
@@ -370,6 +369,7 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
       awaitingConnection = core.config.aiMode === 'omni'
     },
     onCommitted: () => watchdog.arm(),
+    setVoiceCancel: (cancel) => { voiceCancel = cancel },
     reset: () => {
       abandonTurn()
       const msgId = agentMsgId

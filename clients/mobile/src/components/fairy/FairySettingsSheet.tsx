@@ -3,7 +3,8 @@
 // desktop 是居中弹窗 + 左侧栏，手机改成底部面板 + 分段切换；钛合金外观不搬。
 //   · AI 人设、语音：逐项对应，多放了 desktop 只在草稿里、没有界面的语音字段（「高级」里）
 //   · 模型和百炼 / Anthropic 的 Key：在 ModelCenter，这里不重复
-//   · 窗口、截图、追踪、独显、数据库位置、网络代理：手机端没有对应的东西，没搬
+//   · 网络代理：端口存在原生层（lib/network.ts），留空跟随系统 VPN 或系统代理
+//   · 窗口、截图、追踪、独显、数据库位置：手机端没有对应的东西，没搬
 //
 // 配置走 chatController：它手里的 config 是运行中读的那份，和 desktop App.tsx 的 config 状态是一个角色。
 // 绕开它直接存盘的话，它手里还是旧值，新人设不生效，下一次 ctrl.updateConfig 还会把存盘的内容盖回去。
@@ -23,6 +24,7 @@ import {
   View,
 } from 'react-native'
 import { chatController } from '../../lib/agent/chat-controller'
+import { loadProxyPort, saveProxyPort } from '../../lib/network'
 import { solevupCopyText } from '../../lib/solevupdb'
 import { resolveFishApiKey, saveFishApiKey } from '../../lib/voice'
 import { fonts, theme } from '../../theme'
@@ -43,11 +45,12 @@ interface Props {
   readonly onClose: () => void
 }
 
-type SectionId = 'persona' | 'voice'
+type SectionId = 'persona' | 'voice' | 'network'
 
 const SECTION_LIST: { value: SectionId; label: string }[] = [
   { value: 'persona', label: 'AI 人设' },
   { value: 'voice', label: '语音' },
+  { value: 'network', label: '网络' },
 ]
 
 const AI_MODE_OPTIONS: { value: SettingsDraft['aiMode']; label: string }[] = [
@@ -69,9 +72,12 @@ export default function FairySettingsSheet({ visible, onClose }: Props) {
   // Fish Key 存在 Key 库里（跟着同步），不在配置里，打开面板时取
   const [fishKey, setFishKey] = useState('')
   const [fishKeySaved, setFishKeySaved] = useState('')
+  // 代理端口存在原生层（不同步），打开面板时取
+  const [proxyPort, setProxyPort] = useState('')
+  const [proxyPortSaved, setProxyPortSaved] = useState('')
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const dirty = isDraftDirty(draft, baseline) || fishKey.trim() !== fishKeySaved
+  const dirty = isDraftDirty(draft, baseline) || fishKey.trim() !== fishKeySaved || proxyPort.trim() !== proxyPortSaved
 
   useEffect(() => {
     if (!visible) return
@@ -84,6 +90,12 @@ export default function FairySettingsSheet({ visible, onClose }: Props) {
       // 面板关着时留着的未保存草稿不覆盖
       setFishKey((prev) => (prev.trim() !== fishKeySaved ? prev : key ?? ''))
       setFishKeySaved(key ?? '')
+    }).catch(() => {})
+    loadProxyPort().then((port) => {
+      if (!alive) return
+      const text = port ? String(port) : ''
+      setProxyPort((prev) => (prev.trim() !== proxyPortSaved ? prev : text))
+      setProxyPortSaved(text)
     }).catch(() => {})
     return () => { alive = false }
     // 只在打开时取一次；baseline 是这次打开前的起点，不需要跟着变
@@ -109,6 +121,16 @@ export default function FairySettingsSheet({ visible, onClose }: Props) {
         showTip(`Fish Key 没保存上：${e instanceof Error ? e.message : String(e)}`)
       })
     }
+    if (proxyPort.trim() !== proxyPortSaved) {
+      saveProxyPort(proxyPort).then((port) => {
+        const text = port ? String(port) : ''
+        setProxyPort(text)
+        setProxyPortSaved(text)
+      }).catch((e) => {
+        setSaved(false)
+        showTip(`代理端口没保存上：${e instanceof Error ? e.message : String(e)}`)
+      })
+    }
     // 回退规则可能改了值（名称留空回到 Fairy），输入框跟着显示实际存下的内容
     const fresh = draftFromConfig(chatController.config)
     setBaseline(fresh)
@@ -116,7 +138,7 @@ export default function FairySettingsSheet({ visible, onClose }: Props) {
     setSaved(true)
     if (savedTimer.current) clearTimeout(savedTimer.current)
     savedTimer.current = setTimeout(() => setSaved(false), 2000)
-  }, [draft, baseline, fishKey, fishKeySaved])
+  }, [draft, baseline, fishKey, fishKeySaved, proxyPort, proxyPortSaved])
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -147,6 +169,16 @@ export default function FairySettingsSheet({ visible, onClose }: Props) {
               {activeSection === 'persona' && <PersonaSection draft={draft} update={update} />}
               {activeSection === 'voice' && (
                 <VoiceSection draft={draft} update={update} fishKey={fishKey} onFishKeyChange={(v) => { setFishKey(v); setSaved(false) }} />
+              )}
+              {activeSection === 'network' && (
+                <Field
+                  label="代理端口"
+                  technical
+                  value={proxyPort}
+                  onChange={(v) => { setProxyPort(v); setSaved(false) }}
+                  placeholder="留空就跟随系统"
+                  hint="Anthropic 和 Fish 语音从这个本机端口（127.0.0.1）出去，填手机上代理软件的端口，比如 2080。留空就跟随系统 VPN 或系统代理。只对这台设备生效。"
+                />
               )}
             </ScrollView>
 

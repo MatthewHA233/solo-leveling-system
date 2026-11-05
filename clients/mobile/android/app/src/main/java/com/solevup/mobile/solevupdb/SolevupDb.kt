@@ -30,6 +30,11 @@ import java.util.UUID
 class SolevupDb(context: Context) :
   SQLiteOpenHelper(context.applicationContext, migratedDbName(context.applicationContext), null, DB_VERSION) {
 
+  private val appContext: Context = context.applicationContext
+
+  /** 聊天图片文件（规则见 src/lib/agent/chat-images.ts） */
+  val chatImageDir: File get() = File(appContext.filesDir, "chat-images")
+
   override fun onConfigure(db: SQLiteDatabase) {
     super.onConfigure(db)
     // Android SQLite 默认外键不强制，但 schema 用了 ON DELETE CASCADE。
@@ -44,6 +49,9 @@ class SolevupDb(context: Context) :
     // 已装设备的昼夜表数据。新表一律幂等 IF NOT EXISTS 在每次打开时补建。
     ensureModelTables(db)
     ensureChatTables(db)
+    db.execSQL(
+      "CREATE TABLE IF NOT EXISTS synced_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);"
+    )
     applySchemaRevisions(db)
   }
 
@@ -995,7 +1003,10 @@ class SolevupDb(context: Context) :
     val modelFreeQuota: List<SyncModelFreeQuotaRow> = emptyList(),
     val featureBindings: List<SyncFeatureBindingRow> = emptyList(),
     val modelRegistry: List<SyncModelDefRow> = emptyList(),
+    val settings: List<SyncSettingRow> = emptyList(),
   )
+
+  data class SyncSettingRow(val key: String, val value: String, val updatedAt: String)
 
   /** 聊天增量通道的一页（/api/sync/chat）。seq 是这页覆盖到的本机日志序号，对端存成游标。 */
   data class ChatSyncPage(
@@ -1202,7 +1213,36 @@ class SolevupDb(context: Context) :
       modelCallLog = callLog,
       modelFreeQuota = freeQuota,
       featureBindings = bindings,
+      settings = listSyncedSettings(),
     )
+  }
+
+  // ── 在设备间共享的设置（Fish 音色和模型）。规则和 desktop db.rs SYNCED_SETTING_KEYS 相同，改了要同时改：
+  //   · 按 updated_at 取新；表很小，每轮全量导出
+  //   · 旧配置种进表时用 SEED_SETTING_TIME，比任何一次真正的修改都旧，只有另一边什么都没有时才生效
+
+  fun listSyncedSettings(): List<SyncSettingRow> =
+    readableDatabase.rawQuery("SELECT key, value, updated_at FROM synced_settings", null).use { c ->
+      val out = ArrayList<SyncSettingRow>(c.count)
+      while (c.moveToNext()) out.add(SyncSettingRow(c.getString(0), c.getString(1), c.getString(2)))
+      out
+    }
+
+  /** seed：只在表里还没有这一项时写，时间比任何修改都旧 */
+  fun saveSyncedSetting(key: String, value: String, seed: Boolean) {
+    require(key in SYNCED_SETTING_KEYS) { "不认识的设置：$key" }
+    if (seed) {
+      writableDatabase.execSQL(
+        "INSERT OR IGNORE INTO synced_settings (key, value, updated_at) VALUES (?, ?, ?)",
+        arrayOf(key, value, SEED_SETTING_TIME),
+      )
+    } else {
+      writableDatabase.execSQL(
+        """INSERT INTO synced_settings (key, value, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+        arrayOf(key, value, utcNowIso()),
+      )
+    }
   }
 
   // ── Sync import ── 镜像 desktop db.rs import_sync 的 LWW 合并逻辑：
@@ -1227,12 +1267,14 @@ class SolevupDb(context: Context) :
     val chatSessions: Int = 0,
     val chatMessages: Int = 0,
     val modelRegistry: Int = 0,
+    val settings: Int = 0,
+    val chatImages: Int = 0, // 这一轮拉到的聊天图片文件（不进数据库）
     val skipped: Int = 0,
   ) {
     val hasChanges: Boolean
       get() = activityCategories + activityTags + activityBlocks + planNodes + plannedBlocks +
         modelApiKeys + modelCallLog + modelFreeQuota + featureBindings +
-        chatSessions + chatMessages + modelRegistry > 0
+        chatSessions + chatMessages + modelRegistry + settings + chatImages > 0
   }
 
   fun importSync(payload: SyncExport): ImportResult {
@@ -1526,12 +1568,31 @@ class SolevupDb(context: Context) :
 
       val mRegistry = if (payload.modelRegistry.isEmpty()) 0 else replaceModelCatalog(db, payload.modelRegistry)
 
+      var mSettings = 0
+      for (row in payload.settings) {
+        if (row.key !in SYNCED_SETTING_KEYS) {
+          skipped++
+          continue
+        }
+        val local = queryString(db, "SELECT updated_at FROM synced_settings WHERE key = ?", arrayOf(row.key))
+        if (local != null && row.updatedAt <= local) {
+          skipped++
+          continue
+        }
+        db.execSQL(
+          "INSERT OR REPLACE INTO synced_settings (key, value, updated_at) VALUES (?, ?, ?)",
+          arrayOf(row.key, row.value, row.updatedAt),
+        )
+        mSettings++
+      }
+
       db.setTransactionSuccessful()
       return ImportResult(
         activityCategories = cats, activityTags = tags, activityBlocks = blocks,
         planNodes = pNodes, plannedBlocks = pBlocks,
         modelApiKeys = mKeys, modelCallLog = mLog, modelFreeQuota = mQuota, featureBindings = mBindings,
         modelRegistry = mRegistry,
+        settings = mSettings,
         skipped = skipped,
       )
     } finally {
@@ -2779,6 +2840,29 @@ class SolevupDb(context: Context) :
     )
   }
 
+  /** 对方改名后跟着变。只在挑战应答通过后调用 */
+  fun updateLinkAlias(deviceId: String, alias: String) {
+    writableDatabase.execSQL(
+      "UPDATE linked_devices SET alias = ? WHERE device_id = ?", arrayOf(alias, deviceId),
+    )
+  }
+
+  /** 本机别名：主人改过就用改过的，否则按 device_id 算（对齐 desktop db.rs sync_alias） */
+  fun syncAlias(): String =
+    queryString(readableDatabase, "SELECT value FROM sync_meta WHERE key = 'device_alias'", emptyArray())
+      ?.takeIf { it.isNotBlank() }
+      ?: generateAlias(deviceId())
+
+  fun setSyncAlias(alias: String): String {
+    val next = alias.trim()
+    if (next.isEmpty()) throw IllegalArgumentException("别名不能为空")
+    writableDatabase.execSQL(
+      "INSERT OR REPLACE INTO sync_meta (key, value, updated_at) VALUES ('device_alias', ?, ?)",
+      arrayOf(next, nowIso()),
+    )
+    return next
+  }
+
   /**
    * 生成跟 desktop db.rs generate_alias 完全一致的"形容词+水果"别名。
    * 算法：FNV-1a hash `solevup:alias:v1:<device_id>`，
@@ -2834,6 +2918,8 @@ class SolevupDb(context: Context) :
     const val PROVIDER_DASHSCOPE = "dashscope"
     const val PROVIDER_ANTHROPIC = "anthropic"
     /** Fish Audio（TTS）。不是聊天模型的提供商，模型中心不列；放这里是为了跟着同步 */
+    val SYNCED_SETTING_KEYS = setOf("fish_reference_id", "fish_model")
+    const val SEED_SETTING_TIME = "2000-01-01T00:00:00.000Z"
     const val PROVIDER_FISH = "fish"
 
     private const val FEATURE_BINDING_SEED_TIME = "1970-01-01T00:00:00.000Z"

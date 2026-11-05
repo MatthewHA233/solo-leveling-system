@@ -9,7 +9,7 @@
 //   · 冷色只在「系统时刻」出现：按住右 Alt 时的 LISTENING
 // ══════════════════════════════════════════════
 
-import { useCallback, useMemo, useRef, useEffect, useState } from 'react'
+import { useCallback, useMemo, useRef, useEffect, useState, type MutableRefObject } from 'react'
 import { MessageSquare, Camera, Eye, Volume2, VolumeX, Bug, Radio, History, X, Play, Pause, ImagePlus } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -17,7 +17,7 @@ import { createPortal } from 'react-dom'
 import { theme, ti } from '../theme'
 import type { ChatMessage, OmniDebugInfo } from '../App'
 import type { ApiRequestSnapshot } from '../lib/llm/api'
-import { MAX_CHAT_IMAGES, prepareChatImage, type PendingImage } from '../lib/agent/chat-images'
+import { CHAT_IMAGES_UPDATED, MAX_CHAT_IMAGES, prepareChatImage, type PendingImage } from '../lib/agent/chat-images'
 import type { ModelCallLog, ModelDef, ModelFreeQuota } from '../lib/local-api'
 import { MODEL_SELECT_POPUP_WIDTH, modelSelectOption } from '../lib/model-display'
 import { getFeatureModel, listModelFreeQuotas, setFeatureModel } from '../lib/model-audit'
@@ -96,6 +96,8 @@ interface Props {
   readonly messages: readonly ChatMessage[]
   readonly isProcessing: boolean
   readonly onSend: (text: string, images: readonly PendingImage[]) => void
+  /** 语音发送时取走待发的图片（面板把取图函数写进这里） */
+  readonly takeVoiceImagesRef?: MutableRefObject<() => readonly PendingImage[]>
   /** 呼号来自 AI 人设配置（名称 / 称呼用户为），不硬编码 */
   readonly agentName?: string
   readonly userCallsign?: string
@@ -128,7 +130,7 @@ function parseModalityList(raw: string | null | undefined): string[] {
   }
 }
 
-export default function ChatPanel({ messages, isProcessing, onSend, agentName = 'Fairy', userCallsign = '主人', gazeTarget = null, aiMode = 'regular', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen, sessionTitle, fairyState = 'idle', contextRatio = 0 }: Props) {
+export default function ChatPanel({ messages, isProcessing, onSend, takeVoiceImagesRef, agentName = 'Fairy', userCallsign = '主人', gazeTarget = null, aiMode = 'regular', onToggleAiMode, cameraReady, cameraPresent, cameraWindowOpen, onToggleCamera, ttsEnabled, onToggleTts, onOpenSessions, sessionsOpen, sessionTitle, fairyState = 'idle', contextRatio = 0 }: Props) {
   const [input, setInput] = useState('')
   const [pendingImages, setPendingImages] = useState<readonly PendingImage[]>([])
   const pendingImagesRef = useRef<readonly PendingImage[]>([])
@@ -251,11 +253,38 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
     setPendingImages(pendingImagesRef.current)
   }, [])
 
+  useEffect(() => {
+    if (!takeVoiceImagesRef) return
+    takeVoiceImagesRef.current = () => {
+      const images = pendingImagesRef.current
+      if (images.length === 0) return []
+      // 选完图又换了模型：图留着，换回来还能发
+      if (!chatModelSeesImages) {
+        setImageNote(noImageNote)
+        return []
+      }
+      pendingImagesRef.current = []
+      setPendingImages([])
+      setImageNote('')
+      return images
+    }
+  }, [takeVoiceImagesRef, chatModelSeesImages, noImageNote])
+
   const handlePaste = (e: React.ClipboardEvent) => {
     const files = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'))
     if (files.length === 0) return
     e.preventDefault()
     void addImages(files)
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes('Files')) e.preventDefault()
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes('Files')) return
+    e.preventDefault()
+    void addImages([...e.dataTransfer.files].filter((f) => f.type.startsWith('image/')))
   }
 
   const handleSend = () => {
@@ -284,7 +313,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, agentName = 
   const ctxPct = Math.round(Math.min(1, contextRatio) * 100)
 
   return (
-    <div style={{
+    <div onDragOver={handleDragOver} onDrop={handleDrop} style={{
       display: 'flex',
       height: '100%', fontFamily: theme.fontBody,
       position: 'relative',
@@ -902,6 +931,12 @@ function ReasoningBlock({ text, answered }: { text: string; answered: boolean })
 function BubbleImages({ images }: { images: NonNullable<ChatMessage['images']> }) {
   const [preview, setPreview] = useState<string | null>(null)
   const [missing, setMissing] = useState<readonly string[]>([])
+  // 同步拉到了新图片文件：占位再试一次
+  useEffect(() => {
+    const retry = () => setMissing([])
+    window.addEventListener(CHAT_IMAGES_UPDATED, retry)
+    return () => window.removeEventListener(CHAT_IMAGES_UPDATED, retry)
+  }, [])
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
       {images.map((img) => (missing.includes(img.id) || !img.url ? (
@@ -975,6 +1010,7 @@ function Bubble({ message, agentName, userCallsign, onDebug, onOmniDebug }: {
         <MsgMeta label={userCallsign} ts={message.timestamp} align="right" />
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <div className="ti-well" style={{ maxWidth: '88%', padding: '8px 12px 9px' }}>
+            {message.images && message.images.length > 0 && <BubbleImages images={message.images} />}
             <AudioBubble audioUrl={message.audioUrl} durationMs={message.durationMs} />
             {message.transcript && (
               <div style={{

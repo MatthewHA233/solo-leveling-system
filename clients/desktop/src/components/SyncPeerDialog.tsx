@@ -353,7 +353,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
     setManualError(null)
     setManualBusy(true)
     try {
-      // 后端代探：只填 IP 时自动试 39733 和旧端口 49733，返回实际连通的地址
+      // 后端代探：只填 IP 时试 39733，返回实际连通的地址
       const { base, hello } = await probeSyncPeer(manualUrl)
       localStorage.setItem('slu.sync.peerUrl', manualUrl)
       startPairing({ device_id: hello.device_id, alias: hello.alias || new URL(base).hostname, base })

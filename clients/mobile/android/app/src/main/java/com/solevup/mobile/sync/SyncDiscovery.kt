@@ -5,12 +5,14 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.util.Log
 import com.solevup.mobile.solevupdb.SolevupDb
+import com.solevup.mobile.syncclient.SyncClient
 import org.json.JSONObject
 import java.io.IOException
 import java.net.DatagramPacket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.MulticastSocket
+import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -30,7 +32,6 @@ class SyncDiscovery(
   private val context: Context,
   private val db: SolevupDb,
   private val port: Int,
-  private val alias: String,
   private val onPeerSeen: (NearbyPeer) -> Unit,
 ) {
   data class NearbyPeer(
@@ -122,6 +123,74 @@ class SyncDiscovery(
     return peers.values.sortedBy { it.alias }
   }
 
+  /**
+   * 主人点刷新：广播一轮，再问一遍已链接的地址。1 秒内谁都没回应就扫 /24，
+   * 路由器拦组播的网络靠这个才找得到（对齐 desktop discover_round）。
+   */
+  fun discoverRound(): List<NearbyPeer> {
+    val roundStart = System.currentTimeMillis()
+    announceNow()
+    val linkedBases = db.listLinkedDevices().map { it.lastBase }
+    probeBases(linkedBases)
+    Thread.sleep(SCAN_GRACE_MS)
+    if (peers.values.none { it.lastSeenMs >= roundStart }) probeBases(subnetBases(linkedBases))
+    return listPeers()
+  }
+
+  private fun subnetBases(linkedBases: List<String>): List<String> {
+    val own = SyncProtocol.lanIpv4Addresses()
+    val linked = linkedBases.mapNotNull { base ->
+      try { URL(base).host } catch (_: Throwable) { null }
+    }
+    return (own + linked)
+      .filter { isPrivateIpv4(it) }
+      .map { it.substringBeforeLast('.') }
+      .distinct()
+      .flatMap { net -> (1..254).map { "$net.$it" } }
+      .filter { it !in own }
+      .map { "http://$it:$port" }
+  }
+
+  private fun isPrivateIpv4(ip: String): Boolean {
+    val parts = ip.split('.').mapNotNull { it.toIntOrNull() }
+    if (parts.size != 4) return false
+    return parts[0] == 10 ||
+      (parts[0] == 172 && parts[1] in 16..31) ||
+      (parts[0] == 192 && parts[1] == 168)
+  }
+
+  private fun probeBases(bases: List<String>) {
+    if (bases.isEmpty()) return
+    val pool = Executors.newFixedThreadPool(SCAN_CONCURRENCY)
+    for (base in bases) {
+      pool.execute {
+        try {
+          rememberHello(SyncClient.fetchHello(base, timeoutMs = SCAN_TIMEOUT_MS), base)
+        } catch (_: Throwable) {
+          // 这个地址上没有设备
+        }
+      }
+    }
+    pool.shutdown()
+    pool.awaitTermination(SCAN_WAIT_MS, TimeUnit.MILLISECONDS)
+  }
+
+  private fun rememberHello(hello: JSONObject, base: String) {
+    val peerId = hello.optString("device_id")
+    if (peerId.isEmpty() || peerId == deviceId) return
+    val peer = NearbyPeer(
+      deviceId = peerId,
+      alias = hello.optString("alias", peerId),
+      base = base,
+      pairCode = hello.optString("pair_code"),
+      deviceType = hello.optString("device_type"),
+      deviceModel = hello.optString("device_model"),
+      lastSeenMs = System.currentTimeMillis(),
+    )
+    peers[peerId] = peer
+    onPeerSeen(peer)
+  }
+
   private fun receiveLoop(s: MulticastSocket) {
     val buf = ByteArray(MAX_PACKET_LEN)
     while (!s.isClosed) {
@@ -198,7 +267,7 @@ class SyncDiscovery(
 
   private fun payload(announce: Boolean): ByteArray =
     JSONObject().apply {
-      put("alias", alias)
+      put("alias", db.syncAlias())
       put("version", SyncProtocol.DISCOVERY_VERSION)
       put("device_id", deviceId)
       put("pair_code", SyncProtocol.pairCode(deviceId))
@@ -215,5 +284,10 @@ class SyncDiscovery(
     private const val PEER_TTL_MS = 75_000L
     private const val MAX_PACKET_LEN = 4096
     private val BURST_DELAYS_MS = longArrayOf(0L, 180L, 650L)
+    // 扫网段的参数和 desktop sync_discovery.rs 一致
+    private const val SCAN_GRACE_MS = 1_000L
+    private const val SCAN_TIMEOUT_MS = 700
+    private const val SCAN_CONCURRENCY = 64
+    private const val SCAN_WAIT_MS = 30_000L
   }
 }

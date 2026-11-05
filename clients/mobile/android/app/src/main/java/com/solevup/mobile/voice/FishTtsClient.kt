@@ -16,8 +16,8 @@ import java.io.ByteArrayOutputStream
  * API: https://docs.fish.audio/api-reference/endpoint/websocket/tts-live
  *
  * 和桌面端的差异：
- *   · 不走本机 HTTP 代理（手机上没有 127.0.0.1:7890 这回事，见 voice-service.ts 顶部说明）；
- *     手写的 CONNECT 隧道 / TLS / 握手 / Sec-WebSocket-Key 都由 OkHttp 完成。
+ *   · 手写的 CONNECT 隧道 / TLS / 握手 / Sec-WebSocket-Key 都由 OkHttp 完成，
+ *     代理端口来自 AppProxy（VoiceModule 的 http），没配时跟随系统 VPN 或系统代理。
  *   · 音频不经过 JS：直接进 AudioTrack 并在这里攒成 WAV，JS 只收进度事件，最后按需取走。
  *   · 建连失败也发 finish（桌面端 run_ws_loop 用 ? 提前返回时不发，前端要干等 60 秒兜底）。
  */

@@ -11,6 +11,7 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.solevup.mobile.net.AppProxy
 import okhttp3.OkHttpClient
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -44,6 +45,8 @@ class VoiceModule(private val reactContext: ReactApplicationContext) :
   private val http = OkHttpClient.Builder()
     .connectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
     .readTimeout(0, TimeUnit.MILLISECONDS) // WS 长连
+    .proxySelector(AppProxy.selector) // Fish 走「网络代理」设置，百炼 ASR 不受影响
+    .connectionPool(AppProxy.connectionPool)
     .build()
 
   // ── 按住说话（VoiceState） ──

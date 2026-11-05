@@ -9,7 +9,7 @@
 
 import { Stream } from './stream'
 import { isAnthropicModel, streamAnthropic } from './anthropic-stream'
-import { normalizeMessagesForAPI } from './normalize'
+import { hideImagesFromModel, normalizeMessagesForAPI } from './normalize'
 import { logModelUsage, type DashScopeUsage } from '../model-audit'
 import type { ModelCallLog } from '../local-api'
 import type { Message, UserMessage, AssistantMessage, ContentBlock, ToolDefinition } from './types'
@@ -47,6 +47,8 @@ export interface QueryOptions {
   maxTokens?: number   // 默认 8000（Claude Code 的 CAPPED_DEFAULT_MAX_TOKENS 设计：保守槽位保留）
   signal?: AbortSignal
   tools?: readonly ToolDefinition[]  // function calling tools
+  // 当前模型看不了图：把历史里的图换成说明再发（见 normalize.ts）
+  hideImages?: boolean
   feature?: string
   // 调试：每次实际发出 API 请求前调用，传入完整 payload 快照
   onRequestSnapshot?: (snapshot: ApiRequestSnapshot) => void
@@ -207,6 +209,8 @@ export function queryModel(
   messages: Message[],
   options: QueryOptions,
 ): Stream<ApiStreamChunk> {
+  if (options.hideImages) messages = hideImagesFromModel(messages)
+
   // Anthropic（claude-*）走 Rust 代理通道，见 anthropic-stream.ts
   if (isAnthropicModel(options.model)) return streamAnthropic(messages, options)
   const abortController = new AbortController()

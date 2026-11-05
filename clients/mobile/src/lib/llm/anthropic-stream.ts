@@ -9,11 +9,12 @@
 // anthropic.rs（非流式调用、模型种子、测试连接）。手机端没有 Rust 侧，都放在这个文件里，顺序同桌面端。
 //   - 请求用 XMLHttpRequest（同 api.ts）：RN 的 fetch 拿不到流式 response.body
 //   - 代理：桌面端要在 Rust 里走「网络代理」设置的本机端口（WebView 的 fetch 走不了代理）。
-//     手机端没有这个设置：RN 的 XHR 走 OkHttp，默认遵守系统代理，VPN 在系统层接管流量，都不需要 App 配置。
+//     手机端的设置在 AppProxy.kt：RN 的 XHR 走 OkHttp，配了端口走端口，没配就遵守系统代理，VPN 在系统层接管流量。
 //   - 取消：桌面端的 Rust 请求取消不了，会在后台跑完。手机端 xhr.abort() 真的断开连接。
 // ══════════════════════════════════════════════
 
 import { Stream } from './stream'
+import { explainProxyFailure, isConnectError } from '../network'
 import { normalizeMessagesForAPI } from './normalize'
 import { logModelUsage } from './model-usage'
 import { isSolevupDbAvailable, solevupGetActiveModelApiKey } from '../solevupdb'
@@ -134,13 +135,11 @@ function openRequest(apiKey: string): XMLHttpRequest {
   return xhr
 }
 
-function isConnectError(detail: string): boolean {
-  return /resolve host|failed to connect|unable to connect|connection refused|unreachable|handshake|no address/i.test(detail)
-}
-
-/** 手机端没有代理端口可查，连不上时提示的是系统层的 VPN / 代理 */
+/** 配了代理端口时说代理，没配时提示的是系统层的 VPN / 代理 */
 function explainSendError(detail: string, timedOut = false): string {
   if (timedOut) return 'Anthropic 超时没响应（线路通了但对面慢，或者线路不稳）'
+  const proxyFailure = explainProxyFailure(detail)
+  if (proxyFailure) return proxyFailure
   if (isConnectError(detail)) return `连不上 Anthropic。确认手机的 VPN 或系统代理开着：${detail}`
   return `请求 Anthropic 失败：${detail}`
 }

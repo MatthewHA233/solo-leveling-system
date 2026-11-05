@@ -162,6 +162,8 @@ interface SolevupDbNative {
   renameTagPath(tagId: number, newFullPath: string, cascade: boolean): Promise<number>
   getPref(key: string, fallback: string): Promise<string>
   setPref(key: string, value: string): Promise<boolean>
+  listSyncedSettings(): Promise<SyncedSetting[]>
+  saveSyncedSetting(key: string, value: string, seed: boolean): Promise<boolean>
   exportSync(since: string | null): Promise<SyncExport>
   importSync(payload: SyncExport): Promise<SyncImportResult>
   getActiveModelApiKey(provider: string | null): Promise<ModelApiKeyInfo | null>
@@ -334,6 +336,23 @@ export async function solevupRenameCategory(
 export async function solevupRenameTagPath(tagId: number, newFullPath: string, cascade = false): Promise<number> {
   if (!Native) return 0
   return Native.renameTagPath(tagId, newFullPath, cascade)
+}
+
+export interface SyncedSetting {
+  readonly key: string
+  readonly value: string
+  readonly updated_at: string
+}
+
+/** 随同步走的设置，规则见 agent/synced-settings.ts */
+export async function solevupListSyncedSettings(): Promise<SyncedSetting[]> {
+  if (!Native) return []
+  return Native.listSyncedSettings()
+}
+
+export async function solevupSaveSyncedSetting(key: string, value: string, seed: boolean): Promise<void> {
+  if (!Native) return
+  await Native.saveSyncedSetting(key, value, seed)
 }
 
 export async function solevupGetPref(key: string, fallback: string): Promise<string> {

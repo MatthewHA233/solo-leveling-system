@@ -30,7 +30,17 @@ export type ImportResult = {
   chatSessions: number
   chatMessages: number
   modelRegistry: number
+  settings: number
+  chatImages: number
   skipped: number
+}
+
+/** 配对页的在线状态和型号 */
+export type LinkProbe = {
+  deviceId: string
+  online: boolean
+  deviceType?: string
+  deviceModel?: string
 }
 
 export type SyncRoundResult = {
@@ -62,6 +72,7 @@ interface SyncClientNative {
   listLinkedDevices(): Promise<LinkedDevice[]>
   linkPeer(baseUrl: string, code: string): Promise<LinkPeerResult>
   verifyLinkedPeer(deviceId: string): Promise<string | null>
+  probeLinkedPeers(): Promise<LinkProbe[]>
   unlinkPeer(deviceId: string): Promise<boolean>
   syncNow(deviceId: string): Promise<SyncRoundResult>
   syncAll(): Promise<SyncAllItem[]>
@@ -89,6 +100,11 @@ export async function linkPeer(baseUrl: string, code: string): Promise<LinkPeerR
 export async function verifyLinkedPeer(deviceId: string): Promise<string | null> {
   if (!Native) return null
   return Native.verifyLinkedPeer(deviceId)
+}
+
+export async function probeLinkedPeers(): Promise<LinkProbe[]> {
+  if (!Native) return []
+  return Native.probeLinkedPeers()
 }
 
 export async function unlinkPeer(deviceId: string): Promise<boolean> {

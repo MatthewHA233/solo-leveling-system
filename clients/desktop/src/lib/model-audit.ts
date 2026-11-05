@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { LogModelCallRequest, ModelApiKey, ModelCallLog, ModelFreeQuota, UpsertModelApiKeyRequest } from './local-api'
+import type { LogModelCallRequest, ModelApiKey, ModelCallLog, ModelDef, ModelFreeQuota, UpsertModelApiKeyRequest } from './local-api'
 
 export interface DashScopeUsage {
   prompt_tokens?: number
@@ -79,6 +79,18 @@ export async function getFeatureModel(feature: string, fallback: string): Promis
     return model || fallback
   } catch {
     return fallback
+  }
+}
+
+/** 模型能不能看图。不在模型库里的让它试，不支持时接口会报错 */
+export async function modelSeesImages(modelId: string): Promise<boolean> {
+  try {
+    const def = (await invoke<ModelDef[]>('list_models')).find((m) => m.id === modelId)
+    if (!def) return true
+    const modalities: unknown = JSON.parse(def.modalities ?? '[]')
+    return Array.isArray(modalities) && modalities.includes('image')
+  } catch {
+    return true
   }
 }
 

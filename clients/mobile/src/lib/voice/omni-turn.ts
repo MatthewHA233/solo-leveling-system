@@ -6,6 +6,8 @@
 
 /** 一轮回复里这么久没有任何新内容，算没有回应 */
 export const OMNI_REPLY_TIMEOUT_MS = 30_000
+/** 排队的音频播完后，最多再等这么久 */
+export const OMNI_PLAYBACK_GRACE_MS = 5_000
 
 export interface OmniWatchdog {
   /** 开始等（提交录音、工具开始或跑完），重新计时 */

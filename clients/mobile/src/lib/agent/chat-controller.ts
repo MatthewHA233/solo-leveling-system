@@ -14,6 +14,7 @@
 
 import { startThoughtOutbox } from '../ai/anchor-outbox'
 import { initChatImages, type PickedImage } from '../chatimage'
+import { loadProxyPort } from '../network'
 import { ensureModelCatalog } from '../models/registry'
 import { saveFishApiKey } from '../voice'
 import { loadConfig, type AgentConfig } from './agent-config'
@@ -81,6 +82,9 @@ class ChatControllerImpl {
     }
     this.omniFlow.syncSubscription()
     core.emit()
+    core.initSyncedSettings().catch((e) => console.warn('[Sync] 读取同步设置失败', e))
+    // 连不上时的报错要说清楚是不是代理的问题
+    loadProxyPort().catch((e) => console.warn('[Chat] 读取代理端口失败', e))
 
     void ensureModelCatalog()
     startThoughtOutbox()
@@ -106,6 +110,10 @@ class ChatControllerImpl {
   // ── 发送（发送中再发送、按住说话、切会话都会打断正在进行的回复）──
 
   sendText = (text: string, images?: readonly PickedImage[]): Promise<void> => this.handleSend(text, false, images)
+
+  setVoiceImageSource = (source: () => readonly PickedImage[]): void => {
+    this.core.takeVoiceImages = source
+  }
 
   clearGaze = (): void => {
     this.core.focusedCard = null

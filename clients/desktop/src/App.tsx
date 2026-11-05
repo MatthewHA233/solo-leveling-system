@@ -10,7 +10,7 @@ import {
   fetchPerceptionSpans, fetchBiliSpans, searchBiliHistory, fetchGoals, parseGoalTags,
   fetchActivityPalette, fetchActivityBlocks, paintActivityBlocks, eraseActivityBlocks,
   fetchPlanNodes, fetchPlannedBlocks, paintPlannedBlocks, erasePlannedBlocks,
-  fetchSyncLinks, fetchSyncPeers, runSyncLink,
+  fetchSyncLinks, fetchSyncPeers, runSyncLink, fetchSyncedSettings, saveSyncedSetting,
   addContextCard, addBinding,
 } from './lib/local-api'
 import type { PerceptionSpan, BiliSpan, ModelCallLog, LinkedDevice, SyncPeer } from './lib/local-api'
@@ -22,9 +22,10 @@ import type { ActivityBlock, ActivityPalette, PlanNode, PlannedBlock, RecordLaye
 import { theme, hud, ti, tiSurface, tiTitle } from './theme'
 
 // Agent
-import { getDashScopeApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
+import { DEFAULT_CONFIG, getDashScopeApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
-import { getFeatureModel, getFishApiKey, logModelUsage, realtimeUsageToDashScope, saveFishApiKey, type RealtimeUsage } from './lib/model-audit'
+import { configUpdatesFromSettings, seedWrites, settingWrites } from './lib/agent/synced-settings'
+import { getFeatureModel, getFishApiKey, logModelUsage, modelSeesImages, realtimeUsageToDashScope, saveFishApiKey, type RealtimeUsage } from './lib/model-audit'
 import { buildStaticPrompt, buildDynamicContext, buildConversationSummary } from './lib/ai/prompt-templates'
 import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from './lib/ai/prompt-templates'
 import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
@@ -36,9 +37,9 @@ import { withBrowserArgs } from './lib/webview-args'
 import { buildAsrContext, buildAsrVocabulary } from './lib/voice/asr-hints'
 import { createUserMessage, createAssistantMessage, getMessageText, isAssistantMessage, userContentWithImages } from './lib/llm/types'
 import {
-  chatImageUrl, describeImagesForModel, initChatImages, parseImageMarker, withImageMarker, type PendingImage,
+  CHAT_IMAGES_UPDATED, chatImageUrl, describeImagesForModel, initChatImages, loadRestoredImages, parseImageMarker, withImageMarker, type PendingImage,
 } from './lib/agent/chat-images'
-import type { Message } from './lib/llm/types'
+import type { ImageBlock, Message } from './lib/llm/types'
 import type { ApiRequestSnapshot } from './lib/llm/api'
 
 // Session 持久化
@@ -224,14 +225,18 @@ function sessionMessagesToChatMessages(msgs: readonly SessionMessage[], audioDir
   return out
 }
 
-function sessionMessagesToLLMHistory(msgs: readonly SessionMessage[]): Message[] {
+function sessionMessagesToLLMHistory(
+  msgs: readonly SessionMessage[],
+  images?: ReadonlyMap<string, ImageBlock>,
+): Message[] {
   const out: Message[] = []
   for (const m of msgs) {
     if (m.role === 'tool') continue
     const content = (m.content ?? '').trim()
     if (!content) continue
     if (m.role === 'user') {
-      out.push(createUserMessage(describeImagesForModel(content)))
+      const blocks = parseImageMarker(content).ids.flatMap((id) => images?.get(id) ?? [])
+      out.push(createUserMessage(describeImagesForModel(content, blocks.length), { images: blocks }))
     } else if (m.role === 'assistant') {
       out.push(createAssistantMessage(content))
     }
@@ -453,8 +458,8 @@ export default function App() {
   const pushSyncLog = useCallback((entry: Omit<SyncLogEntry, 'ts'>) => {
     const now = Date.now()
     setSyncLog((prev) => {
-      const latest = prev[0]
-      if (latest && latest.text === entry.text && now - latest.ts < 5000) {
+      // 查 5 秒内所有条目：离线重试时「开始」和「失败」交替出现，只比最新一条拦不住
+      if (prev.some((e) => e.text === entry.text && now - e.ts < 5000)) {
         return prev
       }
       const next: SyncLogEntry = { ...entry, ts: now }
@@ -542,6 +547,7 @@ export default function App() {
   const replyTurnRef = useRef(0)
   const replyControlRef = useRef<{ interrupt: () => void } | null>(null)
   const handleSendRef = useRef<HandleSend | null>(null)
+  const takeVoiceImagesRef = useRef<() => readonly PendingImage[]>(() => [])
   // 当前对话绑定的语境卡（语境库里展开转录的那张）；聊天锚定到它
   const activeContextRef = useRef<{ cardId: string; text: string; title: string } | null>(null)
   // 主人在洪流域鼠标锁定的卡片（粘性悬浮）；注入 system prompt，说"这张卡片"时 AI 立刻知道
@@ -743,6 +749,16 @@ export default function App() {
   const [fairyUiState, setFairyUiState] = useState<FairyState>('idle')
   const voiceServiceRef = useRef<VoiceService | null>(null)
   const configRef = useRef(config)
+  // 同步进来的设置只更新配置，不写回同步表（规则见 synced-settings.ts）
+  const applySyncedSettings = useCallback(async () => {
+    const updates = configUpdatesFromSettings(await fetchSyncedSettings(), configRef.current)
+    if (Object.keys(updates).length === 0) return
+    setConfig((prev) => {
+      const next = updateConfig(prev, updates)
+      configRef.current = next
+      return next
+    })
+  }, [])
   const systemPromptRef = useRef<string>('')
   // 文字模式用：静态段作系统提示词（跨轮不变，吃得到前缀缓存），动态段作本轮 <system-reminder>
   const promptPartsRef = useRef<{ staticPrompt: string; dynamicContext: string }>({ staticPrompt: '', dynamicContext: '' })
@@ -774,7 +790,7 @@ export default function App() {
 
         if (state.messages.length > 0) {
           setChatMessages(sessionMessagesToChatMessages(state.messages, audioDir))
-          conversationRef.current = compactHistory(sessionMessagesToLLMHistory(state.messages))
+          conversationRef.current = compactHistory(sessionMessagesToLLMHistory(state.messages, await loadRestoredImages(state.messages)))
         }
       } catch {
         // 后端不可用：静默降级（不影响功能，不持久化）
@@ -990,7 +1006,7 @@ export default function App() {
       const { listen } = await import('@tauri-apps/api/event')
       if (cancelled) return
       // 拆解 SyncImportResult / SyncRoundResult 成简洁中文行
-      const fmtImport = (r: { activity_categories?: number; activity_tags?: number; activity_blocks?: number; plan_nodes?: number; planned_blocks?: number; model_call_log?: number; model_api_keys?: number; model_free_quota?: number; feature_bindings?: number; chat_sessions?: number; chat_messages?: number; skipped?: number } | null | undefined): string => {
+      const fmtImport = (r: { activity_categories?: number; activity_tags?: number; activity_blocks?: number; plan_nodes?: number; planned_blocks?: number; model_call_log?: number; model_api_keys?: number; model_free_quota?: number; feature_bindings?: number; chat_sessions?: number; chat_messages?: number; settings?: number; chat_images?: number; skipped?: number } | null | undefined): string => {
         if (!r) return '0 条'
         const parts: string[] = []
         if (r.activity_categories) parts.push(`分类×${r.activity_categories}`)
@@ -1004,6 +1020,8 @@ export default function App() {
         if (r.feature_bindings) parts.push(`功能绑定×${r.feature_bindings}`)
         if (r.chat_sessions) parts.push(`聊天会话×${r.chat_sessions}`)
         if (r.chat_messages) parts.push(`聊天消息×${r.chat_messages}`)
+        if (r.settings) parts.push(`设置×${r.settings}`)
+        if (r.chat_images) parts.push(`聊天图片×${r.chat_images}`)
         if (parts.length === 0) return r.skipped ? `0 条（跳过 ${r.skipped}）` : '0 条'
         const skipNote = r.skipped ? ` · 跳过 ${r.skipped}` : ''
         return parts.join(' + ') + skipNote
@@ -1017,6 +1035,9 @@ export default function App() {
             alias,
             text: `← ${alias} 推过来 ${detail}`,
           })
+          if (e.payload?.result?.settings > 0) {
+            applySyncedSettings().catch((err) => console.warn('[Sync] 读取同步设置失败', err))
+          }
           // 触发刷新；每个 fetch 完成后再各打一行确认本地真实落库行数
           const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`
           Promise.all([
@@ -1100,6 +1121,10 @@ export default function App() {
             // 之前缺这段：sync:finished 只刷设备列表，本端是发起方时
             // pull 到的对端数据要等下次手动 fetch 才显示，体验不对。
             const pulled = r?.pulled
+            if ((pulled?.settings ?? 0) > 0) {
+              applySyncedSettings().catch((err) => console.warn('[Sync] 读取同步设置失败', err))
+            }
+            if ((pulled?.chat_images ?? 0) > 0) window.dispatchEvent(new Event(CHAT_IMAGES_UPDATED))
             // AUDIT-035：pulledCount 也必须包含模型 4 表，否则纯模型同步时
             // pulledCount=0，下面的重渲染分支永远不会触发，前端永远拿不到新模型设置
             const pulledCount =
@@ -1166,7 +1191,7 @@ export default function App() {
       cancelled = true
       unlisteners.forEach((u) => u())
     }
-  }, [refreshActivityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshPlanNodes, selectedDate, pushSyncLog])
+  }, [refreshActivityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshPlanNodes, selectedDate, pushSyncLog, applySyncedSettings])
 
   // 定时刷新 discovered peers（每 5 秒）—— 顶栏判断 linked 设备在线/离线
   useEffect(() => {
@@ -1620,9 +1645,14 @@ export default function App() {
           if (isOmniMode) omniUserInputPersistedRef.current = false
           // 起标题按「主人说了几句」数；没转写出文字的那句不算
           if (text.trim()) titleFlowRef.current?.onUserMessage(text)
+          // 待发的图片跟这句语音一起发。实时语音发不了图，留在输入框
+          const images = !isOmniMode && text.trim() ? takeVoiceImagesRef.current() : []
+          const bubbleImages = images.map(({ id, url }) => ({ id, url }))
           // 更新用户气泡的转写文字
           setChatMessages((prev) =>
-            prev.map((m) => m.id === sessionMsgId ? { ...m, transcript: text } : m)
+            prev.map((m) => m.id === sessionMsgId
+              ? { ...m, transcript: text, ...(bubbleImages.length > 0 ? { images: bubbleImages } : {}) }
+              : m)
           )
 
           // 语音消息持久化：等录音落盘拿到 audioPath（落盘失败也照样存文字，别丢主人说的话）
@@ -1635,7 +1665,7 @@ export default function App() {
             if (isOmniMode) omniUserInputPersistedRef.current = true
             void saving.then((saved) => {
               const voiceMsg = {
-                ...makeSessionMessage('user', text, saved?.audioPath, saved?.durationMs),
+                ...makeSessionMessage('user', withImageMarker(text, images.map((i) => i.id)), saved?.audioPath, saved?.durationMs),
                 ...(recordedAt ? { timestamp: recordedAt } : null),
               }
               persistedBufferRef.current = [...persistedBufferRef.current, voiceMsg]
@@ -1647,7 +1677,7 @@ export default function App() {
           if (isOmniMode) {
             lastOmniUserInputRef.current = text   // 供 audio_done 持久化使用
           } else {
-            handleSend(text, true)
+            handleSend(text, true, undefined, images)
           }
         },
         onOmniCommitted: () => omniReplyWatchdogRef.current?.arm(),
@@ -2252,12 +2282,24 @@ export default function App() {
   }
 
   const handleConfigUpdate = useCallback((updates: Partial<AgentConfig>) => {
+    for (const { key, value } of settingWrites(configRef.current, updates)) {
+      saveSyncedSetting(key, value).catch((e) => console.warn('[Sync] 保存同步设置失败', e))
+    }
     setConfig((prev) => {
       const next = updateConfig(prev, updates)
       configRef.current = next
       return next
     })
   }, [])
+
+  // Fish 音色和模型：用户改过默认值就写种子，再用同步表里的值
+  useEffect(() => {
+    void (async () => {
+      const rows = await fetchSyncedSettings()
+      await Promise.all(seedWrites(rows, configRef.current, DEFAULT_CONFIG).map((w) => saveSyncedSetting(w.key, w.value, true)))
+      await applySyncedSettings()
+    })().catch((e) => console.warn('[Sync] 读取同步设置失败', e))
+  }, [applySyncedSettings])
 
   // 旧版 Fish Key 存在配置里，不同步：搬进 Key 库，手机才拿得到
   useEffect(() => {
@@ -2578,6 +2620,7 @@ export default function App() {
     }
 
     const chatModel = await getFeatureModel('fairy_chat', config.openaiCardModel || 'qwen3.6-flash')
+    const hideImages = !(await modelSeesImages(chatModel))
     const dashscopeApiKey = getDashScopeApiKey(config) ?? ''
 
     // 本轮实时背景只附在发给模型的这条消息上；存进历史的是不带背景的原话，让前缀跨轮不变
@@ -2595,6 +2638,7 @@ export default function App() {
           apiKey: dashscopeApiKey,
           apiBase: config.openaiApiBase,
           model: chatModel,
+          hideImages,
           feature: 'fairy_chat',
           maxTokens: 8000,
           tools: TOOL_DEFINITIONS,
@@ -2964,6 +3008,7 @@ export default function App() {
     }
     try {
       const msgs = await fetchSessionMessages(sessionId)
+      const restoredImages = await loadRestoredImages(msgs)
       // 正在回复就先停掉（生成和朗读）：切走之后它不该继续出声
       if (replyControlRef.current) {
         replyControlRef.current.interrupt()
@@ -2976,7 +3021,7 @@ export default function App() {
       const title = knownTitle ?? sessions.find((s) => s.id === sessionId)?.title
       applySessionTitle(title || DEFAULT_SESSION_TITLE)
       titleFlow.reset(sessionId, title || DEFAULT_SESSION_TITLE, countUserMessages(msgs))
-      conversationRef.current = compactHistory(sessionMessagesToLLMHistory(msgs))
+      conversationRef.current = compactHistory(sessionMessagesToLLMHistory(msgs, restoredImages))
       revokeTrackedBlobAudioUrls()
       setChatMessages(sessionMessagesToChatMessages(msgs, audioDirRef.current))
       performJump()
@@ -3609,6 +3654,7 @@ export default function App() {
                     messages={chatMessages}
                     isProcessing={isProcessing}
                     onSend={sendFromPanel}
+                    takeVoiceImagesRef={takeVoiceImagesRef}
                     agentName={config.agentName}
                     userCallsign={config.agentCallUser}
                     gazeTarget={gazeTarget}

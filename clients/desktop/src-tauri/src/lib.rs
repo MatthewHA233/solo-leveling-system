@@ -1565,6 +1565,19 @@ async fn save_chat_image(id: String, jpeg_bytes: Vec<u8>) -> Result<(), String> 
     std::fs::write(dir.join(format!("{}.jpg", id)), &jpeg_bytes).map_err(|e| format!("写入失败: {}", e))
 }
 
+/// 重新打开会话时把图片再发给模型用；文件不在返回 None
+#[tauri::command]
+async fn read_chat_image(id: String) -> Result<Option<String>, String> {
+    use base64::Engine;
+    if !is_chat_image_id(&id) {
+        return Err("图片 id 不对".into());
+    }
+    match std::fs::read(chat_image_root().join(format!("{}.jpg", id))) {
+        Ok(bytes) => Ok(Some(base64::engine::general_purpose::STANDARD.encode(bytes))),
+        Err(_) => Ok(None),
+    }
+}
+
 #[tauri::command]
 fn get_chat_image_dir() -> String {
     chat_image_root().to_string_lossy().into_owned()
@@ -2089,6 +2102,7 @@ pub fn run() {
             save_audio_file,
             get_audio_dir,
             save_chat_image,
+            read_chat_image,
             get_chat_image_dir,
             setup_fairy,
             update_fairy_cursor_radius,

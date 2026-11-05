@@ -8,11 +8,13 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.solevup.mobile.solevupdb.SolevupDb
+import com.solevup.mobile.sync.SyncDiscovery
+import com.solevup.mobile.sync.SyncLog
 import com.solevup.mobile.sync.SyncRuntime
 
 /**
  * 同步服务现在由 SyncRuntime 随进程启动（端口 39733，与 desktop 统一）。
- * 这个模块只给配对页看状态、重试和附近设备，并把同步事件转给 JS。
+ * 这个模块只给配对页看状态、日志、重试、改别名和附近设备，并把同步事件转给 JS。
  */
 class SyncServerModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext), SyncRuntime.EventSink, LifecycleEventListener {
@@ -58,20 +60,58 @@ class SyncServerModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun listNearbyPeers(promise: Promise) {
     try {
+      promise.resolve(peersArray(SyncRuntime.nearbyPeers()))
+    } catch (e: Throwable) {
+      promise.reject("SYNC_LIST_PEERS_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun refreshPeers(promise: Promise) {
+    Thread {
+      try {
+        promise.resolve(peersArray(SyncRuntime.refreshPeers()))
+      } catch (e: Throwable) {
+        promise.reject("SYNC_REFRESH_PEERS_FAILED", e.message, e)
+      }
+    }.start()
+  }
+
+  @ReactMethod
+  fun setAlias(alias: String, promise: Promise) {
+    try {
+      promise.resolve(statusMap(SyncRuntime.setAlias(alias)))
+    } catch (e: Throwable) {
+      promise.reject("SYNC_SET_ALIAS_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun syncLog(promise: Promise) {
+    try {
       val arr = Arguments.createArray()
-      for (peer in SyncRuntime.nearbyPeers()) {
+      for (entry in SyncLog.list()) {
         arr.pushMap(Arguments.createMap().apply {
-          putString("deviceId", peer.deviceId)
-          putString("alias", peer.alias)
-          putString("deviceType", peer.deviceType)
-          putString("deviceModel", peer.deviceModel)
-          putString("base", peer.base)
-          putString("pairCode", peer.pairCode)
+          putDouble("at", entry.at.toDouble())
+          putString("text", entry.text)
         })
       }
       promise.resolve(arr)
     } catch (e: Throwable) {
-      promise.reject("SYNC_LIST_PEERS_FAILED", e.message, e)
+      promise.reject("SYNC_LOG_FAILED", e.message, e)
+    }
+  }
+
+  private fun peersArray(peers: List<SyncDiscovery.NearbyPeer>) = Arguments.createArray().apply {
+    for (peer in peers) {
+      pushMap(Arguments.createMap().apply {
+        putString("deviceId", peer.deviceId)
+        putString("alias", peer.alias)
+        putString("deviceType", peer.deviceType)
+        putString("deviceModel", peer.deviceModel)
+        putString("base", peer.base)
+        putString("pairCode", peer.pairCode)
+      })
     }
   }
 
@@ -102,7 +142,9 @@ class SyncServerModule(private val reactContext: ReactApplicationContext) :
     s.error?.let { putString("error", it) }
     putString("alias", s.alias)
     putString("deviceId", s.deviceId)
+    putString("deviceModel", s.deviceModel)
     putString("pairCode", s.pairCode)
+    putDouble("nextAutoSyncAt", s.nextAutoSyncAt.toDouble())
   }
 
   override fun onDbChanged(source: String, result: SolevupDb.ImportResult) {
@@ -121,6 +163,8 @@ class SyncServerModule(private val reactContext: ReactApplicationContext) :
         putInt("chatSessions", result.chatSessions)
         putInt("chatMessages", result.chatMessages)
         putInt("modelRegistry", result.modelRegistry)
+        putInt("settings", result.settings)
+        putInt("chatImages", result.chatImages)
         putInt("skipped", result.skipped)
       })
     })

@@ -2,16 +2,27 @@
 // 图片附件（规则见 lib/agent/chat-images.ts）：
 //   · BubbleImages：气泡里的图片，点一下看大图
 //   · PendingImagesBar：输入框上方待发的图片，点一下移除
-// 选图走系统选择器（lib/chatimage.ts）。别的设备发的图，文件不在这台上，显示占位
+// 选图走系统选择器（lib/chatimage.ts）。别的设备发的图，文件还没同步过来时显示占位
 // ══════════════════════════════════════════════
 
-import { useState } from 'react'
-import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { useEffect, useState } from 'react'
+import { DeviceEventEmitter, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { theme } from '../../theme'
 import type { ChatImageAttachment } from '../../types'
 
 function Tile({ image }: { image: ChatImageAttachment }) {
   const [missing, setMissing] = useState(false)
+  // 同步拉到了新图片文件：占位再试一次
+  useEffect(() => {
+    if (!missing) return
+    const sub = DeviceEventEmitter.addListener(
+      'SolevupDbChanged',
+      (e: { changed?: { chatImages?: number } } | null) => {
+        if ((e?.changed?.chatImages ?? 0) > 0) setMissing(false)
+      },
+    )
+    return () => sub.remove()
+  }, [missing])
   if (missing || !image.uri) return <Text style={styles.missing}>图片不在这台设备上</Text>
   return (
     <Image

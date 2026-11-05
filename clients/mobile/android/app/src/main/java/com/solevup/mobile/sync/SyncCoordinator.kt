@@ -53,23 +53,29 @@ class SyncCoordinator(
   /** 阻塞跑一轮：手动同步和 WorkManager 用，失败抛异常。 */
   fun runRound(deviceId: String, base: String, source: String): SyncClient.SyncRoundResult =
     synchronized(roundLock) {
+      val alias = linkAlias(deviceId)
       syncing.add(deviceId)
+      SyncLog.add("→ 开始与 $alias 同步")
       listener.onSyncStatus(deviceId, true, null, null)
       try {
         val token = db.linkedDeviceToken(deviceId)
           ?: throw SyncClient.SyncException("这台设备还没有配对")
         // 先确认对面持有同一个令牌，再发令牌和数据
-        SyncClient.verifyPeer(base, db.deviceId(), deviceId, token)
+        val hello = SyncClient.verifyPeer(base, db.deviceId(), deviceId, token)
+        // 对方可能改过名。校验通过才信
+        hello.optString("alias").takeIf { it.isNotBlank() && it != alias }?.let { db.updateLinkAlias(deviceId, it) }
         val r = SyncClient.bidirectionalSync(db, base, token)
         db.touchLinkSynced(deviceId, SyncProtocol.normalizeBase(base))
         lastSuccessAt[deviceId] = System.currentTimeMillis()
         lastErrors.remove(deviceId)
         if (r.pulled.hasChanges) listener.onDbChanged(source, r.pulled)
+        SyncLog.add("✓ ${linkAlias(deviceId)} 同步完成 · 拉 [${SyncLog.describe(r.pulled)}] / 推 [${SyncLog.describe(r.pushed)}]")
         listener.onSyncStatus(deviceId, false, true, null)
         r
       } catch (t: Throwable) {
         val msg = t.message ?: "同步失败"
         lastErrors[deviceId] = msg
+        SyncLog.add("✗ $alias 同步失败: $msg")
         listener.onSyncStatus(deviceId, false, false, msg)
         listener.onRoundFailed()
         throw t
@@ -77,6 +83,9 @@ class SyncCoordinator(
         syncing.remove(deviceId)
       }
     }
+
+  private fun linkAlias(deviceId: String): String =
+    db.listLinkedDevices().find { it.deviceId == deviceId }?.alias ?: deviceId
 
   /** 后台触发：冷却期内和已排队的直接丢弃，失败只记日志。 */
   fun enqueue(link: SolevupDb.LinkedDevice, source: String, cooldownMs: Long) {
@@ -121,7 +130,7 @@ class SyncCoordinator(
     // 旧版对端没有配对接口，直接调只会收到一个看不出原因的 404
     if (hello.optInt("protocol_version") < 2) throw SyncClient.SyncException("对端版本太旧，请两边都升级后再配对")
     val paired = try {
-      SyncClient.pair(base, code, selfId, db.generateAlias(selfId))
+      SyncClient.pair(base, code, selfId, db.syncAlias())
     } catch (e: org.json.JSONException) {
       throw SyncClient.SyncException("对端版本太旧或回复异常，请两边都升级后再配对", e)
     }
@@ -159,6 +168,7 @@ class SyncCoordinator(
   fun onInboundImport(deviceId: String, remoteIp: String?, result: SolevupDb.ImportResult) {
     if (result.hasChanges) listener.onDbChanged("sync-server", result)
     val link = db.listLinkedDevices().find { it.deviceId == deviceId } ?: return
+    if (result.hasChanges) SyncLog.add("← ${link.alias} 推过来 ${SyncLog.describe(result)}")
     lastSuccessAt[deviceId] = System.currentTimeMillis()
     lastErrors.remove(deviceId)
     val base = remoteIp?.let { "http://$it:${SyncProtocol.DEFAULT_PORT}" } ?: link.lastBase

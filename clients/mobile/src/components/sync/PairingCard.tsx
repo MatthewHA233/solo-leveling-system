@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// 局域网配对：本机身份、附近设备、手动输入、已链接设备
+// 局域网配对：本机身份、附近设备、手动输入、已链接设备、同步日志
 // 同步本身由原生 SyncRuntime 自动完成，这里只负责建立和管理链接
 // ══════════════════════════════════════════════
 
@@ -8,23 +8,30 @@ import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import {
   linkPeer,
   listLinkedDevices,
+  probeLinkedPeers,
   syncNow,
   unlinkPeer,
   type ImportResult,
   type LinkedDevice,
+  type LinkProbe,
 } from '../../lib/syncclient'
 import {
   createPairCode,
+  getSyncLog,
   getSyncServerStatus,
   listNearbyPeers,
+  refreshNearbyPeers,
   retrySyncServer,
+  setSyncAlias,
   subscribeSyncStatus,
   type NearbyPeer,
+  type SyncLogEntry,
   type SyncServerStatus,
 } from '../../lib/syncserver'
 import { theme } from '../../theme'
 
 const NEARBY_POLL_MS = 3000
+const LINK_PROBE_MS = 5000
 
 function summarize(r: ImportResult): string {
   const parts: string[] = []
@@ -35,6 +42,8 @@ function summarize(r: ImportResult): string {
   if (r.modelApiKeys + r.modelCallLog + r.featureBindings > 0) {
     parts.push(`模型数据 ${r.modelApiKeys + r.modelCallLog + r.featureBindings}`)
   }
+  if (r.settings > 0) parts.push(`设置 ${r.settings}`)
+  if (r.chatImages > 0) parts.push(`聊天图片 ${r.chatImages}`)
   return parts.length > 0 ? parts.join(' · ') : '无变化'
 }
 
@@ -51,6 +60,13 @@ export default function PairingCard() {
   const [pairTarget, setPairTarget] = useState<{ key: string; label: string; base: string } | null>(null)
   const [codeInput, setCodeInput] = useState('')
   const linksRef = useRef<LinkedDevice[]>([])
+  const [probes, setProbes] = useState<readonly LinkProbe[]>([])
+  const [refreshing, setRefreshing] = useState(false)
+  // 正在改别名时是输入框的内容
+  const [aliasDraft, setAliasDraft] = useState<string | null>(null)
+  const [log, setLog] = useState<readonly SyncLogEntry[]>([])
+  const [logOpen, setLogOpen] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
 
   const refreshLinks = useCallback(async () => {
     try {
@@ -67,6 +83,10 @@ export default function PairingCard() {
     }
   }, [])
 
+  const refreshLog = useCallback(() => {
+    getSyncLog().then(setLog).catch(() => {})
+  }, [])
+
   useEffect(() => {
     let alive = true
     const tick = () => {
@@ -75,14 +95,41 @@ export default function PairingCard() {
     }
     tick()
     void refreshLinks()
+    refreshLog()
     const timer = setInterval(tick, NEARBY_POLL_MS)
-    const unsubscribe = subscribeSyncStatus(() => { void refreshLinks() })
+    const unsubscribe = subscribeSyncStatus(() => {
+      void refreshLinks()
+      refreshLog()
+    })
     return () => {
       alive = false
       clearInterval(timer)
       unsubscribe()
     }
-  }, [refreshLinks])
+  }, [refreshLinks, refreshLog])
+
+  // 已链接设备的在线状态和型号。只在有已链接设备时才问
+  const hasLinks = links.length > 0
+  useEffect(() => {
+    if (!hasLinks) return
+    let alive = true
+    const probe = () => {
+      probeLinkedPeers().then((p) => { if (alive) setProbes(p) }).catch(() => {})
+    }
+    probe()
+    const timer = setInterval(probe, LINK_PROBE_MS)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [hasLinks])
+
+  // 倒计时每秒走一次
+  useEffect(() => {
+    if (!hasLinks) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [hasLinks])
 
   useEffect(() => {
     if (!pairCode) return
@@ -98,6 +145,28 @@ export default function PairingCard() {
       setMessage(`生成配对码失败：${e?.message ?? String(e)}`)
     }
   }, [])
+
+  const refreshPeers = useCallback(async () => {
+    setRefreshing(true)
+    try {
+      setNearby(await refreshNearbyPeers())
+    } catch (e: any) {
+      setMessage(`刷新失败：${e?.message ?? String(e)}`)
+    } finally {
+      setRefreshing(false)
+    }
+  }, [])
+
+  const confirmAlias = useCallback(async () => {
+    if (aliasDraft == null) return
+    try {
+      const next = await setSyncAlias(aliasDraft)
+      if (next) setStatus(next)
+      setAliasDraft(null)
+    } catch (e: any) {
+      setMessage(`改名失败：${e?.message ?? String(e)}`)
+    }
+  }, [aliasDraft])
 
   const startPairing = useCallback((key: string, label: string, base: string) => {
     setPairTarget({ key, label, base })
@@ -153,6 +222,10 @@ export default function PairingCard() {
 
   const linkedIds = new Set(links.map((d) => d.deviceId))
   const unlinkedNearby = nearby.filter((p) => !linkedIds.has(p.deviceId))
+  const anySyncing = links.some((d) => d.syncing)
+  const nextSyncIn = status?.nextAutoSyncAt
+    ? Math.max(0, Math.ceil((status.nextAutoSyncAt - now) / 1000))
+    : null
 
   return (
     <View style={styles.card}>
@@ -161,8 +234,37 @@ export default function PairingCard() {
 
       {status?.running ? (
         <View style={styles.identity}>
-          <Text style={styles.alias}>{status.alias}</Text>
-          <Text style={styles.sub}>指纹 {status.pairCode}</Text>
+          {aliasDraft != null ? (
+            <View style={styles.inputRow}>
+              <TextInput
+                value={aliasDraft}
+                onChangeText={setAliasDraft}
+                placeholder="这台设备的名字"
+                placeholderTextColor={theme.inkSoft}
+                maxLength={32}
+                autoFocus
+                style={styles.input}
+              />
+              <Pressable
+                style={styles.btn}
+                disabled={aliasDraft.trim().length === 0}
+                onPress={() => void confirmAlias()}
+              >
+                <Text style={styles.btnText}>确定</Text>
+              </Pressable>
+              <Pressable style={styles.plainBtn} hitSlop={8} onPress={() => setAliasDraft(null)}>
+                <Text style={styles.link}>取消</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={styles.headRow}>
+              <Text style={styles.alias} numberOfLines={1}>{status.alias}</Text>
+              <Pressable hitSlop={8} onPress={() => setAliasDraft(status.alias)}>
+                <Text style={styles.link}>改名</Text>
+              </Pressable>
+            </View>
+          )}
+          <Text style={styles.sub}>{status.deviceModel} · 指纹 {status.pairCode}</Text>
           {status.ipv4s.length > 0 ? (
             status.ipv4s.map((ip) => (
               <Text key={ip} selectable style={styles.address}>{ip}:{status.port}</Text>
@@ -193,7 +295,12 @@ export default function PairingCard() {
         </View>
       )}
 
-      <Text style={styles.section}>附近设备</Text>
+      <View style={styles.sectionRow}>
+        <Text style={styles.sectionTitle}>附近设备</Text>
+        <Pressable hitSlop={8} disabled={refreshing} onPress={() => void refreshPeers()}>
+          <Text style={styles.link}>{refreshing ? '查找中…' : '刷新'}</Text>
+        </Pressable>
+      </View>
       {unlinkedNearby.length === 0 ? (
         <Text style={styles.sub}>
           {nearby.length > 0 ? '附近的设备都已链接。' : '还没发现设备。电脑端打开后，这里会自动出现。'}
@@ -268,11 +375,25 @@ export default function PairingCard() {
       <Text style={styles.section}>已链接</Text>
       {links.length === 0 ? (
         <Text style={styles.sub}>还没有链接任何设备。</Text>
-      ) : (
-        links.map((device) => (
+      ) : nextSyncIn != null && (
+        <Text style={styles.sub}>
+          {anySyncing ? '正在同步…' : `${nextSyncIn} 秒后自动同步附近的设备`}
+        </Text>
+      )}
+      {links.map((device) => {
+        const peer = nearby.find((p) => p.deviceId === device.deviceId)
+        const probe = probes.find((p) => p.deviceId === device.deviceId)
+        const online = !!peer || !!probe?.online
+        const model = probe?.deviceModel || peer?.deviceModel
+        return (
           <View key={device.deviceId} style={styles.linkBox}>
-            <Text style={styles.rowTitle} numberOfLines={1}>{device.alias}</Text>
-            <Text style={styles.sub} numberOfLines={1}>{device.lastBase}</Text>
+            <View style={styles.headRow}>
+              <View style={[styles.dot, online && styles.dotOnline]} />
+              <Text style={styles.rowTitle} numberOfLines={1}>{device.alias}</Text>
+            </View>
+            <Text style={styles.sub} numberOfLines={1}>
+              {[online ? '在线' : '离线', model, device.lastBase].filter(Boolean).join(' · ')}
+            </Text>
             <Text style={styles.sub}>
               {device.syncing ? '同步中…' : `上次同步：${device.lastSyncedAt ?? '尚未同步'}`}
             </Text>
@@ -290,10 +411,26 @@ export default function PairingCard() {
               </Pressable>
             </View>
           </View>
-        ))
-      )}
+        )
+      })}
 
       {!!message && <Text style={styles.message} numberOfLines={4}>{message}</Text>}
+
+      <View style={styles.sectionRow}>
+        <Text style={styles.sectionTitle}>同步日志 · 最近 {log.length} 条</Text>
+        <Pressable hitSlop={8} onPress={() => setLogOpen((v) => !v)}>
+          <Text style={styles.link}>{logOpen ? '收起' : '展开'}</Text>
+        </Pressable>
+      </View>
+      {logOpen && (log.length === 0 ? (
+        <Text style={styles.sub}>还没有日志记录。</Text>
+      ) : (
+        log.map((entry, i) => (
+          <Text key={`${entry.at}-${i}`} style={styles.logLine}>
+            {new Date(entry.at).toTimeString().slice(0, 8)}  {entry.text}
+          </Text>
+        ))
+      ))}
     </View>
   )
 }
@@ -310,10 +447,24 @@ const styles = StyleSheet.create({
   title: { fontSize: 15, fontWeight: '700', color: theme.ink },
   sub: { fontSize: 12, color: theme.inkSoft, marginTop: 3 },
   identity: { marginTop: 12 },
-  alias: { fontSize: 14, fontWeight: '600', color: theme.ink },
+  alias: { flexShrink: 1, fontSize: 14, fontWeight: '600', color: theme.ink },
   address: { fontSize: 18, fontWeight: '600', color: theme.ink, marginTop: 6 },
   warn: { fontSize: 12, color: theme.danger, marginTop: 4 },
   section: { fontSize: 12, fontWeight: '600', color: theme.ink, marginTop: 16, marginBottom: 2 },
+  sectionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 16,
+    marginBottom: 2,
+  },
+  sectionTitle: { fontSize: 12, fontWeight: '600', color: theme.ink },
+  headRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  link: { fontSize: 12, fontWeight: '600', color: theme.accent },
+  plainBtn: { paddingHorizontal: 2 },
+  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.line },
+  dotOnline: { backgroundColor: theme.accent },
+  logLine: { fontSize: 11, lineHeight: 16, color: theme.inkSoft, marginTop: 4 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -324,7 +475,7 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   rowMain: { flex: 1 },
-  rowTitle: { fontSize: 14, fontWeight: '600', color: theme.ink },
+  rowTitle: { flexShrink: 1, fontSize: 14, fontWeight: '600', color: theme.ink },
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
   input: {
     flex: 1,

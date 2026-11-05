@@ -19,7 +19,9 @@ import { runQueryLoop } from '../llm/query-loop'
 import { createUserMessage, getMessageText, isAssistantMessage, userContentWithImages, type Message } from '../llm/types'
 import { randomUUID } from '../llm/uuid'
 import type { PickedImage } from '../chatimage'
+import { explainProxyFailure } from '../network'
 import { getFeatureModel } from '../models/model-audit'
+import { modelSeesImages } from '../models/registry'
 import { solevupGetActiveModelApiKey } from '../solevupdb'
 import { createReplyTts, resolveFishApiKey, saveAudioFile, type ReplyTts } from '../voice'
 import { waveformFromWavBase64 } from '../../components/fairy/fairy-format'
@@ -133,7 +135,7 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
           try {
             tts = createReplyTts(
               { apiKey: fishApiKey, referenceId: config.fishReferenceId, model: config.fishModel },
-              (reason) => core.addSystemNote(`语音播报连不上，这轮只有文字：${reason}`),
+              (reason) => core.addSystemNote(`语音播报连不上，这轮只有文字：${explainProxyFailure(reason) ?? reason}`),
             )
           } catch (e) {
             console.warn('[Chat] TTS 不可用', e)
@@ -158,6 +160,7 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
           apiKey: dashscopeApiKey,
           apiBase: config.openaiApiBase,
           model: chatModel,
+          hideImages: !modelSeesImages(chatModel),
           feature: 'fairy_chat',
           maxTokens: 8000,
           tools: TOOL_DEFINITIONS,

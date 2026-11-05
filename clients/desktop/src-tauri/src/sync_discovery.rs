@@ -13,9 +13,6 @@ use tokio::{net::UdpSocket, sync::Mutex};
 const MULTICAST_GROUP: &str = "224.0.0.167";
 const SYNC_DISCOVERY_VERSION: &str = "1.0";
 
-/// 旧同步端口。电脑端 6 月已迁到 39733（49733 落在 Windows 动态端口段，会被 HNS 随机预留），
-/// 但旧版手机端仍在 49733 上开服务、发广播 —— 发现与探测都兼容它。
-pub const LEGACY_PORT: u16 = 49733;
 /// 手动链接 / 在线检测的握手超时
 const PROBE_TIMEOUT: Duration = Duration::from_millis(2500);
 /// 扫网段时单个地址的超时：局域网里活着的设备几十毫秒就回
@@ -129,11 +126,6 @@ impl SyncDiscoveryState {
         }
     }
 
-    /// 发现与监听用的端口：主端口 + 旧端口（兼容旧版手机）
-    pub fn ports(&self) -> Vec<u16> {
-        if self.port == LEGACY_PORT { vec![self.port] } else { vec![self.port, LEGACY_PORT] }
-    }
-
     /// 组播发现到的设备
     pub async fn remember_peer(&self, dto: SyncDiscoveryDto, addr: SocketAddr, source: &'static str) {
         let peer = SyncPeer {
@@ -187,9 +179,9 @@ impl SyncDiscoveryState {
     }
 
     /// 探测一个用户输入的地址（纯查询，不登记、不触发同步）。
-    /// 带端口就只试那个端口；只填 IP 就依次试主端口和旧端口。
+    /// 带端口就试那个端口；只填 IP 就试主端口。
     pub async fn probe(&self, target: &str) -> Result<ProbeResult, String> {
-        let bases = candidate_bases(target, &self.ports())?;
+        let bases = candidate_bases(target, self.port)?;
         let client = lan_client(PROBE_TIMEOUT)?;
         let mut errors = Vec::new();
         for base in &bases {
@@ -238,16 +230,16 @@ impl SyncDiscoveryState {
         self.peers().await
     }
 
-    /// 把每个 /24 网段的 1–254 在所有发现端口上各问一遍 /api/sync/hello
+    /// 把每个 /24 网段的 1–254 各问一遍 /api/sync/hello
     async fn scan_subnets(&self, subnets: &[[u8; 3]]) {
         let Ok(client) = lan_client(SCAN_TIMEOUT) else { return };
         let own = local_ipv4();
-        let ports = self.ports();
+        let port = self.port;
         let bases = subnets
             .iter()
             .flat_map(|net| (1..=254u8).map(move |host| Ipv4Addr::new(net[0], net[1], net[2], host)))
             .filter(|ip| Some(*ip) != own)
-            .flat_map(|ip| ports.iter().map(move |port| format!("http://{ip}:{port}")))
+            .map(|ip| format!("http://{ip}:{port}"))
             .collect::<Vec<_>>();
 
         let found = stream::iter(bases)
@@ -282,18 +274,12 @@ impl SyncDiscoveryState {
     pub async fn send_announcement(&self) -> Result<(), String> {
         let socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| e.to_string())?;
         let bytes = serde_json::to_vec(&self.dto(true)).map_err(|e| e.to_string())?;
-        let targets = self
-            .ports()
-            .into_iter()
-            .map(|port| format!("{}:{}", MULTICAST_GROUP, port))
-            .collect::<Vec<_>>();
+        let target = format!("{}:{}", MULTICAST_GROUP, self.port);
         for wait_ms in [0, 180, 650] {
             if wait_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
             }
-            for target in &targets {
-                socket.send_to(&bytes, target).await.map_err(|e| e.to_string())?;
-            }
+            socket.send_to(&bytes, &target).await.map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -314,15 +300,12 @@ pub async fn start(db: Arc<Database>, app_handle: Arc<AppHandle>, port: u16) -> 
         app_handle,
     });
 
-    // 主端口 + 旧端口各开一个监听；旧端口绑不上（比如被 Windows 预留）只少一条兼容通道，不影响主流程
-    for listen_port in state.ports() {
-        let listener_state = state.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Err(e) = run_listener(listener_state, listen_port).await {
-                log::warn!("[SyncDiscovery] UDP {} 发现监听未启动: {}", listen_port, e);
-            }
-        });
-    }
+    let listener_state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = run_listener(listener_state, port).await {
+            log::warn!("[SyncDiscovery] UDP {} 发现监听未启动: {}", port, e);
+        }
+    });
 
     let announce_state = state.clone();
     tauri::async_runtime::spawn(async move {
@@ -369,7 +352,7 @@ async fn run_listener(state: Arc<SyncDiscoveryState>, listen_port: u16) -> Resul
             continue; // 自己发出的组播回环
         }
         let should_answer = dto.announce;
-        // 回复要发到对方声明的端口，而不是本机端口：两端端口不同（39733 vs 49733）时才回得过去
+        // 回复要发到对方声明的端口，而不是本机端口
         let reply_port = dto.port;
         state.remember_peer(dto, addr, "multicast").await;
 
@@ -406,7 +389,7 @@ async fn fetch_hello(client: &reqwest::Client, base: &str) -> Result<PeerHello, 
 }
 
 /// 用户输入 → 候选 base 列表。带端口只试那个端口；只填主机就每个发现端口各试一次。
-fn candidate_bases(target: &str, ports: &[u16]) -> Result<Vec<String>, String> {
+fn candidate_bases(target: &str, default_port: u16) -> Result<Vec<String>, String> {
     let trimmed = target.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return Err("请先输入对方的 IP 或地址".to_string());
@@ -415,10 +398,8 @@ fn candidate_bases(target: &str, ports: &[u16]) -> Result<Vec<String>, String> {
     let url = reqwest::Url::parse(&with_scheme).map_err(|_| format!("地址格式不对：{trimmed}"))?;
     let host = url.host_str().ok_or_else(|| format!("地址里没有主机：{trimmed}"))?;
     let scheme = url.scheme();
-    Ok(match url.port() {
-        Some(port) => vec![format!("{scheme}://{host}:{port}")],
-        None => ports.iter().map(|port| format!("{scheme}://{host}:{port}")).collect(),
-    })
+    let port = url.port().unwrap_or(default_port);
+    Ok(vec![format!("{scheme}://{host}:{port}")])
 }
 
 /// 本机主网卡的 IPv4：UDP socket 对外 connect 只选路由、不发包

@@ -8,7 +8,7 @@
 //   · 拖拽把手：把 panHandlers 传给 headerPanHandlers
 // ══════════════════════════════════════════════
 
-import { useCallback, useState } from 'react'
+import { useCallback, useState, type MutableRefObject } from 'react'
 import { Animated, StyleSheet, View, type GestureResponderHandlers, type StyleProp, type ViewStyle } from 'react-native'
 import { theme } from '../../theme'
 import type { ApiRequestSnapshot } from '../../lib/llm/api'
@@ -58,6 +58,7 @@ export interface FairyChatPanelProps {
   readonly voiceHint?: string
   readonly autoFocus?: boolean
   readonly pendingImages?: readonly ChatImageAttachment[]
+  readonly imageGateRef?: MutableRefObject<() => boolean>
   readonly onPressAttach?: () => void
   readonly onRemoveImage?: (image: ChatImageAttachment) => void
   readonly onVoicePressIn?: () => void
@@ -95,6 +96,7 @@ export default function FairyChatPanel({
   voiceHint,
   autoFocus,
   pendingImages,
+  imageGateRef,
   onPressAttach,
   onRemoveImage,
   onVoicePressIn,
@@ -162,6 +164,7 @@ export default function FairyChatPanel({
         autoFocus={autoFocus}
         gutter={gutter}
         pendingImages={pendingImages}
+        imageGateRef={imageGateRef}
         onPressAttach={onPressAttach}
         onRemoveImage={onRemoveImage}
         onVoicePressIn={onVoicePressIn}

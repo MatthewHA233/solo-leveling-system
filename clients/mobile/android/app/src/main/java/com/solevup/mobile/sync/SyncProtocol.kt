@@ -19,6 +19,10 @@ object SyncProtocol {
   private val NON_LAN_PREFIXES = listOf("rmnet", "ccmni", "pdp", "dummy", "tun", "ppp")
 
   /** 补 scheme 和默认端口，存库与发请求都用这个形态。 */
+  /** 图片 id 会拼进路径，只收发送端生成的格式 */
+  fun isChatImageId(id: String): Boolean =
+    id.length == 16 && id.all { it in '0'..'9' || it in 'a'..'f' }
+
   fun normalizeBase(raw: String): String {
     val trimmed = raw.trim().trimEnd('/')
     val withScheme = if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {

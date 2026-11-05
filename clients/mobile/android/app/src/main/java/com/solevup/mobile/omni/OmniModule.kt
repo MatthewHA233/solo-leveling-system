@@ -611,7 +611,7 @@ class OmniModule(private val reactContext: ReactApplicationContext) :
     player = null
   }
 
-  /** 回复音频的播放进度：{ hasAudio, drainedMs }（对应 desktop omniLastSourceEndedRef 的轮询） */
+  /** 回复音频的播放进度：{ hasAudio, drainedMs, queuedMs }（对应 desktop omniLastSourceEndedRef 的轮询） */
   @ReactMethod
   fun playbackState(promise: Promise) {
     val p = player
@@ -619,6 +619,7 @@ class OmniModule(private val reactContext: ReactApplicationContext) :
       promise.resolve(Arguments.createMap().apply {
         putBoolean("hasAudio", false)
         putDouble("drainedMs", 0.0)
+        putDouble("queuedMs", 0.0)
       })
     } else {
       promise.resolve(p.stateMap())

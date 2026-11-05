@@ -11,7 +11,7 @@
 // 麦克风处理中也能按，按下就打断回复（对应桌面端右 Alt）
 // ══════════════════════════════════════════════
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState, type MutableRefObject } from 'react'
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import Svg, { Circle } from 'react-native-svg'
 import { alpha, theme } from '../../theme'
@@ -69,6 +69,8 @@ export interface FairyInputDockProps {
   readonly gutter?: number
   /** 待发图片（状态在调用方，发送后由调用方清空） */
   readonly pendingImages?: readonly ChatImageAttachment[]
+  /** 语音发送前问一下：当前模型能看图吗，不能就提示。输入框把判断函数写进这里 */
+  readonly imageGateRef?: MutableRefObject<() => boolean>
   readonly onPressAttach?: () => void
   readonly onRemoveImage?: (image: ChatImageAttachment) => void
   /** 提供了才显示「按住说话」键 */
@@ -87,6 +89,7 @@ export default function FairyInputDock({
   autoFocus = false,
   gutter = 14,
   pendingImages = [],
+  imageGateRef,
   onPressAttach,
   onRemoveImage,
   onVoicePressIn,
@@ -105,6 +108,15 @@ export default function FairyInputDock({
   const refuseImages = useCallback(() => {
     showTip(`${picker.chatModelLabel} 看不了图片，先换一个能看图的模型`)
   }, [picker.chatModelLabel])
+
+  useEffect(() => {
+    if (!imageGateRef) return
+    imageGateRef.current = () => {
+      if (picker.chatModelSeesImages) return true
+      refuseImages()
+      return false
+    }
+  }, [imageGateRef, picker.chatModelSeesImages, refuseImages])
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim()

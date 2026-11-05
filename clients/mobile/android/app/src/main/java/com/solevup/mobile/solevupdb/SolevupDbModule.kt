@@ -419,6 +419,27 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
   // 每台设备独立。重装 app 才会丢。
 
   @ReactMethod
+  fun listSyncedSettings(promise: Promise) {
+    try {
+      promise.resolve(Arguments.createArray().apply {
+        for (row in db.listSyncedSettings()) pushMap(Arguments.createMap().apply {
+          putString("key", row.key)
+          putString("value", row.value)
+          putString("updatedAt", row.updatedAt)
+        })
+      })
+    } catch (e: Throwable) { promise.reject("SETTINGS_LIST_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun saveSyncedSetting(key: String, value: String, seed: Boolean, promise: Promise) {
+    try {
+      db.saveSyncedSetting(key, value, seed)
+      promise.resolve(true)
+    } catch (e: Throwable) { promise.reject("SETTINGS_SAVE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
   fun getPref(key: String, fallback: String, promise: Promise) {
     try {
       promise.resolve(prefs().getString(key, fallback) ?: fallback)

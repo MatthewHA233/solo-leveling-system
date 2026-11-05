@@ -10,6 +10,7 @@ import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.WritableMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 流式 PCM16 单声道播放（Fish TTS / Omni 回复共用），替代 desktop 前端的 WebAudio 排队播放。
@@ -28,6 +29,8 @@ internal class PcmPlayer(private val sampleRate: Int, private val threadName: St
   @Volatile private var hasAudio = false
   @Volatile private var track: AudioTrack? = null
   @Volatile private var drainedAt = 0L
+  @Volatile private var realEnd = 0L // 当前 AudioTrack 里最后一个真实音频帧的位置
+  private val queuedBytes = AtomicLong() // 还在队列里、没写进 AudioTrack 的字节
   private var thread: Thread? = null
   private var oddByte: Byte? = null // 上一块多出来的半个样本；write 只有一个生产者线程（WS 回调）
 
@@ -37,6 +40,7 @@ internal class PcmPlayer(private val sampleRate: Int, private val threadName: St
     if (aligned.isEmpty()) return
     hasAudio = true
     drainedAt = 0L
+    queuedBytes.addAndGet(aligned.size.toLong())
     queue.offer(aligned)
     synchronized(lock) { startThreadLocked() }
   }
@@ -81,9 +85,18 @@ internal class PcmPlayer(private val sampleRate: Int, private val threadName: St
     return if (at == 0L) 0 else SystemClock.elapsedRealtime() - at
   }
 
+  /** 还有多少音频没播（对应桌面端 nextStartTime - currentTime） */
+  fun queuedMs(): Long {
+    if (closed || failed) return 0
+    val played = track?.let { it.playbackHeadPosition.toLong() and 0xFFFFFFFFL } ?: realEnd
+    val frames = queuedBytes.get() / 2 + (realEnd - played).coerceAtLeast(0)
+    return frames * 1000 / sampleRate
+  }
+
   fun stateMap(): WritableMap = Arguments.createMap().apply {
     putBoolean("hasAudio", hasAudio)
     putDouble("drainedMs", drainedMs().toDouble())
+    putDouble("queuedMs", queuedMs().toDouble())
   }
 
   private fun loop() {
@@ -99,7 +112,7 @@ internal class PcmPlayer(private val sampleRate: Int, private val threadName: St
     try {
       if (!closed) t.play()
       var total = 0L // 写进轨道的总帧数（含静音）
-      var realEnd = 0L // 最后一个真实音频帧的位置
+      realEnd = 0L
       var lastWriteAt = SystemClock.elapsedRealtime()
       val silence = ByteArray(SILENCE_BYTES)
       while (!closed) {
@@ -107,6 +120,7 @@ internal class PcmPlayer(private val sampleRate: Int, private val threadName: St
         if (chunk != null) {
           drainedAt = 0L
           writeAll(t, chunk)
+          queuedBytes.addAndGet(-chunk.size.toLong())
           total += chunk.size / 2
           realEnd = total
           lastWriteAt = SystemClock.elapsedRealtime()

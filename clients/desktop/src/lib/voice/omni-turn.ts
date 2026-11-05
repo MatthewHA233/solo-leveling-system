@@ -1,12 +1,12 @@
 // ══════════════════════════════════════════════
-// Omni 实时语音：等回复的看门狗（手机端 lib/voice/omni-turn.ts 的看门狗是同一份）
+// Omni 实时语音：等回复的看门狗（手机端 lib/voice/omni-turn.ts 同一份）
 // 录音提交后服务端可能一个字都不回、连接也可能无声无息地断了，
 // 这时没有任何事件能让 Fairy 从「思考中」回来，只能靠超时。
 // ══════════════════════════════════════════════
 
 /** 一轮回复里这么久没有任何新内容，算没有回应 */
 export const OMNI_REPLY_TIMEOUT_MS = 30_000
-/** 排队的音频播完后，最多再等这么久 onended */
+/** 排队的音频播完后，最多再等这么久 */
 export const OMNI_PLAYBACK_GRACE_MS = 5_000
 
 export interface OmniWatchdog {

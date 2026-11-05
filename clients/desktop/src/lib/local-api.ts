@@ -532,6 +532,8 @@ export interface SyncImportResult {
   feature_bindings: number
   chat_sessions?: number
   chat_messages?: number
+  settings?: number
+  chat_images?: number
   skipped: number
 }
 
@@ -565,7 +567,7 @@ export interface SyncProbeResult {
  * 让本机后端去探测一个局域网设备（手动链接 / 已链接设备在线检测都走这里）。
  * 不能在前端直接 fetch 对端：页面跑在 localhost:5172，直连 192.168.x.x 属于跨域，
  * 对端没开 CORS 时会被 WebView2 直接拦下，表现为"点了没反应"。
- * target 可只填 IP，后端会依次试 39733 和旧端口 49733。
+ * target 可只填 IP，后端会试 39733。
  */
 export async function probeSyncPeer(target: string): Promise<SyncProbeResult> {
   const res = await fetch(`${API_BASE}/api/sync/probe?target=${encodeURIComponent(target.trim())}`)
@@ -597,6 +599,31 @@ export async function setLocalSyncAlias(alias: string): Promise<string> {
   const json: ApiResponse<string> = await res.json()
   if (!json.success || !json.data) throw new Error(json.error || '更新别名失败')
   return json.data
+}
+
+// ── 随同步走的设置，规则见 lib/agent/synced-settings.ts ──
+
+export interface SyncedSetting {
+  key: string
+  value: string
+  updated_at: string
+}
+
+export async function fetchSyncedSettings(): Promise<SyncedSetting[]> {
+  const res = await fetch(`${API_BASE}/api/sync/settings`)
+  const json: ApiResponse<SyncedSetting[]> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '读取同步设置失败')
+  return json.data
+}
+
+export async function saveSyncedSetting(key: string, value: string, seed = false): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/sync/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, value, seed }),
+  })
+  const json: ApiResponse<unknown> = await res.json()
+  if (!json.success) throw new Error(json.error || '保存同步设置失败')
 }
 
 // ── 已链接（持久自动同步）设备 ──

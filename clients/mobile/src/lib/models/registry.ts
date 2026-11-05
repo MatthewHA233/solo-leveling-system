@@ -381,6 +381,12 @@ export function hasAllModalities(model: ModelDef, required: readonly string[] | 
   return required.every((m) => modalities.has(m))
 }
 
+/** 模型能不能看图。不在模型库里的让它试，不支持时接口会报错 */
+export function modelSeesImages(modelId: string): boolean {
+  const def = getModelDef(modelId)
+  return !def || hasAllModalities(def, ['image'])
+}
+
 // ── 功能绑定规格（与 desktop ModelDialog FEATURE_SPECS 同源） ──
 
 export interface FeatureSpec {
