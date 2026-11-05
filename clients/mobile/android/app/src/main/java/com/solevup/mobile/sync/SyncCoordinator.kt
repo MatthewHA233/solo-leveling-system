@@ -31,7 +31,9 @@ class SyncCoordinator(
   data class LinkResult(
     val deviceId: String,
     val alias: String,
-    val result: SyncClient.SyncRoundResult,
+    val result: SyncClient.SyncRoundResult?,
+    // 配对成功但第一轮同步失败时的原因
+    val syncError: String?,
   )
 
   // 一轮是全量 export + import，同一时刻只跑一轮
@@ -116,6 +118,8 @@ class SyncCoordinator(
     val peerId = hello.optString("device_id")
     if (peerId.isEmpty()) throw SyncClient.SyncException("对端没有返回设备 ID")
     if (peerId == selfId) throw SyncClient.SyncException("不能链接本机")
+    // 旧版对端没有配对接口，直接调只会收到一个看不出原因的 404
+    if (hello.optInt("protocol_version") < 2) throw SyncClient.SyncException("对端版本太旧，请两边都升级后再配对")
     val paired = try {
       SyncClient.pair(base, code, selfId, db.generateAlias(selfId))
     } catch (e: org.json.JSONException) {
@@ -123,7 +127,12 @@ class SyncCoordinator(
     }
     if (paired.deviceId != peerId) throw SyncClient.SyncException("这个地址上已经不是刚才那台设备")
     db.addLinkedDevice(peerId, paired.alias, base, paired.token)
-    return LinkResult(peerId, paired.alias, runRound(peerId, base, "link"))
+    // 到这里配对已经成功，令牌两边都存好了。第一轮同步失败不算配对失败，之后还会自动同步
+    return try {
+      LinkResult(peerId, paired.alias, runRound(peerId, base, "link"), null)
+    } catch (t: Throwable) {
+      LinkResult(peerId, paired.alias, null, t.message ?: "同步失败")
+    }
   }
 
   /** 删本地链接，再告诉对方。对方不在线也算解除成功 */

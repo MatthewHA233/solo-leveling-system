@@ -2449,7 +2449,6 @@ class SolevupDb(context: Context) :
     }
   }
 
-  /** 会话是否已被删除（墓碑）。界面开着的会话被同步删掉时靠它发现；不存在的 id 算没删。 */
   /** 消息正文开头 [图片:id1,id2] 里引用的所有图片 id（清理本机图片文件用，规则见 src/lib/agent/chat-images.ts） */
   fun chatImageIds(): Set<String> {
     val ids = HashSet<String>()
@@ -2464,6 +2463,7 @@ class SolevupDb(context: Context) :
     return ids
   }
 
+  /** 会话是否已被删除（墓碑）。界面开着的会话被同步删掉时靠它发现；不存在的 id 算没删。 */
   fun isChatSessionDeleted(sessionId: String): Boolean =
     readableDatabase.rawQuery(
       "SELECT 1 FROM chat_sessions WHERE id = ? AND deleted_at IS NOT NULL",

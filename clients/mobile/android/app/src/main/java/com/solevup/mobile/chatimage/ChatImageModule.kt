@@ -92,7 +92,9 @@ class ChatImageModule(private val ctx: ReactApplicationContext) :
     val promise = pending ?: return
     val max = pendingMax
     pending = null
-    val uris = if (resultCode == Activity.RESULT_OK) urisOf(data).take(max) else emptyList()
+    val picked = if (resultCode == Activity.RESULT_OK) urisOf(data) else emptyList()
+    // Android 12 及以下走文件选择器，限制不了选几张
+    val uris = picked.take(max)
     // 解码压缩放后台：大图要几百毫秒
     Thread({
       val images = Arguments.createArray()
@@ -108,6 +110,7 @@ class ChatImageModule(private val ctx: ReactApplicationContext) :
       promise.resolve(Arguments.createMap().apply {
         putArray("images", images)
         putInt("failed", failed)
+        putInt("skipped", picked.size - uris.size)
       })
     }, "solevup-chat-image").start()
   }

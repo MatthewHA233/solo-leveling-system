@@ -3,7 +3,7 @@
 // 同步本身由原生 SyncRuntime 自动完成，这里只负责建立和管理链接
 // ══════════════════════════════════════════════
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import {
   linkPeer,
@@ -50,15 +50,18 @@ export default function PairingCard() {
   // 正在和哪台设备配对：要输入它屏幕上的配对码
   const [pairTarget, setPairTarget] = useState<{ key: string; label: string; base: string } | null>(null)
   const [codeInput, setCodeInput] = useState('')
+  const linksRef = useRef<LinkedDevice[]>([])
 
   const refreshLinks = useCallback(async () => {
     try {
       const next = await listLinkedDevices()
-      // 多了一台：本机的配对码刚被用掉
-      setLinks((prev) => {
-        if (next.length > prev.length) setPairCode(null)
-        return next
-      })
+      const prev = linksRef.current
+      // 多了一台，或者已链接的设备换了令牌（重新配对）：本机的配对码刚被用掉
+      const paired = next.length > prev.length
+        || next.some((n) => prev.some((p) => p.deviceId === n.deviceId && p.authToken !== n.authToken))
+      if (paired) setPairCode(null)
+      linksRef.current = next
+      setLinks(next)
     } catch {
       setLinks([])
     }
@@ -109,7 +112,9 @@ export default function PairingCard() {
     try {
       const r = await linkPeer(pairTarget.base, codeInput.trim())
       if (r) {
-        setMessage(`已链接 ${r.alias}：拉取 ${summarize(r.pulled)}；推送 ${summarize(r.pushed)}`)
+        setMessage(r.pulled && r.pushed
+          ? `已链接 ${r.alias}：拉取 ${summarize(r.pulled)}；推送 ${summarize(r.pushed)}`
+          : `已链接 ${r.alias}，第一次同步没成功（${r.syncError ?? '原因未知'}），之后会自动重试`)
         setAddress('')
         setPairTarget(null)
       }

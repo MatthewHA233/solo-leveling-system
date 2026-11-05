@@ -125,7 +125,6 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
     lastUserInput = ''
     userInputPersisted = false
     core.addSystemNote(`Omni 超过 ${OMNI_REPLY_TIMEOUT_MS / 1000} 秒没有回应，这一轮先结束了`)
-    core.setProcessing(false)
     void omniStop()
     core.emitFairy('idle')
   })
@@ -334,7 +333,6 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
         resetTurnState()
         core.addSystemNote(`Omni 错误: ${message ?? '未知'}`)
         idleWaitToken += 1
-        core.setProcessing(false)
         core.emitFairy('idle')
       } else if (status === 'disconnected') {
         // 没有回复在进行（等播完、录音中、回复早结束了）：这是正常的换连接或服务端清理空闲连接，
@@ -344,7 +342,6 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
         closeTurn('没说完')
         resetTurnState()
         core.addSystemNote('Omni 连接断开了，这一轮没有说完')
-        core.setProcessing(false)
         core.emitFairy('idle')
       }
     },
@@ -360,6 +357,7 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
         // 回复途中切走：退订后收不到 audio_done，气泡和 Fairy 都会停在半路。连接也停掉，别继续播
         abandonTurn()
         closeTurn('被打断')
+        awaitingConnection = false
         void omniStop()
         if (!core.isProcessing && core.fairyState !== 'listening') core.emitFairy('idle')
       }

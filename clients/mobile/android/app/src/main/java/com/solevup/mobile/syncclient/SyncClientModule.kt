@@ -60,8 +60,11 @@ class SyncClientModule(private val reactContext: ReactApplicationContext) :
         promise.resolve(Arguments.createMap().apply {
           putString("deviceId", r.deviceId)
           putString("alias", r.alias)
-          putMap("pulled", importResultToMap(r.result.pulled))
-          putMap("pushed", importResultToMap(r.result.pushed))
+          r.result?.let { round ->
+            putMap("pulled", importResultToMap(round.pulled))
+            putMap("pushed", importResultToMap(round.pushed))
+          }
+          r.syncError?.let { putString("syncError", it) }
         })
       } catch (e: Throwable) {
         promise.reject("LINK_PEER_FAILED", e.message, e)

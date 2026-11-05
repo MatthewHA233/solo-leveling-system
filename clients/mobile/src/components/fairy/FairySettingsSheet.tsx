@@ -36,6 +36,7 @@ import {
   rebaseDraft,
   type SettingsDraft,
 } from './SettingsDraft'
+import { showTip } from './tip'
 
 interface Props {
   readonly visible: boolean
@@ -102,7 +103,11 @@ export default function FairySettingsSheet({ visible, onClose }: Props) {
     const updates = changedFields(draft, baseline)
     if (Object.keys(updates).length > 0) chatController.updateConfig(updates)
     if (fishKey.trim() !== fishKeySaved) {
-      saveFishApiKey(fishKey).then(() => setFishKeySaved(fishKey.trim())).catch((e) => console.warn('[Settings] 保存 Fish Key 失败', e))
+      saveFishApiKey(fishKey).then(() => setFishKeySaved(fishKey.trim())).catch((e) => {
+        console.warn('[Settings] 保存 Fish Key 失败', e)
+        setSaved(false)
+        showTip(`Fish Key 没保存上：${e instanceof Error ? e.message : String(e)}`)
+      })
     }
     // 回退规则可能改了值（名称留空回到 Fairy），输入框跟着显示实际存下的内容
     const fresh = draftFromConfig(chatController.config)

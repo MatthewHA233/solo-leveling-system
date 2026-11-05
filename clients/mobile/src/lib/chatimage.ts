@@ -15,18 +15,20 @@ export interface PickedImage {
 }
 
 type NativeShape = {
-  pick(max: number): Promise<{ images: { id: string; uri: string; base64: string; mediaType: string }[]; failed: number }>
+  pick(max: number): Promise<{ images: { id: string; uri: string; base64: string; mediaType: string }[]; failed: number; skipped: number }>
   getDirUri(): Promise<string>
   sweep(): Promise<number>
 }
 
 const Native: NativeShape | null = Platform.OS === 'android' ? (NativeModules.ChatImage as NativeShape) : null
 
-export async function pickChatImages(max: number): Promise<{ images: PickedImage[]; failed: number }> {
-  if (!Native) return { images: [], failed: 0 }
+/** failed = 读不了的张数，skipped = 超过上限没有加上的张数 */
+export async function pickChatImages(max: number): Promise<{ images: PickedImage[]; failed: number; skipped: number }> {
+  if (!Native) return { images: [], failed: 0, skipped: 0 }
   const r = await Native.pick(max)
   return {
     failed: r.failed,
+    skipped: r.skipped,
     images: r.images.map((i) => ({
       id: i.id,
       uri: i.uri,

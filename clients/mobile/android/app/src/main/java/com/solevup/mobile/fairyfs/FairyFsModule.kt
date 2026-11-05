@@ -13,7 +13,7 @@ import java.io.File
 private const val TAG = "FairyFs"
 
 /**
- * java.nio.file.Files.isSymbolicLink 要 API 26，这里 minSdk 24，用 lstat。
+ * 用 lstat，不用 java.nio.file.Files.isSymbolicLink：后者判断不了时也返回 false。
  * 路径不存在不算符号链接；其他错误（权限等）判断不了时按是处理，宁可拒绝。
  */
 private fun isSymlink(file: File): Boolean =

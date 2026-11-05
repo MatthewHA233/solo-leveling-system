@@ -3070,7 +3070,6 @@ impl Database {
         Ok(out)
     }
 
-    /// 获取会话的所有消息
     /// 消息正文开头 [图片:id1,id2] 里引用的所有图片 id（清理本机图片文件用，规则见 src/lib/agent/chat-images.ts）
     pub async fn chat_image_ids(&self) -> Result<std::collections::HashSet<String>, String> {
         let conn = self.conn.lock().await;
@@ -3086,6 +3085,7 @@ impl Database {
         Ok(ids)
     }
 
+    /// 获取会话的所有消息
     pub async fn get_chat_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(

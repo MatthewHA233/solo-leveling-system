@@ -150,7 +150,8 @@ export default function AgentPanel({ visible, onClose }: Props) {
       showTip(`一次最多发 ${MAX_CHAT_IMAGES} 张`)
       return
     }
-    pickChatImages(room).then(({ images, failed }) => {
+    pickChatImages(room).then(({ images, failed, skipped }) => {
+      if (skipped > 0) showTip(`一次最多发 ${MAX_CHAT_IMAGES} 张，多选的 ${skipped} 张没有加上`)
       if (failed > 0) showTip(`有 ${failed} 张图片读不了`)
       if (images.length > 0) setPendingImages((prev) => [...prev, ...images].slice(0, MAX_CHAT_IMAGES))
     }).catch((e) => showTip(`选图失败：${e instanceof Error ? e.message : String(e)}`))

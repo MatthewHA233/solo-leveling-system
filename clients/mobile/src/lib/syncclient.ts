@@ -40,6 +40,15 @@ export type SyncRoundResult = {
   pushed: ImportResult
 }
 
+export type LinkPeerResult = {
+  deviceId: string
+  alias: string
+  /** 第一轮同步的结果。配对成功但同步失败时没有，原因在 syncError */
+  pulled?: ImportResult
+  pushed?: ImportResult
+  syncError?: string
+}
+
 export type SyncAllItem = {
   deviceId: string
   alias: string
@@ -51,7 +60,7 @@ export type SyncAllItem = {
 
 interface SyncClientNative {
   listLinkedDevices(): Promise<LinkedDevice[]>
-  linkPeer(baseUrl: string, code: string): Promise<SyncRoundResult>
+  linkPeer(baseUrl: string, code: string): Promise<LinkPeerResult>
   verifyLinkedPeer(deviceId: string): Promise<string | null>
   unlinkPeer(deviceId: string): Promise<boolean>
   syncNow(deviceId: string): Promise<SyncRoundResult>
@@ -71,7 +80,7 @@ export async function listLinkedDevices(): Promise<LinkedDevice[]> {
 }
 
 /** code 是对方设备上显示的配对码；两边都记成已链接，之后不用再输 */
-export async function linkPeer(baseUrl: string, code: string): Promise<SyncRoundResult | null> {
+export async function linkPeer(baseUrl: string, code: string): Promise<LinkPeerResult | null> {
   if (!Native) return null
   return Native.linkPeer(baseUrl, code)
 }
