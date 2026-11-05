@@ -53,6 +53,7 @@ class SolevupDb(context: Context) :
       "CREATE TABLE IF NOT EXISTS synced_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);"
     )
     applySchemaRevisions(db)
+    ensureProviderActiveKeys(db)
   }
 
   // onUpgrade 是破坏式的，已有表的结构和数据调整都放这里，按 sync_meta.schema_rev 只跑一次
@@ -1504,6 +1505,8 @@ class SolevupDb(context: Context) :
         mKeys++
       }
 
+      ensureProviderActiveKeys(db)
+
       // ── model_call_log ──（append-only，按 id 幂等）
       var mLog = 0
       val deletedKeyIds = HashSet<String>()
@@ -1606,6 +1609,28 @@ class SolevupDb(context: Context) :
     val id: String, val label: String, val apiKey: String, val isActive: Boolean, val provider: String,
     val createdAt: String, val updatedAt: String,
   )
+
+  /**
+   * 每个提供商都要有一把启用的 Key。以前「全局只启用一把」的规则、同步交错都可能留下一把都没启用的提供商，
+   * 这时启用最近更新的一把。不改 updated_at：两端算出同一把，也不会用旧内容盖掉对端的新修改。
+   * 规则两端各有一份（db.rs ensure_provider_active_keys）。
+   */
+  private fun ensureProviderActiveKeys(db: SQLiteDatabase) {
+    db.execSQL(
+      """UPDATE model_api_keys SET is_active = 1
+         WHERE id IN (
+           SELECT (SELECT k.id FROM model_api_keys k
+                   WHERE k.provider = p.provider AND k.deleted_at IS NULL AND length(k.api_key) > 0
+                   ORDER BY k.updated_at DESC, k.created_at DESC, k.id LIMIT 1)
+           FROM (SELECT DISTINCT provider FROM model_api_keys) p
+           WHERE NOT EXISTS (
+             SELECT 1 FROM model_api_keys a
+             WHERE a.provider = p.provider AND a.is_active = 1
+               AND a.deleted_at IS NULL AND length(a.api_key) > 0
+           )
+         )""".trimIndent()
+    )
+  }
 
   fun getActiveModelApiKey(provider: String = PROVIDER_DASHSCOPE): ModelApiKeyInfo? {
     readableDatabase.rawQuery(

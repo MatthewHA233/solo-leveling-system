@@ -1477,6 +1477,8 @@ impl Database {
         seed_feature_bindings(&conn)?;
         crate::jev::seed_decision_models(&conn)?;
 
+        ensure_provider_active_keys(&conn)?;
+
         log::info!("[Database] 表初始化完成");
         Ok(())
     }
@@ -2805,8 +2807,8 @@ impl Database {
         // AUDIT-036：
         // - 接受 deleted_at（tombstone）：本地保留行作为 tombstone，
         //   api_key 字段强制清空（即使对端发了明文也不存）
-        // - active 全局唯一：当 import 一个活的 is_active=1 行后，事务内
-        //   把其他所有 is_active=1 的行降为 0 + bump updated_at = row.updated_at
+        // - 每个提供商一把 active：当 import 一个活的 is_active=1 行后，事务内
+        //   把同提供商其他 is_active=1 的行降为 0 + bump updated_at = row.updated_at
         //   让对端下一轮同步能拿到 inactive 状态
         for row in payload.model_api_keys {
             let local_updated: Option<String> = conn.query_row(
@@ -2847,6 +2849,8 @@ impl Database {
             }
             result.model_api_keys += 1;
         }
+
+        ensure_provider_active_keys(&conn)?;
 
         // ── 模型调用日志：append-only，PK=id 撞了就跳过 ──
         for row in payload.model_call_log {
@@ -6230,7 +6234,7 @@ impl Database {
         let result = conn.query_row(
             "SELECT id, label, api_key, is_active, created_at, updated_at, provider
              FROM ai_provider_keys
-             WHERE is_active = 1 AND deleted_at IS NULL AND provider = ?
+             WHERE is_active = 1 AND deleted_at IS NULL AND length(api_key) > 0 AND provider = ?
              ORDER BY updated_at DESC
              LIMIT 1",
             rusqlite::params![provider],
@@ -6770,6 +6774,29 @@ fn normalize_due_date(raw: Option<&str>) -> Result<Option<String>, String> {
 
 /// 旧表 model_api_keys 改名为 ai_provider_keys，并补 provider 列（老数据全是百炼）。
 /// 新库没有旧表时什么也不做；两张表都在时不动，免得丢数据
+/// 每个提供商都要有一把启用的 Key。以前「全局只启用一把」的规则、同步交错都可能留下一把都没启用的提供商，
+/// 这时启用最近更新的一把。不改 updated_at：两端算出同一把，也不会用旧内容盖掉对端的新修改。
+/// 规则两端各有一份（SolevupDb.kt ensureProviderActiveKeys）
+fn ensure_provider_active_keys(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "UPDATE ai_provider_keys SET is_active = 1
+         WHERE id IN (
+           SELECT (SELECT k.id FROM ai_provider_keys k
+                   WHERE k.provider = p.provider AND k.deleted_at IS NULL AND length(k.api_key) > 0
+                   ORDER BY k.updated_at DESC, k.created_at DESC, k.id LIMIT 1)
+           FROM (SELECT DISTINCT provider FROM ai_provider_keys) p
+           WHERE NOT EXISTS (
+             SELECT 1 FROM ai_provider_keys a
+             WHERE a.provider = p.provider AND a.is_active = 1
+               AND a.deleted_at IS NULL AND length(a.api_key) > 0
+           )
+         )",
+        [],
+    )
+    .map_err(|e| format!("补启用 Key 失败: {e}"))?;
+    Ok(())
+}
+
 fn migrate_ai_provider_keys_table(conn: &Connection) -> Result<(), String> {
     let table_exists = |name: &str| -> Result<bool, String> {
         conn.query_row(
