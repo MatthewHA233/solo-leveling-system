@@ -1,152 +1,141 @@
 package com.solevup.mobile.syncserver
 
 import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.solevup.mobile.solevupdb.SolevupDb
-import java.net.Inet4Address
-import java.net.NetworkInterface
+import com.solevup.mobile.sync.SyncRuntime
 
 /**
- * 桥接 SyncHttpServer 的启停 + 显示当前监听地址。
- *
- * 端口 39733，与 desktop 统一（全平台一个端口，照 LocalSend 的做法）。
- * 旧版用 49733：它落在 Windows 动态端口段（≥49152），desktop 已于 2026-06 迁走；
- * desktop 仍兼容监听/探测 49733，所以未升级的旧手机也能被发现。
+ * 同步服务现在由 SyncRuntime 随进程启动（端口 39733，与 desktop 统一）。
+ * 这个模块只给配对页看状态、重试和附近设备，并把同步事件转给 JS。
  */
 class SyncServerModule(private val reactContext: ReactApplicationContext) :
-  ReactContextBaseJavaModule(reactContext) {
+  ReactContextBaseJavaModule(reactContext), SyncRuntime.EventSink, LifecycleEventListener {
 
   override fun getName(): String = NAME
 
-  private val db: SolevupDb by lazy { SolevupDb(reactContext) }
-
-  @Volatile
-  private var server: SyncHttpServer? = null
-
-  @Volatile
-  private var broadcaster: SyncDiscoveryBroadcaster? = null
-
-  @Volatile
-  private var currentPort: Int = 0
-
-  // 跟 desktop generate_alias 同算法（形容词+水果），同 device_id 全平台一致
-  private val deviceAlias: String by lazy { db.generateAlias(db.deviceId()) }
-
-  @ReactMethod
-  fun start(port: Double, promise: Promise) {
-    try {
-      val p = port.toInt().takeIf { it > 0 } ?: DEFAULT_PORT
-      // 已经在跑同端口，幂等
-      if (server != null && currentPort == p) {
-        promise.resolve(addrMap(p))
-        return
-      }
-      // 跑着别的端口先停
-      server?.stop()
-      broadcaster?.stop()
-      val s = SyncHttpServer(p, db, deviceAlias) { r ->
-        emitSolevupDbChanged("sync-server", r)
-      }
-      s.start(SOCKET_TIMEOUT_MS, false)  // daemon=false 让线程跟 app 进程
-      server = s
-      currentPort = p
-      // 启动 mDNS multicast 广播，让 desktop SyncDiscovery 在 NEARBY 区自动看到
-      val b = SyncDiscoveryBroadcaster(reactContext, db, p, deviceAlias)
-      b.start()
-      broadcaster = b
-      promise.resolve(addrMap(p))
-    } catch (e: Throwable) {
-      promise.reject("SYNC_SERVER_START_FAILED", e.message, e)
-    }
+  override fun initialize() {
+    super.initialize()
+    SyncRuntime.setEventSink(this)
+    reactContext.addLifecycleEventListener(this)
   }
 
-  @ReactMethod
-  fun stop(promise: Promise) {
-    try {
-      server?.stop()
-      server = null
-      broadcaster?.stop()
-      broadcaster = null
-      currentPort = 0
-      promise.resolve(true)
-    } catch (e: Throwable) {
-      promise.reject("SYNC_SERVER_STOP_FAILED", e.message, e)
-    }
+  override fun invalidate() {
+    SyncRuntime.clearEventSink(this)
+    reactContext.removeLifecycleEventListener(this)
+    super.invalidate()
   }
+
+  override fun onHostResume() = SyncRuntime.setEventSink(this)
+  override fun onHostPause() = Unit
+  override fun onHostDestroy() = Unit
 
   @ReactMethod
   fun status(promise: Promise) {
     try {
-      val running = server != null
-      promise.resolve(Arguments.createMap().apply {
-        putBoolean("running", running)
-        putInt("port", currentPort)
-        putArray("ipv4s", Arguments.createArray().apply {
-          for (ip in lanIpv4Addresses()) pushString(ip)
-        })
-      })
+      promise.resolve(statusMap(SyncRuntime.status()))
     } catch (e: Throwable) {
       promise.reject("SYNC_SERVER_STATUS_FAILED", e.message, e)
     }
   }
 
-  private fun addrMap(port: Int) = Arguments.createMap().apply {
-    putBoolean("running", true)
-    putInt("port", port)
-    putArray("ipv4s", Arguments.createArray().apply {
-      for (ip in lanIpv4Addresses()) pushString(ip)
+  @ReactMethod
+  fun retry(promise: Promise) {
+    Thread {
+      try {
+        promise.resolve(statusMap(SyncRuntime.retry()))
+      } catch (e: Throwable) {
+        promise.reject("SYNC_SERVER_RETRY_FAILED", e.message, e)
+      }
+    }.start()
+  }
+
+  @ReactMethod
+  fun listNearbyPeers(promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (peer in SyncRuntime.nearbyPeers()) {
+        arr.pushMap(Arguments.createMap().apply {
+          putString("deviceId", peer.deviceId)
+          putString("alias", peer.alias)
+          putString("deviceType", peer.deviceType)
+          putString("deviceModel", peer.deviceModel)
+          putString("base", peer.base)
+          putString("pairCode", peer.pairCode)
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) {
+      promise.reject("SYNC_LIST_PEERS_FAILED", e.message, e)
+    }
+  }
+
+  // RN 的 NativeEventEmitter 要求模块实现这两个方法
+  @ReactMethod
+  fun addListener(eventName: String) = Unit
+
+  @ReactMethod
+  fun removeListeners(count: Double) = Unit
+
+  private fun statusMap(s: SyncRuntime.Status) = Arguments.createMap().apply {
+    putBoolean("running", s.running)
+    putInt("port", s.port)
+    putArray("ipv4s", Arguments.createArray().apply { for (ip in s.ipv4s) pushString(ip) })
+    s.error?.let { putString("error", it) }
+    putString("alias", s.alias)
+    putString("deviceId", s.deviceId)
+    putString("pairCode", s.pairCode)
+  }
+
+  override fun onDbChanged(source: String, result: SolevupDb.ImportResult) {
+    emit("SolevupDbChanged", Arguments.createMap().apply {
+      putString("source", source)
+      putMap("changed", Arguments.createMap().apply {
+        putInt("activityCategories", result.activityCategories)
+        putInt("activityTags", result.activityTags)
+        putInt("activityBlocks", result.activityBlocks)
+        putInt("planNodes", result.planNodes)
+        putInt("plannedBlocks", result.plannedBlocks)
+        putInt("modelApiKeys", result.modelApiKeys)
+        putInt("modelCallLog", result.modelCallLog)
+        putInt("modelFreeQuota", result.modelFreeQuota)
+        putInt("featureBindings", result.featureBindings)
+        putInt("chatSessions", result.chatSessions)
+        putInt("chatMessages", result.chatMessages)
+        putInt("modelRegistry", result.modelRegistry)
+        putInt("skipped", result.skipped)
+      })
     })
   }
 
-  private fun emitSolevupDbChanged(source: String, r: SolevupDb.ImportResult) {
+  override fun onSyncStatus(deviceId: String, syncing: Boolean, ok: Boolean?, error: String?) {
+    emit("SolevupSyncStatus", Arguments.createMap().apply {
+      putString("deviceId", deviceId)
+      putBoolean("syncing", syncing)
+      if (ok != null) putBoolean("ok", ok)
+      if (error != null) putString("error", error)
+    })
+  }
+
+  private fun emit(event: String, payload: com.facebook.react.bridge.WritableMap) {
+    if (!reactContext.hasActiveReactInstance()) return
     reactContext.runOnJSQueueThread {
       try {
-        val payload = Arguments.createMap().apply {
-          putString("source", source)
-          putMap("changed", Arguments.createMap().apply {
-            putInt("activityCategories", r.activityCategories)
-            putInt("activityTags", r.activityTags)
-            putInt("activityBlocks", r.activityBlocks)
-            putInt("planNodes", r.planNodes)
-            putInt("plannedBlocks", r.plannedBlocks)
-            putInt("skipped", r.skipped)
-          })
-        }
         reactContext
           .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-          .emit("SolevupDbChanged", payload)
+          .emit(event, payload)
       } catch (_: Throwable) {
         // JS runtime may be paused/destroyed; AppState refresh covers the next foreground.
       }
     }
   }
 
-  /** 拉所有 active 网卡的 ipv4，过滤 loopback。让 UI 选/展示给用户。 */
-  private fun lanIpv4Addresses(): List<String> {
-    val out = ArrayList<String>()
-    try {
-      val ifs = NetworkInterface.getNetworkInterfaces() ?: return out
-      for (nif in ifs) {
-        if (!nif.isUp || nif.isLoopback || nif.isVirtual) continue
-        for (addr in nif.inetAddresses) {
-          if (addr is Inet4Address && !addr.isLoopbackAddress) {
-            out.add(addr.hostAddress ?: continue)
-          }
-        }
-      }
-    } catch (_: Throwable) {
-      // ignore，返回空
-    }
-    return out
-  }
-
   companion object {
     const val NAME = "SyncServer"
-    private const val DEFAULT_PORT = 39733
-    private const val SOCKET_TIMEOUT_MS = 30_000
   }
 }

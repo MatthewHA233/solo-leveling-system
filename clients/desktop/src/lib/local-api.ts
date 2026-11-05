@@ -530,6 +530,8 @@ export interface SyncImportResult {
   model_call_log: number
   model_free_quota: number
   feature_bindings: number
+  chat_sessions?: number
+  chat_messages?: number
   skipped: number
 }
 

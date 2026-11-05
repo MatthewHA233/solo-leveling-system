@@ -204,6 +204,10 @@ pub struct SyncExport {
     pub model_free_quota: Vec<SyncModelFreeQuota>,
     #[serde(default)]
     pub feature_bindings: Vec<SyncFeatureBinding>,
+    /// 模型库快照，只在全量导出时带上：手机没有内置价目更新，靠它算费用。
+    /// 桌面端各有自己的种子，收到后不写库。
+    #[serde(default)]
+    pub model_registry: Vec<ModelDef>,
 }
 
 fn default_sync_provider() -> String {
@@ -273,6 +277,56 @@ pub struct SyncFeatureBinding {
     pub updated_at: String,
 }
 
+// ── 聊天增量通道（/api/sync/chat）──
+// 不进 SyncExport：聊天历史会很长，全量导出每轮都传一遍，超限还会连累其他表一起同步失败。
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncChatSession {
+    pub id: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub meta_updated_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncChatMessage {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub content: Option<String>,
+    pub tool_calls: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub name: Option<String>,
+    pub timestamp: String,
+    pub audio_path: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub usage_json: Option<String>,
+    pub reasoning: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatSyncPage {
+    pub device_id: String,
+    /// 这页覆盖到的本机日志序号，对端存成游标
+    pub seq: i64,
+    pub more: bool,
+    #[serde(default)]
+    pub sessions: Vec<SyncChatSession>,
+    #[serde(default)]
+    pub messages: Vec<SyncChatMessage>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ChatSyncImportResult {
+    pub chat_sessions: usize,
+    pub chat_messages: usize,
+    pub skipped: usize,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LinkedDevice {
     pub device_id: String,
@@ -297,6 +351,10 @@ pub struct SyncImportResult {
     pub model_free_quota: usize,
     #[serde(default)]
     pub feature_bindings: usize,
+    #[serde(default)]
+    pub chat_sessions: usize,
+    #[serde(default)]
+    pub chat_messages: usize,
     pub skipped: usize,
 }
 
@@ -928,6 +986,10 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN duration_ms INTEGER");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN usage_json TEXT");
         let _ = conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN reasoning TEXT");
+        // 聊天记录进同步：删除要能传播（deleted_at），改名不能顶到列表最前（meta_updated_at 与 updated_at 分开）
+        let _ = conn.execute_batch("ALTER TABLE chat_sessions ADD COLUMN deleted_at TEXT");
+        let _ = conn.execute_batch("ALTER TABLE chat_sessions ADD COLUMN meta_updated_at TEXT");
+        ensure_chat_sync_log(&conn)?;
         let _ = conn.execute_batch("ALTER TABLE context_anchor_bindings ADD COLUMN source_card_id TEXT");
         let _ = conn.execute_batch("ALTER TABLE context_cards ADD COLUMN source_card_id TEXT");
         // 协议志清单：计划节点 = 任务，补上日期 / 优先级 / 备注 / 完成时间（旧库缺列时追加；同步只更新它自己的列，不会冲掉这些）
@@ -2201,6 +2263,12 @@ impl Database {
     }
 
     pub async fn export_sync(&self, since: Option<String>) -> Result<SyncExport, String> {
+        // list_models 自己会拿连接锁，必须放在 lock 之前
+        let model_registry = if since.is_none() {
+            self.list_models().await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let conn = self.conn.lock().await;
         let exported_at = local_now_string();
         let device_id = get_or_create_device_id(&conn)?;
@@ -2436,6 +2504,7 @@ impl Database {
             model_call_log,
             model_free_quota,
             feature_bindings,
+            model_registry,
         })
     }
 
@@ -2451,6 +2520,8 @@ impl Database {
             model_call_log: 0,
             model_free_quota: 0,
             feature_bindings: 0,
+            chat_sessions: 0,
+            chat_messages: 0,
             skipped: 0,
         };
 
@@ -2536,6 +2607,9 @@ impl Database {
             result.activity_tags += 1;
         }
 
+        // 子节点可能排在父节点前面（节点移动过，id 就不再是父小子大）。这时 parent_id 先写成 NULL，全部写完再补；
+        // 不补的话这一行下一轮 updated_at 相同会被跳过，父子关系就永久丢了
+        let mut unresolved_parents: Vec<(String, String)> = Vec::new();
         for row in payload.plan_nodes {
             if !should_apply_sync_row(&conn, "plan_nodes", &row.sync_id, &row.updated_at)? {
                 result.skipped += 1;
@@ -2549,6 +2623,11 @@ impl Database {
                 Some(sync_id) => lookup_id_by_sync(&conn, "plan_nodes", sync_id)?,
                 None => None,
             };
+            if parent_id.is_none() {
+                if let Some(parent_sync_id) = &row.parent_sync_id {
+                    unresolved_parents.push((row.sync_id.clone(), parent_sync_id.clone()));
+                }
+            }
             conn.execute(
                 "INSERT INTO plan_nodes (sync_id, project_tag_id, parent_id, title, status, sort_order, created_at, updated_at, deleted_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2559,6 +2638,14 @@ impl Database {
                 params![&row.sync_id, project_tag_id, parent_id, &row.title, &row.status, row.sort_order, &row.created_at, &row.updated_at, &row.deleted_at],
             ).map_err(|e| e.to_string())?;
             result.plan_nodes += 1;
+        }
+        for (sync_id, parent_sync_id) in unresolved_parents {
+            if let Some(parent_id) = lookup_id_by_sync(&conn, "plan_nodes", &parent_sync_id)? {
+                conn.execute(
+                    "UPDATE plan_nodes SET parent_id = ? WHERE sync_id = ?",
+                    params![parent_id, &sync_id],
+                ).map_err(|e| e.to_string())?;
+            }
         }
 
         for row in payload.activity_blocks {
@@ -2858,8 +2945,8 @@ impl Database {
         let conn = self.conn.lock().await;
 
         conn.execute(
-            "INSERT INTO chat_sessions (id, title, created_at, updated_at) VALUES (?, '新会话', ?, ?)",
-            params![&id, &now, &now],
+            "INSERT INTO chat_sessions (id, title, created_at, updated_at, meta_updated_at) VALUES (?, '新会话', ?, ?, ?)",
+            params![&id, &now, &now, chat_meta_now()],
         ).map_err(|e| e.to_string())?;
 
         log::info!("[Database] 创建会话: {}", id);
@@ -2870,7 +2957,7 @@ impl Database {
     pub async fn get_recent_chat_sessions(&self, limit: i64) -> Result<Vec<ChatSession>, String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
-            "SELECT id, title, summary, created_at, updated_at FROM chat_sessions ORDER BY updated_at DESC LIMIT ?"
+            "SELECT id, title, summary, created_at, updated_at FROM chat_sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?"
         ).map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([limit], |row| {
@@ -2898,12 +2985,13 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT s.id, s.title, s.summary, s.created_at, s.updated_at
              FROM chat_sessions s
-             WHERE s.title LIKE ?1 ESCAPE '\\'
+             WHERE s.deleted_at IS NULL
+               AND (s.title LIKE ?1 ESCAPE '\\'
                 OR s.summary LIKE ?1 ESCAPE '\\'
                 OR EXISTS (
                     SELECT 1 FROM chat_messages m
                     WHERE m.session_id = s.id AND m.content LIKE ?1 ESCAPE '\\'
-                )
+                ))
              ORDER BY s.updated_at DESC
              LIMIT ?2"
         ).map_err(|e| e.to_string())?;
@@ -2955,7 +3043,8 @@ impl Database {
     pub async fn get_chat_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms, usage_json, reasoning FROM chat_messages WHERE session_id = ? ORDER BY timestamp"
+            // 同一毫秒写入的 tool_calls 和工具结果靠 rowid 保持写入顺序；两端的同步也按写入顺序插入
+            "SELECT id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms, usage_json, reasoning FROM chat_messages WHERE session_id = ? ORDER BY timestamp, rowid"
         ).map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([session_id], |row| {
@@ -2983,6 +3072,16 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn.lock().await;
 
+        // 会话可能刚被同步删掉而界面还开着。写进墓碑的消息谁也看不到，两端也对不上，手机端同样丢弃
+        let tombstone: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE id = ? AND deleted_at IS NOT NULL)",
+            params![session_id],
+            |r| r.get(0),
+        ).map_err(|e| e.to_string())?;
+        if tombstone {
+            return Ok(());
+        }
+
         for msg in req.messages {
             let id = Uuid::new_v4().to_string();
             conn.execute(
@@ -2991,8 +3090,9 @@ impl Database {
             ).map_err(|e| e.to_string())?;
         }
 
+        // 只增不减：本机时钟偏慢时写小了，对端已有的较大值不会再传回来，两端就一直不一致
         conn.execute(
-            "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+            "UPDATE chat_sessions SET updated_at = MAX(updated_at, ?) WHERE id = ?",
             params![&now, session_id],
         ).map_err(|e| e.to_string())?;
 
@@ -3001,20 +3101,21 @@ impl Database {
 
     /// 更新会话标题或摘要。
     /// 不 bump updated_at：它的语义是"最后聊天活动"（persist_messages 负责），
-    /// 改名/重新起标题不应把旧会话顶到列表最前。
+    /// 改名/重新起标题不应把旧会话顶到列表最前。同步靠 meta_updated_at 判断新旧。
     pub async fn update_chat_session(&self, session_id: &str, req: UpdateChatSessionRequest) -> Result<(), String> {
         let conn = self.conn.lock().await;
+        let meta_now = chat_meta_now();
 
         if let Some(ref title) = req.title {
             conn.execute(
-                "UPDATE chat_sessions SET title = ? WHERE id = ?",
-                params![title, session_id],
+                &format!("UPDATE chat_sessions SET title = ?1, meta_updated_at = {} WHERE id = ?3 AND deleted_at IS NULL", CHAT_META_BUMP_SQL),
+                params![title, &meta_now, session_id],
             ).map_err(|e| e.to_string())?;
         }
         if let Some(ref summary) = req.summary {
             conn.execute(
-                "UPDATE chat_sessions SET summary = ? WHERE id = ?",
-                params![summary, session_id],
+                &format!("UPDATE chat_sessions SET summary = ?1, meta_updated_at = {} WHERE id = ?3 AND deleted_at IS NULL", CHAT_META_BUMP_SQL),
+                params![summary, &meta_now, session_id],
             ).map_err(|e| e.to_string())?;
         }
 
@@ -3032,7 +3133,7 @@ impl Database {
                 let mut stmt = conn.prepare(
                     "SELECT s.id FROM chat_sessions s
                      LEFT JOIN chat_messages m ON m.session_id = s.id
-                     WHERE m.id IS NULL AND s.id != ?"
+                     WHERE m.id IS NULL AND s.deleted_at IS NULL AND s.id != ?"
                 ).map_err(|e| e.to_string())?;
                 let rows = stmt.query_map(params![eid], |r| r.get::<_, String>(0))
                     .map_err(|e| e.to_string())?;
@@ -3042,7 +3143,7 @@ impl Database {
                 let mut stmt = conn.prepare(
                     "SELECT s.id FROM chat_sessions s
                      LEFT JOIN chat_messages m ON m.session_id = s.id
-                     WHERE m.id IS NULL"
+                     WHERE m.id IS NULL AND s.deleted_at IS NULL"
                 ).map_err(|e| e.to_string())?;
                 let rows = stmt.query_map([], |r| r.get::<_, String>(0))
                     .map_err(|e| e.to_string())?;
@@ -3065,16 +3166,286 @@ impl Database {
         Ok(ids)
     }
 
-    /// 删除会话（含其所有消息）
+    /// 删除会话：消息立刻清掉，会话留墓碑让删除能传到其他设备
     pub async fn delete_chat_session(&self, session_id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
+        let meta_now = chat_meta_now();
         conn.execute(
             "DELETE FROM chat_messages WHERE session_id = ?",
             params![session_id],
         ).map_err(|e| e.to_string())?;
         conn.execute(
-            "DELETE FROM chat_sessions WHERE id = ?",
-            params![session_id],
+            "UPDATE chat_sessions SET title = '', summary = NULL, deleted_at = ?, meta_updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+            params![&meta_now, &meta_now, session_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 导出 since_seq 之后的一页；peer 导入来的行不回传给它自己
+    pub async fn chat_sync_page(&self, since_seq: i64, peer: Option<&str>, max_bytes: usize) -> Result<ChatSyncPage, String> {
+        let conn = self.conn.lock().await;
+        let device_id = get_or_create_device_id(&conn)?;
+        let max_seq: i64 = conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM chat_sync_log", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+
+        let entries: Vec<(i64, String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT seq, kind, entity_id FROM chat_sync_log
+                 WHERE seq > ?1 AND (origin IS NULL OR origin <> ?2)
+                 ORDER BY seq LIMIT ?3"
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map(params![since_seq, peer.unwrap_or(""), CHAT_PAGE_ROWS], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            }).map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        let mut message_stmt = conn.prepare(
+            "SELECT id, session_id, role, content, tool_calls, tool_call_id, name, timestamp,
+                    audio_path, duration_ms, usage_json, reasoning
+             FROM chat_messages WHERE id = ? AND role IN ('user', 'assistant', 'tool')"
+        ).map_err(|e| e.to_string())?;
+
+        let mut session_ids: Vec<String> = Vec::new();
+        let mut seen_sessions = std::collections::HashSet::new();
+        let mut messages: Vec<SyncChatMessage> = Vec::new();
+        let mut bytes = 0usize;
+        let mut last_seq = since_seq;
+        let mut truncated = entries.len() as i64 >= CHAT_PAGE_ROWS;
+        for (seq, kind, id) in entries {
+            last_seq = seq;
+            if kind == "s" {
+                if seen_sessions.insert(id.clone()) {
+                    session_ids.push(id);
+                }
+            } else {
+                let row = message_stmt.query_row(params![&id], |r| {
+                    Ok(SyncChatMessage {
+                        id: r.get(0)?,
+                        session_id: r.get(1)?,
+                        role: r.get(2)?,
+                        content: r.get(3)?,
+                        tool_calls: r.get(4)?,
+                        tool_call_id: r.get(5)?,
+                        name: r.get(6)?,
+                        timestamp: r.get(7)?,
+                        audio_path: r.get(8)?,
+                        duration_ms: r.get(9)?,
+                        usage_json: r.get(10)?,
+                        reasoning: r.get(11)?,
+                    })
+                }).optional().map_err(|e| e.to_string())?;
+                let Some(row) = row else { continue };
+                bytes += row.content.as_ref().map_or(0, |v| v.len())
+                    + row.tool_calls.as_ref().map_or(0, |v| v.len())
+                    + row.usage_json.as_ref().map_or(0, |v| v.len())
+                    + row.reasoning.as_ref().map_or(0, |v| v.len());
+                // 消息所在会话的日志序号可能排在后面，同页带上，否则对端收到消息却没有会话
+                if seen_sessions.insert(row.session_id.clone()) {
+                    session_ids.push(row.session_id.clone());
+                }
+                messages.push(row);
+            }
+            if bytes >= max_bytes {
+                truncated = true;
+                break;
+            }
+        }
+
+        // 空会话不外发：两端都会清理空会话，发出去只会被对方当成新会话再推回来。墓碑要发，否则删除传不过去
+        let mut session_stmt = conn.prepare(
+            "SELECT s.id, s.title, s.summary, s.created_at, s.updated_at,
+                    COALESCE(s.meta_updated_at, s.created_at), s.deleted_at
+             FROM chat_sessions s
+             WHERE s.id = ? AND (s.deleted_at IS NOT NULL
+               OR EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = s.id))"
+        ).map_err(|e| e.to_string())?;
+        let mut sessions = Vec::with_capacity(session_ids.len());
+        for id in &session_ids {
+            let row = session_stmt.query_row(params![id], |r| {
+                Ok(SyncChatSession {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    summary: r.get(2)?,
+                    created_at: r.get(3)?,
+                    updated_at: r.get(4)?,
+                    meta_updated_at: r.get(5)?,
+                    deleted_at: r.get(6)?,
+                })
+            }).optional().map_err(|e| e.to_string())?;
+            if let Some(row) = row {
+                sessions.push(row);
+            }
+        }
+
+        Ok(ChatSyncPage {
+            device_id,
+            seq: if truncated { last_seq } else { max_seq },
+            more: truncated,
+            sessions,
+            messages,
+        })
+    }
+
+    /// 会话元数据按 meta_updated_at LWW，时间相同比标题和摘要，两端才会选同一个；
+    /// 删除优先且不可撤销；updated_at 取较大值；消息按 id 并集，同 id 只接受变长的版本（见 chat_message_grows）。
+    /// 手机端 SolevupDb.importChatPage 是同一套规则，改这里要一起改。
+    pub async fn chat_sync_import(&self, page: ChatSyncPage) -> Result<ChatSyncImportResult, String> {
+        let mut conn = self.conn.lock().await;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let before: i64 = tx.query_row("SELECT COALESCE(MAX(seq), 0) FROM chat_sync_log", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        let mut result = ChatSyncImportResult::default();
+        // 合并结果和对方发来的不一样：对方还不知道本地这份，日志不能标成来自对方
+        let mut keep_local: Vec<&str> = Vec::new();
+
+        for row in &page.sessions {
+            let local: Option<(String, String, String, Option<String>, Option<String>)> = tx.query_row(
+                "SELECT COALESCE(meta_updated_at, created_at), updated_at, title, summary, deleted_at
+                 FROM chat_sessions WHERE id = ?",
+                params![&row.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            ).optional().map_err(|e| e.to_string())?;
+            let Some((local_meta, local_updated, local_title, local_summary, local_deleted)) = local else {
+                tx.execute(
+                    "INSERT INTO chat_sessions (id, title, summary, created_at, updated_at, meta_updated_at, deleted_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    params![&row.id, &row.title, &row.summary, &row.created_at, &row.updated_at, &row.meta_updated_at, &row.deleted_at],
+                ).map_err(|e| e.to_string())?;
+                if row.deleted_at.is_none() {
+                    result.chat_sessions += 1;
+                }
+                continue;
+            };
+            let newer = (&row.meta_updated_at, &row.title, row.summary.as_deref().unwrap_or(""))
+                > (&local_meta, &local_title, local_summary.as_deref().unwrap_or(""));
+            let apply_meta = match (&local_deleted, &row.deleted_at) {
+                (Some(_), None) => false,
+                (None, Some(_)) => true,
+                _ => newer,
+            };
+            let same_meta = row.meta_updated_at == local_meta
+                && row.title == local_title
+                && row.summary == local_summary
+                && row.deleted_at == local_deleted;
+            if !(apply_meta || same_meta) || local_updated > row.updated_at {
+                keep_local.push(&row.id);
+            }
+            let mut changed = false;
+            if apply_meta {
+                tx.execute(
+                    "UPDATE chat_sessions SET title = ?, summary = ?, meta_updated_at = ?, deleted_at = ? WHERE id = ?",
+                    params![&row.title, &row.summary, &row.meta_updated_at, &row.deleted_at, &row.id],
+                ).map_err(|e| e.to_string())?;
+                if row.deleted_at.is_some() {
+                    tx.execute("DELETE FROM chat_messages WHERE session_id = ?", params![&row.id])
+                        .map_err(|e| e.to_string())?;
+                }
+                changed = true;
+            }
+            if row.updated_at > local_updated {
+                tx.execute(
+                    "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+                    params![&row.updated_at, &row.id],
+                ).map_err(|e| e.to_string())?;
+                changed = true;
+            }
+            if changed {
+                result.chat_sessions += 1;
+            } else {
+                result.skipped += 1;
+            }
+        }
+
+        for row in &page.messages {
+            let alive: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE id = ? AND deleted_at IS NULL)",
+                params![&row.session_id],
+                |r| r.get(0),
+            ).map_err(|e| e.to_string())?;
+            if !alive {
+                result.skipped += 1;
+                continue;
+            }
+            let local: Option<(Option<String>, Option<String>)> = tx.query_row(
+                "SELECT content, reasoning FROM chat_messages WHERE id = ?",
+                params![&row.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional().map_err(|e| e.to_string())?;
+            let Some((local_content, local_reasoning)) = local else {
+                tx.execute(
+                    "INSERT OR IGNORE INTO chat_messages
+                       (id, session_id, role, content, tool_calls, tool_call_id, name, timestamp,
+                        audio_path, duration_ms, usage_json, reasoning)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![&row.id, &row.session_id, &row.role, &row.content, &row.tool_calls, &row.tool_call_id,
+                            &row.name, &row.timestamp, &row.audio_path, &row.duration_ms, &row.usage_json, &row.reasoning],
+                ).map_err(|e| e.to_string())?;
+                result.chat_messages += 1;
+                continue;
+            };
+            if !chat_message_grows(row, local_content.as_deref(), local_reasoning.as_deref()) {
+                result.skipped += 1;
+                continue;
+            }
+            tx.execute(
+                "UPDATE chat_messages
+                 SET content = ?, reasoning = ?, tool_calls = COALESCE(?, tool_calls), tool_call_id = COALESCE(?, tool_call_id),
+                     name = COALESCE(?, name), audio_path = COALESCE(?, audio_path), duration_ms = COALESCE(?, duration_ms),
+                     usage_json = COALESCE(?, usage_json)
+                 WHERE id = ?",
+                params![&row.content, &row.reasoning, &row.tool_calls, &row.tool_call_id,
+                        &row.name, &row.audio_path, &row.duration_ms, &row.usage_json, &row.id],
+            ).map_err(|e| e.to_string())?;
+            // chat_messages 没有 UPDATE 触发器，手动登记，第三台设备才收得到
+            tx.execute(
+                "INSERT OR REPLACE INTO chat_sync_log (kind, entity_id) VALUES ('m', ?)",
+                params![&row.id],
+            ).map_err(|e| e.to_string())?;
+            result.chat_messages += 1;
+        }
+
+        tx.execute(
+            "UPDATE chat_sync_log SET origin = ? WHERE seq > ?",
+            params![&page.device_id, before],
+        ).map_err(|e| e.to_string())?;
+        for id in keep_local {
+            tx.execute(
+                "UPDATE chat_sync_log SET origin = NULL WHERE kind = 's' AND entity_id = ? AND seq > ?",
+                params![id, before],
+            ).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(result)
+    }
+
+    /// (pull_seq, push_seq)
+    pub async fn chat_sync_cursor(&self, peer_device_id: &str) -> Result<(i64, i64), String> {
+        let conn = self.conn.lock().await;
+        let cursor = conn.query_row(
+            "SELECT pull_seq, push_seq FROM chat_sync_cursor WHERE peer_device_id = ?",
+            params![peer_device_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional().map_err(|e| e.to_string())?;
+        Ok(cursor.unwrap_or((0, 0)))
+    }
+
+    pub async fn save_chat_pull_seq(&self, peer_device_id: &str, seq: i64) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO chat_sync_cursor (peer_device_id, pull_seq) VALUES (?, ?)
+             ON CONFLICT(peer_device_id) DO UPDATE SET pull_seq = excluded.pull_seq",
+            params![peer_device_id, seq],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn save_chat_push_seq(&self, peer_device_id: &str, seq: i64) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO chat_sync_cursor (peer_device_id, push_seq) VALUES (?, ?)
+             ON CONFLICT(peer_device_id) DO UPDATE SET push_seq = excluded.push_seq",
+            params![peer_device_id, seq],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -4450,6 +4821,65 @@ fn backfill_sync_ids(conn: &Connection, table: &str) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+const CHAT_PAGE_ROWS: i64 = 500;
+
+/// meta_updated_at 两端用同一格式（毫秒 + Z），才能按字符串比较新旧
+fn chat_meta_now() -> String {
+    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// 本机改标题 / 摘要时写入的 meta_updated_at：?2 是当前时间。
+/// 本机时钟比已知版本慢时，直接写 now 会让元数据回退：对端已经把序号越过去了，不会再发，两端就永久不一致。
+/// 所以取「已知版本 + 1 毫秒」，保证本机的修改总能压过自己见过的版本。手机端 SolevupDb.patchChatSession 用同一段 SQL。
+const CHAT_META_BUMP_SQL: &str = "CASE WHEN COALESCE(meta_updated_at, created_at) >= ?2
+    THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(meta_updated_at, created_at), '+0.001 seconds'), ?2)
+    ELSE ?2 END";
+
+/// 同 id 的消息只有写入它的那台设备会改，而且只会变长（手机端流式途中也落盘，可能先同步出去半截）。
+/// 长的赢，等长比内容，两端选同一个。不能「收到就覆盖」：第三台设备转发的旧版本会盖掉新版本。
+/// 手机端 SolevupDb.chatMessageGrows 是同一规则（按字符计长，按码点比较，码点序等于这里的 UTF-8 字节序）。
+fn chat_message_grows(row: &SyncChatMessage, local_content: Option<&str>, local_reasoning: Option<&str>) -> bool {
+    let content = row.content.as_deref().unwrap_or("");
+    let reasoning = row.reasoning.as_deref().unwrap_or("");
+    let local_content = local_content.unwrap_or("");
+    let local_reasoning = local_reasoning.unwrap_or("");
+    let size = content.chars().count() + reasoning.chars().count();
+    let local_size = local_content.chars().count() + local_reasoning.chars().count();
+    (size, content, reasoning) > (local_size, local_content, local_reasoning)
+}
+
+/// 聊天增量同步的日志：写入靠触发器登记，业务代码不用管；
+/// AUTOINCREMENT 保证序号不回退，对端按序号存游标。手机端 SolevupDb.kt 是同一套结构。
+fn ensure_chat_sync_log(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(r#"
+        CREATE TABLE IF NOT EXISTS chat_sync_log (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            origin TEXT,
+            UNIQUE(kind, entity_id)
+        );
+        CREATE TABLE IF NOT EXISTS chat_sync_cursor (
+            peer_device_id TEXT PRIMARY KEY,
+            pull_seq INTEGER NOT NULL DEFAULT 0,
+            push_seq INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TRIGGER IF NOT EXISTS chat_sessions_log_insert AFTER INSERT ON chat_sessions
+        BEGIN INSERT OR REPLACE INTO chat_sync_log (kind, entity_id) VALUES ('s', NEW.id); END;
+        CREATE TRIGGER IF NOT EXISTS chat_sessions_log_update AFTER UPDATE ON chat_sessions
+        BEGIN INSERT OR REPLACE INTO chat_sync_log (kind, entity_id) VALUES ('s', NEW.id); END;
+        CREATE TRIGGER IF NOT EXISTS chat_sessions_log_delete AFTER DELETE ON chat_sessions
+        BEGIN DELETE FROM chat_sync_log WHERE kind = 's' AND entity_id = OLD.id; END;
+        CREATE TRIGGER IF NOT EXISTS chat_messages_log_insert AFTER INSERT ON chat_messages
+        BEGIN INSERT OR REPLACE INTO chat_sync_log (kind, entity_id) VALUES ('m', NEW.id); END;
+        CREATE TRIGGER IF NOT EXISTS chat_messages_log_delete AFTER DELETE ON chat_messages
+        BEGIN DELETE FROM chat_sync_log WHERE kind = 'm' AND entity_id = OLD.id; END;
+        INSERT OR IGNORE INTO chat_sync_log (kind, entity_id) SELECT 's', id FROM chat_sessions;
+        INSERT OR IGNORE INTO chat_sync_log (kind, entity_id)
+            SELECT 'm', id FROM chat_messages ORDER BY timestamp;
+    "#).map_err(|e| format!("创建聊天同步日志失败: {}", e))
 }
 
 fn ensure_sync_metadata(conn: &Connection) -> Result<(), String> {

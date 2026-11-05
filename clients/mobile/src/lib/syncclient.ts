@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════
 // SyncClient Native Module 桥接 (Android-only)
-// Mobile 主动 pull/push + WorkManager 定时同步
+// 链接管理 + 手动同步；自动同步由原生 SyncRuntime 负责，不依赖任何页面
 // ══════════════════════════════════════════════
 
 import { NativeModules, Platform } from 'react-native'
@@ -11,6 +11,8 @@ export type LinkedDevice = {
   lastBase: string
   lastSyncedAt?: string
   createdAt: string
+  syncing?: boolean
+  lastError?: string
 }
 
 export type ImportResult = {
@@ -19,6 +21,13 @@ export type ImportResult = {
   activityBlocks: number
   planNodes: number
   plannedBlocks: number
+  modelApiKeys: number
+  modelCallLog: number
+  modelFreeQuota: number
+  featureBindings: number
+  chatSessions: number
+  chatMessages: number
+  modelRegistry: number
   skipped: number
 }
 
@@ -44,14 +53,10 @@ interface SyncClientNative {
   unlinkPeer(deviceId: string): Promise<boolean>
   syncNow(deviceId: string): Promise<SyncRoundResult>
   syncAll(): Promise<SyncAllItem[]>
-  enqueuePeriodicSync(intervalMinutes: number): Promise<boolean>
-  cancelPeriodicSync(): Promise<boolean>
 }
 
 const Native: SyncClientNative | null =
   Platform.OS === 'android' ? (NativeModules.SyncClient as SyncClientNative) ?? null : null
-
-export const SYNC_PERIODIC_DEFAULT_MINUTES = 15
 
 export function isSyncClientAvailable(): boolean {
   return Native != null
@@ -80,14 +85,4 @@ export async function syncNow(deviceId: string): Promise<SyncRoundResult | null>
 export async function syncAll(): Promise<SyncAllItem[]> {
   if (!Native) return []
   return Native.syncAll()
-}
-
-export async function enqueuePeriodicSync(intervalMinutes: number = SYNC_PERIODIC_DEFAULT_MINUTES): Promise<boolean> {
-  if (!Native) return false
-  return Native.enqueuePeriodicSync(intervalMinutes)
-}
-
-export async function cancelPeriodicSync(): Promise<boolean> {
-  if (!Native) return false
-  return Native.cancelPeriodicSync()
 }

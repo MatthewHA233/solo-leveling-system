@@ -4,7 +4,7 @@
 //   · 启动任务和发现钩子都用它
 // ══════════════════════════════════════════════
 
-use crate::db::{Database, SyncExport, SyncImportResult};
+use crate::db::{ChatSyncImportResult, ChatSyncPage, Database, SyncExport, SyncImportResult};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
@@ -39,6 +39,10 @@ fn last_synced() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
 }
 
 const DISCOVER_COOLDOWN: Duration = Duration::from_secs(10);
+
+/// 聊天增量同步一页的大小；axum 和手机端都收得下，单条超长消息会独占一页
+pub const CHAT_PAGE_BYTES: usize = 1_500_000;
+const CHAT_MAX_PAGES: usize = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRoundResult {
@@ -91,9 +95,10 @@ pub async fn bidirectional_sync(
         return Err(format!("对端 export 错误: {}", pull_resp.error.unwrap_or_default()));
     }
     let remote_snapshot = pull_resp.data.ok_or("对端 export 数据为空")?;
+    let peer_device_id = remote_snapshot.device_id.clone();
 
     // 2) 本地导入
-    let pulled = db.import_sync(remote_snapshot).await
+    let mut pulled = db.import_sync(remote_snapshot).await
         .map_err(|e| format!("本地 import 失败: {}", e))?;
 
     // 3) 本地 export
@@ -109,9 +114,76 @@ pub async fn bidirectional_sync(
     if !push_resp.success {
         return Err(format!("对端 import 错误: {}", push_resp.error.unwrap_or_default()));
     }
-    let pushed = push_resp.data.ok_or("对端 import 数据为空")?;
+    let mut pushed = push_resp.data.ok_or("对端 import 数据为空")?;
+
+    // 5) 聊天记录走独立通道：失败不影响上面已经同步好的数据
+    if let Err(e) = sync_chat(&db, &client, &base, &peer_device_id, &mut pulled, &mut pushed).await {
+        log::info!("[SyncEngine] 聊天记录同步跳过 ({}): {}", base, e);
+    }
 
     Ok(SyncRoundResult { pulled, pushed })
+}
+
+/// 旧版对端没有 /api/sync/chat：游标不前进，等它升级后补齐
+async fn sync_chat(
+    db: &Database,
+    client: &reqwest::Client,
+    base: &str,
+    peer_device_id: &str,
+    pulled: &mut SyncImportResult,
+    pushed: &mut SyncImportResult,
+) -> Result<(), String> {
+    let self_id = db.sync_device_id().await?;
+    let (pull_seq, push_seq) = db.chat_sync_cursor(peer_device_id).await?;
+
+    let url = format!("{}/api/sync/chat", base);
+    let mut since = pull_seq;
+    for _ in 0..CHAT_MAX_PAGES {
+        let resp: ApiEnvelope<ChatSyncPage> = client.get(&url)
+            .query(&[
+                ("since", since.to_string()),
+                ("peer", self_id.clone()),
+                ("max_bytes", CHAT_PAGE_BYTES.to_string()),
+            ])
+            .send().await.map_err(|e| e.to_string())?
+            .json().await.map_err(|e| e.to_string())?;
+        if !resp.success {
+            return Err(resp.error.unwrap_or_default());
+        }
+        let page = resp.data.ok_or("聊天记录数据为空")?;
+        let (seq, more) = (page.seq, page.more);
+        let result = db.chat_sync_import(page).await?;
+        pulled.chat_sessions += result.chat_sessions;
+        pulled.chat_messages += result.chat_messages;
+        db.save_chat_pull_seq(peer_device_id, seq).await?;
+        since = seq;
+        if !more {
+            break;
+        }
+    }
+
+    let mut since = push_seq;
+    for _ in 0..CHAT_MAX_PAGES {
+        let page = db.chat_sync_page(since, Some(peer_device_id), CHAT_PAGE_BYTES).await?;
+        let (seq, more) = (page.seq, page.more);
+        if !page.sessions.is_empty() || !page.messages.is_empty() {
+            let resp: ApiEnvelope<ChatSyncImportResult> = client.post(&url).json(&page).send().await
+                .map_err(|e| e.to_string())?
+                .json().await.map_err(|e| e.to_string())?;
+            if !resp.success {
+                return Err(resp.error.unwrap_or_default());
+            }
+            let result = resp.data.ok_or("聊天记录推送结果为空")?;
+            pushed.chat_sessions += result.chat_sessions;
+            pushed.chat_messages += result.chat_messages;
+        }
+        db.save_chat_push_seq(peer_device_id, seq).await?;
+        since = seq;
+        if !more {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// 启动时遍历 linked_devices 做一轮，失败只记日志不打扰用户。

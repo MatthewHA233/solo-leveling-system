@@ -17,7 +17,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
 
   override fun getName(): String = NAME
 
-  private val db: SolevupDb by lazy { SolevupDb(reactContext) }
+  private val db: SolevupDb by lazy { SolevupDb.shared(reactContext.applicationContext) }
 
   @ReactMethod
   fun ping(promise: Promise) {
@@ -458,15 +458,18 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
 
   // ── 模型配置（聊天链路：active key / 模型绑定 / 用量落库） ──
 
+  private fun keyToMap(k: SolevupDb.ModelApiKeyInfo) = Arguments.createMap().apply {
+    putString("id", k.id); putString("label", k.label)
+    putString("apiKey", k.apiKey); putBoolean("isActive", k.isActive)
+    putString("provider", k.provider)
+    putString("createdAt", k.createdAt); putString("updatedAt", k.updatedAt)
+  }
+
   @ReactMethod
-  fun getActiveModelApiKey(promise: Promise) {
+  fun getActiveModelApiKey(provider: String?, promise: Promise) {
     try {
-      val k = db.getActiveModelApiKey()
-      if (k == null) { promise.resolve(null); return }
-      promise.resolve(Arguments.createMap().apply {
-        putString("id", k.id); putString("label", k.label)
-        putString("apiKey", k.apiKey); putBoolean("isActive", k.isActive)
-      })
+      val k = db.getActiveModelApiKey(provider ?: SolevupDb.PROVIDER_DASHSCOPE)
+      promise.resolve(k?.let { keyToMap(it) })
     } catch (e: Throwable) { promise.reject("MODEL_KEY_FAILED", e.message, e) }
   }
 
@@ -474,15 +477,44 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
   fun listModelApiKeys(promise: Promise) {
     try {
       val arr = Arguments.createArray()
-      for (k in db.listModelApiKeys()) {
-        arr.pushMap(Arguments.createMap().apply {
-          putString("id", k.id); putString("label", k.label)
-          putBoolean("isActive", k.isActive)
-          putBoolean("hasKey", k.apiKey.isNotEmpty())
-        })
-      }
+      for (k in db.listModelApiKeys()) arr.pushMap(keyToMap(k))
       promise.resolve(arr)
     } catch (e: Throwable) { promise.reject("MODEL_KEYS_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun upsertModelApiKey(id: String?, label: String, apiKey: String, provider: String?, activate: Boolean, promise: Promise) {
+    try {
+      promise.resolve(keyToMap(db.upsertModelApiKey(id, label, apiKey, provider, activate)))
+    } catch (e: Throwable) { promise.reject("MODEL_KEY_UPSERT_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun setActiveModelApiKey(id: String, promise: Promise) {
+    try { db.setActiveModelApiKey(id); promise.resolve(true) }
+    catch (e: Throwable) { promise.reject("MODEL_KEY_ACTIVATE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun deleteModelApiKey(id: String, promise: Promise) {
+    try { db.deleteModelApiKey(id); promise.resolve(true) }
+    catch (e: Throwable) { promise.reject("MODEL_KEY_DELETE_FAILED", e.message, e) }
+  }
+
+  // 模型库走 JSON 字符串：字段形状和 desktop ModelDef 完全一致（snake_case），JS 不用再转一层
+
+  @ReactMethod
+  fun listModelCatalog(promise: Promise) {
+    try { promise.resolve(SyncJson.modelCatalogToJson(db.listModelCatalog()).toString()) }
+    catch (e: Throwable) { promise.reject("MODEL_CATALOG_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun seedModelCatalogIfEmpty(json: String, promise: Promise) {
+    try {
+      val rows = SyncJson.parseModelRegistry(org.json.JSONObject().put("model_registry", org.json.JSONArray(json)))
+      promise.resolve(db.seedModelCatalogIfEmpty(rows))
+    } catch (e: Throwable) { promise.reject("MODEL_CATALOG_SEED_FAILED", e.message, e) }
   }
 
   @ReactMethod
@@ -491,22 +523,29 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
     catch (e: Throwable) { promise.reject("BINDING_FAILED", e.message, e) }
   }
 
+  /** 返回 ModelCallLog 形状的 JSON 字符串，消息的 usage_json 直接存它（和 desktop 一致）。 */
   @ReactMethod
-  fun insertModelCallLog(row: ReadableMap, promise: Promise) {
+  fun logModelCall(row: ReadableMap, promise: Promise) {
     try {
-      val id = db.insertModelCallLog(
-        apiKeyId = if (row.hasKey("apiKeyId") && !row.isNull("apiKeyId")) row.getString("apiKeyId") else null,
-        feature = row.getString("feature") ?: "fairy_chat",
-        modelId = row.getString("modelId") ?: "",
-        startedAt = row.getString("startedAt") ?: "",
+      fun tokens(key: String) = if (row.hasKey(key) && !row.isNull(key)) row.getDouble(key).toLong() else 0L
+      fun text(key: String) = if (row.hasKey(key) && !row.isNull(key)) row.getString(key) else null
+      val logged = db.logModelCall(SolevupDb.LogModelCallRequest(
+        apiKeyId = text("apiKeyId"),
+        feature = text("feature") ?: "fairy_chat",
+        modelId = text("modelId") ?: "",
+        startedAt = text("startedAt") ?: "",
         durationMs = if (row.hasKey("durationMs") && !row.isNull("durationMs")) row.getDouble("durationMs").toLong() else null,
-        promptTextTokens = if (row.hasKey("promptTextTokens")) row.getDouble("promptTextTokens").toLong() else 0L,
-        completionTextTokens = if (row.hasKey("completionTextTokens")) row.getDouble("completionTextTokens").toLong() else 0L,
+        promptTextTokens = tokens("promptTextTokens"),
+        promptImageTokens = tokens("promptImageTokens"),
+        promptVideoTokens = tokens("promptVideoTokens"),
+        promptAudioTokens = tokens("promptAudioTokens"),
+        completionTextTokens = tokens("completionTextTokens"),
+        completionAudioTokens = tokens("completionAudioTokens"),
         success = if (row.hasKey("success")) row.getBoolean("success") else true,
-        errorMessage = if (row.hasKey("errorMessage") && !row.isNull("errorMessage")) row.getString("errorMessage") else null,
-        metadata = if (row.hasKey("metadata") && !row.isNull("metadata")) row.getString("metadata") else null,
-      )
-      promise.resolve(id)
+        errorMessage = text("errorMessage"),
+        metadata = text("metadata"),
+      ))
+      promise.resolve(SyncJson.modelCallLogToUsageJson(logged).toString())
     } catch (e: Throwable) { promise.reject("CALL_LOG_FAILED", e.message, e) }
   }
 
@@ -514,9 +553,10 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
   fun listFeatureBindings(promise: Promise) {
     try {
       val arr = Arguments.createArray()
-      for ((feature, modelId) in db.listFeatureBindings()) {
+      for (b in db.listFeatureBindings()) {
         arr.pushMap(Arguments.createMap().apply {
-          putString("feature", feature); putString("modelId", modelId)
+          putString("feature", b.feature); putString("modelId", b.modelId)
+          putString("updatedAt", b.updatedAt)
         })
       }
       promise.resolve(arr)
@@ -547,13 +587,60 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
           putDouble("completionTextTokens", r.completionTextTokens.toDouble())
           putDouble("completionAudioTokens", r.completionAudioTokens.toDouble())
           if (r.costCny != null) putDouble("costCny", r.costCny) else putNull("costCny")
+          if (r.costUsd != null) putDouble("costUsd", r.costUsd) else putNull("costUsd")
           putDouble("freeQuotaTokens", r.freeQuotaTokens.toDouble())
           putDouble("freeQuotaSavedCny", r.freeQuotaSavedCny)
           putBoolean("success", r.success == 1)
+          if (r.errorMessage != null) putString("errorMessage", r.errorMessage) else putNull("errorMessage")
+          if (r.metadata != null) putString("metadata", r.metadata) else putNull("metadata")
         })
       }
       promise.resolve(arr)
     } catch (e: Throwable) { promise.reject("CALL_LOG_QUERY_FAILED", e.message, e) }
+  }
+
+  // 用量界面：形状对齐 desktop ModelCallLog / CallLogBucket（snake_case JSON 字符串），limit <= 0 表示不限条数
+
+  @ReactMethod
+  fun queryCallLog(
+    timeFrom: String?, timeTo: String?, feature: String?, modelId: String?, apiKeyId: String?, limit: Double,
+    promise: Promise,
+  ) {
+    try {
+      val rows = db.queryCallLog(timeFrom, timeTo, feature, modelId, apiKeyId, if (limit > 0) limit.toInt() else null)
+      promise.resolve(SyncJson.modelCallLogsToUsageJson(rows).toString())
+    } catch (e: Throwable) { promise.reject("CALL_LOG_QUERY_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun aggregateCallLog(
+    timeFrom: String, timeTo: String, granularity: String, feature: String?, modelId: String?, apiKeyId: String?,
+    promise: Promise,
+  ) {
+    try {
+      val rows = db.aggregateCallLog(timeFrom, timeTo, granularity, feature, modelId, apiKeyId)
+      promise.resolve(SyncJson.callLogBucketsToJson(rows).toString())
+    } catch (e: Throwable) { promise.reject("CALL_LOG_AGGREGATE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun getModelCallLog(id: String, promise: Promise) {
+    try { promise.resolve(db.getModelCallLog(id)?.let { SyncJson.modelCallLogToUsageJson(it).toString() }) }
+    catch (e: Throwable) { promise.reject("CALL_LOG_GET_FAILED", e.message, e) }
+  }
+
+  /** 复制 API Key 用：RN 自带 Clipboard 已废弃，又不引第三方包；打上敏感标记，系统不在剪贴板预览里显示明文。 */
+  @ReactMethod
+  fun copyText(text: String, promise: Promise) {
+    try {
+      val clipboard = reactContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+      val clip = android.content.ClipData.newPlainText("text", text)
+      clip.description.extras = android.os.PersistableBundle().apply {
+        putBoolean("android.content.extra.IS_SENSITIVE", true)
+      }
+      clipboard.setPrimaryClip(clip)
+      promise.resolve(true)
+    } catch (e: Throwable) { promise.reject("COPY_TEXT_FAILED", e.message, e) }
   }
 
   @ReactMethod
@@ -570,6 +657,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
           putDouble("remainingTokens", r.remainingTokens.toDouble())
           if (r.usedPercent != null) putString("usedPercent", r.usedPercent) else putNull("usedPercent")
           if (r.expireDate != null) putString("expireDate", r.expireDate) else putNull("expireDate")
+          if (r.rawQuota != null) putString("rawQuota", r.rawQuota) else putNull("rawQuota")
           putString("scannedAt", r.scannedAt)
           if (r.errorMessage != null) putString("errorMessage", r.errorMessage) else putNull("errorMessage")
         })
@@ -615,6 +703,9 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
           if (r.durationMs != null) putDouble("durationMs", r.durationMs.toDouble()) else putNull("durationMs")
           if (r.usageJson != null) putString("usageJson", r.usageJson) else putNull("usageJson")
           if (r.reasoning != null) putString("reasoning", r.reasoning) else putNull("reasoning")
+          if (r.toolCalls != null) putString("toolCalls", r.toolCalls) else putNull("toolCalls")
+          if (r.toolCallId != null) putString("toolCallId", r.toolCallId) else putNull("toolCallId")
+          if (r.name != null) putString("name", r.name) else putNull("name")
         })
       }
       promise.resolve(arr)
@@ -636,11 +727,38 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
           durationMs = if (m.hasKey("durationMs") && !m.isNull("durationMs")) m.getDouble("durationMs").toLong() else null,
           usageJson = if (m.hasKey("usageJson") && !m.isNull("usageJson")) m.getString("usageJson") else null,
           reasoning = if (m.hasKey("reasoning") && !m.isNull("reasoning")) m.getString("reasoning") else null,
+          toolCalls = if (m.hasKey("toolCalls") && !m.isNull("toolCalls")) m.getString("toolCalls") else null,
+          toolCallId = if (m.hasKey("toolCallId") && !m.isNull("toolCallId")) m.getString("toolCallId") else null,
+          name = if (m.hasKey("name") && !m.isNull("name")) m.getString("name") else null,
         ))
       }
-      db.appendChatMessages(sessionId, list)
-      promise.resolve(true)
+      // false = 会话已是墓碑，写入被拒，JS 层新建会话接着写
+      promise.resolve(db.appendChatMessages(sessionId, list))
     } catch (e: Throwable) { promise.reject("MESSAGES_APPEND_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun isChatSessionDeleted(sessionId: String, promise: Promise) {
+    try { promise.resolve(db.isChatSessionDeleted(sessionId)) }
+    catch (e: Throwable) { promise.reject("SESSION_STATE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun searchChatSessions(query: String, limit: Double, promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (hit in db.searchChatSessions(query, limit.toInt())) {
+        arr.pushMap(Arguments.createMap().apply {
+          putMap("session", sessionToMap(hit.session))
+          putArray("snippets", Arguments.createArray().apply {
+            for (sn in hit.snippets) pushMap(Arguments.createMap().apply {
+              putString("role", sn.role); putString("excerpt", sn.excerpt); putString("timestamp", sn.timestamp)
+            })
+          })
+        })
+      }
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("SESSION_SEARCH_FAILED", e.message, e) }
   }
 
   @ReactMethod
@@ -657,8 +775,11 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun cleanupEmptyChatSessions(exceptId: String?, promise: Promise) {
-    try { db.cleanupEmptyChatSessions(exceptId); promise.resolve(true) }
-    catch (e: Throwable) { promise.reject("SESSION_CLEANUP_FAILED", e.message, e) }
+    try {
+      val arr = Arguments.createArray()
+      for (id in db.cleanupEmptyChatSessions(exceptId)) arr.pushString(id)
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("SESSION_CLEANUP_FAILED", e.message, e) }
   }
 
   companion object {

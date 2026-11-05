@@ -30,21 +30,7 @@ import {
   type SyncExport,
 } from '../lib/solevupdb'
 // solevupdb_seed 已删除（不再硬编码 9 类 70 标签 seed）；空 palette 由 UI 创建或 LAN 同步拉取。
-import {
-  getSyncServerStatus,
-  startSyncServer,
-  stopSyncServer,
-  SYNC_SERVER_DEFAULT_PORT,
-  type SyncServerStatus,
-} from '../lib/syncserver'
-import {
-  enqueuePeriodicSync,
-  linkPeer,
-  listLinkedDevices,
-  syncNow,
-  unlinkPeer,
-  type LinkedDevice,
-} from '../lib/syncclient'
+import PairingCard from '../components/sync/PairingCard'
 import {
   clearTorrentCaptures,
   collectUsageStats,
@@ -101,15 +87,6 @@ export default function PerceptionScreen() {
   const [solevupStats, setSolevupStats] = useState<SolevupDbStats | null>(null)
   const [solevupDeviceId, setSolevupDeviceId] = useState<string>('')
   const [exportSummary, setExportSummary] = useState<string>('')
-  const [serverStatus, setServerStatus] = useState<SyncServerStatus | null>(null)
-  const [serverErr, setServerErr] = useState<string>('')
-
-  // 主动同步：linked desktops + 手动同步状态
-  const [linkedDevices, setLinkedDevices] = useState<LinkedDevice[]>([])
-  const [linkUrl, setLinkUrl] = useState<string>('')
-  const [linkBusy, setLinkBusy] = useState(false)
-  const [linkMsg, setLinkMsg] = useState<string>('')
-  const [syncingId, setSyncingId] = useState<string | null>(null)
   const [windowEvents, setWindowEvents] = useState<AppMonitorSegment[]>([])
   const [clicks, setClicks] = useState<ClickCountSnapshot>({ total: 0, entries: [] })
   const [torrentStats, setTorrentStats] = useState<TorrentStats | null>(null)
@@ -134,11 +111,6 @@ export default function PerceptionScreen() {
     void refreshTorrentStats()
     void refreshTorrentReadMode()
     void refreshSolevupDb()
-    void runSelfImport()
-    void autoStartServer()
-    void refreshLinkedDevices()
-    // 注册定时后台同步（KEEP 策略幂等，重复调不会重置 15min 计时器）
-    void enqueuePeriodicSync(15)
     // 启动静默检查更新（拉本地 versionCode + OSS latest.json）
     void initUpdater()
   }, [])
@@ -207,106 +179,6 @@ export default function PerceptionScreen() {
       if (updateForced) setConfirmUpdateOpen(true)
     } finally {
       setUpdateInstalling(false)
-    }
-  }
-
-  async function refreshLinkedDevices() {
-    try {
-      setLinkedDevices(await listLinkedDevices())
-    } catch {
-      setLinkedDevices([])
-    }
-  }
-
-  async function doLinkPeer() {
-    const url = linkUrl.trim()
-    if (!url) {
-      setLinkMsg('请填写电脑 IP，例如 192.168.0.104')
-      return
-    }
-    setLinkBusy(true)
-    setLinkMsg('')
-    try {
-      const r = await linkPeer(url)
-      if (r) {
-        setLinkMsg(
-          `✓ ${r.alias}：拉 cat ${r.pulled.activityCategories} tag ${r.pulled.activityTags} ` +
-          `block ${r.pulled.activityBlocks} / 推 cat ${r.pushed.activityCategories} ` +
-          `tag ${r.pushed.activityTags} block ${r.pushed.activityBlocks}`,
-        )
-        setLinkUrl('')
-        await refreshLinkedDevices()
-      }
-    } catch (e: any) {
-      setLinkMsg(`✗ 链接失败: ${e?.message ?? String(e)}`)
-    } finally {
-      setLinkBusy(false)
-    }
-  }
-
-  async function doSyncNow(deviceId: string) {
-    setSyncingId(deviceId)
-    setLinkMsg('')
-    try {
-      const r = await syncNow(deviceId)
-      if (r) {
-        setLinkMsg(
-          `✓ ${r.alias}：拉 cat ${r.pulled.activityCategories} tag ${r.pulled.activityTags} ` +
-          `block ${r.pulled.activityBlocks} / 推 cat ${r.pushed.activityCategories} ` +
-          `tag ${r.pushed.activityTags} block ${r.pushed.activityBlocks}`,
-        )
-        await refreshLinkedDevices()
-      }
-    } catch (e: any) {
-      setLinkMsg(`✗ 同步失败: ${e?.message ?? String(e)}`)
-    } finally {
-      setSyncingId(null)
-    }
-  }
-
-  async function doUnlinkPeer(deviceId: string, alias: string) {
-    try {
-      await unlinkPeer(deviceId)
-      setLinkMsg(`已解除与 ${alias} 的链接`)
-      await refreshLinkedDevices()
-    } catch (e: any) {
-      setLinkMsg(`✗ 解除失败: ${e?.message ?? String(e)}`)
-    }
-  }
-
-  async function refreshServer() {
-    try {
-      setServerStatus(await getSyncServerStatus())
-    } catch (e: any) {
-      setServerErr(e?.message ?? String(e))
-    }
-  }
-
-  // 启动 app 时自动启 HTTP server，让 desktop 一打开 SyncPeerDialog 就能找到。
-  // 失败不打扰用户（端口被占或权限），可以手动点"启动"重试。
-  async function autoStartServer() {
-    try {
-      const cur = await getSyncServerStatus()
-      if (!cur?.running) {
-        await startSyncServer(SYNC_SERVER_DEFAULT_PORT)
-      }
-      await refreshServer()
-    } catch (e: any) {
-      setServerErr(e?.message ?? String(e))
-    }
-  }
-
-  async function toggleServer() {
-    setServerErr('')
-    try {
-      if (serverStatus?.running) {
-        await stopSyncServer()
-      } else {
-        await startSyncServer(SYNC_SERVER_DEFAULT_PORT)
-      }
-      await refreshServer()
-    } catch (e: any) {
-      setServerErr(e?.message ?? String(e))
     }
   }
 
@@ -584,128 +456,7 @@ export default function PerceptionScreen() {
         </View>
       </View>
 
-      {/* 同步傻瓜式入口：自动启 server，大字显示 IP 让电脑直接照抄 */}
-      <View style={[styles.card, { borderColor: theme.accent, borderWidth: 1.5 }]}>
-        <Text style={[styles.cardLabel, { color: theme.accent, fontWeight: '700' }]}>
-          🔗 局域网同步 · 电脑端添加这台手机
-        </Text>
-        {serverStatus?.running ? (
-          serverStatus.ipv4s.length > 0 ? (
-            <>
-              <Text style={styles.cardSub}>在电脑上打开"同步设备"对话框，手动输入下面地址：</Text>
-              {serverStatus.ipv4s.map((ip) => (
-                <Text
-                  key={ip}
-                  selectable
-                  style={{
-                    fontSize: 22,
-                    fontWeight: '700',
-                    color: theme.ink,
-                    paddingVertical: 6,
-                    letterSpacing: 0.4,
-                  }}
-                >
-                  {ip}:{serverStatus.port}
-                </Text>
-              ))}
-              <Text style={styles.cardSub}>(手机和电脑必须在同一 WiFi)</Text>
-            </>
-          ) : (
-            <Text style={[styles.cardSub, { color: '#C0392B' }]}>
-              ⚠ 没找到 LAN IP，检查 WiFi 是否打开
-            </Text>
-          )
-        ) : (
-          <Text style={styles.cardSub}>同步服务未启动，点下面"启动"按钮</Text>
-        )}
-        {!!serverErr && (
-          <Text style={[styles.cardSub, { color: '#C0392B' }]}>⚠ {serverErr}</Text>
-        )}
-        <View style={[styles.btnRow, { marginTop: 8 }]}>
-          <Pressable style={styles.btn} onPress={toggleServer}>
-            <Text style={styles.btnText}>
-              {serverStatus?.running ? '停止' : '启动'}
-            </Text>
-          </Pressable>
-          <Pressable style={[styles.btn, styles.btnGhost]} onPress={refreshServer}>
-            <Text style={[styles.btnText, styles.btnGhostText]}>刷新</Text>
-          </Pressable>
-        </View>
-      </View>
-
-      {/* 手机主动链接电脑端 + 已链接列表 + 立即同步按钮 */}
-      <View style={styles.card}>
-        <Text style={styles.cardLabel}>📲 链接电脑端 (手机主动同步 + 每 15 分钟后台跑)</Text>
-        <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', marginTop: 8 }}>
-          <TextInput
-            value={linkUrl}
-            onChangeText={setLinkUrl}
-            placeholder="例: 192.168.0.104"
-            placeholderTextColor={theme.inkSoft}
-            editable={!linkBusy}
-            style={{
-              flex: 1,
-              borderWidth: 1,
-              borderColor: theme.line,
-              borderRadius: 8,
-              paddingHorizontal: 12,
-              paddingVertical: 8,
-              color: theme.ink,
-              backgroundColor: '#fff',
-            }}
-          />
-          <Pressable style={styles.btn} onPress={doLinkPeer} disabled={linkBusy}>
-            <Text style={styles.btnText}>{linkBusy ? '连接中…' : '链接'}</Text>
-          </Pressable>
-        </View>
-        {!!linkMsg && (
-          <Text style={[styles.cardSub, { marginTop: 8 }]} numberOfLines={3}>
-            {linkMsg}
-          </Text>
-        )}
-        {linkedDevices.length === 0 ? (
-          <Text style={[styles.cardSub, { marginTop: 8, fontStyle: 'italic' }]}>
-            尚未链接任何电脑。
-          </Text>
-        ) : (
-          <View style={{ marginTop: 12, gap: 8 }}>
-            {linkedDevices.map((d) => (
-              <View
-                key={d.deviceId}
-                style={{
-                  borderWidth: 1, borderColor: theme.line, borderRadius: 8,
-                  padding: 10,
-                }}
-              >
-                <Text style={[styles.cardValue, { fontSize: 14 }]} numberOfLines={1}>
-                  {d.alias}
-                </Text>
-                <Text style={styles.cardSub} numberOfLines={1}>{d.lastBase}</Text>
-                <Text style={styles.cardSub}>
-                  上次同步：{d.lastSyncedAt ?? '尚未同步'}
-                </Text>
-                <View style={[styles.btnRow, { marginTop: 8 }]}>
-                  <Pressable
-                    style={styles.btn}
-                    onPress={() => doSyncNow(d.deviceId)}
-                    disabled={syncingId === d.deviceId}
-                  >
-                    <Text style={styles.btnText}>
-                      {syncingId === d.deviceId ? '同步中…' : '立即同步'}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.btn, styles.btnGhost]}
-                    onPress={() => doUnlinkPeer(d.deviceId, d.alias)}
-                  >
-                    <Text style={[styles.btnText, styles.btnGhostText]}>解除</Text>
-                  </Pressable>
-                </View>
-              </View>
-            ))}
-          </View>
-        )}
-      </View>
+      <PairingCard />
 
       <View style={styles.card}>
         <Text style={styles.cardLabel}>Native module 状态</Text>

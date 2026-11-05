@@ -4,7 +4,7 @@
 // ══════════════════════════════════════════════
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
     routing::{delete, get, patch, post, put},
@@ -26,7 +26,7 @@ use crate::db::{
     AddCategoryRequest, AddTagRequest, PaintBlocksRequest, EraseBlocksRequest,
     AddPlanNodeRequest, UpdatePlanNodeRequest, MovePlanNodeRequest, PaintPlannedBlocksRequest,
     UpdateCategoryRequest, RenamePathRequest, PerceptionSpan, SyncExport, SyncImportResult,
-    LinkedDevice,
+    ChatSyncPage, ChatSyncImportResult, LinkedDevice,
 };
 use crate::bili_download::{BiliDownloadState, PlayUrlMeta, QualityProbe, deliver_playurl_result, deliver_probe_result};
 use crate::sync_discovery::{SyncDiscoveryState, SyncPeer};
@@ -570,6 +570,8 @@ async fn sync_hello(State(state): State<ApiState>) -> Json<ApiResponse<SyncHello
                     "model_call_log",
                     "model_free_quota",
                     "feature_bindings",
+                    "chat_sessions",
+                    "chat_messages",
                 ],
                 alias,
                 device_type: state.sync_discovery.device_type.to_string(),
@@ -634,6 +636,47 @@ async fn sync_import(
                 let _ = state.app_handle.emit("sync:imported", serde_json::json!({
                     "from_device_id": from_device_id,
                     "changed": total,
+                    "result": &result,
+                }));
+            }
+            Json(ApiResponse::ok(result))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatSyncQuery {
+    #[serde(default)]
+    since: i64,
+    peer: Option<String>,
+    max_bytes: Option<usize>,
+}
+
+/// GET /api/sync/chat?since=N&peer=DEVICE_ID — 聊天记录增量分页
+async fn sync_chat_page(
+    State(state): State<ApiState>,
+    Query(query): Query<ChatSyncQuery>,
+) -> Json<ApiResponse<ChatSyncPage>> {
+    let max_bytes = query.max_bytes.unwrap_or(sync_engine::CHAT_PAGE_BYTES);
+    match state.db.chat_sync_page(query.since, query.peer.as_deref(), max_bytes).await {
+        Ok(page) => Json(ApiResponse::ok(page)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/sync/chat — 对端推过来的一页聊天记录
+async fn sync_chat_import(
+    State(state): State<ApiState>,
+    Json(page): Json<ChatSyncPage>,
+) -> Json<ApiResponse<ChatSyncImportResult>> {
+    let from_device_id = page.device_id.clone();
+    match state.db.chat_sync_import(page).await {
+        Ok(result) => {
+            if result.chat_sessions + result.chat_messages > 0 {
+                let _ = state.app_handle.emit("sync:imported", serde_json::json!({
+                    "from_device_id": from_device_id,
+                    "changed": result.chat_sessions + result.chat_messages,
                     "result": &result,
                 }));
             }
@@ -1169,6 +1212,26 @@ async fn get_bili_day_counts(
     }
 }
 
+#[derive(Deserialize)]
+struct BiliTranscriptQuery {
+    path: String,
+}
+
+/// GET /api/bilibili/transcripts?path=<download_path> — Tauri 命令 get_bili_transcripts 的 HTTP 版，给手机端用。
+/// path 只是数据库查询键，不读文件；历史版本不传（最多 80 份全文，手机端用不上）
+async fn get_bili_transcripts(
+    State(state): State<ApiState>,
+    Query(query): Query<BiliTranscriptQuery>,
+) -> Json<ApiResponse<crate::db::BiliTranscriptCache>> {
+    match state.db.get_bili_transcripts_by_path(&query.path).await {
+        Ok(mut cache) => {
+            cache.history.clear();
+            Json(ApiResponse::ok(cache))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
 /// GET /api/bilibili/history?page=0&page_size=50&unlinked_only=false
 async fn get_bili_history(
     State(state): State<ApiState>,
@@ -1691,6 +1754,8 @@ async fn close_presence_span(
     }
 }
 
+const SYNC_BODY_LIMIT: usize = 64 * 1024 * 1024;
+
 pub fn create_router(
     db: Arc<Database>,
     bili: Arc<BiliState>,
@@ -1724,6 +1789,7 @@ pub fn create_router(
         .route("/api/sync/alias", post(sync_set_alias))
         .route("/api/sync/export", get(sync_export))
         .route("/api/sync/import", post(sync_import))
+        .route("/api/sync/chat", get(sync_chat_page).post(sync_chat_import))
         .route("/api/sync/peers", get(sync_peers))
         .route("/api/sync/discover", post(sync_discover))
         .route("/api/sync/probe", get(sync_probe))
@@ -1746,6 +1812,7 @@ pub fn create_router(
         .route("/api/bilibili/history", get(get_bili_history))
         .route("/api/bilibili/history/search", get(search_bili_history))
         .route("/api/bilibili/day-counts", get(get_bili_day_counts))
+        .route("/api/bilibili/transcripts", get(get_bili_transcripts))
         .route("/api/bilibili/history/link", axum::routing::put(link_bili_to_event))
         .route("/api/bilibili/cover", get(proxy_bili_cover))
         .route("/api/bilibili/spans/day", get(get_bili_spans_day))
@@ -1777,6 +1844,8 @@ pub fn create_router(
         .merge(crate::protocols_api::routes())
         .merge(crate::network::routes())
         .merge(crate::anthropic::routes())
+        // axum 默认只收 2MB，全量同步一超过就 413，整轮失败
+        .layer(DefaultBodyLimit::max(SYNC_BODY_LIMIT))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
