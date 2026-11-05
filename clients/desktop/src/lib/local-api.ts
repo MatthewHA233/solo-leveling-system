@@ -535,11 +535,6 @@ export interface SyncImportResult {
   skipped: number
 }
 
-export interface SyncTransferResult {
-  snapshot: SyncExport
-  importResult: SyncImportResult
-}
-
 function normalizeSyncBase(base: string): string {
   const trimmed = base.trim().replace(/\/+$/, '')
   if (!trimmed) return API_BASE
@@ -593,37 +588,6 @@ export async function discoverSyncPeers(): Promise<SyncPeer[]> {
   return json.data
 }
 
-export async function exportSync(since?: string | null, base = API_BASE): Promise<SyncExport> {
-  const query = since ? `?since=${encodeURIComponent(since)}` : ''
-  const res = await fetch(`${normalizeSyncBase(base)}/api/sync/export${query}`)
-  const json: ApiResponse<SyncExport> = await res.json()
-  if (!json.success || !json.data) throw new Error(json.error || '同步导出失败')
-  return json.data
-}
-
-export async function importSync(payload: SyncExport, base = API_BASE): Promise<SyncImportResult> {
-  const res = await fetch(`${normalizeSyncBase(base)}/api/sync/import`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  const json: ApiResponse<SyncImportResult> = await res.json()
-  if (!json.success || !json.data) throw new Error(json.error || '同步导入失败')
-  return json.data
-}
-
-export async function pullSyncFromPeer(peerBase: string, since?: string | null): Promise<SyncTransferResult> {
-  const snapshot = await exportSync(since, peerBase)
-  const importResult = await importSync(snapshot)
-  return { snapshot, importResult }
-}
-
-export async function pushSyncToPeer(peerBase: string, since?: string | null): Promise<SyncTransferResult> {
-  const snapshot = await exportSync(since)
-  const importResult = await importSync(snapshot, peerBase)
-  return { snapshot, importResult }
-}
-
 export async function setLocalSyncAlias(alias: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/sync/alias`, {
     method: 'POST',
@@ -657,11 +621,20 @@ export async function fetchSyncLinks(): Promise<LinkedDevice[]> {
   return json.data
 }
 
-export async function addSyncLink(deviceId: string, alias: string, lastBase: string): Promise<LinkedDevice> {
+/** 生成配对码给对方设备输入（5 分钟有效，用一次就作废） */
+export async function createPairCode(): Promise<{ code: string; ttl_seconds: number }> {
+  const res = await fetch(`${API_BASE}/api/sync/pair-code`, { method: 'POST' })
+  const json: ApiResponse<{ code: string; ttl_seconds: number }> = await res.json()
+  if (!json.success || !json.data) throw new Error(json.error || '生成配对码失败')
+  return json.data
+}
+
+/** code 是对方设备上显示的配对码；两边都记成已链接，之后不用再输 */
+export async function addSyncLink(deviceId: string, lastBase: string, code: string): Promise<LinkedDevice> {
   const res = await fetch(`${API_BASE}/api/sync/links`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ device_id: deviceId, alias, last_base: lastBase }),
+    body: JSON.stringify({ device_id: deviceId, last_base: lastBase, code }),
   })
   const json: ApiResponse<LinkedDevice> = await res.json()
   if (!json.success || !json.data) throw new Error(json.error || '建立链接失败')

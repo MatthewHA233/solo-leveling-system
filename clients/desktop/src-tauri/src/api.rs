@@ -4,19 +4,21 @@
 // ══════════════════════════════════════════════
 
 use axum::{
-    extract::{DefaultBodyLimit, Path, Query, State},
-    http::StatusCode,
+    extract::{ConnectInfo, DefaultBodyLimit, Path, Query, Request, State},
+    http::{header, HeaderMap, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Json, Response},
     routing::{delete, get, patch, post, put},
     Router,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use uuid;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{oneshot, Mutex};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 use crate::db::{
     AppendChatMessagesRequest, ChatMessage, ChatSession, Database, UpdateChatSessionRequest,
@@ -90,6 +92,7 @@ pub struct ApiState {
     // emit 通过 Deref 拿 &AppHandle，不需要 clone。
     // 详见 tauri issue #15408。
     pub app_handle: Arc<AppHandle>,
+    pub pairing: Arc<std::sync::Mutex<crate::sync_auth::PairingState>>,
 }
 
 // ── Response Types ──
@@ -203,6 +206,15 @@ struct SyncHello {
     alias: String,
     device_type: String,
     device_model: String,
+    /// 问话方是已配对设备时的挑战应答（规则见 sync_auth.rs）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proof: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SyncHelloQuery {
+    peer: Option<String>,
+    challenge: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -213,8 +225,28 @@ struct SetAliasPayload {
 #[derive(Deserialize)]
 struct AddLinkPayload {
     device_id: String,
-    alias: String,
     last_base: String,
+    code: String,
+}
+
+#[derive(Deserialize)]
+struct PairPayload {
+    code: String,
+    device_id: String,
+    alias: String,
+}
+
+#[derive(Serialize)]
+struct PairResult {
+    token: String,
+    device_id: String,
+    alias: String,
+}
+
+#[derive(Serialize)]
+struct PairCode {
+    code: String,
+    ttl_seconds: u64,
 }
 
 // ── Handlers ──
@@ -551,15 +583,24 @@ async fn erase_planned_blocks(
 }
 
 /// GET /api/sync/hello
-async fn sync_hello(State(state): State<ApiState>) -> Json<ApiResponse<SyncHello>> {
+async fn sync_hello(
+    State(state): State<ApiState>,
+    Query(query): Query<SyncHelloQuery>,
+) -> Json<ApiResponse<SyncHello>> {
     match state.db.sync_device_id().await {
         Ok(device_id) => {
             let alias = state.sync_discovery.alias();
+            let proof = match (&query.peer, &query.challenge) {
+                (Some(peer), Some(challenge)) => state.db.linked_device_token(peer).await.ok().flatten()
+                    .map(|token| crate::sync_auth::peer_proof(&token, challenge, &device_id)),
+                _ => None,
+            };
             Json(ApiResponse::ok(SyncHello {
                 pair_code: crate::db::sync_pair_code(&device_id),
+                proof,
                 device_id,
                 server_time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                protocol_version: 1,
+                protocol_version: 2,
                 tables: vec![
                     "activity_categories",
                     "activity_tags",
@@ -694,25 +735,90 @@ async fn sync_links(State(state): State<ApiState>) -> Json<ApiResponse<Vec<Linke
     }
 }
 
-/// POST /api/sync/links — 建立链接（写入 linked_devices 并立刻同步一轮）
+/// POST /api/sync/pair-code — 生成配对码给主人看（只给本机页面，见 sync_auth::check_access）
+async fn sync_pair_code(State(state): State<ApiState>) -> Json<ApiResponse<PairCode>> {
+    let code = state.pairing.lock().unwrap_or_else(|e| e.into_inner()).generate();
+    Json(ApiResponse::ok(PairCode { code, ttl_seconds: crate::sync_auth::PAIR_CODE_TTL.as_secs() }))
+}
+
+/// POST /api/sync/pair — 对方拿配对码来换令牌。两边都记成已链接，之后不用再输
+async fn sync_pair(
+    State(state): State<ApiState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(body): Json<PairPayload>,
+) -> Json<ApiResponse<PairResult>> {
+    let device_id = match state.db.sync_device_id().await {
+        Ok(id) => id,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    if body.device_id.trim().is_empty() || body.device_id == device_id {
+        return Json(ApiResponse::error("对方设备 ID 不对"));
+    }
+    let verified = state.pairing.lock().unwrap_or_else(|e| e.into_inner()).verify(&body.code);
+    if let Err(reason) = verified {
+        log::warn!("[API] {} 配对失败: {}", peer.ip(), reason);
+        return Json(ApiResponse::error(reason));
+    }
+    let token = crate::sync_auth::new_token();
+    // 对方的 API 端口和本机相同（两端都固定 39733）
+    let base = format!("http://{}:{}", peer.ip(), state.sync_discovery.port);
+    if let Err(e) = state.db.add_linked_device(body.device_id, body.alias, base, token.clone()).await {
+        return Json(ApiResponse::error(&e));
+    }
+    let _ = state.app_handle.emit("sync:links-changed", ());
+    Json(ApiResponse::ok(PairResult { token, device_id, alias: state.sync_discovery.alias() }))
+}
+
+/// POST /api/sync/unpair — 对方解除了链接，这边也删掉。令牌说明了是谁
+async fn sync_unpair(State(state): State<ApiState>, headers: HeaderMap) -> Json<ApiResponse<()>> {
+    let token = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
+    let Some(token) = crate::sync_auth::bearer_token(token) else {
+        return Json(ApiResponse::error("缺少令牌"));
+    };
+    let device_id = match state.db.linked_device_by_token(token).await {
+        Ok(Some(id)) => id,
+        Ok(None) => return Json(ApiResponse::error("令牌无效")),
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    match state.db.remove_linked_device(&device_id).await {
+        Ok(()) => {
+            let _ = state.app_handle.emit("sync:links-changed", ());
+            Json(ApiResponse::ok(()))
+        }
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/sync/links — 拿对方屏幕上的配对码换令牌，写入 linked_devices 并立刻同步一轮
 async fn sync_link_add(
     State(state): State<ApiState>,
     Json(body): Json<AddLinkPayload>,
 ) -> Json<ApiResponse<LinkedDevice>> {
-    match state.db.add_linked_device(body.device_id, body.alias, body.last_base.clone()).await {
+    let self_id = match state.db.sync_device_id().await {
+        Ok(id) => id,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let paired = match sync_engine::pair_with_peer(&body.last_base, &body.code, &self_id, &state.sync_discovery.alias()).await {
+        Ok(p) => p,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    if paired.device_id != body.device_id {
+        return Json(ApiResponse::error("这个地址上已经不是刚才那台设备"));
+    }
+    match state.db.add_linked_device(paired.device_id, paired.alias, body.last_base.clone(), paired.token).await {
         Ok(link) => {
             let db_for_sync = state.db.clone();
             let app_for_sync = state.app_handle.clone();
-            let base = link.last_base.clone();
-            let device_id = link.device_id.clone();
+            let for_sync = link.clone();
             tokio::spawn(async move {
-                let _ = app_for_sync.emit("sync:started", serde_json::json!({ "device_id": &device_id }));
-                let result = sync_engine::bidirectional_sync(db_for_sync.clone(), &base).await;
+                let device_id = &for_sync.device_id;
+                let _ = app_for_sync.emit("sync:started", serde_json::json!({ "device_id": device_id }));
+                let result = sync_engine::bidirectional_sync(db_for_sync.clone(), &for_sync).await;
                 if result.is_ok() {
-                    let _ = db_for_sync.touch_link_synced(&device_id, &base).await;
+                    let _ = db_for_sync.touch_link_synced(device_id, &for_sync.last_base).await;
                 }
                 let _ = app_for_sync.emit("sync:finished", serde_json::json!({
-                    "device_id": &device_id,
+                    "device_id": device_id,
                     "ok": result.is_ok(),
                     "error": result.as_ref().err().map(|s| s.as_str()),
                     "result": result.as_ref().ok(),
@@ -729,8 +835,15 @@ async fn sync_link_remove(
     State(state): State<ApiState>,
     Path(device_id): Path<String>,
 ) -> Json<ApiResponse<()>> {
+    let link = state.db.list_linked_devices().await.ok()
+        .and_then(|links| links.into_iter().find(|l| l.device_id == device_id));
     match state.db.remove_linked_device(&device_id).await {
-        Ok(()) => Json(ApiResponse::ok(())),
+        Ok(()) => {
+            if let Some(link) = link {
+                tokio::spawn(async move { sync_engine::notify_unpair(&link.last_base, &link.auth_token).await });
+            }
+            Json(ApiResponse::ok(()))
+        }
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -748,7 +861,7 @@ async fn sync_link_run(
         return Json(ApiResponse::error("设备未链接"));
     };
     let _ = state.app_handle.emit("sync:started", serde_json::json!({ "device_id": &device_id }));
-    let result = sync_engine::bidirectional_sync(state.db.clone(), &link.last_base).await;
+    let result = sync_engine::bidirectional_sync(state.db.clone(), &link).await;
     let _ = state.app_handle.emit("sync:finished", serde_json::json!({
         "device_id": &device_id,
         "ok": result.is_ok(),
@@ -1755,6 +1868,8 @@ async fn close_presence_span(
 }
 
 const SYNC_BODY_LIMIT: usize = 64 * 1024 * 1024;
+/// 配对接口不用令牌就能调，没必要给它留同步数据那么大的额度
+const PAIR_BODY_LIMIT: usize = 4 * 1024;
 
 pub fn create_router(
     db: Arc<Database>,
@@ -1764,7 +1879,15 @@ pub fn create_router(
     sync_discovery: Arc<SyncDiscoveryState>,
     app_handle: Arc<AppHandle>,
 ) -> Router {
-    let state = ApiState { db, bili, bailian, bili_dl, sync_discovery, app_handle };
+    let state = ApiState {
+        db,
+        bili,
+        bailian,
+        bili_dl,
+        sync_discovery,
+        app_handle,
+        pairing: Arc::new(std::sync::Mutex::new(Default::default())),
+    };
 
     Router::new()
         .route("/api/health", get(health))
@@ -1786,6 +1909,9 @@ pub fn create_router(
         .route("/api/plans/blocks/paint", post(paint_planned_blocks))
         .route("/api/plans/blocks/erase", post(erase_planned_blocks))
         .route("/api/sync/hello", get(sync_hello))
+        .route("/api/sync/pair", post(sync_pair).layer(DefaultBodyLimit::max(PAIR_BODY_LIMIT)))
+        .route("/api/sync/pair-code", post(sync_pair_code))
+        .route("/api/sync/unpair", post(sync_unpair))
         .route("/api/sync/alias", post(sync_set_alias))
         .route("/api/sync/export", get(sync_export))
         .route("/api/sync/import", post(sync_import))
@@ -1846,13 +1972,53 @@ pub fn create_router(
         .merge(crate::anthropic::routes())
         // axum 默认只收 2MB，全量同步一超过就 413，整轮失败
         .layer(DefaultBodyLimit::max(SYNC_BODY_LIMIT))
+        .layer(middleware::from_fn_with_state(state.clone(), access_guard))
+        // 最外层：预检请求不带令牌，要在 access_guard 之前答复
         .layer(
             CorsLayer::new()
-                .allow_origin(Any)
+                .allow_origin(AllowOrigin::predicate(|origin, parts| {
+                    origin.to_str().is_ok_and(|o| crate::sync_auth::origin_allowed(o, parts.uri.path()))
+                }))
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
         .with_state(state)
+}
+
+/// 规则见 sync_auth::check_access
+async fn access_guard(
+    State(state): State<ApiState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let headers = request.headers();
+    let header_str = |name| headers.get(name).and_then(|v: &header::HeaderValue| v.to_str().ok());
+    let token_valid = match crate::sync_auth::bearer_token(header_str(header::AUTHORIZATION)) {
+        Some(token) => matches!(state.db.linked_device_by_token(token).await, Ok(Some(_))),
+        None => false,
+    };
+    let access = crate::sync_auth::check_access(
+        request.uri().path(),
+        is_loopback(peer.ip()),
+        header_str(header::HOST),
+        header_str(header::ORIGIN),
+        token_valid,
+    );
+    let (status, message) = match access {
+        crate::sync_auth::Access::Allow => return next.run(request).await,
+        crate::sync_auth::Access::Unauthorized => (StatusCode::UNAUTHORIZED, "这台设备还没有配对"),
+        crate::sync_auth::Access::Forbidden => (StatusCode::FORBIDDEN, "拒绝访问"),
+    };
+    log::warn!("[API] 拒绝 {} {} {}（{}）", peer.ip(), request.method(), request.uri().path(), message);
+    (status, Json(ApiResponse::<()>::error(message))).into_response()
+}
+
+fn is_loopback(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()),
+    }
 }
 
 // ── 专注锁：扩展规则下发 + 心跳 ──
@@ -1931,7 +2097,7 @@ pub async fn start_server(
         }
     }
 
-    if let Err(e) = axum::serve(listener, app).await {
+    if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await {
         log::error!("[API] 服务器错误: {}", e);
     }
 }

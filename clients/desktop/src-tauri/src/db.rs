@@ -334,6 +334,9 @@ pub struct LinkedDevice {
     pub last_base: String,
     pub last_synced_at: Option<String>,
     pub created_at: String,
+    /// 配对时换到的令牌，两台设备各存一份。不进 JSON：链接列表接口不外发
+    #[serde(skip)]
+    pub auth_token: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -979,6 +982,10 @@ impl Database {
                 created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             );
         "#).map_err(|e| format!("创建 linked_devices 失败: {}", e))?;
+        ensure_column(&conn, "linked_devices", "auth_token", "auth_token TEXT")?;
+        // 没有配对令牌的旧链接：同步接口不再放行，留着也同步不了，让主人重新配对
+        conn.execute("DELETE FROM linked_devices WHERE auth_token IS NULL", [])
+            .map_err(|e| format!("清理未配对链接失败: {}", e))?;
 
         ensure_sync_metadata(&conn)?;
 
@@ -2202,7 +2209,7 @@ impl Database {
     pub async fn list_linked_devices(&self) -> Result<Vec<LinkedDevice>, String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
-            "SELECT device_id, alias, last_base, last_synced_at, created_at
+            "SELECT device_id, alias, last_base, last_synced_at, created_at, auth_token
              FROM linked_devices
              ORDER BY COALESCE(last_synced_at, '') DESC, alias ASC"
         ).map_err(|e| e.to_string())?;
@@ -2213,12 +2220,32 @@ impl Database {
                 last_base: row.get(2)?,
                 last_synced_at: row.get(3)?,
                 created_at: row.get(4)?,
+                auth_token: row.get(5)?,
             })
         }).map_err(|e| e.to_string())?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub async fn add_linked_device(&self, device_id: String, alias: String, last_base: String) -> Result<LinkedDevice, String> {
+    /// 令牌属于哪台已链接设备
+    pub async fn linked_device_by_token(&self, token: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().await;
+        conn.query_row(
+            "SELECT device_id FROM linked_devices WHERE auth_token = ?",
+            params![token],
+            |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())
+    }
+
+    pub async fn linked_device_token(&self, device_id: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().await;
+        conn.query_row(
+            "SELECT auth_token FROM linked_devices WHERE device_id = ?",
+            params![device_id],
+            |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())
+    }
+
+    pub async fn add_linked_device(&self, device_id: String, alias: String, last_base: String, auth_token: String) -> Result<LinkedDevice, String> {
         let device_id = device_id.trim().to_string();
         if device_id.is_empty() {
             return Err("device_id 不能为空".to_string());
@@ -2228,10 +2255,10 @@ impl Database {
         let conn = self.conn.lock().await;
         let now = local_now_string();
         conn.execute(
-            "INSERT INTO linked_devices (device_id, alias, last_base, created_at) VALUES (?, ?, ?, ?)
+            "INSERT INTO linked_devices (device_id, alias, last_base, created_at, auth_token) VALUES (?, ?, ?, ?, ?)
              ON CONFLICT(device_id) DO UPDATE SET
-               alias=excluded.alias, last_base=excluded.last_base",
-            params![&device_id, &alias, &last_base, &now],
+               alias=excluded.alias, last_base=excluded.last_base, auth_token=excluded.auth_token",
+            params![&device_id, &alias, &last_base, &now, &auth_token],
         ).map_err(|e| e.to_string())?;
         let created_at: String = conn.query_row(
             "SELECT created_at FROM linked_devices WHERE device_id = ?",
@@ -2243,7 +2270,7 @@ impl Database {
             params![&device_id],
             |r| r.get(0),
         ).optional().map_err(|e| e.to_string())?.flatten();
-        Ok(LinkedDevice { device_id, alias, last_base, last_synced_at, created_at })
+        Ok(LinkedDevice { device_id, alias, last_base, last_synced_at, created_at, auth_token })
     }
 
     pub async fn remove_linked_device(&self, device_id: &str) -> Result<(), String> {

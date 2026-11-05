@@ -36,6 +36,7 @@ interface SyncServerNative {
   status(): Promise<SyncServerStatus>
   retry(): Promise<SyncServerStatus>
   listNearbyPeers(): Promise<NearbyPeer[]>
+  createPairCode(): Promise<{ code: string; ttlSeconds: number }>
 }
 
 const Native: SyncServerNative | null =
@@ -53,6 +54,12 @@ export async function getSyncServerStatus(): Promise<SyncServerStatus | null> {
 export async function retrySyncServer(): Promise<SyncServerStatus | null> {
   if (!Native) return null
   return Native.retry()
+}
+
+/** 生成配对码给对方设备输入（5 分钟有效，用一次就作废） */
+export async function createPairCode(): Promise<{ code: string; ttlSeconds: number } | null> {
+  if (!Native) return null
+  return Native.createPairCode()
 }
 
 export async function listNearbyPeers(): Promise<NearbyPeer[]> {

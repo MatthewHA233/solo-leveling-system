@@ -2,9 +2,11 @@
 // SyncEngine — 对一个对端做双向（pull + push）同步
 //   · 复用 HTTP /api/sync/export · /api/sync/import 协议
 //   · 启动任务和发现钩子都用它
+//   · 发令牌和数据之前先确认对面持有同一个令牌（规则见 sync_auth.rs）
 // ══════════════════════════════════════════════
 
-use crate::db::{ChatSyncImportResult, ChatSyncPage, Database, SyncExport, SyncImportResult};
+use crate::db::{ChatSyncImportResult, ChatSyncPage, Database, LinkedDevice, SyncExport, SyncImportResult};
+use crate::sync_auth;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
@@ -57,14 +59,26 @@ struct ApiEnvelope<T> {
     error: Option<String>,
 }
 
-fn http_client() -> Result<reqwest::Client, String> {
+fn http_client_builder() -> reqwest::ClientBuilder {
     // LAN 同步永远不走系统代理：开发环境里 reqwest 会读 http_proxy / https_proxy
     // env，把 192.168.x.x 内网 IP 也丢给代理，导致 "error sending request for url"。
     reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .no_proxy()
-        .build()
-        .map_err(|e| e.to_string())
+}
+
+fn http_client() -> Result<reqwest::Client, String> {
+    http_client_builder().build().map_err(|e| e.to_string())
+}
+
+/// 每个请求都带令牌。只在 verify_peer 通过后用
+fn authed_client(token: &str) -> Result<reqwest::Client, String> {
+    let mut value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|e| e.to_string())?;
+    value.set_sensitive(true);
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(reqwest::header::AUTHORIZATION, value);
+    http_client_builder().default_headers(headers).build().map_err(|e| e.to_string())
 }
 
 fn normalize_base(base: &str) -> String {
@@ -76,14 +90,88 @@ fn normalize_base(base: &str) -> String {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct HelloProof {
+    device_id: String,
+    proof: Option<String>,
+}
+
+/// 发现广播和地址都可能是假的：对面算得出应答，才说明它持有同一个令牌。
+/// 这一步不能带令牌，所以用普通 client
+async fn verify_peer(base: &str, self_id: &str, device_id: &str, token: &str) -> Result<(), String> {
+    let challenge = sync_auth::new_challenge();
+    let resp: ApiEnvelope<HelloProof> = http_client()?
+        .get(format!("{}/api/sync/hello", base))
+        .query(&[("peer", self_id), ("challenge", challenge.as_str())])
+        .send().await
+        .map_err(|e| format!("连接对端失败: {}", e))?
+        .json().await
+        .map_err(|e| format!("解析对端 hello 失败: {}", e))?;
+    if !resp.success {
+        return Err(format!("对端 hello 错误: {}", resp.error.unwrap_or_default()));
+    }
+    let hello = resp.data.ok_or("对端 hello 数据为空")?;
+    // 地址可能已被 DHCP 分给别的设备
+    if hello.device_id != device_id {
+        return Err(format!("地址 {} 已不是这台设备", base));
+    }
+    match hello.proof {
+        Some(proof) if sync_auth::verify_proof(token, &challenge, device_id, &proof) => Ok(()),
+        _ => Err("对方不认这次配对了，可能已经解除。请解除链接后重新配对".to_string()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PairedPeer {
+    pub token: String,
+    pub device_id: String,
+    pub alias: String,
+}
+
+/// 拿对方屏幕上的配对码换令牌。两边都把对方记成已链接
+pub async fn pair_with_peer(peer_base: &str, code: &str, self_id: &str, self_alias: &str) -> Result<PairedPeer, String> {
+    let url = format!("{}/api/sync/pair", normalize_base(peer_base));
+    let resp: ApiEnvelope<PairedPeer> = http_client()?
+        .post(&url)
+        .json(&serde_json::json!({ "code": code, "device_id": self_id, "alias": self_alias }))
+        .send().await
+        .map_err(|e| format!("连接对端失败: {}", e))?
+        .json().await
+        .map_err(|e| format!("对端版本太旧或回复异常，请两边都升级后再配对: {}", e))?;
+    if !resp.success {
+        return Err(resp.error.unwrap_or_else(|| "配对失败".to_string()));
+    }
+    resp.data.ok_or_else(|| "对端配对结果为空".to_string())
+}
+
+/// 解除链接时顺手告诉对方，对方连不上也没关系：它下次同步会校验失败，提示主人解除
+pub async fn notify_unpair(peer_base: &str, token: &str) {
+    let url = format!("{}/api/sync/unpair", normalize_base(peer_base));
+    let Ok(client) = authed_client(token) else { return };
+    if let Err(e) = client.post(&url).timeout(Duration::from_secs(3)).send().await {
+        log::info!("[SyncEngine] 通知对端解除配对失败（{}）: {}", peer_base, e);
+    }
+}
+
 /// 双向：先从对端 export 拉本地 import，再本地 export 推到对端 import。
 /// 任何一段失败就早退，错误带上下文。
 pub async fn bidirectional_sync(
     db: Arc<Database>,
-    peer_base: &str,
+    link: &LinkedDevice,
 ) -> Result<SyncRoundResult, String> {
-    let base = normalize_base(peer_base);
-    let client = http_client()?;
+    let base = normalize_base(&link.last_base);
+    bidirectional_sync_at(db, link, &base).await
+}
+
+/// 同上，但连另一个地址：发现到已链接设备的新地址时用，同步成功才写库
+async fn bidirectional_sync_at(
+    db: Arc<Database>,
+    link: &LinkedDevice,
+    base: &str,
+) -> Result<SyncRoundResult, String> {
+    let self_id = db.sync_device_id().await?;
+    verify_peer(base, &self_id, &link.device_id, &link.auth_token).await?;
+    let client = authed_client(&link.auth_token)?;
 
     // 1) 拉对端快照
     let pull_url = format!("{}/api/sync/export", base);
@@ -117,7 +205,7 @@ pub async fn bidirectional_sync(
     let mut pushed = push_resp.data.ok_or("对端 import 数据为空")?;
 
     // 5) 聊天记录走独立通道：失败不影响上面已经同步好的数据
-    if let Err(e) = sync_chat(&db, &client, &base, &peer_device_id, &mut pulled, &mut pushed).await {
+    if let Err(e) = sync_chat(&db, &client, base, &peer_device_id, &mut pulled, &mut pushed).await {
         log::info!("[SyncEngine] 聊天记录同步跳过 ({}): {}", base, e);
     }
 
@@ -218,7 +306,7 @@ pub async fn run_startup_sync(db: Arc<Database>, app: Arc<AppHandle>) {
 
         tokio::spawn(async move {
             emit_started(&app_for_sync, &device_id);
-            let result = bidirectional_sync(db_for_sync.clone(), &base).await;
+            let result = bidirectional_sync(db_for_sync.clone(), &link).await;
             match &result {
                 Ok(round) => {
                     if let Err(e) = db_for_sync.touch_link_synced(&device_id, &base).await {
@@ -276,9 +364,9 @@ pub async fn maybe_sync_on_discover(db: Arc<Database>, app: Arc<AppHandle>, devi
         Ok(l) => l,
         Err(_) => return,
     };
-    if !links.iter().any(|l| l.device_id == device_id) {
+    let Some(link) = links.into_iter().find(|l| l.device_id == device_id) else {
         return;
-    }
+    };
 
     // 冷却检查
     {
@@ -302,7 +390,7 @@ pub async fn maybe_sync_on_discover(db: Arc<Database>, app: Arc<AppHandle>, devi
     let device_id_owned = device_id.to_string();
     tokio::spawn(async move {
         emit_started(&app, &device_id_owned);
-        let result = bidirectional_sync(db.clone(), &base_owned).await;
+        let result = bidirectional_sync_at(db.clone(), &link, &normalize_base(&base_owned)).await;
         match &result {
             Ok(round) => {
                 let _ = db.touch_link_synced(&device_id_owned, &base_owned).await;

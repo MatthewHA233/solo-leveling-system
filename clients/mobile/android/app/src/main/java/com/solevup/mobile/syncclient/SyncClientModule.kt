@@ -11,7 +11,8 @@ import com.solevup.mobile.sync.SyncRuntime
 /**
  * Mobile 主动同步 bridge，所有触发都走 SyncCoordinator：
  *   - listLinkedDevices()   → 已链接对端列表 + lastSyncedAt
- *   - linkPeer(baseUrl)     → hello → addLinkedDevice → 立即 bidirectional 一次
+ *   - linkPeer(baseUrl, code) → 用配对码换令牌 → addLinkedDevice → 立即 bidirectional 一次
+ *   - verifyLinkedPeer(deviceId) → 确认对面持有同一个令牌（发私人内容前用）
  *   - unlinkPeer(deviceId)  → 解除
  *   - syncNow(deviceId)     → 手动触发一次
  *   - syncAll()             → 遍历所有 linked 跑一遍
@@ -35,6 +36,7 @@ class SyncClientModule(private val reactContext: ReactApplicationContext) :
           putString("lastBase", link.lastBase)
           link.lastSyncedAt?.let { putString("lastSyncedAt", it) }
           putString("createdAt", link.createdAt)
+          putString("authToken", link.authToken)
           putBoolean("syncing", coordinator.isSyncing(link.deviceId))
           coordinator.lastError(link.deviceId)?.let { putString("lastError", it) }
         })
@@ -46,15 +48,15 @@ class SyncClientModule(private val reactContext: ReactApplicationContext) :
   }
 
   /**
-   * 输入对端 baseUrl (形如 192.168.0.104 或 http://x:39733)，
-   * 走 hello 拿 device_id + alias → 写 linked_devices → 立即 bidirectional 一次。
+   * 输入对端 baseUrl (形如 192.168.0.104 或 http://x:39733) 和它屏幕上的配对码，
+   * 换令牌 → 写 linked_devices → 立即 bidirectional 一次。
    * 返回 { deviceId, alias, pulled{...}, pushed{...} }
    */
   @ReactMethod
-  fun linkPeer(baseUrl: String, promise: Promise) {
+  fun linkPeer(baseUrl: String, code: String, promise: Promise) {
     Thread {
       try {
-        val r = SyncRuntime.coordinator.linkPeer(baseUrl)
+        val r = SyncRuntime.coordinator.linkPeer(baseUrl, code)
         promise.resolve(Arguments.createMap().apply {
           putString("deviceId", r.deviceId)
           putString("alias", r.alias)
@@ -67,10 +69,28 @@ class SyncClientModule(private val reactContext: ReactApplicationContext) :
     }.start()
   }
 
+  /** 通过时返回对端的 deviceType；连不上、认不出或令牌对不上都 resolve null */
+  @ReactMethod
+  fun verifyLinkedPeer(deviceId: String, promise: Promise) {
+    Thread {
+      try {
+        val link = db.listLinkedDevices().find { it.deviceId == deviceId }
+        if (link == null) {
+          promise.resolve(null)
+        } else {
+          val hello = SyncClient.verifyPeer(link.lastBase, db.deviceId(), deviceId, link.authToken)
+          promise.resolve(hello.optString("device_type", "desktop"))
+        }
+      } catch (_: Throwable) {
+        promise.resolve(null)
+      }
+    }.start()
+  }
+
   @ReactMethod
   fun unlinkPeer(deviceId: String, promise: Promise) {
     try {
-      db.removeLinkedDevice(deviceId)
+      SyncRuntime.coordinator.unlinkPeer(deviceId)
       promise.resolve(true)
     } catch (e: Throwable) {
       promise.reject("UNLINK_FAILED", e.message, e)

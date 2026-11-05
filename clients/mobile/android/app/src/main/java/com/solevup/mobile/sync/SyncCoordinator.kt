@@ -54,12 +54,11 @@ class SyncCoordinator(
       syncing.add(deviceId)
       listener.onSyncStatus(deviceId, true, null, null)
       try {
-        // 地址可能已被 DHCP 分给别的设备，同步前先确认对面还是这台
-        val helloId = SyncClient.fetchHello(base).optString("device_id")
-        if (helloId != deviceId) {
-          throw SyncClient.SyncException("地址 $base 已不是这台设备")
-        }
-        val r = SyncClient.bidirectionalSync(db, base)
+        val token = db.linkedDeviceToken(deviceId)
+          ?: throw SyncClient.SyncException("这台设备还没有配对")
+        // 先确认对面持有同一个令牌，再发令牌和数据
+        SyncClient.verifyPeer(base, db.deviceId(), deviceId, token)
+        val r = SyncClient.bidirectionalSync(db, base, token)
         db.touchLinkSynced(deviceId, SyncProtocol.normalizeBase(base))
         lastSuccessAt[deviceId] = System.currentTimeMillis()
         lastErrors.remove(deviceId)
@@ -109,26 +108,42 @@ class SyncCoordinator(
       }
     }
 
-  /** 输入对端地址 → hello 确认身份 → 写链接 → 立刻同步一轮。 */
-  fun linkPeer(rawBase: String): LinkResult {
+  /** 输入对端地址和它屏幕上的配对码 → 换令牌 → 写链接 → 立刻同步一轮。 */
+  fun linkPeer(rawBase: String, code: String): LinkResult {
     val base = SyncProtocol.normalizeBase(rawBase)
+    val selfId = db.deviceId()
     val hello = SyncClient.fetchHello(base)
     val peerId = hello.optString("device_id")
     if (peerId.isEmpty()) throw SyncClient.SyncException("对端没有返回设备 ID")
-    if (peerId == db.deviceId()) throw SyncClient.SyncException("不能链接本机")
-    val peerAlias = hello.optString("alias", peerId)
-    db.addLinkedDevice(peerId, peerAlias, base)
-    return LinkResult(peerId, peerAlias, runRound(peerId, base, "link"))
+    if (peerId == selfId) throw SyncClient.SyncException("不能链接本机")
+    val paired = try {
+      SyncClient.pair(base, code, selfId, db.generateAlias(selfId))
+    } catch (e: org.json.JSONException) {
+      throw SyncClient.SyncException("对端版本太旧或回复异常，请两边都升级后再配对", e)
+    }
+    if (paired.deviceId != peerId) throw SyncClient.SyncException("这个地址上已经不是刚才那台设备")
+    db.addLinkedDevice(peerId, paired.alias, base, paired.token)
+    return LinkResult(peerId, paired.alias, runRound(peerId, base, "link"))
   }
 
-  /** 听到已链接设备的广播：刷新地址（电脑可能换了 IP），过了冷却就同步。 */
+  /** 删本地链接，再告诉对方。对方不在线也算解除成功 */
+  fun unlinkPeer(deviceId: String) {
+    val link = db.listLinkedDevices().find { it.deviceId == deviceId }
+    db.removeLinkedDevice(deviceId)
+    lastErrors.remove(deviceId)
+    if (link != null) background.execute { SyncClient.notifyUnpair(link.lastBase, link.authToken) }
+  }
+
+  /** 听到已链接设备的广播：电脑可能换了 IP，用新地址试一轮。广播谁都能发，校验通过、同步成功才写库 */
   fun onPeerSeen(peer: SyncDiscovery.NearbyPeer) {
     val link = db.listLinkedDevices().find { it.deviceId == peer.deviceId } ?: return
-    val fresh = if (link.lastBase != peer.base) {
-      db.updateLinkBase(link.deviceId, peer.base)
-      link.copy(lastBase = peer.base)
-    } else link
-    enqueue(fresh, "discover", DISCOVER_COOLDOWN_MS)
+    enqueue(link.copy(lastBase = peer.base), "discover", DISCOVER_COOLDOWN_MS)
+  }
+
+  /** 别的设备用本机的配对码配对成功，或解除了链接：刷新配对页 */
+  fun onLinksChanged(deviceId: String) {
+    lastErrors.remove(deviceId)
+    listener.onSyncStatus(deviceId, false, null, null)
   }
 
   /** desktop 主动把数据推过来：记一次成功，避免紧接着又反向跑一轮。 */

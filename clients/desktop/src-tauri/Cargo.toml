@@ -52,6 +52,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 tokio-util = { version = "0.7", features = ["io"] }   # ReaderStream，给视频流端点用
 uuid = { version = "1.0", features = ["v4", "serde"] }
+sha2 = "0.10"  # 同步配对的挑战应答（HMAC-SHA256）
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 url = "2"

@@ -14,6 +14,7 @@ import {
   type LinkedDevice,
 } from '../../lib/syncclient'
 import {
+  createPairCode,
   getSyncServerStatus,
   listNearbyPeers,
   retrySyncServer,
@@ -44,10 +45,20 @@ export default function PairingCard() {
   const [address, setAddress] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState('')
+  // 本机的配对码：主人点了才生成，给对方设备输入
+  const [pairCode, setPairCode] = useState<{ code: string; expiresAt: number } | null>(null)
+  // 正在和哪台设备配对：要输入它屏幕上的配对码
+  const [pairTarget, setPairTarget] = useState<{ key: string; label: string; base: string } | null>(null)
+  const [codeInput, setCodeInput] = useState('')
 
   const refreshLinks = useCallback(async () => {
     try {
-      setLinks(await listLinkedDevices())
+      const next = await listLinkedDevices()
+      // 多了一台：本机的配对码刚被用掉
+      setLinks((prev) => {
+        if (next.length > prev.length) setPairCode(null)
+        return next
+      })
     } catch {
       setLinks([])
     }
@@ -70,22 +81,45 @@ export default function PairingCard() {
     }
   }, [refreshLinks])
 
-  const link = useCallback(async (key: string, target: string) => {
-    setBusy(key)
+  useEffect(() => {
+    if (!pairCode) return
+    const timer = setTimeout(() => setPairCode(null), pairCode.expiresAt - Date.now())
+    return () => clearTimeout(timer)
+  }, [pairCode])
+
+  const generatePairCode = useCallback(async () => {
+    try {
+      const r = await createPairCode()
+      if (r) setPairCode({ code: r.code, expiresAt: Date.now() + r.ttlSeconds * 1000 })
+    } catch (e: any) {
+      setMessage(`生成配对码失败：${e?.message ?? String(e)}`)
+    }
+  }, [])
+
+  const startPairing = useCallback((key: string, label: string, base: string) => {
+    setPairTarget({ key, label, base })
+    setCodeInput('')
+    setMessage('')
+  }, [])
+
+  const confirmPairing = useCallback(async () => {
+    if (!pairTarget) return
+    setBusy(pairTarget.key)
     setMessage('')
     try {
-      const r = await linkPeer(target)
+      const r = await linkPeer(pairTarget.base, codeInput.trim())
       if (r) {
         setMessage(`已链接 ${r.alias}：拉取 ${summarize(r.pulled)}；推送 ${summarize(r.pushed)}`)
         setAddress('')
+        setPairTarget(null)
       }
     } catch (e: any) {
-      setMessage(`链接失败：${e?.message ?? String(e)}`)
+      setMessage(`配对失败：${e?.message ?? String(e)}`)
     } finally {
       setBusy(null)
       void refreshLinks()
     }
-  }, [refreshLinks])
+  }, [pairTarget, codeInput, refreshLinks])
 
   const runSync = useCallback(async (device: LinkedDevice) => {
     setBusy(device.deviceId)
@@ -123,13 +157,23 @@ export default function PairingCard() {
       {status?.running ? (
         <View style={styles.identity}>
           <Text style={styles.alias}>{status.alias}</Text>
-          <Text style={styles.sub}>配对码 {status.pairCode}</Text>
+          <Text style={styles.sub}>指纹 {status.pairCode}</Text>
           {status.ipv4s.length > 0 ? (
             status.ipv4s.map((ip) => (
               <Text key={ip} selectable style={styles.address}>{ip}:{status.port}</Text>
             ))
           ) : (
             <Text style={styles.warn}>没有局域网地址，检查一下 Wi-Fi</Text>
+          )}
+          {pairCode ? (
+            <View style={styles.codeBox}>
+              <Text selectable style={styles.code}>{pairCode.code}</Text>
+              <Text style={styles.sub}>在另一台设备上输入这个配对码，5 分钟内有效。只需配对一次。</Text>
+            </View>
+          ) : (
+            <Pressable style={styles.ghostBtn} onPress={() => void generatePairCode()}>
+              <Text style={styles.ghostBtnText}>生成配对码</Text>
+            </Pressable>
           )}
         </View>
       ) : (
@@ -154,14 +198,14 @@ export default function PairingCard() {
           <View key={peer.deviceId} style={styles.row}>
             <View style={styles.rowMain}>
               <Text style={styles.rowTitle} numberOfLines={1}>{peer.alias}</Text>
-              <Text style={styles.sub} numberOfLines={1}>{peer.deviceModel} · 配对码 {peer.pairCode}</Text>
+              <Text style={styles.sub} numberOfLines={1}>{peer.deviceModel} · 指纹 {peer.pairCode}</Text>
             </View>
             <Pressable
               style={styles.btn}
               disabled={busy != null}
-              onPress={() => void link(peer.deviceId, peer.base)}
+              onPress={() => startPairing(peer.deviceId, peer.alias, peer.base)}
             >
-              <Text style={styles.btnText}>{busy === peer.deviceId ? '链接中…' : '链接'}</Text>
+              <Text style={styles.btnText}>配对</Text>
             </Pressable>
           </View>
         ))
@@ -182,11 +226,39 @@ export default function PairingCard() {
         <Pressable
           style={styles.btn}
           disabled={busy != null || address.trim().length === 0}
-          onPress={() => void link('manual', address.trim())}
+          onPress={() => startPairing('manual', address.trim(), address.trim())}
         >
-          <Text style={styles.btnText}>{busy === 'manual' ? '链接中…' : '链接'}</Text>
+          <Text style={styles.btnText}>配对</Text>
         </Pressable>
       </View>
+
+      {pairTarget && (
+        <View style={styles.pairBox}>
+          <Text style={styles.sub}>在「{pairTarget.label}」上生成配对码，输入到这里。只需要配对这一次。</Text>
+          <View style={styles.inputRow}>
+            <TextInput
+              value={codeInput}
+              onChangeText={setCodeInput}
+              placeholder="6 位配对码"
+              placeholderTextColor={theme.inkSoft}
+              keyboardType="number-pad"
+              maxLength={6}
+              editable={busy == null}
+              style={styles.input}
+            />
+            <Pressable
+              style={styles.btn}
+              disabled={busy != null || codeInput.trim().length === 0}
+              onPress={() => void confirmPairing()}
+            >
+              <Text style={styles.btnText}>{busy != null ? '配对中…' : '确定'}</Text>
+            </Pressable>
+          </View>
+          <Pressable style={styles.ghostBtn} disabled={busy != null} onPress={() => setPairTarget(null)}>
+            <Text style={styles.ghostBtnText}>取消</Text>
+          </Pressable>
+        </View>
+      )}
 
       <Text style={styles.section}>已链接</Text>
       {links.length === 0 ? (
@@ -285,4 +357,13 @@ const styles = StyleSheet.create({
   },
   ghostBtnText: { color: theme.ink, fontSize: 13, fontWeight: '600' },
   message: { fontSize: 12, color: theme.inkSoft, marginTop: 12 },
+  codeBox: { marginTop: 10 },
+  code: { fontSize: 26, fontWeight: '700', color: theme.ink, letterSpacing: 4 },
+  pairBox: {
+    borderWidth: 1,
+    borderColor: theme.line,
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 10,
+  },
 })

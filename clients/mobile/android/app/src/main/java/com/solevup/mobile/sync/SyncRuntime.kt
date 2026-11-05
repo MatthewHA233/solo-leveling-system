@@ -55,6 +55,8 @@ object SyncRuntime : SyncCoordinator.Listener {
 
   val coordinator: SyncCoordinator by lazy { SyncCoordinator(db, this) }
 
+  private val pairing = SyncPairing()
+
   @Volatile private var server: SyncHttpServer? = null
   @Volatile private var discovery: SyncDiscovery? = null
   @Volatile private var lastError: String? = null
@@ -92,6 +94,9 @@ object SyncRuntime : SyncCoordinator.Listener {
 
   fun nearbyPeers(): List<SyncDiscovery.NearbyPeer> = discovery?.listPeers() ?: emptyList()
 
+  /** 生成配对码给对方设备输入（5 分钟有效，用一次就作废） */
+  fun createPairCode(): SyncPairing.PairCode = pairing.generate()
+
   /** 启动失败时由配对页手动重试。 */
   fun retry(): Status {
     startEndpoints()
@@ -117,7 +122,10 @@ object SyncRuntime : SyncCoordinator.Listener {
     var error: String? = null
     if (server == null) {
       try {
-        val s = SyncHttpServer(SyncProtocol.DEFAULT_PORT, db, alias, coordinator::onInboundImport)
+        val s = SyncHttpServer(
+          SyncProtocol.DEFAULT_PORT, db, alias, pairing,
+          coordinator::onLinksChanged, coordinator::onInboundImport,
+        )
         s.start(SOCKET_TIMEOUT_MS, false)
         server = s
       } catch (t: Throwable) {

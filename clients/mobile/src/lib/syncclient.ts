@@ -11,6 +11,8 @@ export type LinkedDevice = {
   lastBase: string
   lastSyncedAt?: string
   createdAt: string
+  /** 配对时换到的令牌，访问对端的私有接口要带 */
+  authToken: string
   syncing?: boolean
   lastError?: string
 }
@@ -49,7 +51,8 @@ export type SyncAllItem = {
 
 interface SyncClientNative {
   listLinkedDevices(): Promise<LinkedDevice[]>
-  linkPeer(baseUrl: string): Promise<SyncRoundResult>
+  linkPeer(baseUrl: string, code: string): Promise<SyncRoundResult>
+  verifyLinkedPeer(deviceId: string): Promise<string | null>
   unlinkPeer(deviceId: string): Promise<boolean>
   syncNow(deviceId: string): Promise<SyncRoundResult>
   syncAll(): Promise<SyncAllItem[]>
@@ -67,9 +70,16 @@ export async function listLinkedDevices(): Promise<LinkedDevice[]> {
   return Native.listLinkedDevices()
 }
 
-export async function linkPeer(baseUrl: string): Promise<SyncRoundResult | null> {
+/** code 是对方设备上显示的配对码；两边都记成已链接，之后不用再输 */
+export async function linkPeer(baseUrl: string, code: string): Promise<SyncRoundResult | null> {
   if (!Native) return null
-  return Native.linkPeer(baseUrl)
+  return Native.linkPeer(baseUrl, code)
+}
+
+/** 确认对面持有同一个令牌，通过时返回对端 deviceType，否则 null */
+export async function verifyLinkedPeer(deviceId: string): Promise<string | null> {
+  if (!Native) return null
+  return Native.verifyLinkedPeer(deviceId)
 }
 
 export async function unlinkPeer(deviceId: string): Promise<boolean> {

@@ -27,6 +27,7 @@ import {
 } from 'lucide-react'
 import {
   addSyncLink,
+  createPairCode,
   discoverSyncPeers,
   fetchSyncHello,
   fetchSyncLinks,
@@ -108,6 +109,13 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
   // 手动链接失败原因就地显示在按钮下方（全局日志默认收起，用户看不到 → 以前表现为"点了没反应"）
   const [manualError, setManualError] = useState<string | null>(null)
   const [busyLinkId, setBusyLinkId] = useState<string | null>(null)
+  // 本机的配对码：主人点了才生成，给对方设备输入
+  const [pairCode, setPairCode] = useState<{ code: string; expiresAt: number } | null>(null)
+  // 正在和哪台设备配对：要输入它屏幕上的配对码
+  const [pairTarget, setPairTarget] = useState<{ device_id: string; alias: string; base: string } | null>(null)
+  const [pairInput, setPairInput] = useState('')
+  const [pairBusy, setPairBusy] = useState(false)
+  const [pairError, setPairError] = useState<string | null>(null)
   const [logOpen, setLogOpen] = useState(false)
   // 本地反馈直接写入全局日志（替代之前底部 toast 行）
   // 旧调用点 setMessage(null) / setError(null) 用来"清空" —— 日志模式下不需要清，转无操作
@@ -173,6 +181,25 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
     })
     return () => { unlisten?.() }
   }, [open, refreshLinks])
+
+  // 别的设备用本机的配对码配对成功、或解除了链接
+  useEffect(() => {
+    if (!open) return
+    let unlisten: (() => void) | undefined
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen('sync:links-changed', () => {
+        refreshLinks()
+        setPairCode(null)
+      }).then((fn) => { unlisten = fn }).catch(() => {})
+    })
+    return () => { unlisten?.() }
+  }, [open, refreshLinks])
+
+  useEffect(() => {
+    if (!pairCode) return
+    const timer = setTimeout(() => setPairCode(null), pairCode.expiresAt - Date.now())
+    return () => clearTimeout(timer)
+  }, [pairCode])
 
   useEffect(() => {
     if (!open) return
@@ -241,23 +268,44 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
     return peers.filter((p) => !linkedIds.has(p.device_id))
   }, [peers, links])
 
-  const linkDevice = useCallback(async (peer: SyncPeer) => {
-    setError(null)
-    setMessage(null)
-    setBusyLinkId(peer.device_id)
+  const startPairing = useCallback((target: { device_id: string; alias: string; base: string }) => {
+    setPairTarget(target)
+    setPairInput('')
+    setPairError(null)
+  }, [])
+
+  const confirmPairing = useCallback(async () => {
+    if (!pairTarget || pairBusy) return
+    const code = pairInput.trim()
+    if (!code) {
+      setPairError('请输入对方设备上显示的配对码')
+      return
+    }
+    setPairError(null)
+    setPairBusy(true)
     try {
-      const link = await addSyncLink(peer.device_id, peer.alias, peerBaseUrl(peer))
+      const link = await addSyncLink(pairTarget.device_id, pairTarget.base, code)
       setLinks((prev) => {
         const without = prev.filter((l) => l.device_id !== link.device_id)
         return [link, ...without]
       })
-      setMessage(`已与 ${peer.alias} 建立链接，正在做第一次同步`)
+      setMessage(`已与 ${link.alias} 配对，正在做第一次同步`)
+      setPairTarget(null)
     } catch (e) {
-      setError(`建立链接失败：${e instanceof Error ? e.message : String(e)}`)
+      setPairError(e instanceof Error ? e.message : String(e))
     } finally {
-      setBusyLinkId(null)
+      setPairBusy(false)
     }
-  }, [])
+  }, [pairTarget, pairInput, pairBusy, setMessage])
+
+  const generatePairCode = useCallback(async () => {
+    try {
+      const { code, ttl_seconds } = await createPairCode()
+      setPairCode({ code, expiresAt: Date.now() + ttl_seconds * 1000 })
+    } catch (e) {
+      setError(`生成配对码失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }, [setError])
 
   const unlinkDevice = useCallback(async (link: LinkedDevice) => {
     setError(null)
@@ -308,12 +356,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
       // 后端代探：只填 IP 时自动试 39733 和旧端口 49733，返回实际连通的地址
       const { base, hello } = await probeSyncPeer(manualUrl)
       localStorage.setItem('slu.sync.peerUrl', manualUrl)
-      const link = await addSyncLink(hello.device_id, hello.alias || new URL(base).hostname, base)
-      setLinks((prev) => {
-        const without = prev.filter((l) => l.device_id !== link.device_id)
-        return [link, ...without]
-      })
-      setMessage(`已与 ${link.alias} 建立链接`)
+      startPairing({ device_id: hello.device_id, alias: hello.alias || new URL(base).hostname, base })
       setManualOpen(false)
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e)
@@ -322,7 +365,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
     } finally {
       setManualBusy(false)
     }
-  }, [manualUrl, setError, setMessage])
+  }, [manualUrl, setError, startPairing])
 
   const startAliasEdit = useCallback(() => {
     setAliasDraft(localHello?.alias ?? '')
@@ -456,6 +499,23 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
             <div style={{ fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted }}>
               指纹 {localHello?.pair_code ?? '----'}
             </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 22 }}>
+              {pairCode ? (
+                <>
+                  <span style={labelStyle}>配对码</span>
+                  <span style={{ fontFamily: theme.fontMono, fontSize: 15, fontWeight: 800, letterSpacing: 2, color: theme.electricBlue, userSelect: 'text' }}>
+                    {pairCode.code}
+                  </span>
+                  <span style={{ marginLeft: 'auto', fontFamily: theme.fontMono, fontSize: 10, color: theme.textMuted }}>
+                    <CountdownText target={pairCode.expiresAt} />s
+                  </span>
+                </>
+              ) : (
+                <button type="button" onClick={generatePairCode} style={{ ...primaryButtonStyle(theme.electricBlue), padding: '3px 8px', fontSize: 11 }}>
+                  生成配对码
+                </button>
+              )}
+            </div>
           </div>
           <Tooltip content="重新搜索附近设备">
             <button type="button" onClick={refreshPeers} disabled={discovering} style={iconButtonStyle(theme.electricBlue, discovering)}>
@@ -573,7 +633,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
               lineHeight: 1.6,
               color: theme.textMuted,
             }}>
-              还没有已链接的设备。下方"附近未链接"区点 <Link2 size={11} style={{ verticalAlign: 'middle', color: theme.expGreen }} /> 建立链接，之后两台设备一打开就互相同步。
+              还没有已链接的设备。下方"附近"区点 <Link2 size={11} style={{ verticalAlign: 'middle', color: theme.expGreen }} />，输入对方设备上生成的配对码。只需配对一次，之后两台设备一打开就互相同步。
             </div>
           ) : (
             <div style={{ display: 'grid', gap: 6 }}>
@@ -628,14 +688,48 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
                   key={peer.device_id}
                   peer={peer}
                   busy={busyLinkId === peer.device_id}
-                  onLink={() => linkDevice(peer)}
+                  onLink={() => startPairing({ device_id: peer.device_id, alias: peer.alias, base: peerBaseUrl(peer) })}
                 />
               ))}
             </div>
           )}
         </div>
 
-        {/* 折叠：手动输入 IP（直接建立链接） */}
+        {pairTarget && (
+          <div style={{ ...wellBox, padding: '8px 10px', display: 'grid', gap: 6 }}>
+            <div style={{ fontSize: 11.5, lineHeight: 1.5, color: theme.textSecondary }}>
+              在「{pairTarget.alias}」上生成配对码，输入到这里。只需要配对这一次。
+            </div>
+            {pairError && (
+              <div style={{ color: '#ff9b9b', fontSize: 11, lineHeight: 1.5, wordBreak: 'break-all' }}>{pairError}</div>
+            )}
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input
+                autoFocus
+                value={pairInput}
+                inputMode="numeric"
+                maxLength={6}
+                onChange={(e) => { setPairInput(e.target.value); setPairError(null) }}
+                onKeyDown={(e) => { if (e.key === 'Enter') confirmPairing() }}
+                placeholder="6 位配对码"
+                style={inputStyle}
+              />
+              <button
+                type="button"
+                onClick={confirmPairing}
+                disabled={pairBusy}
+                style={{ ...primaryButtonStyle(theme.electricBlue), opacity: pairBusy ? 0.5 : 1, cursor: pairBusy ? 'wait' : 'pointer' }}
+              >
+                {pairBusy ? '配对中…' : '配对'}
+              </button>
+              <button type="button" onClick={() => setPairTarget(null)} style={iconButtonStyle(theme.textSecondary, false)}>
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 折叠：手动输入 IP（探测到设备后输入配对码） */}
         <div style={wellBox}>
           <button
             type="button"
@@ -822,7 +916,7 @@ function UnlinkedCard({
           {peer.ip}{peer.source === 'manual' ? '' : ` · ${peer.source}`}
         </div>
       </div>
-      <Tooltip content="建立链接（之后双向自动同步）">
+      <Tooltip content="配对（之后双向自动同步）">
         <button
           type="button"
           onClick={onLink}

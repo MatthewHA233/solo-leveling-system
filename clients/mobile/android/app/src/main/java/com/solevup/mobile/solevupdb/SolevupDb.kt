@@ -56,6 +56,7 @@ class SolevupDb(context: Context) :
     try {
       if (rev < 1) applyRevision1(db)
       if (rev < 2) applyRevision2(db)
+      if (rev < 3) applyRevision3(db)
       db.execSQL(
         "INSERT OR REPLACE INTO sync_meta (key, value, updated_at) VALUES ('schema_rev', ?, ?)",
         arrayOf(SCHEMA_REV.toString(), nowIso()),
@@ -64,6 +65,12 @@ class SolevupDb(context: Context) :
     } finally {
       db.endTransaction()
     }
+  }
+
+  private fun applyRevision3(db: SQLiteDatabase) {
+    // 同步接口开始要配对令牌，旧链接没有令牌，留着也同步不了，让主人重新配对
+    addColumnIfMissing(db, "linked_devices", "auth_token", "auth_token TEXT")
+    db.execSQL("DELETE FROM linked_devices WHERE auth_token IS NULL")
   }
 
   private fun applyRevision2(db: SQLiteDatabase) {
@@ -448,7 +455,8 @@ class SolevupDb(context: Context) :
         alias TEXT NOT NULL,
         last_base TEXT NOT NULL,
         last_synced_at TEXT,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        auth_token TEXT
       );
       """.trimIndent()
     )
@@ -2694,9 +2702,11 @@ class SolevupDb(context: Context) :
   )
 
   fun listLinkedDevices(): List<LinkedDevice> {
+    /** 配对时换到的令牌，两台设备各存一份 */
+    val authToken: String,
     val out = ArrayList<LinkedDevice>()
     readableDatabase.rawQuery(
-      """SELECT device_id, alias, last_base, last_synced_at, created_at
+      """SELECT device_id, alias, last_base, last_synced_at, created_at, auth_token
          FROM linked_devices
          ORDER BY COALESCE(last_synced_at, '') DESC, alias ASC""".trimIndent(),
       null,
@@ -2710,33 +2720,33 @@ class SolevupDb(context: Context) :
         ))
       }
     }
+          authToken = c.getString(5),
     return out
   }
 
-  /** Upsert linked device。如果对端 device_id 已存在，刷新 alias 和 last_base。 */
-  fun addLinkedDevice(deviceId: String, alias: String, lastBase: String): LinkedDevice {
+  /** 令牌属于哪台已链接设备 */
+  fun linkedDeviceByToken(token: String): String? =
+    queryString(readableDatabase, "SELECT device_id FROM linked_devices WHERE auth_token = ?", arrayOf(token))
+
+  fun linkedDeviceToken(deviceId: String): String? =
+    queryString(readableDatabase, "SELECT auth_token FROM linked_devices WHERE device_id = ?", arrayOf(deviceId))
+
+  /** Upsert linked device。如果对端 device_id 已存在（重新配对），刷新 alias、last_base 和令牌。 */
+  fun addLinkedDevice(deviceId: String, alias: String, lastBase: String, authToken: String): LinkedDevice {
     val now = nowIso()
     writableDatabase.execSQL(
-      """INSERT INTO linked_devices (device_id, alias, last_base, created_at)
-         VALUES (?, ?, ?, ?)
+      """INSERT INTO linked_devices (device_id, alias, last_base, created_at, auth_token)
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(device_id) DO UPDATE SET
-           alias=excluded.alias, last_base=excluded.last_base""".trimIndent(),
-      arrayOf(deviceId, alias, lastBase, now),
+           alias=excluded.alias, last_base=excluded.last_base, auth_token=excluded.auth_token""".trimIndent(),
+      arrayOf(deviceId, alias, lastBase, now, authToken),
     )
-    return LinkedDevice(deviceId, alias, lastBase, null, now)
+    return LinkedDevice(deviceId, alias, lastBase, null, now, authToken)
   }
 
   fun removeLinkedDevice(deviceId: String) {
     writableDatabase.execSQL(
       "DELETE FROM linked_devices WHERE device_id = ?", arrayOf(deviceId),
-    )
-  }
-
-  /** 发现到已链接设备的新地址时刷新（还没同步，不动 lastSyncedAt）。 */
-  fun updateLinkBase(deviceId: String, lastBase: String) {
-    writableDatabase.execSQL(
-      "UPDATE linked_devices SET last_base = ? WHERE device_id = ?",
-      arrayOf(lastBase, deviceId),
     )
   }
 
@@ -2790,7 +2800,7 @@ class SolevupDb(context: Context) :
     private const val DB_NAME = "solevup.db"
     private val LEGACY_DB_NAMES = listOf("solo.db")
     private const val DB_VERSION = 1
-    private const val SCHEMA_REV = 2
+    private const val SCHEMA_REV = 3
     private const val CHAT_PAGE_ROWS = 500
     private const val CHAT_MESSAGE_COLUMNS =
       "id, role, content, timestamp, audio_path, duration_ms, usage_json, reasoning, tool_calls, tool_call_id, name"

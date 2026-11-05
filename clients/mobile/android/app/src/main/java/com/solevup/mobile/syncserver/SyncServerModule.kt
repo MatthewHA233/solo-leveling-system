@@ -75,6 +75,19 @@ class SyncServerModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  @ReactMethod
+  fun createPairCode(promise: Promise) {
+    try {
+      val code = SyncRuntime.createPairCode()
+      promise.resolve(Arguments.createMap().apply {
+        putString("code", code.code)
+        putDouble("ttlSeconds", code.ttlSeconds.toDouble())
+      })
+    } catch (e: Throwable) {
+      promise.reject("SYNC_PAIR_CODE_FAILED", e.message, e)
+    }
+  }
+
   // RN 的 NativeEventEmitter 要求模块实现这两个方法
   @ReactMethod
   fun addListener(eventName: String) = Unit

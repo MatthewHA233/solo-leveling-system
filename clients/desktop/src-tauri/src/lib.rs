@@ -6,6 +6,7 @@ use tauri::Emitter;
 
 mod db;
 mod api;
+mod sync_auth;
 mod notes;
 mod notes_api;
 mod jev;

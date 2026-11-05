@@ -11,7 +11,7 @@
 // 调用方要能区分「桌面端上确实没有」和「现在连不上」。
 // ══════════════════════════════════════════════
 
-import { listLinkedDevices, type LinkedDevice } from './syncclient'
+import { listLinkedDevices, verifyLinkedPeer, type LinkedDevice } from './syncclient'
 
 const PROBE_TIMEOUT_MS = 3_000
 const REQUEST_TIMEOUT_MS = 15_000
@@ -55,7 +55,7 @@ export function isDesktopUnreachable(e: unknown): e is DesktopUnreachableError {
 
 // ── 地址解析 ──
 
-let cachedBase: { base: string; at: number } | null = null
+let cachedBase: { base: string; token: string; at: number } | null = null
 
 export function invalidateDesktopBase(): void {
   cachedBase = null
@@ -81,17 +81,11 @@ async function fetchText(
 }
 
 async function isLiveDesktop(link: LinkedDevice): Promise<boolean> {
-  try {
-    const { text } = await fetchText(`${link.lastBase}/api/sync/hello`, { method: 'GET' }, PROBE_TIMEOUT_MS)
-    const json = JSON.parse(text) as ApiResponse<{ device_id?: string; device_type?: string }>
-    // 地址可能已被 DHCP 分给别的设备（同 SyncCoordinator.runRound 的身份确认）：
-    // 想法卡是私人内容，不能写到一台认不出来的机器上
-    return json.success === true
-      && json.data?.device_id === link.deviceId
-      && json.data?.device_type !== 'mobile'
-  } catch {
-    return false
-  }
+  // 地址可能已被 DHCP 分给别的设备，发现广播也可能是假的（同 SyncCoordinator.runRound 的校验）：
+  // 想法卡是私人内容，不能写到一台认不出来的机器上。令牌也要确认过才发
+  const timer = new Promise<null>((resolve) => setTimeout(() => resolve(null), PROBE_TIMEOUT_MS))
+  const deviceType = await Promise.race([verifyLinkedPeer(link.deviceId).catch(() => null), timer])
+  return deviceType != null && deviceType !== 'mobile'
 }
 
 /**
@@ -99,7 +93,11 @@ async function isLiveDesktop(link: LinkedDevice): Promise<boolean> {
  * 注意想法卡不在同步协议里，两台桌面端之间数据不互通。
  */
 export async function resolveDesktopBase(): Promise<string> {
-  if (cachedBase && Date.now() - cachedBase.at < BASE_CACHE_MS) return cachedBase.base
+  return (await resolveDesktopLink()).base
+}
+
+async function resolveDesktopLink(): Promise<{ base: string; token: string }> {
+  if (cachedBase && Date.now() - cachedBase.at < BASE_CACHE_MS) return cachedBase
 
   const links = await listLinkedDevices()
   if (links.length === 0) throw new DesktopUnreachableError('还没有配对桌面端')
@@ -107,8 +105,8 @@ export async function resolveDesktopBase(): Promise<string> {
   const ordered = [...links].sort((a, b) => (b.lastSyncedAt ?? '').localeCompare(a.lastSyncedAt ?? ''))
   for (const link of ordered) {
     if (await isLiveDesktop(link)) {
-      cachedBase = { base: link.lastBase, at: Date.now() }
-      return link.lastBase
+      cachedBase = { base: link.lastBase, token: link.authToken, at: Date.now() }
+      return cachedBase
     }
   }
   throw new DesktopUnreachableError(`桌面端不可达（${links.map((l) => l.alias).join('、')}）`)
@@ -127,14 +125,15 @@ export async function desktopRequest<T>(
   path: string,
   body?: unknown,
 ): Promise<ApiResponse<T>> {
-  const base = await resolveDesktopBase()
+  const { base, token } = await resolveDesktopLink()
+  const auth = { Authorization: `Bearer ${token}` }
   let res: { status: number; text: string }
   try {
     res = await fetchText(
       `${base}${path}`,
       body === undefined
-        ? { method }
-        : { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+        ? { method, headers: auth }
+        : { method, headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
       REQUEST_TIMEOUT_MS,
     )
   } catch (e) {
