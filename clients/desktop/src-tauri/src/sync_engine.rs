@@ -41,6 +41,14 @@ fn last_synced() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
 }
 
 const DISCOVER_COOLDOWN: Duration = Duration::from_secs(10);
+/// 广播谁都能发，对端要求的间隔封顶，免得被拖成一直不同步
+const MAX_PEER_SYNC_AFTER: Duration = Duration::from_secs(3600);
+
+/// 对端主动推过来：它发起的一轮已经双向做完，记一次成功，避免紧接着又反向跑一轮（手机端 onInboundImport 同理）
+pub fn note_inbound_sync(device_id: &str) {
+    let mut map = lock_map(last_synced());
+    map.insert(device_id.to_string(), Instant::now());
+}
 
 /// 聊天增量同步一页的大小；axum 和手机端都收得下，单条超长消息会独占一页
 pub const CHAT_PAGE_BYTES: usize = 1_500_000;
@@ -435,7 +443,14 @@ fn lock_map<'a>(m: &'a std::sync::Mutex<HashMap<String, Instant>>) -> std::sync:
 /// 防护：
 /// 1. 同 device_id 已在同步中 → 直接返回（防多播洪水）
 /// 2. 上次成功 < 10 秒 → 跳过（避免同一对端反复 ping 触发风暴）
-pub async fn maybe_sync_on_discover(db: Arc<Database>, app: Arc<AppHandle>, device_id: &str, base: &str) {
+/// 3. 对端在广播里要求放慢（手机在后台发 sync_after_s=300）→ 按它的间隔，一轮要双向传整份数据
+pub async fn maybe_sync_on_discover(
+    db: Arc<Database>,
+    app: Arc<AppHandle>,
+    device_id: &str,
+    base: &str,
+    sync_after: Duration,
+) {
     let links = match db.list_linked_devices().await {
         Ok(l) => l,
         Err(_) => return,
@@ -446,9 +461,10 @@ pub async fn maybe_sync_on_discover(db: Arc<Database>, app: Arc<AppHandle>, devi
 
     // 冷却检查
     {
+        let cooldown = DISCOVER_COOLDOWN.max(sync_after.min(MAX_PEER_SYNC_AFTER));
         let map = lock_map(last_synced());
         if let Some(at) = map.get(device_id) {
-            if at.elapsed() < DISCOVER_COOLDOWN {
+            if at.elapsed() < cooldown {
                 return;
             }
         }

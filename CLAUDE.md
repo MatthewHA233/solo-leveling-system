@@ -399,6 +399,9 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 
 同步服务随进程启动（`android/.../sync/SyncRuntime.kt`），不依赖打开感知层页面；感知层页面只做配对（`src/components/sync/PairingCard.tsx`）。端口 `39733`，和 desktop 一致（`clients/desktop/src-tauri/src/api.rs`）。
 
+- 常驻：前台服务 `sync/SyncService.kt`（通知栏一条低优先级通知），打开应用、开机、应用更新后拉起。
+- 后台放慢：一轮要双向传整份数据，手机不在前台时广播带 `sync_after_s=300`，两端都按 5 分钟一轮；回到前台立刻同步。规则两端各有一份（`SyncRuntime.kt`、`sync_engine.rs maybe_sync_on_discover`），改规则要同时改两端。
+
 - 配对：一边显示 6 位配对码（5 分钟有效、用一次就失效、错 5 次作废），另一边用它调 `POST /api/sync/pair` 换长期令牌，两边都存进 `linked_devices.auth_token`。之后的请求带 `Authorization: Bearer`，发现到的新地址要通过挑战应答才用。只有 `hello`、`pair`（手机端还有 `ping`）不要令牌。流量仍是明文 HTTP。规则两端各有一份（`sync_auth.rs`、`SyncPairing.kt`），改规则要同时改两端。
 - 全量 `/api/sync/{hello,export,import}`：活动数据、Key、模型用量，按 LWW 合并。Fish Key 也在 Key 库里（`provider='fish'`、`id='fish-audio'`）。
 - Key 启用：每个提供商一把。没有启用的就启用最近更新的一把，不改 `updated_at`，打开数据库和同步导入后都检查。规则两端各有一份（`db.rs ensure_provider_active_keys`、`SolevupDb.kt ensureProviderActiveKeys`），改规则要同时改两端。

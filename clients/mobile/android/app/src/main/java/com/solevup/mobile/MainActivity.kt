@@ -1,11 +1,16 @@
 package com.solevup.mobile
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
 import com.facebook.react.defaults.DefaultReactActivityDelegate
 import com.solevup.mobile.perception.PerceptionDb
 import com.solevup.mobile.perception.SolevupAccessibilityService
+import com.solevup.mobile.sync.SyncService
 
 class MainActivity : ReactActivity() {
 
@@ -14,6 +19,22 @@ class MainActivity : ReactActivity() {
    * rendering of the component.
    */
   override fun getMainComponentName(): String = "Solevup"
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    SyncService.start(this)
+    askNotificationPermissionOnce()
+  }
+
+  // 常驻同步的通知要这个权限（Android 13+）。只问一次：拒绝了同步照常跑，只是通知栏看不到
+  private fun askNotificationPermissionOnce() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+    val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+    if (prefs.getBoolean(KEY_ASKED_NOTIFICATIONS, false)) return
+    prefs.edit().putBoolean(KEY_ASKED_NOTIFICATIONS, true).apply()
+    requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+  }
 
   override fun onResume() {
     super.onResume()
@@ -43,4 +64,10 @@ class MainActivity : ReactActivity() {
    */
   override fun createReactActivityDelegate(): ReactActivityDelegate =
       DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled)
+
+  companion object {
+    private const val PREFS_NAME = "solevup_sync_service"
+    private const val KEY_ASKED_NOTIFICATIONS = "asked_notifications"
+    private const val REQUEST_NOTIFICATIONS = 39733
+  }
 }

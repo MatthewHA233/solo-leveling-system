@@ -21,18 +21,20 @@ import java.util.concurrent.TimeUnit
 /**
  * UDP 发现，协议严格对齐 desktop sync_discovery.rs：
  *   - 报文 JSON: alias / version / device_id / pair_code / port / protocol /
- *     announce / device_type / device_model
+ *     announce / device_type / device_model / sync_after_s
  *   - 启动后立即一轮 + 每 30s 一轮，每轮 3 帧（0 / 180 / 650ms）
  *   - 收到 announce=true 时单播回 announce=false，这样不依赖对方的组播能到达自己
+ *   - sync_after_s：希望对方多久同步一轮，后台时放慢（见 SyncRuntime），桌面按它的间隔冷却
  *
  * 既发又收：只发不收的话，电脑换 IP 后手机拿不到新地址，只能等电脑主动推。
  * Android Wi-Fi 默认过滤组播，接收必须持有 MulticastLock。
  */
-class SyncDiscovery(
+class SyncDiscovery @JvmOverloads constructor(
   private val context: Context,
   private val db: SolevupDb,
   private val port: Int,
   private val onPeerSeen: (NearbyPeer) -> Unit,
+  private val syncAfterSeconds: () -> Int = { 0 },
 ) {
   data class NearbyPeer(
     val deviceId: String,
@@ -276,6 +278,7 @@ class SyncDiscovery(
       put("announce", announce)
       put("device_type", "mobile")
       put("device_model", Build.MODEL ?: "Android")
+      put("sync_after_s", syncAfterSeconds())
     }.toString().toByteArray(Charsets.UTF_8)
 
   companion object {

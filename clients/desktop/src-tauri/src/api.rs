@@ -661,6 +661,7 @@ async fn sync_import(
     let from_device_id = payload.device_id.clone();
     match state.db.import_sync(payload).await {
         Ok(result) => {
+            crate::sync_engine::note_inbound_sync(&from_device_id);
             // 通知前端：数据库被对端 import 改过了，全局重拉
             // AUDIT-035：旧 5 表 + 模型 4 表都要算进 total，否则模型-only 同步
             // 不会 emit sync:imported，前端日志和模型设置 UI 都不刷新

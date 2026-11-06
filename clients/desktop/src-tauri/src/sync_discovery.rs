@@ -86,6 +86,9 @@ pub struct SyncDiscoveryDto {
     pub device_type: String,
     #[serde(default)]
     pub device_model: String,
+    /// 对端希望多久同步一轮（秒）：手机在后台时发 300，前台和旧版本是 0（按默认冷却）
+    #[serde(default)]
+    pub sync_after_s: u64,
 }
 
 pub struct SyncDiscoveryState {
@@ -140,7 +143,7 @@ impl SyncDiscoveryState {
             device_type: dto.device_type,
             device_model: dto.device_model,
         };
-        self.insert_peer(peer).await;
+        self.insert_peer(peer, Duration::from_secs(dto.sync_after_s)).await;
     }
 
     /// HTTP 探测 / 扫网段发现到的设备
@@ -159,10 +162,11 @@ impl SyncDiscoveryState {
             device_type: hello.device_type,
             device_model: hello.device_model,
         };
-        self.insert_peer(peer).await;
+        // 探测和扫网段是主人点刷新触发的，按默认冷却
+        self.insert_peer(peer, Duration::ZERO).await;
     }
 
-    async fn insert_peer(&self, peer: SyncPeer) {
+    async fn insert_peer(&self, peer: SyncPeer, sync_after: Duration) {
         if peer.device_id == self.device_id {
             return;
         }
@@ -174,7 +178,7 @@ impl SyncDiscoveryState {
         let db = self.db.clone();
         let app = self.app_handle.clone();
         tokio::spawn(async move {
-            crate::sync_engine::maybe_sync_on_discover(db, app, &device_id, &peer_base).await;
+            crate::sync_engine::maybe_sync_on_discover(db, app, &device_id, &peer_base, sync_after).await;
         });
     }
 
@@ -268,6 +272,7 @@ impl SyncDiscoveryState {
             announce,
             device_type: self.device_type.to_string(),
             device_model: self.device_model.to_string(),
+            sync_after_s: 0,
         }
     }
 

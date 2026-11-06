@@ -153,9 +153,10 @@ class SyncCoordinator(
   }
 
   /** 听到已链接设备的广播：电脑可能换了 IP，用新地址试一轮。广播谁都能发，校验通过、同步成功才写库 */
-  fun onPeerSeen(peer: SyncDiscovery.NearbyPeer) {
+  @JvmOverloads
+  fun onPeerSeen(peer: SyncDiscovery.NearbyPeer, cooldownMs: Long = DISCOVER_COOLDOWN_MS) {
     val link = db.listLinkedDevices().find { it.deviceId == peer.deviceId } ?: return
-    enqueue(link.copy(lastBase = peer.base), "discover", DISCOVER_COOLDOWN_MS)
+    enqueue(link.copy(lastBase = peer.base), "discover", cooldownMs)
   }
 
   /** 别的设备用本机的配对码配对成功，或解除了链接：刷新配对页 */
@@ -181,5 +182,7 @@ class SyncCoordinator(
     // desktop 每 30s 广播一次，而且它自己也会反向同步，手机不必每次都跑
     const val DISCOVER_COOLDOWN_MS = 60_000L
     const val FOREGROUND_COOLDOWN_MS = 15_000L
+    // 后台时两端都放慢到这个间隔：一轮要双向传整份数据，常驻后每 30 秒一轮太费电
+    const val BACKGROUND_SYNC_MS = 5 * 60_000L
   }
 }

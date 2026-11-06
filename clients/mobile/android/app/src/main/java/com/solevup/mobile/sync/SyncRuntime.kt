@@ -20,8 +20,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 进程级同步运行时：HTTP server、UDP 发现、网络回调、周期任务都在这里，
  * 由 MainApplication 拉起，不依赖 RN 和任何页面。
  *
- * 进程存活靠无障碍服务（启用时常驻）和 WorkManager（15 分钟兜底）；
- * 不用前台服务，避免常驻通知。
+ * 进程存活靠常驻前台服务 SyncService（通知栏一条低优先级通知），WorkManager 15 分钟兜底。
+ * 不在前台时广播带 sync_after_s，两端都放慢到 5 分钟一轮；回到前台立刻同步。
  */
 object SyncRuntime : SyncCoordinator.Listener {
   interface EventSink {
@@ -68,6 +68,7 @@ object SyncRuntime : SyncCoordinator.Listener {
   @Volatile private var pendingNetworkSync: ScheduledFuture<*>? = null
   @Volatile private var autoSync: ScheduledFuture<*>? = null
   @Volatile private var nextAutoSyncAt = 0L
+  @Volatile private var inForeground = false
 
   fun start(application: Application) {
     if (!started.compareAndSet(false, true)) return
@@ -153,7 +154,7 @@ object SyncRuntime : SyncCoordinator.Listener {
     }
     if (discovery == null) {
       try {
-        val d = SyncDiscovery(appContext, db, SyncProtocol.DEFAULT_PORT, coordinator::onPeerSeen)
+        val d = SyncDiscovery(appContext, db, SyncProtocol.DEFAULT_PORT, ::onPeerSeen, ::syncAfterSeconds)
         d.start()
         discovery = d
       } catch (t: Throwable) {
@@ -206,6 +207,17 @@ object SyncRuntime : SyncCoordinator.Listener {
     }, AUTO_SYNC_PERIOD_MS, AUTO_SYNC_PERIOD_MS, TimeUnit.MILLISECONDS)
   }
 
+  // 不在前台时两端都放慢：桌面看广播里的 sync_after_s，手机自己按同样的间隔冷却
+  private fun syncAfterSeconds(): Int =
+    if (inForeground) 0 else (SyncCoordinator.BACKGROUND_SYNC_MS / 1000).toInt()
+
+  private fun onPeerSeen(peer: SyncDiscovery.NearbyPeer) {
+    coordinator.onPeerSeen(
+      peer,
+      if (inForeground) SyncCoordinator.DISCOVER_COOLDOWN_MS else SyncCoordinator.BACKGROUND_SYNC_MS,
+    )
+  }
+
   private fun stopAutoSync() {
     autoSync?.cancel(false)
     autoSync = null
@@ -217,6 +229,7 @@ object SyncRuntime : SyncCoordinator.Listener {
 
     override fun onActivityStarted(activity: Activity) {
       startedCount++
+      if (startedCount == 1) inForeground = true
       if (startedCount == 1 && ::appContext.isInitialized) {
         scheduler.execute {
           discovery?.announceNow()
@@ -228,7 +241,14 @@ object SyncRuntime : SyncCoordinator.Listener {
 
     override fun onActivityStopped(activity: Activity) {
       startedCount = (startedCount - 1).coerceAtLeast(0)
-      if (startedCount == 0) scheduler.execute { stopAutoSync() }
+      if (startedCount == 0) {
+        inForeground = false
+        scheduler.execute {
+          stopAutoSync()
+          // 马上告诉桌面放慢，不用等下一轮广播
+          discovery?.announceNow()
+        }
+      }
     }
 
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
