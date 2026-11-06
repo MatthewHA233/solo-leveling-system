@@ -14,20 +14,22 @@
 
 import { isAnthropicModel } from '../llm/anthropic-stream'
 import type { ApiRequestSnapshot, ModelCallLog } from '../llm/api'
-import { compactHistory, withSystemReminder } from '../llm/context-window'
+import { contextBudget, roughTokens, withSystemReminder } from '../llm/context-window'
 import { runQueryLoop } from '../llm/query-loop'
 import { createUserMessage, getMessageText, isAssistantMessage, userContentWithImages, type Message } from '../llm/types'
 import { randomUUID } from '../llm/uuid'
 import type { PickedImage } from '../chatimage'
 import { explainProxyFailure } from '../network'
 import { getFeatureModel } from '../models/model-audit'
-import { modelSeesImages } from '../models/registry'
+import { getModelDef, modelSeesImages } from '../models/registry'
 import { solevupGetActiveModelApiKey } from '../solevupdb'
 import { createReplyTts, resolveFishApiKey, saveAudioFile, type ReplyTts } from '../voice'
 import { waveformFromWavBase64 } from '../../components/fairy/fairy-format'
 import { getDashScopeApiKey } from './agent-config'
 import type { SessionMessage } from './agent-memory'
+import type { CompactionContext } from './chat-compaction'
 import { runThoughtDistill } from './chat-distill'
+import { toolTraceRow } from './chat-history'
 import { withImageMarker } from './chat-images'
 import type { ChatCore } from './chat-core'
 import type { PromptFlow } from './chat-prompt'
@@ -45,11 +47,14 @@ function lastReplyText(history: readonly Message[]): string {
   return ''
 }
 
-export type HandleSend = (text: string, fromVoice?: boolean, images?: readonly PickedImage[]) => Promise<void>
+// userTimestamp：语音那句落库的时间，发给模型的那条用同一个时间（压缩按时间在库里找分界）
+export type HandleSend = (text: string, fromVoice?: boolean, images?: readonly PickedImage[], userTimestamp?: string) => Promise<void>
 
 export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: PromptFlow): HandleSend {
-  return async function handleSend(text, fromVoice = false, images = []) {
+  return async function handleSend(text, fromVoice = false, images = [], userTimestamp) {
     if (!text.trim() && images.length === 0) return
+    // 主人这句的时间：气泡、落库的那行、发给模型的那条用同一个
+    const sentAt = userTimestamp ?? new Date().toISOString()
 
     // 发送中再发送：先停掉上一轮
     core.replyControl?.interrupt()
@@ -65,7 +70,7 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
 
     // 文字输入：添加用户气泡并落库（语音输入的气泡和落库在 chat-voice 的 onUserAudio / onTranscript）
     if (!fromVoice) {
-      const userRow = makeSessionMessage('user', withImageMarker(text.trim(), images.map((i) => i.id)))
+      const userRow = { ...makeSessionMessage('user', withImageMarker(text.trim(), images.map((i) => i.id))), timestamp: sentAt }
       core.setMessages((prev) => [...prev, {
         id: userRow.id!, role: 'user', content: text, timestamp: userRow.timestamp,
         ...(images.length > 0 ? { images: images.map(({ id, uri }) => ({ id, uri })) } : {}),
@@ -96,7 +101,7 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
     const agentMsgId = randomUUID()
     let agentTimestamp = ''
     const imageBlocks = images.map((i) => i.block)
-    const userMsg = createUserMessage(text, { images: imageBlocks })
+    const userMsg = createUserMessage(text, { images: imageBlocks, timestamp: sentAt })
     const capturedSnapshots: ApiRequestSnapshot[] = []
     let capturedUsage: ModelCallLog | null = null
     let capturedReasoning = ''   // 思考模型的推演流（随消息一起持久化，回看用）
@@ -150,12 +155,33 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
         message: { ...userMsg.message, content: userContentWithImages(withSystemReminder(text, dynamicContext), imageBlocks) },
       }
 
+      // 压缩用的参数：门槛按这个模型算；写摘要和这轮聊天同一个模型、系统提示词、工具定义（好吃缓存）
+      const chatSystemPrompt = staticPrompt || systemPrompt
+      core.contextBudget = contextBudget(getModelDef(chatModel))
+      core.contextOverhead = roughTokens(chatSystemPrompt) + roughTokens(JSON.stringify(TOOL_DEFINITIONS))
+      const compactCtx: CompactionContext = {
+        budget: core.contextBudget,
+        overheadTokens: core.contextOverhead,
+        apiOptions: {
+          apiKey: dashscopeApiKey,
+          apiBase: config.openaiApiBase,
+          model: chatModel,
+          systemPrompt: chatSystemPrompt,
+          hideImages: !modelSeesImages(chatModel),
+          feature: 'fairy_chat',
+          tools: TOOL_DEFINITIONS,
+        },
+        agentCallUser: config.agentCallUser,
+      }
+      // 整段已经超过硬上限就先压完再发；后台摘要还在写就等它几秒（切走了就不动别的会话的历史）
+      if (sessions.follow(turnSid) === core.sessionId) await core.compactor?.beforeSend(compactCtx, apiUserMsg)
+
       // 被打断的旧轮可能比新轮晚走到这里（取数慢、新轮等超时先走了）：不能把归属改回去，否则新轮的历史写不进来
       core.conversationOwner = Math.max(core.conversationOwner, turnId)
       const sentHistory = [...core.conversation, apiUserMsg]
       const newHistory = await runQueryLoop({
         messages: sentHistory,
-        systemPrompt: staticPrompt || systemPrompt,
+        systemPrompt: chatSystemPrompt,
         apiOptions: {
           apiKey: dashscopeApiKey,
           apiBase: config.openaiApiBase,
@@ -221,11 +247,19 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
         executeTool: (call) => executeAgentTool(call.name, call.arguments),
       })
 
-      // 工具调用与结果留在历史里（下一轮还能引用刚查到的数据）；体量超高水位时才按整轮分批压缩
+      // 工具调用与结果留在历史里（下一轮还能引用刚查到的数据）；超门槛时先清旧工具结果，还超就在后台写摘要
       // 切走了，或新一轮等不及已经读走了历史：这段历史不属于现在的对话，不能盖上去
       // （新一轮还在等上一轮收尾时要写，它读到的历史才有上一轮）
       if (core.conversationOwner === turnId && sessions.follow(turnSid) === core.sessionId) {
-        core.setConversation(compactHistory(newHistory.map((m) => (m === apiUserMsg ? userMsg : m))))
+        const settled = newHistory.map((m) => (m === apiUserMsg ? userMsg : m))
+        core.setConversation(core.compactor ? core.compactor.settle(settled, compactCtx) : settled)
+        core.compactor?.kick(compactCtx)
+      }
+
+      // 工具记录落库（时间排在主人这句后面、回复前面）：切会话、重启后还在
+      const traceRow = toolTraceRow(newHistory.slice(sentHistory.length), sentAt)
+      if (traceRow) {
+        sessions.persistRows(turnSid, [{ ...traceRow, id: randomUUID() }]).catch((e) => console.warn('[Chat] 工具记录写入失败', e))
       }
       if (interrupted) {
         core.patchMessage(agentMsgId, (m) => (m.content ? { ...m, content: `${m.content}……（被打断）` } : m))

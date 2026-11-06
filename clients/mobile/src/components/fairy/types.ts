@@ -51,6 +51,8 @@ export interface FairyMessage {
   readonly debugSnapshots?: readonly ApiRequestSnapshot[]
   readonly omniDebugInfo?: OmniDebugInfo
   readonly usage?: ModelCallLog | null
+  /** 压缩提示点开看到的摘要（规则见 lib/agent/chat-history.ts） */
+  readonly summary?: string
 }
 
 export interface FairyGazeTarget {

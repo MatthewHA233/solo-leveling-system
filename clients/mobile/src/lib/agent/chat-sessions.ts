@@ -13,8 +13,7 @@ import { DeviceEventEmitter } from 'react-native'
 import type { ChatMessage } from '../../types'
 import { createTitleFlow, DEFAULT_SESSION_TITLE, type TitleFlow } from '../ai/session-title-flow'
 import { chatImageUri, loadRestoredImages } from '../chatimage'
-import { compactHistory } from '../llm/context-window'
-import { createAssistantMessage, createUserMessage, type ImageBlock, type Message } from '../llm/types'
+import type { CompactionResult } from '../llm/context-window'
 import { randomUUID } from '../llm/uuid'
 import { parseModelCallLog } from '../models/model-audit'
 import { refreshModelCatalog } from '../models/registry'
@@ -31,7 +30,9 @@ import {
   type ChatSessionInfo,
   type SessionMessage,
 } from './agent-memory'
-import { describeImagesForModel, parseImageMarker } from './chat-images'
+import { parseImageMarker } from './chat-images'
+import { createCompactor } from './chat-compaction'
+import { compactNotice, compactSummaryRow, isCompactSummaryRow, restoreLLMHistory, rowsToLLMMessages } from './chat-history'
 import type { ChatCore } from './chat-core'
 
 const REROUTED_NOTE = '这个会话已在另一台设备上删除，刚才的消息存到了新会话。'
@@ -42,6 +43,11 @@ const DELETED_NOTE = '这个会话已在另一台设备上删除，继续发送�
 export function sessionMessagesToChatMessages(msgs: readonly SessionMessage[]): ChatMessage[] {
   const out: ChatMessage[] = []
   for (const m of msgs) {
+    // 压缩摘要显示成一条提示，点开能看；工具记录不显示
+    if (isCompactSummaryRow(m) && m.content?.trim()) {
+      out.push({ id: m.id ?? randomUUID(), role: 'system', content: compactNotice(), summary: m.content, timestamp: m.timestamp })
+      continue
+    }
     if (m.role === 'tool') continue
     const { ids: imageIds, text: content } = parseImageMarker((m.content ?? '').trim())
     // 音频气泡：即使没有文字也要还原（content 可能是 transcript）
@@ -69,23 +75,14 @@ export function sessionMessagesToChatMessages(msgs: readonly SessionMessage[]): 
   return out
 }
 
-export function sessionMessagesToLLMHistory(
-  msgs: readonly SessionMessage[],
-  images?: ReadonlyMap<string, ImageBlock>,
-): Message[] {
-  const out: Message[] = []
-  for (const m of msgs) {
-    if (m.role === 'tool') continue
-    const content = (m.content ?? '').trim()
-    if (!content) continue
-    if (m.role === 'user') {
-      const blocks = parseImageMarker(content).ids.flatMap((id) => images?.get(id) ?? [])
-      out.push(createUserMessage(describeImagesForModel(content, blocks.length), { images: blocks }))
-    } else if (m.role === 'assistant') {
-      out.push(createAssistantMessage(content))
-    }
+/** 压缩提示插在保留段第一条前面，和从库里恢复时的位置一致（对齐 desktop insertCompactNotice） */
+function insertCompactNotice(messages: readonly ChatMessage[], result: CompactionResult): ChatMessage[] {
+  const notice: ChatMessage = {
+    id: randomUUID(), role: 'system', content: compactNotice(result.kind),
+    summary: result.summaryText, timestamp: result.summaryTimestamp,
   }
-  return out
+  const index = messages.findIndex((m) => m.timestamp > result.summaryTimestamp)
+  return index < 0 ? [...messages, notice] : [...messages.slice(0, index), notice, ...messages.slice(index)]
 }
 
 /** 会话里主人说过几句（起标题的计数从这里接上） */
@@ -214,6 +211,24 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
     }
   }
 
+  // 上下文压缩（规则见 chat-compaction.ts）。摘要存进它所属的会话（被另一台设备删了就跟着改道）
+  core.compactor = createCompactor({
+    getConversation: () => core.conversation,
+    setConversation: (history) => {
+      core.setConversation(history)
+      core.emit()
+    },
+    getSessionId: () => core.sessionId,
+    persistSummary: (sid, result) => {
+      persistRows(sid, [{ ...compactSummaryRow(result), id: randomUUID() }])
+        .catch((e) => console.warn('[Compact] 摘要写入失败', e))
+    },
+    onCompacted: (result, sid) => {
+      if (follow(sid) !== core.sessionId) return
+      core.setMessages((prev) => insertCompactNotice(prev, result))
+    },
+  })
+
   /** 打断正在进行的回复和录音：切走之后它们不能再动界面和新会话的历史 */
   const stopCurrentTurn = () => {
     core.replyControl?.interrupt()
@@ -245,7 +260,8 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
       const info = title ?? core.sessions.find((s) => s.id === sessionId)?.title
       applySessionTitle(info || DEFAULT_SESSION_TITLE)
       titleFlow.reset(sessionId, info || DEFAULT_SESSION_TITLE, countUserMessages(msgs))
-      core.setConversation(compactHistory(sessionMessagesToLLMHistory(msgs, restoredImages)))
+      core.compactor?.reset()
+      core.setConversation(restoreLLMHistory(msgs, restoredImages))
       core.setMessages(() => sessionMessagesToChatMessages(msgs))
       performJump()
     } catch {
@@ -255,6 +271,7 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
 
   const newSession = async () => {
     stopCurrentTurn()
+    core.compactor?.reset()
     try {
       const s = await createChatSession()
       core.sessionId = s.id
@@ -313,7 +330,7 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
       titleFlow.reset(sessionId, restoredTitle, countUserMessages(state.messages))
 
       if (state.messages.length > 0) {
-        core.setConversation(compactHistory(sessionMessagesToLLMHistory(state.messages, await loadRestoredImages(state.messages))))
+        core.setConversation(restoreLLMHistory(state.messages, await loadRestoredImages(state.messages)))
         core.setMessages(() => sessionMessagesToChatMessages(state.messages))
       }
     } catch {
@@ -335,7 +352,7 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
       pendingDbSync = true
       return
     }
-    // 启动恢复只载入了最后一段，比它早的行不算「新」
+    // 比缓冲里最早那行还早的不算「新」
     const earliest = core.persistedBuffer[0] ? timeMs(core.persistedBuffer[0].timestamp) : 0
     const known = new Set<string | undefined>([
       ...core.persistedBuffer.map((m) => m.id),
@@ -344,9 +361,11 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
     const unseen = rows.filter((r) => !known.has(r.id) && timeMs(r.timestamp) >= earliest)
     const unwritten = core.persistedBuffer.filter((m) => !rows.some((r) => r.id === m.id))
     core.persistedBuffer = [...rows, ...unwritten]
-    if (unseen.length === 0) return
-    core.setConversation(compactHistory([...core.conversation, ...sessionMessagesToLLMHistory(unseen)]))
-    core.setMessages((prev) => [...prev, ...sessionMessagesToChatMessages(unseen)])
+    // 另一台设备写的压缩摘要不接到这里：这边的历史没按它压，界面提示的位置也不对，下次打开会话再显示
+    const fresh = unseen.filter((r) => !isCompactSummaryRow(r))
+    if (fresh.length === 0) return
+    core.setConversation([...core.conversation, ...rowsToLLMMessages(fresh)])
+    core.setMessages((prev) => [...prev, ...sessionMessagesToChatMessages(fresh)])
   }
 
   const onDbChanged = async (changed: Record<string, number | undefined>) => {

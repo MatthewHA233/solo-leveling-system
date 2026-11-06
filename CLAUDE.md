@@ -407,6 +407,7 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 - Key 启用：每个提供商一把。没有启用的就启用最近更新的一把，不改 `updated_at`，打开数据库和同步导入后都检查。规则两端各有一份（`db.rs ensure_provider_active_keys`、`SolevupDb.kt ensureProviderActiveKeys`），改规则要同时改两端。
 - 设置：表 `synced_settings`，跟着全量同步，按 `updated_at` 取新。现在只有 Fish 音色和模型，其他配置每台设备各管各的。手动改才写表，同步进来的只更新配置，不写回。规则两端各有一份（两端 `lib/agent/synced-settings.ts`、`db.rs SYNCED_SETTING_KEYS`、`SolevupDb.kt SYNCED_SETTING_KEYS`），改规则要同时改两端。
 - 聊天增量 `/api/sync/chat`：触发器写 `chat_sync_log`，按对端存游标，不进全量导出。
+- 聊天里还有两种 `role='tool'` 的行跟着聊天增量走：`compact_summary`（压缩摘要）和 `tool_trace`（一轮的工具调用和结果）。格式和恢复规则两端各有一份（两端 `lib/agent/chat-history.ts`，逐字一致），改要同时改两端；搜索会话时两端都排除 tool 行。
 - 合并规则两端各有一份（`db.rs chat_sync_import`、`SolevupDb.kt importChatPage`）。改规则要同时改两端，并更新和运行 `python3 clients/mobile/alignment/chat_sync_sim.py`。
 - 聊天图片文件在 `<数据目录>/chat-images/`，消息正文开头的 `[图片:id1,id2]` 标记随聊天同步。每轮同步后，发起方经 `GET /api/sync/chat-image/{id}`（要令牌）拉本机缺的文件，还没拉到时显示占位。标记规则两端各有一份（两端 `chat-images.ts`、`db.rs chat_image_ids`、`SolevupDb.kt chatImageIds`），拉取规则也是（`sync_engine.rs pull_chat_images`、`SyncClient.kt pullChatImages`），改规则要同时改两端。
 - 想法卡、锚点等表没有 `updated_at`，不在同步协议里，桌面端是唯一数据源。手机端经 `src/lib/desktop-api.ts` 直接读写已配对的桌面端，连不上时写入进待发送队列（`src/lib/ai/anchor-outbox.ts`）。
@@ -487,6 +488,7 @@ python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
 - `src/lib/agent/chat-controller.ts` — 全局单例，只做组装；流程在 `chat-core`（状态和订阅）、`chat-sessions`（会话）、`chat-prompt`（提示词取数）、`chat-send`（发送主流程）、`chat-distill`（想法沉淀）、`chat-voice`（按住说话）、`chat-omni`（实时语音）。React 侧用 `use-chat-controller.ts`
 - `src/lib/agent/tools/` — 工具定义和实现，按领域分文件；提示词在 `src/lib/ai/prompt-templates.ts`
 - `src/lib/llm/` — 流式调用、Anthropic 通道、`context-window`（静态前缀 + 每轮 reminder + 压缩）、`query-loop`（工具循环）
+- 上下文压缩：`lib/llm/context-window.ts`（门槛和清理）、`lib/llm/compact.ts`（模型写摘要）、`lib/agent/chat-compaction.ts`（时机）、`lib/agent/chat-history.ts`（库行 ↔ 历史），两端逐字一致，改要两端一起改。方案见 `docs/AI系统/上下文压缩与长期记忆-调研交接.md` 第九节
 - `src/lib/models/registry.ts` — 模型库种子，和 `db.rs seed_model_registry` 结构一一对应，桌面端改种子要同步
 - `src/lib/voice/` + `android/.../voice/` — 录音、流式识别、Fish TTS；`android/.../omni/` 是实时语音。`lib/voice/omni-turn.ts`（等回复的看门狗）桌面端有同一份，改要同步
 - `src/components/fairy/` — 聊天面板、气泡、Markdown、会话选择器、设置；`src/components/models/` + `ModelCenter.tsx` — 模型中心

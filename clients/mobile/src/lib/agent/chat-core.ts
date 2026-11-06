@@ -14,13 +14,14 @@ import type {
 } from '../../components/fairy/types'
 import type { ChatMessage } from '../../types'
 import { DEFAULT_SESSION_TITLE } from '../ai/session-title-flow'
-import { estimateChars, HIGH_WATER_CHARS } from '../llm/context-window'
+import { contextBudget, estimateContextTokens, type ContextBudget } from '../llm/context-window'
 import type { Message } from '../llm/types'
 import { randomUUID } from '../llm/uuid'
 import { buildAsrVocabulary } from '../voice/asr-hints'
 import { DEFAULT_CONFIG, loadConfig, updateConfig, type AgentConfig } from './agent-config'
 import type { ChatSessionInfo, SessionMessage } from './agent-memory'
 import { solevupListSyncedSettings, solevupSaveSyncedSetting } from '../solevupdb'
+import type { Compactor } from './chat-compaction'
 import { configUpdatesFromSettings, seedWrites, settingWrites } from './synced-settings'
 
 /** 流式增量最多这么久刷新一次界面（一批网络数据里有很多个 delta，不用每个都渲染） */
@@ -65,7 +66,7 @@ export class ChatCore {
   /** 边说边出字：录音浮层显示，松手后清空 */
   partialText = ''
   config: AgentConfig = DEFAULT_CONFIG
-  /** 上下文占用（历史字符数 / 压缩高水位），历史变了才重算 */
+  /** 上下文占用（历史 token / 压缩门槛），历史变了才重算 */
   contextRatio = 0
   jumpTo: FairyJumpTarget | null = null
   gazeTarget: FairyGazeTarget | null = null
@@ -73,6 +74,10 @@ export class ChatCore {
   // ── 流程内部 ──
   /** 给模型看的对话历史（desktop conversationRef） */
   conversation: Message[] = []
+  /** 上下文压缩（规则见 chat-compaction.ts）：门槛按当前聊天模型算，每轮发送时刷新；chat-sessions 建好后挂上来 */
+  contextBudget: ContextBudget = contextBudget(null)
+  contextOverhead = 0
+  compactor: Compactor | null = null
   /** 当前会话的消息行（desktop persistedBufferRef），整表回写和起标题都用它 */
   persistedBuffer: SessionMessage[] = []
   /** Omni 连接用的完整提示词（desktop systemPromptRef） */
@@ -169,7 +174,7 @@ export class ChatCore {
 
   setConversation(history: Message[]): void {
     this.conversation = history
-    this.contextRatio = estimateChars(history) / HIGH_WATER_CHARS
+    this.contextRatio = estimateContextTokens(history, this.contextOverhead) / this.contextBudget.trigger
   }
 
   // ── 配置 ──

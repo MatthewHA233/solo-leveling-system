@@ -82,6 +82,15 @@ export async function getFeatureModel(feature: string, fallback: string): Promis
   }
 }
 
+/** 模型库里的一行（窗口、价格阶梯等）；不在库里或读不到返回 null */
+export async function getModelDef(modelId: string): Promise<ModelDef | null> {
+  try {
+    return (await invoke<ModelDef[]>('list_models')).find((m) => m.id === modelId) ?? null
+  } catch {
+    return null
+  }
+}
+
 /** 模型能不能看图。不在模型库里的让它试，不支持时接口会报错 */
 export async function modelSeesImages(modelId: string): Promise<boolean> {
   try {

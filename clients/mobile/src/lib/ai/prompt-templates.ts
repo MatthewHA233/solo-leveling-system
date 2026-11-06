@@ -449,3 +449,44 @@ export function buildConversationSummary(
 
   return `# 近期对话记录\n${truncated}`
 }
+
+// ── 上下文压缩（lib/llm/compact.ts 用） ──
+// 追加在完整历史末尾发给同一个模型，前缀不变好吃缓存。模板参考 Claude Code / opencode / Gemini CLI，
+// 按陪伴聊天改了段落；有旧摘要时走「更新」，不整份重写（整份重写会越写越短，见 ACE 论文）。
+
+export function compactionPrompt(hasPreviousSummary: boolean, agentCallUser = '主人'): string {
+  const task = hasPreviousSummary
+    ? `对话开头那条是旧摘要，它后面是旧摘要之后的新对话。在旧摘要的基础上更新：仍然成立的内容原样保留，过时的改掉，新的补上。不要整份重写，也不要为了篇幅删掉还有用的内容。`
+    : `把上面的对话整理成一份摘要。`
+  return `这不是${agentCallUser}说的话，是系统的整理请求，现在不用回复${agentCallUser}。前面的对话太长，要压缩成一份摘要；之后只带着这份摘要和最近几轮原话继续聊，摘要里没写的细节就找不回来了。不要调用任何工具，只输出文字。
+
+${task}
+
+先在 <analysis> 里按顺序过一遍：${agentCallUser}每次想要什么、你怎么回应的、说定了什么、${agentCallUser}纠正或反驳过什么、工具查到了哪些具体数据。然后在 <summary> 里按下面的格式写：
+
+<summary>
+## ${agentCallUser}在意的事
+这段对话里${agentCallUser}想要什么、在忙什么、状态和心情。
+
+## 说定的事
+结论、决定、约定、${agentCallUser}的偏好。${agentCallUser}纠正过你或反驳过的，连同当时的分歧一起写，不要只留结论。
+
+## 查到的数据
+工具查到的具体数字、时间、名称、卡片 id 等，只写后面还可能用到的。
+
+## 还没完成的
+待办、答应了还没做的、还没回答的问题，尽量用${agentCallUser}的原话。
+
+## 最近在聊
+这一段最后在聊什么，聊到哪一步。
+
+## ${agentCallUser}的原话
+重要的、带情绪的、表达偏好或纠正你的原话，逐字引用，一条一行。
+</summary>
+
+要求：
+- 写具体的事实和数字，不写「讨论了一些问题」这种空话。
+- 系统提示词、工具说明、实时背景里本来就有的内容不用写，每轮都会重新附上。
+- 没有内容的段落写「无」。
+- 整份一般不超过 2000 字。越早的事可以写得越概括，但说定的事、${agentCallUser}的纠正和偏好不能丢。`
+}

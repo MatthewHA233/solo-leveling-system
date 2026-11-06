@@ -170,17 +170,19 @@ export function createVoiceFlow(
           }))
 
           // 语音消息持久化：等录音落盘拿到 audioPath（落盘失败也照样存文字，别丢主人说的话）
+          // 这句落库的时间，发给模型的那条也用它（压缩按时间在库里找分界）
+          let timestamp = new Date().toISOString()
           const sid = core.sessionId
           if (sid) {
             const saving = audioSaves.get(sessionMsgId) ?? Promise.resolve(null)
             audioSaves.delete(sessionMsgId)
-            const timestamp = recordedAt.get(sessionMsgId)
+            timestamp = recordedAt.get(sessionMsgId) ?? timestamp
             recordedAt.delete(sessionMsgId)
             if (isOmniMode) omni.markUserInputPersisted()
             void saving.then((saved) => sessions.persistRows(sid, [{
               ...makeSessionMessage('user', withImageMarker(text, images.map((i) => i.id)), saved?.audioPath, saved?.durationMs),
               id: sessionMsgId,
-              ...(timestamp ? { timestamp } : null),
+              timestamp,
             }])).catch((e) => console.warn('[Voice] 语音消息持久化失败', e))
           }
 
@@ -188,7 +190,7 @@ export function createVoiceFlow(
           if (isOmniMode) {
             omni.setLastUserInput(text)   // 供 audio_done 持久化使用
           } else {
-            void handleSend(text, true, images)
+            void handleSend(text, true, images, timestamp)
           }
         },
         onOmniCommitted: () => omni.onCommitted(),

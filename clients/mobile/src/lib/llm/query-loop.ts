@@ -14,6 +14,7 @@
 
 import { randomUUID } from './uuid'
 import { queryModel } from './api'
+import { capToolResult } from './context-window'
 import { withRetry } from './retry'
 import {
   createUserMessage,
@@ -90,6 +91,9 @@ interface ModelReply {
   text: string
   pendingCalls: Map<number, { id: string; name: string; args: string }>
   stopReason: StopReason
+  /** 接口返回的真实用量：压缩按它算历史体量（见 context-window.ts） */
+  inputTokens: number
+  outputTokens: number
 }
 
 /** 把一次流消费完。流里报错就抛出，由 withRetry 决定要不要重来；主人打断时流只是提前结束，不算错误 */
@@ -103,6 +107,8 @@ async function consumeModelStream(
   let text = ''
   const pendingCalls = new Map<number, { id: string; name: string; args: string }>()
   let stopReason: StopReason = 'end_turn'
+  let inputTokens = 0
+  let outputTokens = 0
   let failure: string | null = null
 
   // Stream 消费（对应 Claude Code 中的 for await (const part of streamResponse)）
@@ -138,6 +144,8 @@ async function consumeModelStream(
 
       case 'done':
         stopReason = (chunk.stopReason as StopReason) ?? 'end_turn'
+        inputTokens = chunk.inputTokens ?? 0
+        outputTokens = chunk.outputTokens ?? 0
         break
 
       case 'error':
@@ -147,7 +155,7 @@ async function consumeModelStream(
   }
 
   if (failure !== null) throw new Error(failure)
-  return { text, pendingCalls, stopReason }
+  return { text, pendingCalls, stopReason, inputTokens, outputTokens }
 }
 
 // ── 主函数 ──
@@ -212,7 +220,7 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
 
     // ── API 调用 ──
     const currentMsgId = turnCount === 0 ? assistantMsgId : randomUUID()
-    let reply: ModelReply = { text: '', pendingCalls: new Map(), stopReason: 'end_turn' }
+    let reply: ModelReply = { text: '', pendingCalls: new Map(), stopReason: 'end_turn', inputTokens: 0, outputTokens: 0 }
     // 主人已经看到字就不能重来：屏幕和历史里都会重复一遍。工具调用参数还没执行，丢掉重来没有影响
     let showedOutput = false
 
@@ -238,7 +246,7 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
       }
     }
 
-    const { text: accText, pendingCalls, stopReason } = reply
+    const { text: accText, pendingCalls, stopReason, inputTokens, outputTokens } = reply
 
     // ── 构建 AssistantMessage ──
     // 主人打断时流只是提前结束、不报错：已收到的工具调用（可能只有半截参数）不能再执行，也不进历史
@@ -267,8 +275,8 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
         role: 'assistant',
         content: contentBlocks.length > 0 ? contentBlocks : [{ type: 'text', text: '' }],
         stop_reason: stopReason as StopReason,
-        usage: { input_tokens: 0, output_tokens: 0 },
-        model: '',
+        usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+        model: apiOptions.model,
       },
     }
 
@@ -305,6 +313,8 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
       }
 
       // tool result 作为 user message（OpenAI 格式：role='tool', tool_call_id=call.id）
+      // 单条结果太大只留头尾，免得一次查询就把上下文顶满
+      result = capToolResult(result)
       const toolResultMsg: UserMessage = {
         type: 'user',
         uuid: randomUUID(),

@@ -25,21 +25,23 @@ import { theme, hud, ti, tiSurface, tiTitle } from './theme'
 import { DEFAULT_CONFIG, getDashScopeApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
 import { configUpdatesFromSettings, seedWrites, settingWrites } from './lib/agent/synced-settings'
-import { getFeatureModel, getFishApiKey, logModelUsage, modelSeesImages, realtimeUsageToDashScope, saveFishApiKey, type RealtimeUsage } from './lib/model-audit'
+import { getFeatureModel, getFishApiKey, getModelDef, logModelUsage, modelSeesImages, realtimeUsageToDashScope, saveFishApiKey, type RealtimeUsage } from './lib/model-audit'
 import { buildStaticPrompt, buildDynamicContext, buildConversationSummary } from './lib/ai/prompt-templates'
 import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from './lib/ai/prompt-templates'
 import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
 
 // LLM Engine（新）
 import { runQueryLoop } from './lib/llm/query-loop'
-import { compactHistory, estimateChars, HIGH_WATER_CHARS, withSystemReminder } from './lib/llm/context-window'
+import { contextBudget, estimateContextTokens, roughTokens, withSystemReminder, type CompactionResult, type ContextBudget } from './lib/llm/context-window'
+import { createCompactor, type CompactionContext } from './lib/agent/chat-compaction'
+import { compactNotice, compactSummaryRow, isCompactSummaryRow, restoreLLMHistory, toolTraceRow } from './lib/agent/chat-history'
 import { withBrowserArgs } from './lib/webview-args'
 import { buildAsrContext, buildAsrVocabulary } from './lib/voice/asr-hints'
-import { createUserMessage, createAssistantMessage, getMessageText, isAssistantMessage, userContentWithImages } from './lib/llm/types'
+import { createUserMessage, getMessageText, isAssistantMessage, userContentWithImages } from './lib/llm/types'
 import {
-  CHAT_IMAGES_UPDATED, chatImageUrl, describeImagesForModel, initChatImages, loadRestoredImages, parseImageMarker, withImageMarker, type PendingImage,
+  CHAT_IMAGES_UPDATED, chatImageUrl, initChatImages, loadRestoredImages, parseImageMarker, withImageMarker, type PendingImage,
 } from './lib/agent/chat-images'
-import type { ImageBlock, Message } from './lib/llm/types'
+import type { Message } from './lib/llm/types'
 import type { ApiRequestSnapshot } from './lib/llm/api'
 
 // Session 持久化
@@ -153,6 +155,7 @@ export interface ChatMessage {
   readonly omniDebugInfo?: OmniDebugInfo          // 本轮发给 Omni 的上下文快照
   readonly usage?: ModelCallLog                   // 该 AI 回复对应的模型调用审计快照
   readonly images?: readonly { id: string; url: string }[]  // 主人发的图片（规则见 lib/agent/chat-images.ts）
+  readonly summary?: string              // 压缩提示（system）点开看到的摘要（规则见 lib/agent/chat-history.ts）
 }
 
 type FairyActionPayload =
@@ -164,7 +167,8 @@ type ChatMode = AgentConfig['aiMode']
 type FairyChatSubmitPayload = { text?: string; mode?: ChatMode }
 type ModelFeatureBindingPayload = { feature?: string; modelId?: string }
 type TauriEventHandler<T> = (event: { payload: T }) => void
-type HandleSend = (text: string, fromVoice?: boolean, modeOverride?: ChatMode, images?: readonly PendingImage[]) => Promise<void>
+// userTimestamp：语音那句落库的时间，发给模型的那条用同一个时间（压缩按时间在库里找分界）
+type HandleSend = (text: string, fromVoice?: boolean, modeOverride?: ChatMode, images?: readonly PendingImage[], userTimestamp?: string) => Promise<void>
 
 function listenTauriEventStrict<T>(event: string, handler: TauriEventHandler<T>): () => void {
   let disposed = false
@@ -199,6 +203,11 @@ function clampFairyScale(value: unknown): number {
 function sessionMessagesToChatMessages(msgs: readonly SessionMessage[], audioDir = ''): ChatMessage[] {
   const out: ChatMessage[] = []
   for (const m of msgs) {
+    // 压缩摘要显示成一条提示，点开能看；工具记录不显示
+    if (isCompactSummaryRow(m) && m.content?.trim()) {
+      out.push({ id: crypto.randomUUID(), role: 'system', content: compactNotice(), summary: m.content, timestamp: m.timestamp })
+      continue
+    }
     if (m.role === 'tool') continue
     const { ids: imageIds, text: content } = parseImageMarker((m.content ?? '').trim())
     // 音频气泡：即使没有文字也要还原（content 可能是 transcript）
@@ -225,23 +234,14 @@ function sessionMessagesToChatMessages(msgs: readonly SessionMessage[], audioDir
   return out
 }
 
-function sessionMessagesToLLMHistory(
-  msgs: readonly SessionMessage[],
-  images?: ReadonlyMap<string, ImageBlock>,
-): Message[] {
-  const out: Message[] = []
-  for (const m of msgs) {
-    if (m.role === 'tool') continue
-    const content = (m.content ?? '').trim()
-    if (!content) continue
-    if (m.role === 'user') {
-      const blocks = parseImageMarker(content).ids.flatMap((id) => images?.get(id) ?? [])
-      out.push(createUserMessage(describeImagesForModel(content, blocks.length), { images: blocks }))
-    } else if (m.role === 'assistant') {
-      out.push(createAssistantMessage(content))
-    }
+/** 压缩提示插在保留段第一条前面，和从库里恢复时的位置一致 */
+function insertCompactNotice(messages: readonly ChatMessage[], result: CompactionResult): ChatMessage[] {
+  const notice: ChatMessage = {
+    id: crypto.randomUUID(), role: 'system', content: compactNotice(result.kind),
+    summary: result.summaryText, timestamp: result.summaryTimestamp,
   }
-  return out
+  const index = messages.findIndex((m) => m.timestamp > result.summaryTimestamp)
+  return index < 0 ? [...messages, notice] : [...messages.slice(0, index), notice, ...messages.slice(index)]
 }
 
 /** 会话里主人说过几句（起标题的计数从这里接上） */
@@ -596,6 +596,27 @@ export default function App() {
   const persistedBufferRef = useRef<SessionMessage[]>([])  // 已持久化的历史（用于 title 生成的上下文窗口）
   const lastOmniUserInputRef = useRef<string>('')        // Omni 本轮用户输入（文字 or 转写）
   const audioDirRef = useRef<string>('')                 // 音频根目录（Rust data_local/solevup/audio）
+  // 上下文压缩（规则见 lib/agent/chat-compaction.ts）：门槛按当前聊天模型算，每轮发送时刷新
+  const contextBudgetRef = useRef<ContextBudget>(contextBudget(null))
+  const contextOverheadRef = useRef(0)
+  const compactorRef = useRef<ReturnType<typeof createCompactor> | null>(null)
+  if (!compactorRef.current) {
+    compactorRef.current = createCompactor({
+      getConversation: () => conversationRef.current,
+      setConversation: (history) => { conversationRef.current = history },
+      getSessionId: () => sessionIdRef.current,
+      persistSummary: (sid, result) => {
+        const row = compactSummaryRow(result)
+        if (sessionIdRef.current === sid) persistedBufferRef.current = [...persistedBufferRef.current, row]
+        persistMessages(sid, [row]).catch((e) => console.warn('[Compact] 摘要写入失败', e))
+      },
+      onCompacted: (result, sid) => {
+        if (sid !== sessionIdRef.current) return
+        setChatMessages((prev) => insertCompactNotice(prev, result))
+      },
+    })
+  }
+  const compactor = compactorRef.current
   // 语音气泡录音的落盘任务（消息 id → 落盘结果）：定稿文本可能比落盘先到，持久化前要等它
   const audioSaveRef = useRef<Map<string, Promise<{ audioPath: string; durationMs: number } | null>>>(new Map())
   // 语音消息的录音时刻：入库用它当时间戳，保证用户语音排在 AI 回复前面（转写晚到 / 兜底入库时也不乱序）
@@ -790,7 +811,7 @@ export default function App() {
 
         if (state.messages.length > 0) {
           setChatMessages(sessionMessagesToChatMessages(state.messages, audioDir))
-          conversationRef.current = compactHistory(sessionMessagesToLLMHistory(state.messages, await loadRestoredImages(state.messages)))
+          conversationRef.current = restoreLLMHistory(state.messages, await loadRestoredImages(state.messages))
         }
       } catch {
         // 后端不可用：静默降级（不影响功能，不持久化）
@@ -882,9 +903,9 @@ export default function App() {
       date.getDate() === now.getDate()
   }, [])
   const protocolViewLabel = '协议志'
-  // 上下文占用（聊天栏 CTX 段码条）：当前历史字符数 / 压缩高水位，过线后旧对话会被压缩
+  // 上下文占用（聊天栏 CTX 段码条）：当前历史的 token / 压缩门槛，过线后较早的对话会被压缩
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const contextRatio = useMemo(() => estimateChars(conversationRef.current) / HIGH_WATER_CHARS, [chatMessages])
+  const contextRatio = useMemo(() => estimateContextTokens(conversationRef.current, contextOverheadRef.current) / contextBudgetRef.current.trigger, [chatMessages])
 
 
   // 今天每 15 秒轮询一次：数据没变就保留原数组——换成新数组会让整个 App 重渲染一遍（开发模式下约半秒，界面一顿一顿的）
@@ -1656,17 +1677,20 @@ export default function App() {
           )
 
           // 语音消息持久化：等录音落盘拿到 audioPath（落盘失败也照样存文字，别丢主人说的话）
+          // 这句落库的时间，发给模型的那条也用它（压缩按时间在库里找分界）
+          let voiceTimestamp = new Date().toISOString()
           const sid = sessionIdRef.current
           if (sid) {
             const saving = audioSaveRef.current.get(sessionMsgId) ?? Promise.resolve(null)
             audioSaveRef.current.delete(sessionMsgId)
             const recordedAt = voiceRecordedAtRef.current.get(sessionMsgId)
             voiceRecordedAtRef.current.delete(sessionMsgId)
+            voiceTimestamp = recordedAt ?? voiceTimestamp
             if (isOmniMode) omniUserInputPersistedRef.current = true
             void saving.then((saved) => {
               const voiceMsg = {
                 ...makeSessionMessage('user', withImageMarker(text, images.map((i) => i.id)), saved?.audioPath, saved?.durationMs),
-                ...(recordedAt ? { timestamp: recordedAt } : null),
+                timestamp: voiceTimestamp,
               }
               persistedBufferRef.current = [...persistedBufferRef.current, voiceMsg]
               return persistMessages(sid, [voiceMsg])
@@ -1677,7 +1701,7 @@ export default function App() {
           if (isOmniMode) {
             lastOmniUserInputRef.current = text   // 供 audio_done 持久化使用
           } else {
-            handleSend(text, true, undefined, images)
+            handleSend(text, true, undefined, images, voiceTimestamp)
           }
         },
         onOmniCommitted: () => omniReplyWatchdogRef.current?.arm(),
@@ -2489,8 +2513,10 @@ export default function App() {
   // ── Send Message ──
   // 打字和语音（级联）都走这里：同一个主循环、同一个 Fairy（一个大脑）。
   // 实时（实验）语音模式的回复另走 Omni WS，不经过这里。
-  const handleSend = useCallback(async (text: string, fromVoice = false, _modeOverride?: ChatMode, images: readonly PendingImage[] = []) => {
+  const handleSend = useCallback(async (text: string, fromVoice = false, _modeOverride?: ChatMode, images: readonly PendingImage[] = [], userTimestamp?: string) => {
     if (!text.trim() && images.length === 0) return
+    // 主人这句的时间：气泡、发给模型的那条、落库的那行用同一个（压缩按时间在库里找分界）
+    const sentAt = userTimestamp ?? new Date().toISOString()
     // 这一轮属于发起时的会话：切走之后，迟到的回复写回原会话，不能进新会话，也不能盖掉新会话的历史
     const turnSessionId = sessionIdRef.current
     // 语音那句在转写定稿时已经数过（onTranscript），这里只数打字
@@ -2500,7 +2526,7 @@ export default function App() {
     if (!fromVoice) {
       setChatMessages((prev) => [...prev, {
         id: crypto.randomUUID(), role: 'user' as const,
-        content: text, timestamp: new Date().toISOString(),
+        content: text, timestamp: sentAt,
         ...(images.length > 0 ? { images: images.map(({ id, url }) => ({ id, url })) } : {}),
       }])
     }
@@ -2517,7 +2543,10 @@ export default function App() {
 
     const agentMsgId = crypto.randomUUID()
     const imageBlocks = images.map((i) => i.block)
-    const userMsg = createUserMessage(text, { images: imageBlocks })
+    const userMsg = createUserMessage(text, { images: imageBlocks, timestamp: sentAt })
+    // Fairy 气泡出现的时间，回复落库用同一个（时间顺序要排在主人这句和工具记录后面）
+    let agentTimestamp = ''
+    const bubbleTimestamp = () => agentTimestamp || (agentTimestamp = new Date().toISOString())
     const capturedSnapshots: ApiRequestSnapshot[] = []
     let capturedUsage: ModelCallLog | null = null
     let capturedReasoning = ''   // 思考模型的推演流（随消息一起持久化，回看用）
@@ -2630,7 +2659,28 @@ export default function App() {
       message: { ...userMsg.message, content: userContentWithImages(withSystemReminder(text, dynamicContext), imageBlocks) },
     }
 
+    // 压缩用的参数：门槛按这个模型算；写摘要和这轮聊天同一个模型、系统提示词、工具定义（好吃缓存）
+    const chatSystemPrompt = staticPrompt || systemPrompt
+    contextBudgetRef.current = contextBudget(await getModelDef(chatModel))
+    contextOverheadRef.current = roughTokens(chatSystemPrompt) + roughTokens(JSON.stringify(TOOL_DEFINITIONS))
+    const compactCtx: CompactionContext = {
+      budget: contextBudgetRef.current,
+      overheadTokens: contextOverheadRef.current,
+      apiOptions: {
+        apiKey: dashscopeApiKey,
+        apiBase: config.openaiApiBase,
+        model: chatModel,
+        systemPrompt: chatSystemPrompt,
+        hideImages,
+        feature: 'fairy_chat',
+        tools: TOOL_DEFINITIONS,
+      },
+      agentCallUser: config.agentCallUser,
+    }
+
     try {
+      // 整段已经超过硬上限就先压完再发；后台摘要还在写就等它几秒
+      if (sessionIdRef.current === turnSessionId) await compactor.beforeSend(compactCtx, apiUserMsg)
       const newHistory = await runQueryLoop({
         messages: [...conversationRef.current, apiUserMsg],
         systemPrompt: staticPrompt || systemPrompt,
@@ -2668,7 +2718,7 @@ export default function App() {
               }
               return [...prev, {
                 id: agentMsgId, role: 'agent' as const,
-                content: '', reasoning: event.delta, timestamp: new Date().toISOString(),
+                content: '', reasoning: event.delta, timestamp: bubbleTimestamp(),
               }]
             })
           } else if (event.type === 'textDelta') {
@@ -2683,7 +2733,7 @@ export default function App() {
               }
               return [...prev, {
                 id: agentMsgId, role: 'agent' as const,
-                content: event.delta, timestamp: new Date().toISOString(),
+                content: event.delta, timestamp: bubbleTimestamp(),
               }]
             })
             pushToTts(event.delta)
@@ -2719,8 +2769,11 @@ export default function App() {
         },
         executeTool: (call) => executeAgentTool(call.name, call.arguments),
       })
-      // 工具调用与结果留在历史里（下一轮还能引用刚查到的数据）；体量超高水位时才按整轮分批压缩
-      if (sessionIdRef.current === turnSessionId) conversationRef.current = compactHistory(newHistory.map((m) => (m === apiUserMsg ? userMsg : m)))
+      // 工具调用与结果留在历史里（下一轮还能引用刚查到的数据）；超门槛时先清旧工具结果，还超就在后台写摘要
+      if (sessionIdRef.current === turnSessionId) {
+        conversationRef.current = compactor.settle(newHistory.map((m) => (m === apiUserMsg ? userMsg : m)), compactCtx)
+        compactor.kick(compactCtx)
+      }
       if (interrupted) {
         setChatMessages((prev) => prev.map((m) =>
           m.id === agentMsgId && m.content ? { ...m, content: `${m.content}……（被打断）` } : m))
@@ -2842,15 +2895,19 @@ export default function App() {
         })()
       }
 
-      // ── 只持久化本轮 user + 最终 assistant，不能用全量历史长度去裁剪最近上下文窗口 ──
+      // ── 持久化本轮：user + 工具记录（切会话、重启后还在）+ 最终 assistant；时间和气泡、发给模型的那条一致 ──
       const newPairs: SessionMessage[] = []
       const userText = text.trim()
       if (!fromVoice && (userText || images.length > 0)) {
-        newPairs.push(makeSessionMessage('user', withImageMarker(userText, images.map((i) => i.id))))
+        newPairs.push({ ...makeSessionMessage('user', withImageMarker(userText, images.map((i) => i.id))), timestamp: sentAt })
       }
+      const turnStart = newHistory.indexOf(apiUserMsg)
+      const traceRow = turnStart >= 0 ? toolTraceRow(newHistory.slice(turnStart + 1), sentAt) : null
+      if (traceRow) newPairs.push(traceRow)
       if (replyText.trim()) {
         newPairs.push({
           ...makeSessionMessage('assistant', replyText.trim()),
+          timestamp: bubbleTimestamp(),
           reasoning: capturedReasoning || null,
         })
       }
@@ -3021,7 +3078,8 @@ export default function App() {
       const title = knownTitle ?? sessions.find((s) => s.id === sessionId)?.title
       applySessionTitle(title || DEFAULT_SESSION_TITLE)
       titleFlow.reset(sessionId, title || DEFAULT_SESSION_TITLE, countUserMessages(msgs))
-      conversationRef.current = compactHistory(sessionMessagesToLLMHistory(msgs, restoredImages))
+      compactor.reset()
+      conversationRef.current = restoreLLMHistory(msgs, restoredImages)
       revokeTrackedBlobAudioUrls()
       setChatMessages(sessionMessagesToChatMessages(msgs, audioDirRef.current))
       performJump()
@@ -3037,6 +3095,7 @@ export default function App() {
       replyControlRef.current = null
       emitFairy('idle')
     }
+    compactor.reset()
     try {
       const s = await createChatSession()
       sessionIdRef.current = s.id

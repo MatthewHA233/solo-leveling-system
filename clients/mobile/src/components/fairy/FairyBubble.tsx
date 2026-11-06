@@ -1,6 +1,7 @@
 // ══════════════════════════════════════════════
 // 单条消息（对应 desktop ChatPanel Bubble）：
 //   · 系统 / 工具消息：一行等宽小字（工具调用就是 `⚙ name(args)` + `→ 结果` 的系统消息）
+//   · 压缩提示：同样一行小字，点一下展开摘要（desktop CompactNotice）
 //   · 主人语音：语音条 + 转写
 //   · 主人文字（含边说边出的中间结果）：右侧气泡
 //   · Fairy：文字直接落在面板上（markdown）
@@ -11,8 +12,8 @@
 //   · fadeSlideIn 入场动画没搬：历史会话一次加载几百条时会全部闪一遍
 // ══════════════════════════════════════════════
 
-import { memo } from 'react'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { memo, useState } from 'react'
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { alpha, fonts, theme } from '../../theme'
 import type { ApiRequestSnapshot } from '../../lib/llm/api'
 import ModelUsageBadge from '../models/ModelUsageBadge'
@@ -38,7 +39,31 @@ export interface FairyBubbleProps {
 
 // ── 系统 / 工具消息 ──
 
+function CompactNotice({ message, onLongPress }: Pick<FairyBubbleProps, 'message' | 'onLongPress'>) {
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <View>
+      <Pressable
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        delayLongPress={LONG_PRESS_MS}
+        onPress={() => setExpanded(!expanded)}
+        onLongPress={onLongPress ? () => onLongPress(message) : undefined}
+      >
+        <Text style={styles.system}>{message.content}  {expanded ? '收起 ▾' : '看摘要 ▸'}</Text>
+      </Pressable>
+      {expanded && (
+        <ScrollView style={styles.summaryWell} contentContainerStyle={styles.summaryContent} nestedScrollEnabled>
+          <Text style={styles.summaryText}>{message.summary}</Text>
+        </ScrollView>
+      )}
+    </View>
+  )
+}
+
 export function SystemLine({ message, onLongPress }: Pick<FairyBubbleProps, 'message' | 'onLongPress'>) {
+  if (message.summary) return <CompactNotice message={message} onLongPress={onLongPress} />
   const isErr = isSystemError(message.content)
   return (
     <Pressable delayLongPress={LONG_PRESS_MS} onLongPress={onLongPress ? () => onLongPress(message) : undefined}>
@@ -144,6 +169,9 @@ const styles = StyleSheet.create({
     color: theme.inkSoft, opacity: 0.85,
   },
   systemError: { color: theme.danger, opacity: 1 },
+  summaryWell: { marginTop: 6, maxHeight: 280, backgroundColor: theme.sunk, borderRadius: 8 },
+  summaryContent: { paddingHorizontal: 12, paddingVertical: 8 },
+  summaryText: { fontSize: 12, lineHeight: 20, color: theme.inkSoft },
   userRow: { flexDirection: 'row', justifyContent: 'flex-end' },
   userBubble: {
     maxWidth: '88%', backgroundColor: alpha(theme.accent, 0.1), borderRadius: 14,

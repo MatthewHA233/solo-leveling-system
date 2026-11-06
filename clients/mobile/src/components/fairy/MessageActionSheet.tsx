@@ -10,9 +10,9 @@ import { showTip } from './tip'
 import type { ApiRequestSnapshot } from '../../lib/llm/api'
 import type { FairyMessage, OmniDebugInfo } from './types'
 
-/** 长按复制的文字：语音消息复制转写 */
+/** 长按复制的文字：语音消息复制转写，压缩提示复制摘要 */
 export function copyableText(message: FairyMessage): string {
-  return message.content || message.audio?.transcript || ''
+  return message.summary || message.content || message.audio?.transcript || ''
 }
 
 export default function MessageActionSheet({ message, onClose, onDebug, onOmniDebug }: {

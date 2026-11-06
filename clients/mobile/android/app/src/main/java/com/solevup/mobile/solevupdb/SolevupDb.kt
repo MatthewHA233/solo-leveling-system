@@ -2616,7 +2616,10 @@ class SolevupDb(context: Context) :
   data class ChatSearchSnippet(val role: String, val excerpt: String, val timestamp: String)
   data class ChatSearchHit(val session: ChatSessionRow, val snippets: List<ChatSearchSnippet>)
 
-  /** 全文搜索（对齐 desktop search_chat_sessions：标题 / 摘要 / 消息内容 LIKE，片段前后约 60 字）。 */
+  /**
+   * 全文搜索（对齐 desktop search_chat_sessions：标题 / 摘要 / 消息内容 LIKE，片段前后约 60 字）。
+   * role='tool' 的行（压缩摘要、工具记录）不算：没有对应气泡，跳不过去（见 src/lib/agent/chat-history.ts）。
+   */
   fun searchChatSessions(query: String, limit: Int): List<ChatSearchHit> {
     val db = readableDatabase
     val q = query.trim()
@@ -2630,7 +2633,7 @@ class SolevupDb(context: Context) :
          WHERE s.deleted_at IS NULL
            AND (s.title LIKE ?1 ESCAPE '\' OR s.summary LIKE ?1 ESCAPE '\'
                 OR EXISTS (SELECT 1 FROM chat_messages m
-                           WHERE m.session_id = s.id AND m.content LIKE ?1 ESCAPE '\'))
+                           WHERE m.session_id = s.id AND m.role <> 'tool' AND m.content LIKE ?1 ESCAPE '\'))
          ORDER BY s.updated_at DESC LIMIT ${limit.coerceIn(1, 200)}""".trimIndent(),
       arrayOf(pattern),
     ).use { c ->
@@ -2645,7 +2648,7 @@ class SolevupDb(context: Context) :
       val snippets = ArrayList<ChatSearchSnippet>()
       db.rawQuery(
         """SELECT role, content, timestamp FROM chat_messages
-           WHERE session_id = ?1 AND content LIKE ?2 ESCAPE '\'
+           WHERE session_id = ?1 AND role <> 'tool' AND content LIKE ?2 ESCAPE '\'
            ORDER BY timestamp DESC LIMIT 200""".trimIndent(),
         arrayOf(s.id, pattern),
       ).use { c ->

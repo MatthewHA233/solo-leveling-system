@@ -79,4 +79,6 @@ export interface ChatMessage {
   omniDebugInfo?: OmniDebugInfo
   /** 模型审计整行（入库到 usage_json，恢复时过 parseModelCallLog） */
   usage?: ModelCallLog | null
+  /** 压缩提示（system）点开看到的摘要（规则见 lib/agent/chat-history.ts） */
+  summary?: string
 }

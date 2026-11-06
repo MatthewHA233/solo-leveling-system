@@ -162,12 +162,14 @@ export function createUserMessage(
     isMeta?: true
     isVirtual?: true
     images?: readonly ImageBlock[]
+    /** 从库里恢复、或要和落库那一行对齐时传入（压缩的分界按时间找行） */
+    timestamp?: string
   } = {},
 ): UserMessage {
   return {
     type: 'user',
     uuid: opts.uuid ?? randomUUID(),
-    timestamp: new Date().toISOString(),
+    timestamp: opts.timestamp ?? new Date().toISOString(),
     message: {
       role: 'user',
       content: opts.images?.length ? userContentWithImages(content, opts.images) : content || '(empty)',
@@ -186,12 +188,13 @@ export function createAssistantMessage(
     usage?: TokenUsage
     stop_reason?: StopReason
     requestId?: string
+    timestamp?: string
   } = {},
 ): AssistantMessage {
   return {
     type: 'assistant',
     uuid: opts.uuid ?? randomUUID(),
-    timestamp: new Date().toISOString(),
+    timestamp: opts.timestamp ?? new Date().toISOString(),
     message: {
       role: 'assistant',
       content: [{ type: 'text', text: content }],
@@ -200,6 +203,45 @@ export function createAssistantMessage(
       model: opts.model ?? '',
     },
     requestId: opts.requestId,
+  }
+}
+
+/** 带工具调用的回复（从库里恢复工具记录时用；正常对话由 query-loop 生成） */
+export function createToolUseMessage(
+  text: string,
+  calls: readonly { id: string; name: string; input: Record<string, unknown> }[],
+  opts: { timestamp?: string } = {},
+): AssistantMessage {
+  const content: ContentBlock[] = []
+  if (text) content.push({ type: 'text', text })
+  for (const c of calls) content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.input })
+  return {
+    type: 'assistant',
+    uuid: randomUUID(),
+    timestamp: opts.timestamp ?? new Date().toISOString(),
+    message: {
+      role: 'assistant',
+      content,
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 0, output_tokens: 0 },
+      model: '',
+    },
+  }
+}
+
+/** 工具结果（OpenAI 格式里是 role:'tool'，这里统一是 type:'user'） */
+export function createToolResultMessage(
+  toolCallId: string,
+  result: string,
+  opts: { timestamp?: string } = {},
+): UserMessage {
+  return {
+    type: 'user',
+    uuid: randomUUID(),
+    timestamp: opts.timestamp ?? new Date().toISOString(),
+    message: { role: 'user', content: result },
+    toolUseResult: result,
+    sourceToolCallId: toolCallId,
   }
 }
 

@@ -400,7 +400,8 @@ export async function initChatSession(): Promise<{
       return {
         sessionId: recent.id,
         state: {
-          messages: msgs.slice(-MAX_MESSAGES),
+          // 整个会话都载入：发给模型的历史从最新的压缩摘要接着往后（见 chat-history.ts）
+          messages: msgs,
           sessionSummary: recent.summary,
         },
       }

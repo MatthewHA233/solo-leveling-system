@@ -3070,6 +3070,7 @@ impl Database {
 
     /// 全文搜索会话：按 title / summary / 任意一条 chat_messages.content LIKE 匹配
     /// 每个匹配会话附带最多 3 条命中片段（用于前端高亮显示 + 跳转锚点）
+    /// role='tool' 的行（压缩摘要、工具记录）不算：没有对应气泡，跳不过去（见前端 lib/agent/chat-history.ts）
     pub async fn search_chat_sessions(&self, query: &str, limit: i64) -> Result<Vec<SessionSearchHit>, String> {
         let conn = self.conn.lock().await;
         // 转义 LIKE 元字符（%, _, \）以避免误匹配
@@ -3085,7 +3086,7 @@ impl Database {
                 OR s.summary LIKE ?1 ESCAPE '\\'
                 OR EXISTS (
                     SELECT 1 FROM chat_messages m
-                    WHERE m.session_id = s.id AND m.content LIKE ?1 ESCAPE '\\'
+                    WHERE m.session_id = s.id AND m.role <> 'tool' AND m.content LIKE ?1 ESCAPE '\\'
                 ))
              ORDER BY s.updated_at DESC
              LIMIT ?2"
@@ -3107,7 +3108,7 @@ impl Database {
         let mut snippet_stmt = conn.prepare(
             "SELECT role, content, timestamp
              FROM chat_messages
-             WHERE session_id = ?1 AND content LIKE ?2 ESCAPE '\\'
+             WHERE session_id = ?1 AND role <> 'tool' AND content LIKE ?2 ESCAPE '\\'
              ORDER BY timestamp DESC
              LIMIT 200"
         ).map_err(|e| e.to_string())?;
