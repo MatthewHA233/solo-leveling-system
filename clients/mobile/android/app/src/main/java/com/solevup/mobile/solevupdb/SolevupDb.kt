@@ -295,7 +295,7 @@ class SolevupDb(context: Context) :
       """.trimIndent()
     )
     seedFeatureBindings(db)
-    // 模型库跟随 desktop（只读）：种子先由 JS 静态表写入，首次同步后整表以 desktop 为准
+    // 模型库：种子先由 JS 静态表写入，之后和 desktop 双向同步，按行 updated_at 取新（mergeModelCatalog）
     db.execSQL(
       """
       CREATE TABLE IF NOT EXISTS model_registry (
@@ -308,10 +308,12 @@ class SolevupDb(context: Context) :
         notes TEXT,
         deprecated INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
-        currency TEXT NOT NULL DEFAULT 'CNY'
+        currency TEXT NOT NULL DEFAULT 'CNY',
+        deleted_at TEXT
       );
       """.trimIndent()
     )
+    addColumnIfMissing(db, "model_registry", "deleted_at", "deleted_at TEXT")
     db.execSQL(
       """
       CREATE TABLE IF NOT EXISTS model_pricing (
@@ -988,6 +990,8 @@ class SolevupDb(context: Context) :
     val id: String, val category: String, val provider: String, val displayName: String?,
     val modalities: String?, val contextWindow: Long?, val notes: String?, val deprecated: Int,
     val updatedAt: String, val currency: String, val pricing: List<SyncModelPricingRow>,
+    /** 删除标记：desktop 删掉的模型留一行带时间同步过来；界面不显示这种行 */
+    val deletedAt: String? = null,
   )
 
   data class SyncExport(
@@ -1215,6 +1219,8 @@ class SolevupDb(context: Context) :
       modelFreeQuota = freeQuota,
       featureBindings = bindings,
       settings = listSyncedSettings(),
+      // 和 desktop 一样只在全量导出时带模型库，含删除标记的行
+      modelRegistry = if (since == null) listModelCatalog(includeDeleted = true) else emptyList(),
     )
   }
 
@@ -1569,7 +1575,7 @@ class SolevupDb(context: Context) :
         mBindings++
       }
 
-      val mRegistry = if (payload.modelRegistry.isEmpty()) 0 else replaceModelCatalog(db, payload.modelRegistry)
+      val mRegistry = mergeModelCatalog(db, payload.modelRegistry)
 
       var mSettings = 0
       for (row in payload.settings) {
@@ -1765,14 +1771,37 @@ class SolevupDb(context: Context) :
     }
   }
 
-  // ── 模型库（镜像 desktop；Anthropic 的行手机端也会自己从 models.dev 拉，见 upsertModelCatalogRows） ──
+  // ── 模型库（和 desktop 双向同步；Anthropic 的行两端都会自己从 models.dev 拉，见 upsertModelCatalogRows） ──
 
-  private fun replaceModelCatalog(db: SQLiteDatabase, rows: List<SyncModelDefRow>, source: String = CATALOG_SOURCE_SYNC): Int {
+  /**
+   * 同步进来的模型库：按行 LWW（updated_at 取新），带 deleted_at 的行是删除标记。
+   * 规则和 desktop db.rs import_sync 的模型库一段相同，改规则要同时改两端
+   */
+  private fun mergeModelCatalog(db: SQLiteDatabase, rows: List<SyncModelDefRow>): Int {
+    if (rows.isEmpty()) return 0
     db.execSQL(
       "INSERT OR REPLACE INTO sync_meta (key, value, updated_at) VALUES ('model_catalog_source', ?, ?)",
-      arrayOf(source, nowIso()),
+      arrayOf(CATALOG_SOURCE_SYNC, nowIso()),
     )
-    // desktop 每次启动都会重跑种子刷新 updated_at，比内容才知道有没有真变化
+    var merged = 0
+    for (m in rows) {
+      val local = queryString(db, "SELECT updated_at FROM model_registry WHERE id = ?", arrayOf(m.id))
+      if (local != null && local >= m.updatedAt) continue
+      db.execSQL("DELETE FROM model_pricing WHERE model_id = ?", arrayOf(m.id))
+      db.execSQL("DELETE FROM model_registry WHERE id = ?", arrayOf(m.id))
+      insertCatalogRow(db, m)
+      merged++
+    }
+    return merged
+  }
+
+  /** 没同步过时用随包种子整表重写 */
+  private fun replaceModelCatalogWithSeeds(db: SQLiteDatabase, rows: List<SyncModelDefRow>): Int {
+    db.execSQL(
+      "INSERT OR REPLACE INTO sync_meta (key, value, updated_at) VALUES ('model_catalog_source', ?, ?)",
+      arrayOf(CATALOG_SOURCE_SEED, nowIso()),
+    )
+    // 随包种子每次启动都传进来，比内容才知道有没有变化
     val hash = rows.map { it.copy(updatedAt = "") }.toString().hashCode().toString()
     val stored = queryString(db, "SELECT value FROM sync_meta WHERE key = 'model_catalog_hash'", emptyArray())
     if (stored == hash) return 0
@@ -1789,10 +1818,10 @@ class SolevupDb(context: Context) :
   private fun insertCatalogRow(db: SQLiteDatabase, m: SyncModelDefRow) {
     db.execSQL(
       """INSERT INTO model_registry
-           (id, category, provider, display_name, modalities, context_window, notes, deprecated, updated_at, currency)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".trimIndent(),
+           (id, category, provider, display_name, modalities, context_window, notes, deprecated, updated_at, currency, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".trimIndent(),
       arrayOf(m.id, m.category, m.provider, m.displayName, m.modalities, m.contextWindow, m.notes,
-              m.deprecated, m.updatedAt, m.currency),
+              m.deprecated, m.updatedAt, m.currency, m.deletedAt),
     )
     for (t in m.pricing) {
       db.execSQL(
@@ -1810,8 +1839,8 @@ class SolevupDb(context: Context) :
    * 对齐 desktop 启动时的种子（seed_model_registry / seed_decision_models），JS 每次启动调一次：
    * - 没同步过（空表或库里还是种子）：整表换成随包种子，新版的价目能跟上。
    *   Anthropic 的行不在随包种子里（从 models.dev 拉，见 upsertModelCatalogRows），库里已有的原样带上
-   * - 同步过：已有的行以 desktop 为准不动（随包种子可能比 desktop 旧，不能覆盖），只补库里没有的行。
-   *   旧版 desktop 同步来的表可能没有决策模型的行，不补就算不出费用；内容哈希不动，下次同步内容变了仍然整表替换
+   * - 同步过：已有的行不动（随包种子可能比同步来的旧，不能覆盖），只补库里没有的行，带删除标记的也算有。
+   *   旧版 desktop 同步来的表可能没有决策模型的行，不补就算不出费用
    */
   fun seedModelCatalogIfEmpty(rows: List<SyncModelDefRow>): Boolean {
     val db = writableDatabase
@@ -1821,8 +1850,8 @@ class SolevupDb(context: Context) :
       val source = queryString(db, "SELECT value FROM sync_meta WHERE key = 'model_catalog_source'", emptyArray())
       val seeded = if (count == 0L || source == CATALOG_SOURCE_SEED) {
         val seedIds = rows.map { it.id }.toSet()
-        val pulled = listModelCatalog().filter { it.provider == PROVIDER_ANTHROPIC && it.id !in seedIds }
-        replaceModelCatalog(db, rows + pulled, CATALOG_SOURCE_SEED) > 0
+        val pulled = listModelCatalog(includeDeleted = true).filter { it.provider == PROVIDER_ANTHROPIC && it.id !in seedIds }
+        replaceModelCatalogWithSeeds(db, rows + pulled) > 0
       } else {
         var added = 0
         for (m in rows) {
@@ -1839,8 +1868,8 @@ class SolevupDb(context: Context) :
   }
 
   /**
-   * 手机端自己从 models.dev 拉来的行（Anthropic）：有就整行换掉（含价目），没有就加。
-   * 内容哈希不动：下次同步时 desktop 的内容变了仍然整表替换，没变就留着这里写的
+   * 手机端自己从 models.dev 拉来的行（Anthropic）：有就整行换掉（含价目，删除标记也清掉），没有就加。
+   * 行上的 updated_at 是拉取时间，下次同步按它和 desktop 比新旧
    */
   fun upsertModelCatalogRows(rows: List<SyncModelDefRow>): Int {
     val db = writableDatabase
@@ -1858,7 +1887,8 @@ class SolevupDb(context: Context) :
     }
   }
 
-  fun listModelCatalog(): List<SyncModelDefRow> {
+  /** includeDeleted：同步导出要带上有删除标记的行，界面不要 */
+  fun listModelCatalog(includeDeleted: Boolean = false): List<SyncModelDefRow> {
     val db = readableDatabase
     val tiers = HashMap<String, ArrayList<SyncModelPricingRow>>()
     db.rawQuery(
@@ -1873,8 +1903,9 @@ class SolevupDb(context: Context) :
     }
     val out = ArrayList<SyncModelDefRow>()
     db.rawQuery(
-      """SELECT id, category, provider, display_name, modalities, context_window, notes, deprecated, updated_at, currency
-         FROM model_registry ORDER BY category DESC, id DESC""".trimIndent(),
+      """SELECT id, category, provider, display_name, modalities, context_window, notes, deprecated, updated_at, currency, deleted_at
+         FROM model_registry ${if (includeDeleted) "" else "WHERE deleted_at IS NULL"}
+         ORDER BY category DESC, id DESC""".trimIndent(),
       null,
     ).use { c ->
       fun str(i: Int) = if (c.isNull(i)) null else c.getString(i)
@@ -1883,7 +1914,7 @@ class SolevupDb(context: Context) :
         out.add(SyncModelDefRow(
           id, c.getString(1), c.getString(2), str(3), str(4),
           if (c.isNull(5)) null else c.getLong(5), str(6), c.getInt(7), c.getString(8), c.getString(9),
-          tiers[id] ?: emptyList(),
+          tiers[id] ?: emptyList(), str(10),
         ))
       }
     }

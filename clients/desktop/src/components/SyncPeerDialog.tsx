@@ -333,7 +333,7 @@ export default function SyncPeerDialog({ open, onClose, anchorRect, nextSyncAt, 
         (s.activity_categories ?? 0) + (s.activity_tags ?? 0) + (s.activity_blocks ?? 0)
         + (s.plan_nodes ?? 0) + (s.planned_blocks ?? 0)
         + (s.model_api_keys ?? 0) + (s.model_call_log ?? 0)
-        + (s.model_free_quota ?? 0) + (s.feature_bindings ?? 0)
+        + (s.model_free_quota ?? 0) + (s.feature_bindings ?? 0) + (s.model_registry ?? 0)
         + (s.chat_sessions ?? 0) + (s.chat_messages ?? 0)
       const total = sumSide(result.pulled) + sumSide(result.pushed)
       setMessage(`与 ${link.alias} 同步完成 · ${total} 条变更`)

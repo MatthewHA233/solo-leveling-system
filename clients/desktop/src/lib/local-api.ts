@@ -530,6 +530,7 @@ export interface SyncImportResult {
   model_call_log: number
   model_free_quota: number
   feature_bindings: number
+  model_registry?: number
   chat_sessions?: number
   chat_messages?: number
   settings?: number
@@ -1213,6 +1214,7 @@ export interface ModelDef {
   deprecated: boolean
   updated_at: string
   currency?: string                   // 'CNY' | 'USD'
+  deleted_at?: string | null          // 删除标记，只在同步里出现；list_models 不返回带标记的行
   pricing: ModelPricingTier[]
 }
 

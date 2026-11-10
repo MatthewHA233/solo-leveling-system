@@ -137,7 +137,7 @@ class SyncHttpServer(
       put("tables", JSONArray(listOf(
         "activity_categories", "activity_tags", "activity_blocks",
         "plan_nodes", "planned_blocks",
-        "model_api_keys", "model_call_log", "model_free_quota", "feature_bindings",
+        "model_api_keys", "model_call_log", "model_free_quota", "feature_bindings", "model_registry",
         "chat_sessions", "chat_messages",
       )))
       put("alias", db.syncAlias())

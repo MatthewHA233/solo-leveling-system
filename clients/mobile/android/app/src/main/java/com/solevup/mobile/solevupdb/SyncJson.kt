@@ -99,6 +99,7 @@ object SyncJson {
         put("feature", r.feature); put("model_id", r.modelId); put("updated_at", r.updatedAt)
       })
     })
+    o.put("model_registry", modelCatalogToJson(ex.modelRegistry))
   }
 
   fun modelCallLogToJson(r: SolevupDb.SyncModelCallLogRow): JSONObject = JSONObject().apply {
@@ -158,6 +159,7 @@ object SyncJson {
       put("notes", m.notes ?: JSONObject.NULL)
       put("deprecated", m.deprecated == 1)
       put("updated_at", m.updatedAt); put("currency", m.currency)
+      put("deleted_at", m.deletedAt ?: JSONObject.NULL)
       put("pricing", JSONArray().apply {
         for (t in m.pricing) put(JSONObject().apply {
           put("tier_min_tokens", t.tierMinTokens)
@@ -394,6 +396,7 @@ object SyncJson {
         notes = nullable(m, "notes"),
         deprecated = if (m.optBoolean("deprecated")) 1 else 0,
         updatedAt = m.optString("updated_at"), currency = m.optString("currency", "CNY"),
+        deletedAt = nullable(m, "deleted_at"),
         pricing = arr(m, "pricing") { t ->
           SolevupDb.SyncModelPricingRow(
             tierMinTokens = t.optLong("tier_min_tokens"),

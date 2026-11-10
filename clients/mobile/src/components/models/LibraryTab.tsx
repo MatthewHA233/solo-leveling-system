@@ -41,7 +41,7 @@ export default function LibraryTab({
       <View style={styles.head}>
         <View style={styles.headText}>
           <Text style={styles.title}>模型库</Text>
-          <Text style={styles.muted}>由电脑端同步，Claude 的模型也能从 models.dev 更新 · 历史调用成本不回溯</Text>
+          <Text style={styles.muted}>和电脑端双向同步，Claude 的模型能从 models.dev 更新 · 历史调用成本不回溯</Text>
         </View>
         <View style={styles.actions}>
           <Pressable accessibilityRole="button" hitSlop={6} disabled={pullingClaude} onPress={onPullClaude}>

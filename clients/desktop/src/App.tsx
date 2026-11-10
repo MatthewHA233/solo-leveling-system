@@ -1034,7 +1034,7 @@ export default function App() {
       const { listen } = await import('@tauri-apps/api/event')
       if (cancelled) return
       // 拆解 SyncImportResult / SyncRoundResult 成简洁中文行
-      const fmtImport = (r: { activity_categories?: number; activity_tags?: number; activity_blocks?: number; plan_nodes?: number; planned_blocks?: number; model_call_log?: number; model_api_keys?: number; model_free_quota?: number; feature_bindings?: number; chat_sessions?: number; chat_messages?: number; settings?: number; chat_images?: number; skipped?: number } | null | undefined): string => {
+      const fmtImport = (r: { activity_categories?: number; activity_tags?: number; activity_blocks?: number; plan_nodes?: number; planned_blocks?: number; model_call_log?: number; model_api_keys?: number; model_free_quota?: number; feature_bindings?: number; model_registry?: number; chat_sessions?: number; chat_messages?: number; settings?: number; chat_images?: number; skipped?: number } | null | undefined): string => {
         if (!r) return '0 条'
         const parts: string[] = []
         if (r.activity_categories) parts.push(`分类×${r.activity_categories}`)
@@ -1046,6 +1046,7 @@ export default function App() {
         if (r.model_api_keys) parts.push(`API key×${r.model_api_keys}`)
         if (r.model_free_quota) parts.push(`免费额度×${r.model_free_quota}`)
         if (r.feature_bindings) parts.push(`功能绑定×${r.feature_bindings}`)
+        if (r.model_registry) parts.push(`模型库×${r.model_registry}`)
         if (r.chat_sessions) parts.push(`聊天会话×${r.chat_sessions}`)
         if (r.chat_messages) parts.push(`聊天消息×${r.chat_messages}`)
         if (r.settings) parts.push(`设置×${r.settings}`)
@@ -1164,7 +1165,8 @@ export default function App() {
               (pulled?.model_api_keys ?? 0) +
               (pulled?.model_call_log ?? 0) +
               (pulled?.model_free_quota ?? 0) +
-              (pulled?.feature_bindings ?? 0)
+              (pulled?.feature_bindings ?? 0) +
+              (pulled?.model_registry ?? 0)
             if (pulledCount > 0) {
               const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`
               Promise.all([

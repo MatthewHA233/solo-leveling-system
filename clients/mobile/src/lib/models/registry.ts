@@ -1,8 +1,8 @@
 // ══════════════════════════════════════════════
 // 模型注册表（mobile 版）— 种子与 desktop db.rs seed_model_registry / jev.rs 同源
 //
-// 真正的模型库在 SQLite（model_registry / model_pricing）：desktop 全量同步时带过来，
-// 手机端是它的镜像，比内容哈希决定是否整表替换（SolevupDb.replaceModelCatalog）。
+// 真正的模型库在 SQLite（model_registry / model_pricing），和 desktop 双向同步：
+// 两端都导出，收到后按行合并，updated_at 新的赢，删除靠 deleted_at 标记传过去（SolevupDb.mergeModelCatalog）。
 // 这里的静态种子在「还没和 desktop 同步过」时写进库垫底；同步过时只补库里缺的行，让费用能算、绑定能选。
 // Anthropic 的模型不在种子里：两端各自从 models.dev 拉（models-dev.ts、pullAnthropicModels），启动时拉一次，模型中心里也能手动拉。
 // models.dev 和 Anthropic 一样从「网络代理」的端口出去（AppProxy.kt），没配端口时跟随系统代理或 VPN。
@@ -42,6 +42,7 @@ export interface ModelDef {
   deprecated: boolean
   updated_at: string
   currency?: string              // 'CNY' | 'USD'
+  deleted_at?: string | null     // 删除标记，只在同步里出现；读库时不返回带标记的行
   pricing: ModelPricingTier[]
 }
 

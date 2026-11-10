@@ -37,6 +37,7 @@ object SyncLog {
       "API key" to r.modelApiKeys,
       "免费额度" to r.modelFreeQuota,
       "功能绑定" to r.featureBindings,
+      "模型库" to r.modelRegistry,
       "聊天会话" to r.chatSessions,
       "聊天消息" to r.chatMessages,
       "设置" to r.settings,

@@ -99,7 +99,8 @@ pub(crate) fn seed_decision_models(conn: &Connection) -> Result<(), String> {
              VALUES (?1, 'decision', 'vercel', ?2, ?3, ?4, ?5, 0, ?6)
              ON CONFLICT(id) DO UPDATE SET category = excluded.category, provider = excluded.provider,
                  display_name = excluded.display_name, modalities = excluded.modalities,
-                 context_window = excluded.context_window, notes = excluded.notes, updated_at = excluded.updated_at",
+                 context_window = excluded.context_window, notes = excluded.notes, updated_at = excluded.updated_at,
+                 deleted_at = NULL",
             params![id, name, modalities, ctx, note, now],
         )
         .map_err(|e| e.to_string())?;

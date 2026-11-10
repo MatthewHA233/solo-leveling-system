@@ -611,6 +611,7 @@ async fn sync_hello(
                     "model_call_log",
                     "model_free_quota",
                     "feature_bindings",
+                    "model_registry",
                     "chat_sessions",
                     "chat_messages",
                 ],
@@ -674,6 +675,7 @@ async fn sync_import(
                 + result.model_call_log
                 + result.model_free_quota
                 + result.feature_bindings
+                + result.model_registry
                 + result.settings;
             if total > 0 {
                 let _ = state.app_handle.emit("sync:imported", serde_json::json!({

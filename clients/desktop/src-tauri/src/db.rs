@@ -206,8 +206,7 @@ pub struct SyncExport {
     pub feature_bindings: Vec<SyncFeatureBinding>,
     #[serde(default)]
     pub settings: Vec<SyncSetting>,
-    /// 模型库快照，只在全量导出时带上：手机没有内置价目更新，靠它算费用。
-    /// 桌面端各有自己的种子，收到后不写库。
+    /// 模型库，只在全量导出时带上（含删除标记的行）。两端都导出，收到后按行合并：updated_at 取新
     #[serde(default)]
     pub model_registry: Vec<ModelDef>,
 }
@@ -369,6 +368,8 @@ pub struct SyncImportResult {
     pub model_free_quota: usize,
     #[serde(default)]
     pub feature_bindings: usize,
+    #[serde(default)]
+    pub model_registry: usize,
     #[serde(default)]
     pub chat_sessions: usize,
     #[serde(default)]
@@ -1471,6 +1472,7 @@ impl Database {
 
         // 首次启动写入百炼模型库与默认绑定种子（已存在则跳过，幂等）
         ensure_column(&conn, "model_registry", "currency", "currency TEXT NOT NULL DEFAULT 'CNY'")?;
+        ensure_column(&conn, "model_registry", "deleted_at", "deleted_at TEXT")?;
         ensure_column(&conn, "model_call_log", "cost_usd", "cost_usd REAL")?;
         seed_model_registry(&conn)?;
         seed_feature_bindings(&conn)?;
@@ -2332,7 +2334,7 @@ impl Database {
     pub async fn export_sync(&self, since: Option<String>) -> Result<SyncExport, String> {
         // list_models 自己会拿连接锁，必须放在 lock 之前
         let model_registry = if since.is_none() {
-            self.list_models().await.unwrap_or_default()
+            self.load_models(true).await.unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -2596,6 +2598,7 @@ impl Database {
             model_call_log: 0,
             model_free_quota: 0,
             feature_bindings: 0,
+            model_registry: 0,
             chat_sessions: 0,
             chat_messages: 0,
             settings: 0,
@@ -2941,6 +2944,53 @@ impl Database {
                 params![&row.feature, &row.model_id, &row.updated_at],
             ).map_err(|e| e.to_string())?;
             result.feature_bindings += 1;
+        }
+
+        // ── 模型库：按行 LWW by updated_at，PK=id；带 deleted_at 的行是删除标记 ──
+        // 规则两端各有一份（手机端 SolevupDb.kt mergeModelCatalog），改规则要同时改两端
+        for def in payload.model_registry {
+            let local_updated: Option<String> = conn.query_row(
+                "SELECT updated_at FROM model_registry WHERE id = ?",
+                params![&def.id],
+                |r| r.get(0),
+            ).optional().map_err(|e| e.to_string())?;
+            if local_updated.as_deref().map(|t| def.updated_at.as_str() <= t).unwrap_or(false) {
+                result.skipped += 1;
+                continue;
+            }
+            let currency = if def.currency.is_empty() { "CNY" } else { def.currency.as_str() };
+            conn.execute(
+                "INSERT INTO model_registry
+                 (id, category, provider, display_name, modalities, context_window, notes, deprecated, updated_at, currency, deleted_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   category=excluded.category, provider=excluded.provider, display_name=excluded.display_name,
+                   modalities=excluded.modalities, context_window=excluded.context_window,
+                   notes=excluded.notes, deprecated=excluded.deprecated, updated_at=excluded.updated_at,
+                   currency=excluded.currency, deleted_at=excluded.deleted_at",
+                params![
+                    &def.id, &def.category, &def.provider, &def.display_name,
+                    &def.modalities, &def.context_window, &def.notes,
+                    if def.deprecated { 1 } else { 0 }, &def.updated_at, currency, &def.deleted_at,
+                ],
+            ).map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM model_pricing WHERE model_id = ?", params![&def.id])
+                .map_err(|e| e.to_string())?;
+            for t in &def.pricing {
+                conn.execute(
+                    "INSERT INTO model_pricing
+                     (model_id, tier_min_tokens, tier_max_tokens,
+                      price_input_text, price_input_image, price_input_video, price_input_audio,
+                      price_output_text, price_output_text_thinking, price_output_audio)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        &def.id, t.tier_min_tokens, t.tier_max_tokens,
+                        t.price_input_text, t.price_input_image, t.price_input_video, t.price_input_audio,
+                        t.price_output_text, t.price_output_text_thinking, t.price_output_audio,
+                    ],
+                ).map_err(|e| e.to_string())?;
+            }
+            result.model_registry += 1;
         }
 
         Ok(result)
@@ -5637,6 +5687,8 @@ pub struct ModelDef {
     pub updated_at: String,
     #[serde(default)]
     pub currency: String,                 // 'CNY' | 'USD'（决定费用记在 cost_cny 还是 cost_usd）；前端新增模型时不带，upsert_model 按 CNY 记
+    #[serde(default)]
+    pub deleted_at: Option<String>,       // 删除标记：删掉的模型留一行，同步时另一端才知道要删；list_models 不返回
     pub pricing: Vec<ModelPricingTier>,   // 按 tier_min_tokens 升序
 }
 
@@ -5972,7 +6024,8 @@ fn seed_model_registry(conn: &rusqlite::Connection) -> Result<(), String> {
                    display_name=excluded.display_name,
                    modalities=excluded.modalities,
                    context_window=excluded.context_window,
-                   updated_at=excluded.updated_at",
+                   updated_at=excluded.updated_at,
+                   deleted_at=NULL",
                 params![id, category, row_display_name, modalities_json, ctx_opt, &now],
             ).map_err(|e| e.to_string())?;
 
@@ -6072,15 +6125,21 @@ impl Database {
     // ── model_registry ──
 
     pub async fn list_models(&self) -> Result<Vec<ModelDef>, String> {
+        self.load_models(false).await
+    }
+
+    /// include_deleted：同步导出要带上有删除标记的行，界面不要
+    async fn load_models(&self, include_deleted: bool) -> Result<Vec<ModelDef>, String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT id, category, provider, display_name, modalities,
-                    context_window, notes, deprecated, updated_at, currency
+                    context_window, notes, deprecated, updated_at, currency, deleted_at
              FROM model_registry
+             WHERE ?1 OR deleted_at IS NULL
              ORDER BY category DESC, id DESC"
         ).map_err(|e| e.to_string())?;
 
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map(params![include_deleted], |r| {
             Ok(ModelDef {
                 id:             r.get(0)?,
                 category:       r.get(1)?,
@@ -6092,6 +6151,7 @@ impl Database {
                 deprecated:     r.get::<_, i64>(7)? != 0,
                 updated_at:     r.get(8)?,
                 currency:       r.get(9)?,
+                deleted_at:     r.get(10)?,
                 pricing:        Vec::new(),
             })
         }).map_err(|e| e.to_string())?;
@@ -6145,7 +6205,7 @@ impl Database {
                category=excluded.category, provider=excluded.provider, display_name=excluded.display_name,
                modalities=excluded.modalities, context_window=excluded.context_window,
                notes=excluded.notes, deprecated=excluded.deprecated, updated_at=excluded.updated_at,
-               currency=excluded.currency",
+               currency=excluded.currency, deleted_at=NULL",
             params![
                 &def.id, &def.category, &def.provider, &def.display_name,
                 &def.modalities, &def.context_window, &def.notes,
@@ -6175,10 +6235,16 @@ impl Database {
         Ok(())
     }
 
+    /// 价目删掉，模型行留下当删除标记，同步时另一端才知道要删。之后种子、拉取或手动新增同一个 id 会把它恢复
     pub async fn delete_model(&self, model_id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
-        conn.execute("DELETE FROM model_registry WHERE id = ?", rusqlite::params![model_id])
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute("DELETE FROM model_pricing WHERE model_id = ?", rusqlite::params![model_id])
             .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE model_registry SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            rusqlite::params![&now, &now, model_id],
+        ).map_err(|e| e.to_string())?;
         Ok(())
     }
 

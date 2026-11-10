@@ -39,8 +39,8 @@ function summarize(r: ImportResult): string {
   if (blocks > 0) parts.push(`时间块 ${blocks}`)
   if (r.activityCategories + r.activityTags > 0) parts.push(`标签 ${r.activityCategories + r.activityTags}`)
   if (r.chatSessions + r.chatMessages > 0) parts.push(`聊天 ${r.chatMessages}`)
-  if (r.modelApiKeys + r.modelCallLog + r.featureBindings > 0) {
-    parts.push(`模型数据 ${r.modelApiKeys + r.modelCallLog + r.featureBindings}`)
+  if (r.modelApiKeys + r.modelCallLog + r.featureBindings + r.modelRegistry > 0) {
+    parts.push(`模型数据 ${r.modelApiKeys + r.modelCallLog + r.featureBindings + r.modelRegistry}`)
   }
   if (r.settings > 0) parts.push(`设置 ${r.settings}`)
   if (r.chatImages > 0) parts.push(`聊天图片 ${r.chatImages}`)

@@ -406,6 +406,7 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 - 全量 `/api/sync/{hello,export,import}`：活动数据、Key、模型用量，按 LWW 合并。Fish Key 也在 Key 库里（`provider='fish'`、`id='fish-audio'`）。
 - Key 启用：每个提供商一把。没有启用的就启用最近更新的一把，不改 `updated_at`，打开数据库和同步导入后都检查。规则两端各有一份（`db.rs ensure_provider_active_keys`、`SolevupDb.kt ensureProviderActiveKeys`），改规则要同时改两端。
 - 设置：表 `synced_settings`，跟着全量同步，按 `updated_at` 取新。现在只有 Fish 音色和模型，其他配置每台设备各管各的。手动改才写表，同步进来的只更新配置，不写回。规则两端各有一份（两端 `lib/agent/synced-settings.ts`、`db.rs SYNCED_SETTING_KEYS`、`SolevupDb.kt SYNCED_SETTING_KEYS`），改规则要同时改两端。
+- 模型库（`model_registry` + `model_pricing`）：跟着全量同步，两端都导出，收到后按行合并，`updated_at` 新的赢；删除留一行 `deleted_at` 标记传过去，种子、拉取或手动新增同一个 id 会恢复。规则两端各有一份（`db.rs import_sync` 的模型库一段、`SolevupDb.kt mergeModelCatalog`），改规则要同时改两端。
 - 聊天增量 `/api/sync/chat`：触发器写 `chat_sync_log`，按对端存游标，不进全量导出。
 - 聊天里还有两种 `role='tool'` 的行跟着聊天增量走：`compact_summary`（压缩摘要）和 `tool_trace`（一轮的工具调用和结果）。格式和恢复规则两端各有一份（两端 `lib/agent/chat-history.ts`，逐字一致），改要同时改两端；搜索会话时两端都排除 tool 行。
 - 合并规则两端各有一份（`db.rs chat_sync_import`、`SolevupDb.kt importChatPage`）。改规则要同时改两端，并更新和运行 `python3 clients/mobile/alignment/chat_sync_sim.py`。
