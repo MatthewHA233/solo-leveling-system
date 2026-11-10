@@ -37,6 +37,7 @@ export const SCOPE = [
       { file: `${D}lib/agent/agent-config.ts`, target: `${M}lib/agent/agent-config.ts` },
       { file: `${D}lib/agent/agent-memory.ts`, target: `${M}lib/agent/agent-memory.ts` },
       { file: `${D}lib/agent/chat-history.ts`, target: `${M}lib/agent/chat-history.ts` },
+      { file: `${D}lib/agent/tool-call-view.ts`, target: `${M}lib/agent/tool-call-view.ts` },
       { file: `${D}lib/agent/chat-compaction.ts`, target: `${M}lib/agent/chat-compaction.ts` },
       { file: `${D}lib/agent/agent-tools.ts`, target: `${M}lib/agent/tools/` },
       { file: `${D}lib/agent/index.ts`, target: `${M}lib/agent/index.ts` },
@@ -100,6 +101,7 @@ export const SCOPE = [
     title: '聊天面板、气泡、Markdown、调试弹窗',
     files: [
       { file: `${D}components/ChatPanel.tsx`, target: `${M}components/fairy/` },
+      { file: `${D}components/ToolCallRow.tsx`, target: `${M}components/fairy/ToolCallRow.tsx` },
       { file: `${D}components/FairyMarkdown.tsx`, target: `${M}components/fairy/FairyMarkdown.tsx` },
       { file: `${D}components/DebugRequestModal.tsx`, target: `${M}components/fairy/DebugRequestModal.tsx` },
       { file: `${D}components/OmniDebugModal.tsx`, target: `${M}components/fairy/DebugRequestModal.tsx` },
