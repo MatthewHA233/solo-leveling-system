@@ -3,7 +3,8 @@
 //
 // chat_messages 里除了主人和 Fairy 的话，还有两种 role='tool' 的行（旧版本读到 tool 行一律跳过，不受影响）：
 //   · compact_summary：压缩摘要。行的时间 = 保留段第一条的时间 − 1 毫秒，比它早的行都已经在摘要里
-//   · tool_trace：一轮里的工具调用和结果（JSON），时间 = 主人那句 + 1 毫秒。切会话、重启后工具记录还在
+//   · tool_trace：一轮里的工具调用和结果（JSON），时间 = 主人那句 + 1 毫秒。切会话、重启后工具记录还在，
+//     界面上的工具调用行也从它还原（toolCallsOfTrace）
 // 两种行都跟着聊天增量同步到另一台设备。
 // ══════════════════════════════════════════════
 
@@ -19,6 +20,7 @@ import {
 } from '../llm/types'
 import type { SessionMessage } from './agent-memory'
 import { describeImagesForModel, parseImageMarker } from './chat-images'
+import type { ToolCallView } from './tool-call-view'
 
 export const COMPACT_SUMMARY_ROW = 'compact_summary'
 export const TOOL_TRACE_ROW = 'tool_trace'
@@ -90,17 +92,31 @@ export function toolTraceRow(turn: readonly Message[], userTimestamp: string): S
   return rowBase(JSON.stringify(trace), TOOL_TRACE_ROW, shiftMs(userTimestamp, 1))
 }
 
-function traceToMessages(row: SessionMessage): Message[] {
-  let trace: ToolTrace
+const NO_RESULT = '（没有记录到这次调用的结果）'
+
+/** 工具记录行里的各步；内容坏了返回空 */
+function traceSteps(row: SessionMessage): readonly ToolTraceStep[] {
   try {
-    trace = JSON.parse(row.content ?? '') as ToolTrace
+    const trace = JSON.parse(row.content ?? '') as ToolTrace
+    return Array.isArray(trace?.steps) ? trace.steps.filter((step) => step?.calls?.length) : []
   } catch {
     return []
   }
-  const steps: readonly ToolTraceStep[] = Array.isArray(trace?.steps) ? trace.steps : []
+}
+
+/** 工具记录行 → 界面上的工具调用，一次调用一项（恢复会话、同步进来的增量用）；库里没存耗时 */
+export function toolCallsOfTrace(row: SessionMessage): ToolCallView[] {
+  return traceSteps(row).flatMap((step) => step.calls.map((c) => ({
+    id: c.id,
+    name: c.name,
+    arguments: c.arguments,
+    result: step.results?.find((r) => r.id === c.id)?.result ?? NO_RESULT,
+  })))
+}
+
+function traceToMessages(row: SessionMessage): Message[] {
   const out: Message[] = []
-  for (const step of steps) {
-    if (!step?.calls?.length) continue
+  for (const step of traceSteps(row)) {
     const calls = step.calls.map((c) => {
       let input: Record<string, unknown> = {}
       try { input = JSON.parse(c.arguments || '{}') as Record<string, unknown> } catch { /* 参数坏了就当没参数 */ }
@@ -109,7 +125,7 @@ function traceToMessages(row: SessionMessage): Message[] {
     out.push(createToolUseMessage(step.text ?? '', calls, { timestamp: row.timestamp }))
     // 每个调用都要有结果，否则接口报错
     for (const c of step.calls) {
-      const result = step.results?.find((r) => r.id === c.id)?.result ?? '（没有记录到这次调用的结果）'
+      const result = step.results?.find((r) => r.id === c.id)?.result ?? NO_RESULT
       out.push(createToolResultMessage(c.id, result, { timestamp: row.timestamp }))
     }
   }

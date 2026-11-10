@@ -30,6 +30,7 @@ import type { SessionMessage } from './agent-memory'
 import type { CompactionContext } from './chat-compaction'
 import { runThoughtDistill } from './chat-distill'
 import { toolTraceRow } from './chat-history'
+import { startToolCall } from './tool-call-view'
 import { withImageMarker } from './chat-images'
 import type { ChatCore } from './chat-core'
 import type { PromptFlow } from './chat-prompt'
@@ -230,14 +231,11 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
             // 工具调用开始：立即把积压的文字刷给 TTS（否则工具执行期间静音）
             tts?.push('', true)
             if (ownsUi()) core.emitFairy('thinking')
-            let argsPreview = ''
-            try { argsPreview = JSON.stringify(JSON.parse(event.call.arguments), null, 0) } catch { argsPreview = event.call.arguments }
-            core.addSystemNote(`⚙ ${event.call.name}(${argsPreview})`, `tool-${event.call.id}`)
+            core.addToolCall(startToolCall(event.call.id, event.call.name, event.call.arguments))
           } else if (event.type === 'toolCallDone') {
-            // 工具完成：把结果追加到对应的系统消息气泡里
+            // 工具完成：结果记到对应的那一行上
             if (ownsUi()) core.emitFairy('thinking')
-            const resultPreview = event.result.length > 300 ? event.result.slice(0, 300) + '…' : event.result
-            core.patchMessage(`tool-${event.call.id}`, (m) => ({ ...m, content: m.content + `\n→ ${resultPreview}` }))
+            core.finishToolCall(event.call.id, event.result)
           } else if (event.type === 'error') {
             if (interrupted) return // 主人打断导致的中止，不算错误
             // API 错误（工具调用后的第二次请求失败是常见原因）→ 直接显示给用户

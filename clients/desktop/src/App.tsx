@@ -34,7 +34,8 @@ import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
 import { runQueryLoop } from './lib/llm/query-loop'
 import { contextBudget, estimateContextTokens, roughTokens, withSystemReminder, type CompactionResult, type ContextBudget } from './lib/llm/context-window'
 import { createCompactor, type CompactionContext } from './lib/agent/chat-compaction'
-import { compactNotice, compactSummaryRow, isCompactSummaryRow, restoreLLMHistory, toolTraceRow } from './lib/agent/chat-history'
+import { compactNotice, compactSummaryRow, isCompactSummaryRow, restoreLLMHistory, TOOL_TRACE_ROW, toolCallsOfTrace, toolTraceRow } from './lib/agent/chat-history'
+import { finishToolCall, startToolCall, toolCallLine, type ToolCallView } from './lib/agent/tool-call-view'
 import { withBrowserArgs } from './lib/webview-args'
 import { buildAsrContext, buildAsrVocabulary } from './lib/voice/asr-hints'
 import { createUserMessage, getMessageText, isAssistantMessage, userContentWithImages } from './lib/llm/types'
@@ -156,6 +157,17 @@ export interface ChatMessage {
   readonly usage?: ModelCallLog                   // 该 AI 回复对应的模型调用审计快照
   readonly images?: readonly { id: string; url: string }[]  // 主人发的图片（规则见 lib/agent/chat-images.ts）
   readonly summary?: string              // 压缩提示（system）点开看到的摘要（规则见 lib/agent/chat-history.ts）
+  readonly tool?: ToolCallView           // 一次工具调用（system）：单独一行，点开看参数和结果（规则见 lib/agent/tool-call-view.ts）
+}
+
+/** 工具调用在聊天里的那条消息；id 按调用 id 定，结果出来时按它找回这一条 */
+function toolCallMessage(call: ToolCallView, timestamp: string): ChatMessage {
+  return { id: `tool-${call.id}`, role: 'system', content: toolCallLine(call), timestamp, tool: call }
+}
+
+/** 工具跑完：把结果记到对应的那一行上 */
+function finishToolCallMessage(messages: readonly ChatMessage[], callId: string, result: string): ChatMessage[] {
+  return messages.map((m) => (m.id === `tool-${callId}` && m.tool ? { ...m, tool: finishToolCall(m.tool, result) } : m))
 }
 
 type FairyActionPayload =
@@ -203,12 +215,15 @@ function clampFairyScale(value: unknown): number {
 function sessionMessagesToChatMessages(msgs: readonly SessionMessage[], audioDir = ''): ChatMessage[] {
   const out: ChatMessage[] = []
   for (const m of msgs) {
-    // 压缩摘要显示成一条提示，点开能看；工具记录不显示
+    // 压缩摘要显示成一条提示，点开能看；工具记录还原成一次调用一行
     if (isCompactSummaryRow(m) && m.content?.trim()) {
       out.push({ id: crypto.randomUUID(), role: 'system', content: compactNotice(), summary: m.content, timestamp: m.timestamp })
       continue
     }
-    if (m.role === 'tool') continue
+    if (m.role === 'tool') {
+      if (m.name === TOOL_TRACE_ROW) out.push(...toolCallsOfTrace(m).map((call) => toolCallMessage(call, m.timestamp)))
+      continue
+    }
     const { ids: imageIds, text: content } = parseImageMarker((m.content ?? '').trim())
     // 音频气泡：即使没有文字也要还原（content 可能是 transcript）
     const hasAudio = !!(m.audioPath && audioDir)
@@ -1930,24 +1945,15 @@ export default function App() {
           watchdog.arm()
           console.log('[Omni] tool_call', payload.name, payload.arguments)
           emitFairy('thinking')
-          let argsPreview = payload.arguments
-          try { argsPreview = JSON.stringify(JSON.parse(payload.arguments), null, 0) } catch {}
-          const toolMsgId = `tool-${payload.call_id}`
-          setChatMessages((prev) => [...prev, {
-            id: toolMsgId, role: 'system' as const,
-            content: `⚙ ${payload.name}(${argsPreview})`,
-            timestamp: new Date().toISOString(),
-          }])
+          const toolCall = startToolCall(payload.call_id, payload.name, payload.arguments)
+          setChatMessages((prev) => [...prev, toolCallMessage(toolCall, new Date().toISOString())])
           let result: string
           try {
             result = await executeAgentTool(payload.name, payload.arguments)
           } catch (err) {
             result = `工具执行失败：${err instanceof Error ? err.message : String(err)}`
           }
-          const preview = result.length > 300 ? result.slice(0, 300) + '…' : result
-          setChatMessages((prev) => prev.map((m) =>
-            m.id === toolMsgId ? { ...m, content: m.content + `\n→ ${preview}` } : m
-          ))
+          setChatMessages((prev) => finishToolCallMessage(prev, payload.call_id, result))
           // 工具跑的时候这一轮已经作废（连接换过了）：这个 call_id 新连接不认识
           if (epoch !== omniTurnEpochRef.current) return
           omniToolsRunningRef.current -= 1
@@ -2750,22 +2756,12 @@ export default function App() {
             // 工具调用开始：立即把 sentBuf 里积压的文字刷给 TTS（否则工具执行期间静音）
             pushToTts('', true)
             emitFairy('thinking')
-            let argsPreview = ''
-            try { argsPreview = JSON.stringify(JSON.parse(event.call.arguments), null, 0) } catch { argsPreview = event.call.arguments }
-            setChatMessages((prev) => [...prev, {
-              id: `tool-${event.call.id}`, role: 'system' as const,
-              content: `⚙ ${event.call.name}(${argsPreview})`,
-              timestamp: new Date().toISOString(),
-            }])
+            const toolCall = startToolCall(event.call.id, event.call.name, event.call.arguments)
+            setChatMessages((prev) => [...prev, toolCallMessage(toolCall, new Date().toISOString())])
           } else if (event.type === 'toolCallDone') {
-            // 工具完成：把结果追加到对应的系统消息气泡里
+            // 工具完成：结果记到对应的那一行上
             emitFairy('thinking')
-            const resultPreview = event.result.length > 300 ? event.result.slice(0, 300) + '…' : event.result
-            setChatMessages((prev) => prev.map((m) =>
-              m.id === `tool-${event.call.id}`
-                ? { ...m, content: m.content + `\n→ ${resultPreview}` }
-                : m
-            ))
+            setChatMessages((prev) => finishToolCallMessage(prev, event.call.id, event.result))
           } else if (event.type === 'error') {
             if (interrupted) return // 主人打断导致的中止，不算错误
             // API 错误（工具调用后的第二次请求失败是常见原因）→ 直接显示给用户

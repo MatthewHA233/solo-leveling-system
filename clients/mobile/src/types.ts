@@ -3,6 +3,7 @@
 // ══════════════════════════════════════════════
 
 import type { OmniDebugInfo } from './components/fairy/types'
+import type { ToolCallView } from './lib/agent/tool-call-view'
 import type { ApiRequestSnapshot } from './lib/llm/api'
 import type { ModelCallLog } from './lib/models/model-audit'
 
@@ -81,4 +82,6 @@ export interface ChatMessage {
   usage?: ModelCallLog | null
   /** 压缩提示（system）点开看到的摘要（规则见 lib/agent/chat-history.ts） */
   summary?: string
+  /** 一次工具调用（system）：单独一行，点开看参数和结果（规则见 lib/agent/tool-call-view.ts） */
+  tool?: ToolCallView
 }

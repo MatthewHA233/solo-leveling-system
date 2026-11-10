@@ -6,6 +6,7 @@
 // debugSnapshots / omniDebugInfo / usage / audio.path 都是可选，有值时气泡才显示对应功能。
 // ══════════════════════════════════════════════
 
+import type { ToolCallView } from '../../lib/agent/tool-call-view'
 import type { ApiRequestSnapshot } from '../../lib/llm/api'
 import type { ModelCallLog } from '../../lib/models/model-audit'
 import type { ChatImageAttachment } from '../../types'
@@ -53,6 +54,8 @@ export interface FairyMessage {
   readonly usage?: ModelCallLog | null
   /** 压缩提示点开看到的摘要（规则见 lib/agent/chat-history.ts） */
   readonly summary?: string
+  /** 一次工具调用：单独一行，点开看参数和结果（规则见 lib/agent/tool-call-view.ts） */
+  readonly tool?: ToolCallView
 }
 
 export interface FairyGazeTarget {

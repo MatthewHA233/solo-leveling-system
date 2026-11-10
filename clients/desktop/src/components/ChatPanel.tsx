@@ -28,6 +28,7 @@ import Tooltip from './Tooltip'
 import HudSelect from './HudSelect'
 import ModelUsageBadge from './ModelUsageBadge'
 import IconButton from './ui/IconButton'
+import ToolCallRow from './ToolCallRow'
 import LedSegments from './ui/LedSegments'
 import FairyMarkdown from './FairyMarkdown'
 
@@ -1026,7 +1027,10 @@ function Bubble({ message, agentName, userCallsign, onDebug, onOmniDebug }: {
   // 压缩提示：一行小字，点开看摘要
   if (message.role === 'system' && message.summary) return <CompactNotice text={message.content} summary={message.summary} />
 
-  // 系统 / 工具消息：一行等宽小字，不抢眼
+  // 工具调用：单独一行，点开看参数和结果
+  if (message.role === 'system' && message.tool) return <ToolCallRow call={message.tool} />
+
+  // 系统消息：一行等宽小字，不抢眼
   if (message.role === 'system') {
     const isErr = message.content.startsWith('错误')
     return (

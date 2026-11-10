@@ -490,6 +490,7 @@ python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
 - `src/lib/agent/tools/` — 工具定义和实现，按领域分文件；提示词在 `src/lib/ai/prompt-templates.ts`
 - `src/lib/llm/` — 流式调用、Anthropic 通道、`context-window`（静态前缀 + 每轮 reminder + 压缩）、`query-loop`（工具循环）
 - 上下文压缩：`lib/llm/context-window.ts`（门槛和清理）、`lib/llm/compact.ts`（模型写摘要）、`lib/agent/chat-compaction.ts`（时机）、`lib/agent/chat-history.ts`（库行 ↔ 历史），两端逐字一致，改要两端一起改。方案见 `docs/AI系统/上下文压缩与长期记忆-调研交接.md` 第九节
+- 聊天里的工具调用：每次调用单独一行，点开看参数和结果、可以复制；重开会话时从 `tool_trace` 行还原。数据和文字规则在两端的 `lib/agent/tool-call-view.ts`（逐字一致，改要同时改两端），工具的中文名也在里面，新加工具要补一行；样子各画各的（桌面端 `components/ToolCallRow.tsx`，手机端 `components/fairy/ToolCallRow.tsx`）
 - `src/lib/models/registry.ts` — 模型库种子，和 `db.rs seed_model_registry` 结构一一对应，桌面端改种子要同步
 - Anthropic 的模型清单和价目不写在代码里：两端各自从 models.dev 拉（两端的 `lib/models/models-dev.ts`，逐字一致，改要同时改两端），启动时拉一次，模型库里的「更新 Claude 模型」可以手动拉。请求和 Anthropic 一样走「网络代理」的端口（桌面端 `anthropic.rs fetch_models_dev`，手机端 `AppProxy.kt`）。写库桌面端走 `upsert_model`，手机端走 `SolevupDb.upsertModelCatalogRows`
 - `src/lib/voice/` + `android/.../voice/` — 录音、流式识别、Fish TTS；`android/.../omni/` 是实时语音。`lib/voice/omni-turn.ts`（等回复的看门狗）桌面端有同一份，改要同步

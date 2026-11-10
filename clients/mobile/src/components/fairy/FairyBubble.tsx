@@ -1,6 +1,7 @@
 // ══════════════════════════════════════════════
 // 单条消息（对应 desktop ChatPanel Bubble）：
-//   · 系统 / 工具消息：一行等宽小字（工具调用就是 `⚙ name(args)` + `→ 结果` 的系统消息）
+//   · 系统消息：一行等宽小字
+//   · 工具调用：单独一行，点开看参数和结果（ToolCallRow）
 //   · 压缩提示：同样一行小字，点一下展开摘要（desktop CompactNotice）
 //   · 主人语音：语音条 + 转写
 //   · 主人文字（含边说边出的中间结果）：右侧气泡
@@ -23,6 +24,7 @@ import { IconBug, IconRadio } from './icons'
 import { BubbleImages } from './ImageAttachments'
 import { MetaIconBtn, MsgMeta } from './MessageMeta'
 import ReasoningBlock from './ReasoningBlock'
+import ToolCallRow from './ToolCallRow'
 import { TEXT_LINE_HEIGHT, TEXT_SIZE, isSystemError } from './fairy-format'
 import type { FairyMessage, OmniDebugInfo } from './types'
 
@@ -63,6 +65,7 @@ function CompactNotice({ message, onLongPress }: Pick<FairyBubbleProps, 'message
 }
 
 export function SystemLine({ message, onLongPress }: Pick<FairyBubbleProps, 'message' | 'onLongPress'>) {
+  if (message.tool) return <ToolCallRow call={message.tool} onLongPress={onLongPress ? () => onLongPress(message) : undefined} />
   if (message.summary) return <CompactNotice message={message} onLongPress={onLongPress} />
   const isErr = isSystemError(message.content)
   return (

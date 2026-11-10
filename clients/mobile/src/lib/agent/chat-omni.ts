@@ -22,6 +22,7 @@ import type { OmniDebugInfo } from '../../components/fairy/types'
 import { waveformFromWavBase64 } from '../../components/fairy/fairy-format'
 import type { SessionMessage } from './agent-memory'
 import type { ChatCore } from './chat-core'
+import { startToolCall } from './tool-call-view'
 import type { PromptFlow } from './chat-prompt'
 import { makeSessionMessage, type SessionFlow } from './chat-sessions'
 import { executeAgentTool } from './tools'
@@ -273,18 +274,14 @@ export function createOmniFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
       void (async () => {
         console.log('[Omni] tool_call', payload.name)
         core.emitFairy('thinking')
-        let argsPreview = payload.arguments
-        try { argsPreview = JSON.stringify(JSON.parse(payload.arguments), null, 0) } catch {}
-        const toolMsgId = `tool-${payload.call_id}`
-        core.addSystemNote(`⚙ ${payload.name}(${argsPreview})`, toolMsgId)
+        core.addToolCall(startToolCall(payload.call_id, payload.name, payload.arguments))
         let result: string
         try {
           result = await executeAgentTool(payload.name, payload.arguments)
         } catch (err) {
           result = `工具执行失败：${err instanceof Error ? err.message : String(err)}`
         }
-        const preview = result.length > 300 ? result.slice(0, 300) + '…' : result
-        core.patchMessage(toolMsgId, (m) => ({ ...m, content: m.content + `\n→ ${preview}` }))
+        core.finishToolCall(payload.call_id, result)
         // 工具跑的时候这一轮已经作废（连接换过了）：这个 call_id 新连接不认识
         if (epoch !== turnEpoch) return
         toolsRunning -= 1

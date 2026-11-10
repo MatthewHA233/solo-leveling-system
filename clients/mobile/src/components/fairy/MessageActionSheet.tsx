@@ -5,13 +5,15 @@
 
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native'
 import { theme } from '../../theme'
+import { toolCallCopyText } from '../../lib/agent/tool-call-view'
 import { solevupCopyText } from '../../lib/solevupdb'
 import { showTip } from './tip'
 import type { ApiRequestSnapshot } from '../../lib/llm/api'
 import type { FairyMessage, OmniDebugInfo } from './types'
 
-/** 长按复制的文字：语音消息复制转写，压缩提示复制摘要 */
+/** 长按复制的文字：语音消息复制转写，压缩提示复制摘要，工具调用复制整次调用 */
 export function copyableText(message: FairyMessage): string {
+  if (message.tool) return toolCallCopyText(message.tool)
   return message.summary || message.content || message.audio?.transcript || ''
 }
 

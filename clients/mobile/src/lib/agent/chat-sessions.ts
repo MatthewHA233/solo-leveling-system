@@ -32,8 +32,8 @@ import {
 } from './agent-memory'
 import { parseImageMarker } from './chat-images'
 import { createCompactor } from './chat-compaction'
-import { compactNotice, compactSummaryRow, isCompactSummaryRow, restoreLLMHistory, rowsToLLMMessages } from './chat-history'
-import type { ChatCore } from './chat-core'
+import { compactNotice, compactSummaryRow, isCompactSummaryRow, restoreLLMHistory, rowsToLLMMessages, TOOL_TRACE_ROW, toolCallsOfTrace } from './chat-history'
+import { toolCallMessage, type ChatCore } from './chat-core'
 
 const REROUTED_NOTE = '这个会话已在另一台设备上删除，刚才的消息存到了新会话。'
 const DELETED_NOTE = '这个会话已在另一台设备上删除，继续发送会存到新会话。'
@@ -43,12 +43,15 @@ const DELETED_NOTE = '这个会话已在另一台设备上删除，继续发送�
 export function sessionMessagesToChatMessages(msgs: readonly SessionMessage[]): ChatMessage[] {
   const out: ChatMessage[] = []
   for (const m of msgs) {
-    // 压缩摘要显示成一条提示，点开能看；工具记录不显示
+    // 压缩摘要显示成一条提示，点开能看；工具记录还原成一次调用一行
     if (isCompactSummaryRow(m) && m.content?.trim()) {
       out.push({ id: m.id ?? randomUUID(), role: 'system', content: compactNotice(), summary: m.content, timestamp: m.timestamp })
       continue
     }
-    if (m.role === 'tool') continue
+    if (m.role === 'tool') {
+      if (m.name === TOOL_TRACE_ROW) out.push(...toolCallsOfTrace(m).map((call) => toolCallMessage(call, m.timestamp)))
+      continue
+    }
     const { ids: imageIds, text: content } = parseImageMarker((m.content ?? '').trim())
     // 音频气泡：即使没有文字也要还原（content 可能是 transcript）
     const hasAudio = !!m.audioPath

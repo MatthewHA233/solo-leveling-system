@@ -23,6 +23,7 @@ import type { ChatSessionInfo, SessionMessage } from './agent-memory'
 import { solevupListSyncedSettings, solevupSaveSyncedSetting } from '../solevupdb'
 import type { Compactor } from './chat-compaction'
 import { configUpdatesFromSettings, seedWrites, settingWrites } from './synced-settings'
+import { finishToolCall, toolCallLine, type ToolCallView } from './tool-call-view'
 
 /** 流式增量最多这么久刷新一次界面（一批网络数据里有很多个 delta，不用每个都渲染） */
 const STREAM_EMIT_MS = 50
@@ -53,6 +54,11 @@ export interface LastBiliContext {
   readonly cardId: string
   readonly title: string | null
   readonly refPath: string
+}
+
+/** 工具调用在聊天里的那条消息 */
+export function toolCallMessage(call: ToolCallView, timestamp: string): ChatMessage {
+  return { id: `tool-${call.id}`, role: 'system', content: toolCallLine(call), timestamp, tool: call }
 }
 
 export class ChatCore {
@@ -158,6 +164,16 @@ export class ChatCore {
     this.setMessages((prev) => [...prev, {
       id, role: 'system', content, timestamp: new Date().toISOString(),
     }])
+  }
+
+  /** 工具开始跑：聊天里加一行；id 按调用 id 定，结果出来时按它找回这一条 */
+  addToolCall(call: ToolCallView): void {
+    this.setMessages((prev) => [...prev, toolCallMessage(call, new Date().toISOString())])
+  }
+
+  /** 工具跑完：把结果记到对应的那一行上 */
+  finishToolCall(callId: string, result: string): void {
+    this.patchMessage(`tool-${callId}`, (m) => (m.tool ? { ...m, tool: finishToolCall(m.tool, result) } : m))
   }
 
   // ── 状态 ──
