@@ -28,6 +28,7 @@ import {
 import { theme, hud, ti, tiSurface, tiInput, tiTitle, tiKey, tiNotice } from '../theme'
 import HudSelect from './HudSelect'
 import Tooltip from './Tooltip'
+import claudeIconUrl from '../assets/model-icons/claude.svg'
 import type {
   CallLogBucket,
   CallLogGranularity,
@@ -119,6 +120,11 @@ const FEATURE_LABEL = new Map(FEATURE_SPECS.map((f) => [f.feature, f.label]))
 const MODALITY_ZH: Record<string, string> = { text: '文本', image: '图像', video: '视频', audio: '音频', audio_in: '音频输入', audio_out: '音频输出', embedding: '向量' }
 
 const MODEL_ICON_URL = 'https://img.alicdn.com/imgextra/i3/O1CN01Kmx9dR1wcHOaMMXAk_!!6000000006328-55-tps-28-28.svg'
+
+/** 模型卡片的图标按提供商选；没有专门图标的用百炼的 */
+function modelIconUrl(provider: string): string {
+  return provider === 'anthropic' ? claudeIconUrl : MODEL_ICON_URL
+}
 
 function normalizeBailianName(name: string | null | undefined): string | null {
   const s = name?.trim()
@@ -2184,7 +2190,7 @@ function ModelCard({
       <span className="hud-card-stripe" />
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 10 }}>
         <img
-          src={MODEL_ICON_URL}
+          src={modelIconUrl(model.provider)}
           alt=""
           width={32}
           height={32}
@@ -2457,7 +2463,7 @@ function ModelEditor({
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
-          <img src={MODEL_ICON_URL} alt="" width={24} height={24} />
+          <img src={modelIconUrl(initial.provider)} alt="" width={24} height={24} />
           <div style={{ ...tiTitle, fontSize: 14 }}>
             {isNew ? '新增模型' : `修改模型 · ${initial.display_name || initial.id}`}
           </div>
