@@ -1,4 +1,4 @@
-# Solo Leveling System — Claude Code 项目指南
+# Solo Leveling System — 智能体项目指南
 
 ## 仓库结构
 
@@ -13,7 +13,7 @@
 
 ## 自动化审查修复交接
 
-项目里有 Codex 自动化会定期审查提交，并把中文报告写到 `docs/自动化监控报告/提交风险监控/`。修复这些报告里的问题时，Claude Code 按下面规则处理。
+项目里有 Codex 自动化会定期审查提交，并把中文报告写到 `docs/自动化监控报告/提交风险监控/`。修复这些报告里的问题时，智能体按下面规则处理。
 
 - 先读 `docs/自动化监控报告/提交风险监控/审查清单.md`，以其中的“问题追踪”为准；不要只凭某一份历史报告判断问题状态。
 - 修复前明确问题 ID，例如 `AUDIT-005`，并确认当前 HEAD 是否仍存在。若问题已经被后续代码解决，只更新追踪状态或说明，不再改源码。
@@ -82,7 +82,7 @@ cd clients/desktop/src-tauri && cargo xwin build
 # 1. 关闭当前运行的应用进程
 Get-Process solo-leveling-system -ErrorAction SilentlyContinue | Stop-Process -Force
 
-# 2. 编译纯后端 debug 产物（用绝对路径，避免 Bash 工具 cwd 漂移）
+# 2. 编译纯后端 debug 产物（用绝对路径，避免终端工作目录漂移）
 cd D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri
 cargo xwin build
 
@@ -91,11 +91,11 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
 D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri\target\x86_64-pc-windows-msvc\debug\solo-leveling-system.exe
 ```
 
-注意：前端 Vite dev server 由用户自己保持运行，Codex 不要自动运行 `npm run dev` 或 `npm run build`，除非用户明确要求。
+注意：前端 Vite dev server 由用户自己保持运行，智能体不要自动运行 `npm run dev` 或 `npm run build`，除非用户明确要求。
 
 #### macOS 开发工作流
 
-**原生 cargo + Tauri CLI，跟 Windows 不一样：mac 上 `npm run dev` 由 Claude 自己后台跑**，因为 `tauri dev` 在两端工具链都装齐的 mac 上能稳定起，没有 Windows 那种"vite 长跑 + cargo xwin build 单次"的拆分需求。
+**原生 cargo + Tauri CLI，跟 Windows 不一样：mac 上 `npm run dev` 由智能体自己后台跑**，因为 `tauri dev` 在两端工具链都装齐的 mac 上能稳定起，没有 Windows 那种"vite 长跑 + cargo xwin build 单次"的拆分需求。
 
 **绝对禁止的操作：**
 
@@ -105,7 +105,7 @@ D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri\target\x86_64-pc
 | 自主使用 release 打包（`npm run tauri:build:mac`） | 除非用户明确要求 |
 | 用 `TAURI_CONFIG` env 绕开 conf overlay | build script 不读 runtime env，绕不过去 |
 
-**开发模式（两个后台进程，都由 Claude 起）：**
+**开发模式（两个后台进程，都由智能体起）：**
 
 ```bash
 # 终端 1：前端 Vite（tauri.conf.json 配置的 devUrl 是 http://localhost:5172）
@@ -158,7 +158,7 @@ tauri = { version = "...", features = ["macos-private-api"] }
 
 #### WebView2 DevTools MCP 调试
 
-用于调试 Tauri 内嵌 WebView2 页面，例如 `bailian-login`。Chrome DevTools MCP 可以连接到 WebView2 暴露出来的远程调试端口，这样 Codex 就能直接查看真实 DOM、页面文本、控制台和截图，不必靠猜测页面结构。
+用于调试 Tauri 内嵌 WebView2 页面，例如 `bailian-login`。Chrome DevTools MCP 可以连接到 WebView2 暴露出来的远程调试端口，这样智能体就能直接查看真实 DOM、页面文本、控制台和截图，不必靠猜测页面结构。
 
 CC Switch 里新增 MCP 时，完整 JSON 配置如下：
 
@@ -194,7 +194,7 @@ D:\my_pro\GitHub\solo-leveling-system\clients\desktop\src-tauri\target\x86_64-pc
 http://127.0.0.1:9222/json/version
 ```
 
-正常情况下，MCP 能看到主 Vite 页面、`bili-login`、`bailian-login` 和 `#fairy` 等 WebView 页面。在 Codex 中可先用 `chrome devtools` 搜索工具，然后调用 `list_pages`、`select_page`、`take_snapshot`、`list_console_messages` 或截图工具来调试当前 WebView2 会话。
+正常情况下，MCP 能看到主 Vite 页面、`bili-login`、`bailian-login` 和 `#fairy` 等 WebView 页面。智能体可先用 `chrome devtools` 搜索工具，然后调用 `list_pages`、`select_page`、`take_snapshot`、`list_console_messages` 或截图工具来调试当前 WebView2 会话。
 
 ### Mobile 客户端
 
@@ -208,12 +208,12 @@ http://127.0.0.1:9222/json/version
 - 调试用 **MuMu 模拟器**（用户本机已装，adb 自动检测）— `adb devices` 应能看到一台 `127.0.0.1:xxxx`
 - 屏幕已锁竖屏：`android/app/src/main/AndroidManifest.xml` 的 `MainActivity` 加了 `android:screenOrientation="portrait"`，改了要重新 `assembleDebug`
 
-#### 启动开发（Claude 自己管 Metro + APK 安装）
+#### 启动开发（智能体自己管 Metro + APK 安装）
 
-跟 desktop 不一样，mobile 这边 Metro 由 **Claude 后台跑**比较方便，用户只需要让模拟器开着即可。
+跟 desktop 不一样，mobile 这边 Metro 由**智能体后台跑**比较方便，用户只需要让模拟器开着即可。
 
 ```bash
-# Metro：后台启动（Bash 工具 run_in_background:true）
+# Metro：后台启动（用终端工具的后台模式）
 cd clients/mobile && npm start
 # 如果端口 8081 被占，先：lsof -ti:8081 | xargs kill -9
 
@@ -233,7 +233,7 @@ cd clients/mobile && npx react-native run-android
 chmod +x clients/mobile/android/gradlew
 ```
 
-启动 Metro 后用户开模拟器即可看到 app；Claude 通过 adb 截图验证 UI。
+启动 Metro 后用户开模拟器即可看到 app；智能体通过 adb 截图验证 UI。
 
 #### Fast Refresh / Reload
 
@@ -263,7 +263,7 @@ adb shell wm size && adb shell wm density
 # 截图（推荐流程：先截到设备，再 pull 到本地 /tmp）
 adb shell screencap -p /sdcard/shot.png
 adb pull /sdcard/shot.png /tmp/shot.png
-# 然后用 Read 工具读 /tmp/shot.png 看图
+# 然后用读文件工具读 /tmp/shot.png 看图
 
 # 点击 / 滑动
 adb shell input tap <x> <y>
@@ -338,35 +338,35 @@ solo-leveling/android/
 **OSS AK/SK** 从 `~/Projects/Github/MW_ActivityMonitor/.env` 复用（`OSS_ACCESS_KEY_ID/SECRET`，同一台机器一套钥匙）。
 **绝对禁止**把 AK/SK 写进 sls 仓库的任何文件。
 
-**标准发布流程（双击 .command，Claude 不直接跑 python）**：
+**标准发布流程（双击 .command，智能体不直接跑 python）**：
 
-`clients/mobile/release.command` 是 mac Finder 双击入口（已 chmod +x）。Claude 的角色，**严格按顺序，每一步都不可省略**：
+`clients/mobile/release.command` 是 mac Finder 双击入口（已 chmod +x）。智能体的角色，**严格按顺序，每一步都不可省略**：
 
 1. 改 `clients/mobile/VERSION`（手动 bump 两个值 versionName + versionCode）
 2. 写本次 changelog 到 `clients/mobile/CHANGELOG.next.md`
 3. **commit 所有相关改动**（VERSION、源码等）—— commit 后工作区 clean，stamp 会记录干净 HEAD；否则脚本第 [3/8] 步会判 dirty 强制重 build
-4. **🚨 Claude 跑 `python3 scripts/release_mobile.py --build-only`**（background，3~8 分钟首次 / ~30s 增量）—— 这会 build APK 并写新鲜度 stamp（git HEAD + dirty 状态）；`--build-only` 不走 OSS 网络，不怕 Clash 代理
-5. build 完成后用 `aapt dump badging app-release.apk` 校验内嵌 versionCode/versionName == VERSION（必做，结果必须出现在 Claude 对话里给用户看到）
+4. **🚨 智能体跑 `python3 scripts/release_mobile.py --build-only`**（background，3~8 分钟首次 / ~30s 增量）—— 这会 build APK 并写新鲜度 stamp（git HEAD + dirty 状态）；`--build-only` 不走 OSS 网络，不怕 Clash 代理
+5. build 完成后用 `aapt dump badging app-release.apk` 校验内嵌 versionCode/versionName == VERSION（必做，结果必须出现在对话里给用户看到）
 6. **校验通过后**才 `open -R clients/mobile/release.command` 用 Finder 选中显示
 7. **由用户双击 .command** 启动 Terminal 跑上传；脚本会清 Clash 代理 env、读 changelog、校验 APK 版本 + stamp HEAD 匹配后上传（一般不出错，无需用户回贴日志，除非用户主动说有问题）
 
 > 🚨🚨🚨 **第 4 步绝不可省略 —— 惨痛血泪教训**：
 >
-> 0.0.0.8 那次发布事故的真实根因 = Claude **直接跳到第 6 步**让用户双击 .command，没预 build。脚本里有 fallback build，但当时 release.command 不带 `--build`，python 脚本看到 `app-release.apk` 已存在（vc7 的旧产物）就**复用上传**了，于是 manifest 写 vc8 / APK 内部还是 vc7，手机检测到更新但装的是旧版，CDN 还缓存 4~8 小时无法刷新，排查耗了一整下午。
+> 0.0.0.8 那次发布事故的真实根因 = 智能体**直接跳到第 6 步**让用户双击 .command，没预 build。脚本里有 fallback build，但当时 release.command 不带 `--build`，python 脚本看到 `app-release.apk` 已存在（vc7 的旧产物）就**复用上传**了，于是 manifest 写 vc8 / APK 内部还是 vc7，手机检测到更新但装的是旧版，CDN 还缓存 4~8 小时无法刷新，排查耗了一整下午。
 >
 > **三层防护（不要因此放松第 4 步）**：
 > - **`--build-only` 写 stamp**：APK 旁边写 `app-release.apk.stamp.json` 记录 `git_head + git_dirty + built_at`
 > - **脚本 [3/8] 复用条件（任一不满足都重 build）**：APK 存在 + 内嵌版本 == VERSION + stamp 存在 + stamp.git_head == 当前 HEAD + stamp.git_dirty == false + 当前工作区 clean
 > - **上传前 verify_apk_version 兜底**：aapt 再读一次内嵌版本
 >
-> 这三层中只要 stamp 校验是核心 —— 它捕获"VERSION 没变但源码变了"的场景（AUDIT-023）。Claude 必须先 commit 再 build，让 stamp 锚定干净 HEAD。
+> 这三层中只要 stamp 校验是核心 —— 它捕获"VERSION 没变但源码变了"的场景（AUDIT-023）。智能体必须先 commit 再 build，让 stamp 锚定干净 HEAD。
 >
 > **强制 clean build**：`cd clients/mobile/android && ./gradlew clean` 然后再跑 `--build-only`（缓存出问题时用）
 >
-> **绝对禁止 Claude 自己直接跑 `python3 release_mobile.py`（不带 --build-only）走正常上传** —— Claude 的后台 Bash 继承 Clash 代理，OSS 国内域会 502 / 超慢；上传必须由用户双击 .command 走（脚本里 unset 了代理 env）
+> **绝对禁止智能体自己直接跑 `python3 release_mobile.py`（不带 --build-only）走正常上传** —— 智能体的后台终端继承 Clash 代理，OSS 国内域会 502 / 超慢；上传必须由用户双击 .command 走（脚本里 unset 了代理 env）
 
-**为什么不让 Claude 直接 `python3 scripts/release_mobile.py`：**
-- Claude 的后台 Bash 继承 mac 全局代理（Clash 等），OSS 国内域被代理走会 502 / 超慢
+**为什么不让智能体直接 `python3 scripts/release_mobile.py`：**
+- 智能体的后台终端继承 mac 全局代理（Clash 等），OSS 国内域被代理走会 502 / 超慢
 - 用户的全局代理是 codex/其他工具需要的，不能关
 - `.command` 里 `unset http_proxy https_proxy ...` 干净绕开
 
