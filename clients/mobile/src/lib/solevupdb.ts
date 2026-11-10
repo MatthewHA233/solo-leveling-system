@@ -179,6 +179,7 @@ interface SolevupDbNative {
   deleteModelApiKey(id: string): Promise<boolean>
   listModelCatalog(): Promise<string>
   seedModelCatalogIfEmpty(json: string): Promise<boolean>
+  upsertModelCatalog(json: string): Promise<number>
   getFeatureBinding(feature: string): Promise<string | null>
   listFeatureBindings(): Promise<{ feature: string; modelId: string; updatedAt: string }[]>
   setFeatureBinding(feature: string, modelId: string): Promise<boolean>
@@ -443,6 +444,12 @@ export async function solevupListModelCatalogJson(): Promise<string> {
 export async function solevupSeedModelCatalogIfEmpty(json: string): Promise<boolean> {
   if (!Native) return false
   return Native.seedModelCatalogIfEmpty(json)
+}
+
+/** 手机端自己拉来的模型行写进库：有就整行换掉（含价目），没有就加；返回写入的行数 */
+export async function solevupUpsertModelCatalog(json: string): Promise<number> {
+  if (!Native) return 0
+  return Native.upsertModelCatalog(json)
 }
 
 /** 按价目算费用并落库，返回 ModelCallLog 形状的 JSON 字符串（消息 usage_json 直接存它） */

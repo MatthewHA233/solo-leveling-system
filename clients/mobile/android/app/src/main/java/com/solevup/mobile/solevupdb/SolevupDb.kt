@@ -1765,7 +1765,7 @@ class SolevupDb(context: Context) :
     }
   }
 
-  // ── 模型库（只读镜像 desktop） ──
+  // ── 模型库（镜像 desktop；Anthropic 的行手机端也会自己从 models.dev 拉，见 upsertModelCatalogRows） ──
 
   private fun replaceModelCatalog(db: SQLiteDatabase, rows: List<SyncModelDefRow>, source: String = CATALOG_SOURCE_SYNC): Int {
     db.execSQL(
@@ -1807,10 +1807,11 @@ class SolevupDb(context: Context) :
   }
 
   /**
-   * 对齐 desktop 启动时的种子（seed_model_registry / seed_anthropic_models / seed_decision_models），JS 每次启动调一次：
-   * - 没同步过（空表或库里还是种子）：整表换成随包种子，新版的价目能跟上
+   * 对齐 desktop 启动时的种子（seed_model_registry / seed_decision_models），JS 每次启动调一次：
+   * - 没同步过（空表或库里还是种子）：整表换成随包种子，新版的价目能跟上。
+   *   Anthropic 的行不在随包种子里（从 models.dev 拉，见 upsertModelCatalogRows），库里已有的原样带上
    * - 同步过：已有的行以 desktop 为准不动（随包种子可能比 desktop 旧，不能覆盖），只补库里没有的行。
-   *   旧版 desktop 同步来的表可能没有 Claude / 决策模型的行，不补就算不出费用；内容哈希不动，下次同步内容变了仍然整表替换
+   *   旧版 desktop 同步来的表可能没有决策模型的行，不补就算不出费用；内容哈希不动，下次同步内容变了仍然整表替换
    */
   fun seedModelCatalogIfEmpty(rows: List<SyncModelDefRow>): Boolean {
     val db = writableDatabase
@@ -1819,7 +1820,9 @@ class SolevupDb(context: Context) :
       val count = queryLong(db, "SELECT COUNT(*) FROM model_registry", emptyArray()) ?: 0L
       val source = queryString(db, "SELECT value FROM sync_meta WHERE key = 'model_catalog_source'", emptyArray())
       val seeded = if (count == 0L || source == CATALOG_SOURCE_SEED) {
-        replaceModelCatalog(db, rows, CATALOG_SOURCE_SEED) > 0
+        val seedIds = rows.map { it.id }.toSet()
+        val pulled = listModelCatalog().filter { it.provider == PROVIDER_ANTHROPIC && it.id !in seedIds }
+        replaceModelCatalog(db, rows + pulled, CATALOG_SOURCE_SEED) > 0
       } else {
         var added = 0
         for (m in rows) {
@@ -1830,6 +1833,26 @@ class SolevupDb(context: Context) :
       }
       db.setTransactionSuccessful()
       return seeded
+    } finally {
+      db.endTransaction()
+    }
+  }
+
+  /**
+   * 手机端自己从 models.dev 拉来的行（Anthropic）：有就整行换掉（含价目），没有就加。
+   * 内容哈希不动：下次同步时 desktop 的内容变了仍然整表替换，没变就留着这里写的
+   */
+  fun upsertModelCatalogRows(rows: List<SyncModelDefRow>): Int {
+    val db = writableDatabase
+    db.beginTransaction()
+    try {
+      for (m in rows) {
+        db.execSQL("DELETE FROM model_pricing WHERE model_id = ?", arrayOf(m.id))
+        db.execSQL("DELETE FROM model_registry WHERE id = ?", arrayOf(m.id))
+        insertCatalogRow(db, m)
+      }
+      db.setTransactionSuccessful()
+      return rows.size
     } finally {
       db.endTransaction()
     }

@@ -11,14 +11,14 @@ import java.net.SocketAddress
 import java.net.URI
 
 /**
- * 「网络代理」设置：Anthropic 和 Fish 语音从本机这个端口出去（127.0.0.1），和桌面端 network.rs 一个意思。
+ * 「网络代理」设置：Anthropic、Fish 语音和 models.dev（模型清单）从本机这个端口出去（127.0.0.1），和桌面端 network.rs 一个意思。
  * 端口是 0 就跟随系统 VPN 或系统代理。每台设备自己的设置，不同步。
- * 只代理这两个域名（范围和桌面端一致），局域网同步和阿里云都直连。
+ * 只代理这几个域名（范围和桌面端一致），局域网同步和阿里云都直连。
  */
 object AppProxy {
   private const val PREFS_NAME = "solevup_network"
   private const val KEY_PORT = "proxy_port"
-  private val PROXIED_HOSTS = setOf("api.anthropic.com", "api.fish.audio")
+  private val PROXIED_HOSTS = setOf("api.anthropic.com", "api.fish.audio", "models.dev")
 
   private val system: ProxySelector? = ProxySelector.getDefault()
   private lateinit var prefs: SharedPreferences

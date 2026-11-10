@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { LogModelCallRequest, ModelApiKey, ModelCallLog, ModelDef, ModelFreeQuota, UpsertModelApiKeyRequest } from './local-api'
+import { fetchAnthropicCatalog } from './models/models-dev'
 
 export interface DashScopeUsage {
   prompt_tokens?: number
@@ -223,4 +224,11 @@ export async function logModelUsage(options: LogUsageOptions): Promise<ModelCall
     console.warn('[ModelAudit] log_model_call failed:', e)
     return null
   }
+}
+
+/** 从 models.dev 拉 Anthropic 的模型清单和价目写进模型库，返回写入的行数。失败时抛出，message 可直接展示 */
+export async function pullAnthropicModels(): Promise<number> {
+  const rows = await fetchAnthropicCatalog(() => invoke<string>('fetch_models_dev'))
+  for (const def of rows) await invoke('upsert_model', { def })
+  return rows.length
 }

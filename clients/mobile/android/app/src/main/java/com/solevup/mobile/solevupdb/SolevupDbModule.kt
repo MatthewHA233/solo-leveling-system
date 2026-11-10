@@ -539,6 +539,14 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun upsertModelCatalog(json: String, promise: Promise) {
+    try {
+      val rows = SyncJson.parseModelRegistry(org.json.JSONObject().put("model_registry", org.json.JSONArray(json)))
+      promise.resolve(db.upsertModelCatalogRows(rows))
+    } catch (e: Throwable) { promise.reject("MODEL_CATALOG_UPSERT_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
   fun getFeatureBinding(feature: String, promise: Promise) {
     try { promise.resolve(db.getFeatureBinding(feature)) }
     catch (e: Throwable) { promise.reject("BINDING_FAILED", e.message, e) }

@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════
 // 模型库 Tab（对齐 desktop LibraryTab）
-// 差异：手机端只读，没有新增 / 修改；百炼额度扫描要在已登录的内嵌 WebView 里注入脚本，
+// 差异：手机端没有新增 / 修改，只能从 models.dev 更新 Claude 的模型；百炼额度扫描要在已登录的内嵌 WebView 里注入脚本，
 // 手机端不做，额度由桌面端扫完经同步带过来（model_free_quota 表），这里只显示
 // ══════════════════════════════════════════════
 
@@ -20,6 +20,8 @@ export default function LibraryTab({
   models,
   freeQuotaByModel,
   onCategory,
+  onPullClaude,
+  pullingClaude,
   onOpenBailian,
   onOpenBailianDetail,
 }: {
@@ -27,6 +29,8 @@ export default function LibraryTab({
   models: readonly ModelDef[]
   freeQuotaByModel: Map<string, ModelFreeQuota>
   onCategory: (v: ModelCategory) => void
+  onPullClaude: () => void
+  pullingClaude: boolean
   onOpenBailian: () => void
   onOpenBailianDetail: (modelCode: string) => void
 }) {
@@ -37,11 +41,16 @@ export default function LibraryTab({
       <View style={styles.head}>
         <View style={styles.headText}>
           <Text style={styles.title}>模型库</Text>
-          <Text style={styles.muted}>由电脑端同步，这里只读 · 历史调用成本不回溯</Text>
+          <Text style={styles.muted}>由电脑端同步，Claude 的模型也能从 models.dev 更新 · 历史调用成本不回溯</Text>
         </View>
-        <Pressable accessibilityRole="link" hitSlop={6} onPress={onOpenBailian}>
-          <Text style={styles.link}>打开百炼</Text>
-        </Pressable>
+        <View style={styles.actions}>
+          <Pressable accessibilityRole="button" hitSlop={6} disabled={pullingClaude} onPress={onPullClaude}>
+            <Text style={[styles.link, pullingClaude && styles.linkBusy]}>{pullingClaude ? '更新中' : '更新 Claude 模型'}</Text>
+          </Pressable>
+          <Pressable accessibilityRole="link" hitSlop={6} onPress={onOpenBailian}>
+            <Text style={styles.link}>打开百炼</Text>
+          </Pressable>
+        </View>
       </View>
 
       <Segmented scroll value={category} options={options} onChange={(v) => onCategory(v as ModelCategory)} />
@@ -70,5 +79,7 @@ const styles = StyleSheet.create({
   headText: { flex: 1, minWidth: 0 },
   title: { fontSize: 15, fontWeight: '700', color: theme.ink },
   muted: { fontSize: 12, color: theme.inkSoft, marginTop: 2 },
+  actions: { alignItems: 'flex-end', gap: 6 },
   link: { fontSize: 13, color: theme.accent, fontWeight: '600', paddingVertical: 2 },
+  linkBusy: { color: theme.inkSoft },
 })

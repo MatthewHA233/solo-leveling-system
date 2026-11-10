@@ -25,7 +25,7 @@ import { theme, hud, ti, tiSurface, tiTitle } from './theme'
 import { DEFAULT_CONFIG, getDashScopeApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
 import { configUpdatesFromSettings, seedWrites, settingWrites } from './lib/agent/synced-settings'
-import { getFeatureModel, getFishApiKey, getModelDef, logModelUsage, modelSeesImages, realtimeUsageToDashScope, saveFishApiKey, type RealtimeUsage } from './lib/model-audit'
+import { getFeatureModel, getFishApiKey, getModelDef, logModelUsage, modelSeesImages, pullAnthropicModels, realtimeUsageToDashScope, saveFishApiKey, type RealtimeUsage } from './lib/model-audit'
 import { buildStaticPrompt, buildDynamicContext, buildConversationSummary } from './lib/ai/prompt-templates'
 import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from './lib/ai/prompt-templates'
 import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
@@ -936,6 +936,13 @@ export default function App() {
   // 启动时拉一次标签库
   useEffect(() => {
     fetchActivityPalette().then(setActivityPalette).catch(() => {})
+  }, [])
+
+  // 启动时从 models.dev 更新一次 Anthropic 的模型清单和价目；失败不打扰，模型库里可以手动再拉
+  useEffect(() => {
+    pullAnthropicModels()
+      .then((count) => console.log(`[Models] Anthropic 模型清单已更新，共 ${count} 个`))
+      .catch((e) => console.warn('[Models] 更新 Anthropic 模型清单失败:', e))
   }, [])
 
   useEffect(() => {

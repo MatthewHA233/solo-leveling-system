@@ -6,7 +6,8 @@
 //   每次调用记进 model_call_log（api_key_id 归属这把 Key）
 //
 // 桌面端分在三处：anthropic-stream.ts（组 body）、anthropic_stream.rs（发流式请求、解析、记审计）、
-// anthropic.rs（非流式调用、模型种子、测试连接）。手机端没有 Rust 侧，都放在这个文件里，顺序同桌面端。
+// anthropic.rs（非流式调用、测试连接）。手机端没有 Rust 侧，都放在这个文件里，顺序同桌面端。
+//   模型清单和价目不写在这里：从 models.dev 拉了写进模型库（lib/models/models-dev.ts、registry.ts pullAnthropicModels）
 //   - 请求用 XMLHttpRequest（同 api.ts）：RN 的 fetch 拿不到流式 response.body
 //   - 代理：桌面端要在 Rust 里走「网络代理」设置的本机端口（WebView 的 fetch 走不了代理）。
 //     手机端的设置在 AppProxy.kt：RN 的 XHR 走 OkHttp，配了端口走端口，没配就遵守系统代理，VPN 在系统层接管流量。
@@ -19,7 +20,6 @@ import { normalizeMessagesForAPI } from './normalize'
 import { logModelUsage } from './model-usage'
 import { isSolevupDbAvailable, solevupGetActiveModelApiKey } from '../solevupdb'
 import type { ModelApiKeyInfo } from '../solevupdb'
-import type { ModelDef } from '../models/registry'
 import type { ApiStreamChunk, QueryOptions } from './api'
 import type { AssistantMessage, ContentBlock, Message, UserMessage } from './types'
 
@@ -281,53 +281,6 @@ function call(apiKey: string, body: Record<string, unknown>): Promise<AnthropicR
     xhr.ontimeout = () => reject(new Error(explainSendError('', true)))
     xhr.send(JSON.stringify(body))
   })
-}
-
-// ── 模型库种子（Anthropic 官网价目，2026-10 核对；单位美元 / 百万 token，入库保留美元原价，currency = USD）──
-
-type AnthropicTier = readonly [min: number, max: number | null, inUsd: number, outUsd: number]
-
-/** (模型 id, 显示名, 价格阶梯 (min, max, 输入 $, 输出 $), 备注) */
-const MODELS: readonly (readonly [string, string, readonly AnthropicTier[], string])[] = [
-  ['claude-opus-5-5', 'Claude Opus 5.5', [[0, null, 4.0, 20.0]],
-    '智能体主力（官网推荐的默认）。缓存写入 5 分钟 $5 / 1 小时 $8，缓存命中 $0.20（每百万 token）；上下文 100 万，最多输出 12.8 万'],
-  ['claude-sonnet-5-5', 'Claude Sonnet 5.5', [[0, null, 2.0, 10.0]],
-    '速度与智能的平衡。缓存写入 5 分钟 $2.5 / 1 小时 $4，缓存命中 $0.10；上下文 100 万，最多输出 12.8 万'],
-  ['claude-haiku-5-5', 'Claude Haiku 5.5', [[0, 100_000, 0.10, 0.50], [100_000, null, 0.50, 2.50]],
-    '最便宜；分类、抽取、路由。按输入长度两档（≤10 万 / >10 万）。缓存命中 $0.01 / $0.05'],
-  ['claude-fable-5-1', 'Claude Fable 5.1', [[0, null, 10.0, 50.0]],
-    '最贵；高难推理、长程智能体，Opus 不够时再用。缓存写入 5 分钟 $12.5 / 1 小时 $20，缓存命中 $0.25'],
-]
-
-/**
- * 模型种子展开成模型库的行（字段同 anthropic.rs 的 seed_anthropic_models 写入的列）。
- * 这里只产出数据：手机端模型库的写入在 SolevupDb，由模型库那层决定何时合并。
- */
-export function anthropicCatalogRows(now: string = new Date().toISOString()): (ModelDef & { currency: string })[] {
-  const modalities = JSON.stringify(['text', 'image'])
-  return MODELS.map(([id, displayName, tiers, note]) => ({
-    id,
-    category: 'text' as const,
-    provider: PROVIDER_ANTHROPIC,
-    display_name: displayName,
-    modalities,
-    context_window: 1_000_000,
-    notes: note,
-    deprecated: false,
-    updated_at: now,
-    currency: 'USD',
-    pricing: tiers.map(([min, max, inUsd, outUsd]) => ({
-      tier_min_tokens: min,
-      tier_max_tokens: max,
-      price_input_text: inUsd,
-      price_input_image: inUsd,
-      price_input_video: null,
-      price_input_audio: null,
-      price_output_text: outUsd,
-      price_output_text_thinking: outUsd,
-      price_output_audio: null,
-    })),
-  }))
 }
 
 // ── 测试连接（桌面端的 POST /api/anthropic/test，手机端没有这条 HTTP 路由，直接调函数）──

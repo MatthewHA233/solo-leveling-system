@@ -48,6 +48,7 @@ import {
   listModelApiKeys,
   openBailianModelDetail,
   openBailianLogin,
+  pullAnthropicModels,
   scanBailianFreeQuota,
   setActiveModelApiKey,
   takeBailianQuotaProgress,
@@ -738,6 +739,22 @@ export default function ModelDialog({ open, config, onUpdate, onClose }: Props) 
     }
   }, [loadBase, loadUsage])
 
+  const [pullingClaude, setPullingClaude] = useState(false)
+  const pullClaude = useCallback(async () => {
+    setErr(null)
+    setPullingClaude(true)
+    try {
+      const count = await pullAnthropicModels()
+      setSaved(`Claude 模型已更新，共 ${count} 个`)
+      setTimeout(() => setSaved(null), 1800)
+      await loadBase()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPullingClaude(false)
+    }
+  }, [loadBase])
+
   const addModel = useCallback(() => {
     const cat: ModelCategory = category === 'all' ? 'text' : category
     const id = `custom-model-${Date.now()}`
@@ -988,6 +1005,8 @@ export default function ModelDialog({ open, config, onUpdate, onClose }: Props) 
               freeQuotaByModel={freeQuotaByModel}
               onCategory={setCategory}
               onAdd={addModel}
+              onPullClaude={pullClaude}
+              pullingClaude={pullingClaude}
               onEdit={editModel}
               onDelete={deleteModel}
               onOpenBailian={openBailian}
@@ -1987,6 +2006,8 @@ function LibraryTab({
   freeQuotaByModel,
   onCategory,
   onAdd,
+  onPullClaude,
+  pullingClaude,
   onEdit,
   onDelete,
   onOpenBailian,
@@ -2005,6 +2026,8 @@ function LibraryTab({
   freeQuotaByModel: Map<string, ModelFreeQuota>
   onCategory: (v: ModelCategory | 'all') => void
   onAdd: () => void
+  onPullClaude: () => void
+  pullingClaude: boolean
   onEdit: (m: ModelDef) => void
   onDelete: (id: string) => void
   onOpenBailian: () => void
@@ -2067,6 +2090,21 @@ function LibraryTab({
               {scanningQuota ? '扫描过程' : '扫描结果'}
             </button>
           )}
+          <Tooltip content="从 models.dev 拉取 Anthropic 最新的模型清单和价目（启动时也会自动拉一次）">
+            <button
+              type="button"
+              onClick={onPullClaude}
+              disabled={pullingClaude}
+              style={{
+                ...textActionBtnStyle(theme.textSecondary),
+                opacity: pullingClaude ? 0.55 : 1,
+                cursor: pullingClaude ? 'default' : 'pointer',
+              }}
+            >
+              <RefreshCw size={12} style={pullingClaude ? { animation: 'model-dialog-spin 1s linear infinite' } : undefined} />
+              {pullingClaude ? '更新中' : '更新 Claude 模型'}
+            </button>
+          </Tooltip>
           <Segmented
             value={category}
             options={[

@@ -1473,7 +1473,6 @@ impl Database {
         ensure_column(&conn, "model_registry", "currency", "currency TEXT NOT NULL DEFAULT 'CNY'")?;
         ensure_column(&conn, "model_call_log", "cost_usd", "cost_usd REAL")?;
         seed_model_registry(&conn)?;
-        crate::anthropic::seed_anthropic_models(&conn)?;
         seed_feature_bindings(&conn)?;
         crate::jev::seed_decision_models(&conn)?;
 
@@ -5636,7 +5635,8 @@ pub struct ModelDef {
     pub notes: Option<String>,
     pub deprecated: bool,
     pub updated_at: String,
-    pub currency: String,                 // 'CNY' | 'USD'（决定费用记在 cost_cny 还是 cost_usd）
+    #[serde(default)]
+    pub currency: String,                 // 'CNY' | 'USD'（决定费用记在 cost_cny 还是 cost_usd）；前端新增模型时不带，upsert_model 按 CNY 记
     pub pricing: Vec<ModelPricingTier>,   // 按 tier_min_tokens 升序
 }
 
@@ -6134,20 +6134,22 @@ impl Database {
         use rusqlite::params;
         let mut conn = self.conn.lock().await;
         let now = chrono::Utc::now().to_rfc3339();
+        let currency = if def.currency.is_empty() { "CNY" } else { def.currency.as_str() };
         let tx = conn.transaction().map_err(|e| e.to_string())?;
 
         tx.execute(
             "INSERT INTO model_registry
-             (id, category, provider, display_name, modalities, context_window, notes, deprecated, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             (id, category, provider, display_name, modalities, context_window, notes, deprecated, updated_at, currency)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                category=excluded.category, provider=excluded.provider, display_name=excluded.display_name,
                modalities=excluded.modalities, context_window=excluded.context_window,
-               notes=excluded.notes, deprecated=excluded.deprecated, updated_at=excluded.updated_at",
+               notes=excluded.notes, deprecated=excluded.deprecated, updated_at=excluded.updated_at,
+               currency=excluded.currency",
             params![
                 &def.id, &def.category, &def.provider, &def.display_name,
                 &def.modalities, &def.context_window, &def.notes,
-                if def.deprecated { 1 } else { 0 }, &now,
+                if def.deprecated { 1 } else { 0 }, &now, currency,
             ],
         ).map_err(|e| e.to_string())?;
 

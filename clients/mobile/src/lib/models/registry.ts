@@ -1,15 +1,18 @@
 // ══════════════════════════════════════════════
-// 模型注册表（mobile 版）— 种子与 desktop db.rs seed_model_registry / anthropic.rs / jev.rs 同源
+// 模型注册表（mobile 版）— 种子与 desktop db.rs seed_model_registry / jev.rs 同源
 //
 // 真正的模型库在 SQLite（model_registry / model_pricing）：desktop 全量同步时带过来，
-// 手机端只读镜像，比内容哈希决定是否整表替换（SolevupDb.replaceModelCatalog）。
+// 手机端是它的镜像，比内容哈希决定是否整表替换（SolevupDb.replaceModelCatalog）。
 // 这里的静态种子在「还没和 desktop 同步过」时写进库垫底；同步过时只补库里缺的行，让费用能算、绑定能选。
+// Anthropic 的模型不在种子里：两端各自从 models.dev 拉（models-dev.ts、pullAnthropicModels），启动时拉一次，模型中心里也能手动拉。
+// models.dev 和 Anthropic 一样从「网络代理」的端口出去（AppProxy.kt），没配端口时跟随系统代理或 VPN。
 // ⚠ 对齐流程：desktop 改种子后，把本文件 SEEDS/NOTES 等与之逐条比对更新（结构刻意保持逐行可对照）。
-// 数据来源：cn-beijing 百炼价目（元/百万 token）；Anthropic 官网价目（美元/百万 token）；Vercel AI Gateway（美元折算成元）。
+// 数据来源：cn-beijing 百炼价目（元/百万 token）；Vercel AI Gateway（美元折算成元）。
 // ══════════════════════════════════════════════
 
-import { anthropicCatalogRows } from '../llm/anthropic-stream'
-import { solevupListModelCatalogJson, solevupSeedModelCatalogIfEmpty } from '../solevupdb'
+import { hasProxyPort, isConnectError } from '../network'
+import { solevupListModelCatalogJson, solevupSeedModelCatalogIfEmpty, solevupUpsertModelCatalog } from '../solevupdb'
+import { MODELS_DEV_URL, fetchAnthropicCatalog } from './models-dev'
 
 /** decision = 决策模型（只做选择题 / 打分题，走 Vercel AI Gateway） */
 export type ModelCategory = 'text' | 'omni' | 'realtime' | 'embedding' | 'asr' | 'decision'
@@ -269,9 +272,6 @@ function expandSeeds(): ModelDef[] {
     }
   }
 
-  // 对齐 desktop anthropic.rs seed_anthropic_models：入库保留美元原价（价目表在 llm/anthropic-stream.ts，同一份）
-  out.push(...anthropicCatalogRows(SEED_UPDATED_AT))
-
   // 对齐 desktop jev.rs seed_decision_models：价格折成元，只记输入价，输出免费
   for (const [id, name, vision, ctx, usd, note] of DECISION_SEEDS) {
     const cny = Math.round(usd * USD_TO_CNY * 10_000) / 10_000
@@ -342,6 +342,40 @@ export function ensureModelCatalog(): Promise<ModelDef[]> {
       })
   }
   return ensurePromise
+}
+
+const MODELS_DEV_TIMEOUT_MS = 30_000
+
+/** 取 models.dev 的全量目录（JSON 文本）。错误文字接在「从 models.dev 拉模型清单失败：」后面 */
+async function loadModelsDev(): Promise<string> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), MODELS_DEV_TIMEOUT_MS)
+  try {
+    const res = await fetch(MODELS_DEV_URL, { signal: controller.signal })
+    if (!res.ok) throw new Error(`返回 ${res.status}`)
+    return await res.text()
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e)
+    // RN 的 fetch 连不上时只说 Network request failed，拿不到底层原因
+    if (controller.signal.aborted || isConnectError(detail) || /network request failed/i.test(detail)) {
+      const what = controller.signal.aborted ? '超时没响应' : '连不上'
+      throw new Error(hasProxyPort()
+        ? `${what}。确认代理软件开着，端口对得上（Fairy 设置 → 网络）`
+        : `${what}。确认手机的 VPN 或系统代理开着，或者到 Fairy 设置 → 网络 填代理端口`)
+    }
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 从 models.dev 拉 Anthropic 的模型清单和价目写进库并刷新缓存，返回写入的行数。失败时抛出，message 可直接展示 */
+export async function pullAnthropicModels(): Promise<number> {
+  const rows = await fetchAnthropicCatalog(loadModelsDev)
+  await ensureModelCatalog()
+  const count = await solevupUpsertModelCatalog(JSON.stringify(rows))
+  await refreshModelCatalog()
+  return count
 }
 
 /** 最近一次载入的模型表（同步读取） */

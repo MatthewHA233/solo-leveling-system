@@ -3,7 +3,7 @@
 //   POST https://api.anthropic.com/v1/messages
 //   头：x-api-key（Key 存 ai_provider_keys，provider = anthropic）、anthropic-version: 2023-06-01
 //   每次调用记进 model_call_log（api_key_id 归属这把 Key）
-//   模型库条目：claude-opus-5-5（主力）/ claude-sonnet-5-5 / claude-haiku-5-5 / claude-fable-5-1
+//   模型清单和价目不写死：从 models.dev 取（fetch_models_dev，同样走代理），前端解析后写进模型库（lib/models/models-dev.ts）
 //   路由：POST /api/anthropic/test 发一句很短的话，验证代理和 Key
 // ══════════════════════════════════════════════
 
@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 use axum::{extract::State, response::Json, routing::post, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -164,50 +163,31 @@ async fn call(client: &reqwest::Client, port: u16, api_key: &str, body: &serde_j
     })
 }
 
-// ── 模型库种子（Anthropic 官网价目，2026-10 核对；单位美元 / 百万 token，入库保留美元原价，currency = USD）──
+// ── 模型清单：models.dev（公开的模型目录），和 Anthropic 一样走代理端口 ──
 
-/// (模型 id, 显示名, 价格阶梯 (min, max, 输入 $, 输出 $), 备注)
-const MODELS: &[(&str, &str, &[(i64, Option<i64>, f64, f64)], &str)] = &[
-    ("claude-opus-5-5", "Claude Opus 5.5", &[(0, None, 4.0, 20.0)],
-        "智能体主力（官网推荐的默认）。缓存写入 5 分钟 $5 / 1 小时 $8，缓存命中 $0.20（每百万 token）；上下文 100 万，最多输出 12.8 万"),
-    ("claude-sonnet-5-5", "Claude Sonnet 5.5", &[(0, None, 2.0, 10.0)],
-        "速度与智能的平衡。缓存写入 5 分钟 $2.5 / 1 小时 $4，缓存命中 $0.10；上下文 100 万，最多输出 12.8 万"),
-    ("claude-haiku-5-5", "Claude Haiku 5.5", &[(0, Some(100_000), 0.10, 0.50), (100_000, None, 0.50, 2.50)],
-        "最便宜；分类、抽取、路由。按输入长度两档（≤10 万 / >10 万）。缓存命中 $0.01 / $0.05"),
-    ("claude-fable-5-1", "Claude Fable 5.1", &[(0, None, 10.0, 50.0)],
-        "最贵；高难推理、长程智能体，Opus 不够时再用。缓存写入 5 分钟 $12.5 / 1 小时 $20，缓存命中 $0.25"),
-];
+const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
-pub(crate) fn seed_anthropic_models(conn: &Connection) -> Result<(), String> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let modalities = serde_json::to_string(&["text", "image"]).unwrap_or_else(|_| "[]".to_string());
-    for (id, display_name, tiers, note) in MODELS {
-        conn.execute(
-            "INSERT INTO model_registry
-             (id, category, provider, display_name, modalities, context_window, notes, deprecated, updated_at, currency)
-             VALUES (?, 'text', 'anthropic', ?, ?, 1000000, ?, 0, ?, 'USD')
-             ON CONFLICT(id) DO UPDATE SET
-               category=excluded.category, provider=excluded.provider, display_name=excluded.display_name,
-               modalities=excluded.modalities, context_window=excluded.context_window,
-               notes=excluded.notes, updated_at=excluded.updated_at, currency=excluded.currency",
-            params![id, display_name, &modalities, note, &now],
-        )
-        .map_err(|e| e.to_string())?;
-
-        conn.execute("DELETE FROM model_pricing WHERE model_id = ?", params![id]).map_err(|e| e.to_string())?;
-        for (min, max, in_usd, out_usd) in *tiers {
-            conn.execute(
-                "INSERT INTO model_pricing
-                 (model_id, tier_min_tokens, tier_max_tokens,
-                  price_input_text, price_input_image, price_output_text, price_output_text_thinking)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
-                params![id, min, max, in_usd, in_usd, out_usd, out_usd],
-            )
-            .map_err(|e| e.to_string())?;
-        }
+/// 取 models.dev 的全量目录，返回 JSON 文本（约 6 MB）。错误文字接在前端的「从 models.dev 拉模型清单失败：」后面
+pub async fn fetch_models_dev(db: &Database) -> Result<String, String> {
+    let port = db.network_settings().await?.proxy_port;
+    let res = build_client(port)?
+        .get(MODELS_DEV_URL)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_connect() {
+                format!("连不上代理 127.0.0.1:{port}。确认代理软件开着，端口对得上（齿轮 → 网络代理）：{e}")
+            } else if e.is_timeout() {
+                "超时没响应（代理通了但对面慢，或者线路不稳）".to_string()
+            } else {
+                format!("请求失败：{e}")
+            }
+        })?;
+    let status = res.status();
+    if !status.is_success() {
+        return Err(format!("返回 {}", status.as_u16()));
     }
-    log::info!("[Database] Anthropic 模型种子写入 {} 个", MODELS.len());
-    Ok(())
+    res.text().await.map_err(|e| format!("读回复失败：{e}"))
 }
 
 // ── HTTP：测试连接 ──

@@ -15,7 +15,7 @@
 import { startThoughtOutbox } from '../ai/anchor-outbox'
 import { initChatImages, type PickedImage } from '../chatimage'
 import { loadProxyPort } from '../network'
-import { ensureModelCatalog } from '../models/registry'
+import { ensureModelCatalog, pullAnthropicModels } from '../models/registry'
 import { saveFishApiKey } from '../voice'
 import { loadConfig, type AgentConfig } from './agent-config'
 import type { ChatSessionInfo } from './agent-memory'
@@ -87,6 +87,10 @@ class ChatControllerImpl {
     loadProxyPort().catch((e) => console.warn('[Chat] 读取代理端口失败', e))
 
     void ensureModelCatalog()
+    // 从 models.dev 更新一次 Anthropic 的模型清单和价目；失败不打扰，模型中心里可以手动再拉
+    pullAnthropicModels()
+      .then((count) => console.log(`[Chat] Anthropic 模型清单已更新，共 ${count} 个`))
+      .catch((e) => console.warn('[Chat] 更新 Anthropic 模型清单失败', e))
     startThoughtOutbox()
     this.sessionFlow.subscribeDbChanges()
     await this.sessionFlow.boot()

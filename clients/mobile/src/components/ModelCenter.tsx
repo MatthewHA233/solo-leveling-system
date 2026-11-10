@@ -12,6 +12,7 @@ import {
   FEATURE_LABEL,
   FEATURE_SPECS,
   ensureModelCatalog,
+  pullAnthropicModels,
   refreshModelCatalog,
   type ModelCategory,
   type ModelDef,
@@ -77,6 +78,7 @@ export default function ModelCenter({ visible, config, onClose, onSaveConfig }: 
   const [viewMode, setViewMode] = useState<ViewMode>('day')
   const [anchorDate, setAnchorDate] = useState<Date>(() => new Date())
   const [category, setCategory] = useState<ModelCategory>('text')
+  const [pullingClaude, setPullingClaude] = useState(false)
   const [feature, setFeature] = useState<string>('all')
   const [modelId, setModelId] = useState<string>('all')
   const [loading, setLoading] = useState(false)
@@ -185,6 +187,20 @@ export default function ModelCenter({ visible, config, onClose, onSaveConfig }: 
     setErr(null)
     void openBailianLogin().catch((e) => setErr(String(e)))
   }, [])
+
+  const pullClaude = useCallback(async () => {
+    setErr(null)
+    setPullingClaude(true)
+    try {
+      const count = await pullAnthropicModels()
+      flashSaved(`Claude 模型已更新，共 ${count} 个`)
+      await loadBase()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPullingClaude(false)
+    }
+  }, [flashSaved, loadBase])
 
   const startCreateApiKey = useCallback(() => {
     setNewApiKeyLabel(nextApiKeyLabel(apiKeys.filter((k) => k.provider === keyProvider), KEY_PROVIDER_META[keyProvider].defaultLabel))
@@ -348,6 +364,8 @@ export default function ModelCenter({ visible, config, onClose, onSaveConfig }: 
               models={categoryModels}
               freeQuotaByModel={freeQuotaByModel}
               onCategory={setCategory}
+              onPullClaude={() => { void pullClaude() }}
+              pullingClaude={pullingClaude}
               onOpenBailian={openBailian}
               onOpenBailianDetail={openBailianDetail}
             />

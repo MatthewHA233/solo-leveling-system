@@ -65,6 +65,7 @@ export const SCOPE = [
     files: [
       { file: `${D}lib/model-audit.ts`, target: `${M}lib/models/model-audit.ts` },
       { file: `${D}lib/model-display.ts`, target: `${M}lib/models/model-display.ts` },
+      { file: `${D}lib/models/models-dev.ts`, target: `${M}lib/models/models-dev.ts` },
       { file: `${D}components/ModelDialog.tsx`, target: `${M}components/models/` },
       { file: `${D}components/ModelUsageBadge.tsx`, target: `${M}components/models/ModelUsageBadge.tsx` },
       { file: `${R}db.rs`, only: MODEL_DB, target: `${K}solevupdb/SolevupDb.kt` },

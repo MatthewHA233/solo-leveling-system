@@ -131,6 +131,13 @@ async fn anthropic_stream_start(
     anthropic_stream::start_stream(app_handle, db, stream_id, feature, body).await
 }
 
+/// 模型清单：走代理取 models.dev 的全量目录（JSON 文本），前端解析后写进模型库
+#[tauri::command]
+async fn fetch_models_dev(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
+    let db = state.db.read().await.clone().ok_or_else(|| "数据库还没就绪".to_string())?;
+    anthropic::fetch_models_dev(&db).await
+}
+
 #[tauri::command]
 async fn fish_tts_connect(
     api_key: String,
@@ -2028,6 +2035,7 @@ pub fn run() {
             open_url_in_browser,
             fish_tts_connect,
             anthropic_stream_start,
+            fetch_models_dev,
             fish_tts_send_text,
             fish_tts_flush,
             fish_tts_stop,
