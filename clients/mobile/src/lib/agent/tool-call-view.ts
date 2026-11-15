@@ -42,6 +42,12 @@ const TOOL_LABELS: Record<string, string> = {
   Read: '读文件',
   Write: '写文件',
   Edit: '编辑文件',
+  RecordActivity: '记到昼夜表',
+  GetIslands: '查浮岛与约束',
+  SaveIsland: '保存浮岛 / 约束',
+  DeleteIsland: '删除浮岛 / 约束',
+  CheckIslandItem: '勾掉浮岛里的事',
+  CreatePlanTask: '新建计划任务',
 }
 
 export function toolLabel(name: string): string {

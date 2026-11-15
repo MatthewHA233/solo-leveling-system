@@ -8,6 +8,7 @@ import type { PerceptionSpan, BiliSpan, AnchorCategory } from '../local-api'
 import { fetchBiliTranscriptSentences } from '../bili-transcript'
 import type { ActivityPalette } from '../../types'
 import type { ToolDefinition } from '../llm/types'
+import { DAYNIGHT_TOOLS } from './agent-tools-daynight'
 
 // ── 内部 Tool 接口 ──
 
@@ -918,6 +919,7 @@ const ALL_TOOLS: readonly Tool[] = [
   readFile,
   writeFile,
   editFile,
+  ...DAYNIGHT_TOOLS,
 ]
 
 /** 发给 AI 的工具定义列表（OpenAI function calling 格式） */
