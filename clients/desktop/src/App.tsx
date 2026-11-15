@@ -118,6 +118,10 @@ import SyncPeerDialog, { type SyncLogEntry } from './components/SyncPeerDialog'
 import { useBiliHistory } from './lib/bilibili/useHistory'
 import ActivityTagPalette from './components/ActivityTagPalette'
 import TodoListPanel from './components/TodoListPanel'
+import PlanSidePanel from './components/daynight/PlanSidePanel'
+import IslandPanel from './components/daynight/IslandPanel'
+import { useIslands } from './lib/islands/use-islands'
+import { DAYNIGHT_CHANGED_EVENT } from './lib/islands/island-api'
 import ActivityToast from './components/ActivityToast'
 import type { FairyState } from './components/FairyHUD'
 import { CloseConfirmModal } from './components/CloseConfirmModal'
@@ -1017,6 +1021,33 @@ export default function App() {
   const refreshActivityPalette = useCallback(() => {
     fetchActivityPalette().then(setActivityPalette).catch(() => {})
   }, [])
+
+  // 浮岛与约束：规则 + 当天记录 + 近几天记录 → 当天落点
+  const { islands, placements: islandPlacements, error: islandsError, reload: reloadIslands } = useIslands(selectedDate, activityBlocks, activityPalette)
+
+  // 昼夜表的数据被别处改了（Fairy 的工具可能跑在另一个窗口）：重新取一遍。
+  // 撤销栈是按旧数据拍的快照，按它撤回会盖掉新写进来的，所以一并清掉（同 AUDIT-001）
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | null = null
+    ;(async () => {
+      const { listen } = await import('@tauri-apps/api/event')
+      const off = await listen(DAYNIGHT_CHANGED_EVENT, () => {
+        refreshActivityBlocks()
+        refreshPlannedBlocks()
+        refreshActivityPalette()
+        refreshPlanNodes()
+        reloadIslands()
+        setUndoStack([])
+        setRedoStack([])
+        setPlanUndoStack([])
+        setPlanRedoStack([])
+      })
+      if (cancelled) off()
+      else unlisten = off
+    })().catch((err) => console.warn('[DayNight] 监听刷新事件失败', err))
+    return () => { cancelled = true; unlisten?.() }
+  }, [refreshActivityBlocks, refreshPlannedBlocks, refreshActivityPalette, refreshPlanNodes, reloadIslands])
 
   // 主舞台视图的回调（稳定引用，见文件顶部 Stage* 的说明）
   const handlePlanNodesChange = useCallback(() => { refreshPlanNodes() }, [refreshPlanNodes])
@@ -3423,6 +3454,7 @@ export default function App() {
                 <StageDayNightChart
                   activityBlocks={activityBlocks}
                   plannedBlocks={plannedBlocks}
+                  islandPlacements={islandPlacements}
                   planNodes={planNodes}
                   activityPalette={activityPalette}
                   recordLayer={recordLayer}
@@ -3609,6 +3641,18 @@ export default function App() {
                   position: 'relative',
                 }}>
                   {recordLayer === 'plan' ? (
+                    <PlanSidePanel
+                      islands={(
+                        <IslandPanel
+                          selectedDate={selectedDate}
+                          palette={activityPalette}
+                          islands={islands}
+                          placements={islandPlacements}
+                          loadError={islandsError}
+                          onChanged={reloadIslands}
+                        />
+                      )}
+                      todo={(
                     <TodoListPanel
                       selectedDate={selectedDate}
                       palette={activityPalette}
@@ -3629,6 +3673,8 @@ export default function App() {
                         setPlanUndoStack([])
                         setPlanRedoStack([])
                       }}
+                    />
+                      )}
                     />
                   ) : (
                     <ActivityTagPalette

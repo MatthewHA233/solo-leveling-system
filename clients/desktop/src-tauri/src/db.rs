@@ -1467,6 +1467,7 @@ impl Database {
         crate::notes::init_note_tables(&conn)?;
         crate::protocol::init_protocol_tables(&conn)?;
         crate::protocol_genesis::init_genesis_tables(&conn)?;
+        crate::islands::init_island_tables(&conn)?;
         crate::jev::init_jev_tables(&conn)?;
         crate::network::init_network_tables(&conn)?;
 

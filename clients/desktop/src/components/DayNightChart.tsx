@@ -6,6 +6,8 @@ import type { PerceptionSpan, BiliSpan } from '../lib/local-api'
 import { theme } from '../theme'
 import DayNightToolbar from './daynight/DayNightToolbar'
 import { tone, PIPE_TONE } from '../lib/color/harmonize'
+import { islandColor } from '../lib/islands/island-model'
+import type { IslandPlacement } from '../lib/islands/island-model'
 import Tooltip from './Tooltip'
 
 interface Props {
@@ -15,6 +17,8 @@ interface Props {
   plannedBlocks: PlannedBlock[]
   /** 当前项目下的计划节点树 */
   planNodes: PlanNode[]
+  /** 浮岛与约束在这一天的落点（规则算出来的，不是涂上去的） */
+  islandPlacements?: readonly IslandPlacement[]
   /** 标签库（颜色 / 路径查找） */
   activityPalette: ActivityPalette
   /** 当前正在查看/编辑的记录层 */
@@ -362,7 +366,6 @@ function drawTagFills(
   p: ReturnType<typeof getGridParams>,
   spans: PerceptionSpan[],
   hoveredSpanId: number | null,
-  layer: RecordLayer,
 ) {
   const fillOffsetX = p.traceBaseX + traceWidth + TRACE_GAP
 
@@ -374,7 +377,6 @@ function drawTagFills(
 
     const color   = tone(span.color ?? '#4488ff')   // 颜色统一明度彩度（lib/color/harmonize）
     const hovered = hoveredSpanId === span.id
-    const alphaScale = layer === 'plan' ? 0.72 : 1
 
     const startCol = Math.floor(startMin / p.minutesPerCol)
     const endCol   = Math.floor((endMin - 1) / p.minutesPerCol)
@@ -397,9 +399,9 @@ function drawTagFills(
 
       // 1) 填充：弱化半透渐变（参考图风格，整体更"透气"）
       const grad = ctx.createLinearGradient(x, 0, x + w, 0)
-      grad.addColorStop(0, hexToRgba(color, (hovered ? 0.42 : 0.28) * alphaScale))
-      grad.addColorStop(0.75, hexToRgba(color, (hovered ? 0.36 : 0.22) * alphaScale))
-      grad.addColorStop(1, hexToRgba(color, (hovered ? 0.26 : 0.16) * alphaScale))
+      grad.addColorStop(0, hexToRgba(color, hovered ? 0.42 : 0.28))
+      grad.addColorStop(0.75, hexToRgba(color, hovered ? 0.36 : 0.22))
+      grad.addColorStop(1, hexToRgba(color, hovered ? 0.26 : 0.16))
       ctx.fillStyle = grad
       ctx.fillRect(x, y0, w, h)
 
@@ -420,14 +422,12 @@ function drawTagFills(
         ctx.shadowColor = hexToRgba(color, 0.9)
         ctx.shadowBlur = 6
       }
-      ctx.strokeStyle = hexToRgba(color, (hovered ? 1.0 : 0.9) * alphaScale)
+      ctx.strokeStyle = hexToRgba(color, hovered ? 1.0 : 0.9)
       ctx.lineWidth = hovered ? 2.2 : 1.8
-      if (layer === 'plan') ctx.setLineDash([4, 3])
       ctx.beginPath()
       ctx.moveTo(x + 0.5, y0)
       ctx.lineTo(x + 0.5, y1)
       ctx.stroke()
-      ctx.setLineDash([])
       ctx.restore()
 
       // 4) 首/末列 L 形端盖（HUD 收口）
@@ -463,6 +463,165 @@ function drawTagFills(
       }
     }
   }
+}
+
+const PLAN_INSET = 2.5
+const PLAN_SPAN_ID_BASE = -1_000_000_000
+
+/**
+ * 规划区块：虚线轮廓 + 淡底 + 左上角小标签，叠在实际记录之上，不盖住实心块。
+ * active = 右侧栏在「计划」，此时规划区块是可编辑的那一层，画得更实一点。
+ */
+function drawPlanOutlines(
+  ctx: CanvasRenderingContext2D,
+  p: ReturnType<typeof getGridParams>,
+  spans: PerceptionSpan[],
+  hoveredSpanId: number | null,
+  active: boolean,
+) {
+  const fillOffsetX = p.traceBaseX + traceWidth + TRACE_GAP
+  const fontSize = p.fs(10)
+
+  ctx.save()
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
+  ctx.font = `600 ${fontSize}px 'JetBrains Mono', 'Courier New', monospace`
+
+  for (const span of spans) {
+    const startMin = dtToMinute(span.start_at)
+    const endMin   = dtToMinute(span.end_at)
+    if (endMin <= startMin) continue
+
+    const color   = tone(span.color ?? '#4488ff')
+    const hovered = hoveredSpanId === span.id
+    const { parts } = parseTagTitle(span.title)
+    const label = parts[parts.length - 1] ?? ''
+
+    const startCol = Math.floor(startMin / p.minutesPerCol)
+    const endCol   = Math.floor((endMin - 1) / p.minutesPerCol)
+
+    for (let c = startCol; c <= endCol && c < p.cols; c++) {
+      const colStartMin = c * p.minutesPerCol
+      const segStart    = Math.max(startMin, colStartMin)
+      const segEnd      = Math.min(endMin, colStartMin + p.minutesPerCol)
+
+      const x  = colX(c, p) + fillOffsetX + PLAN_INSET
+      const w  = p.cellW - fillOffsetX - PLAN_INSET * 2
+      const y0 = minuteToY(segStart, c, p) + PLAN_INSET
+      const h  = minuteToY(segEnd, c, p) - PLAN_INSET - y0
+      if (h <= 0 || w <= 0) continue
+
+      ctx.fillStyle = hexToRgba(color, hovered ? 0.2 : active ? 0.13 : 0.06)
+      ctx.fillRect(x, y0, w, h)
+
+      ctx.strokeStyle = hexToRgba(color, hovered ? 1 : active ? 0.9 : 0.6)
+      ctx.lineWidth = hovered || active ? 1.4 : 1
+      ctx.setLineDash([5, 3])
+      ctx.strokeRect(x + 0.5, y0 + 0.5, w - 1, h - 1)
+      ctx.setLineDash([])
+
+      if (label && h >= fontSize + 5) {
+        let text = label
+        const maxW = w - 8
+        while (text.length > 1 && ctx.measureText(text).width > maxW) text = text.slice(0, -1)
+        ctx.fillStyle = hexToRgba(color, hovered || active ? 1 : 0.8)
+        ctx.fillText(text, x + 4, y0 + 3)
+      }
+    }
+  }
+  ctx.restore()
+}
+
+const ISLAND_INSET = 4
+const ISLAND_RADIUS = 6
+const ISLAND_MISSED_COLOR = '#8E8982'
+const ISLAND_HATCH_STEP = 7
+
+/**
+ * 浮岛与约束：规则算出来的规划区块，叠在记录之上。
+ *   浮岛 = 圆角框；位置是估的画虚线，锚已经出现画实线
+ *   约束 = 直角框 + 斜纹（钉在钟点上，不会动）
+ *   做完的变淡带对勾，过了没做的变灰；标签靠右上角（涂上去的计划块标签在左上角，互不挡）
+ */
+function drawIslands(
+  ctx: CanvasRenderingContext2D,
+  p: ReturnType<typeof getGridParams>,
+  placements: readonly IslandPlacement[],
+  palette: ActivityPalette,
+) {
+  const fillOffsetX = p.traceBaseX + traceWidth + TRACE_GAP
+  const fontSize = p.fs(11.5)
+
+  ctx.save()
+  ctx.textAlign = 'right'
+  ctx.textBaseline = 'top'
+  ctx.font = `700 ${fontSize}px 'JetBrains Mono', 'Courier New', monospace`
+
+  for (const placement of placements) {
+    const { start, end, status, basis } = placement
+    if (start == null || end == null || end <= start) continue
+    const rule = placement.island.rule
+    const fixed = rule.kind === 'fixed'
+    const estimated = basis === 'estimated'
+    const color = status === 'missed' ? ISLAND_MISSED_COLOR : tone(islandColor(rule, palette, theme.warningOrange))
+    const strength = status === 'active' ? 1 : status === 'done' ? 0.5 : status === 'missed' ? 0.6 : estimated ? 0.65 : 0.85
+    const label = `${status === 'done' ? '✓ ' : estimated ? '≈ ' : ''}${rule.name}`
+
+    const startCol = Math.floor(start / p.minutesPerCol)
+    const endCol   = Math.floor((end - 1) / p.minutesPerCol)
+
+    for (let c = startCol; c <= endCol && c < p.cols; c++) {
+      const colStartMin = c * p.minutesPerCol
+      const segStart = Math.max(start, colStartMin)
+      const segEnd   = Math.min(end, colStartMin + p.minutesPerCol)
+      const isFirst  = c === startCol
+      const isLast   = c === endCol
+
+      const x  = colX(c, p) + fillOffsetX + ISLAND_INSET
+      const w  = p.cellW - fillOffsetX - ISLAND_INSET * 2
+      const y0 = minuteToY(segStart, c, p) + (isFirst ? ISLAND_INSET : 0)
+      const y1 = minuteToY(segEnd, c, p) - (isLast ? ISLAND_INSET : 0)
+      const h  = y1 - y0
+      if (h <= 0 || w <= 0) continue
+
+      // 跨列时只有头尾两端是圆的，中间断开处是直的
+      const r = fixed ? 0 : Math.min(ISLAND_RADIUS, w / 2, h / 2)
+      const shape = new Path2D()
+      shape.roundRect(x + 0.5, y0 + 0.5, w - 1, h - 1, [isFirst ? r : 0, isFirst ? r : 0, isLast ? r : 0, isLast ? r : 0])
+
+      ctx.fillStyle = hexToRgba(color, (status === 'active' ? 0.18 : 0.08) * strength)
+      ctx.fill(shape)
+
+      if (fixed) {
+        ctx.save()
+        ctx.clip(shape)
+        ctx.strokeStyle = hexToRgba(color, 0.22 * strength)
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        for (let d = -h; d < w; d += ISLAND_HATCH_STEP) {
+          ctx.moveTo(x + d, y0 + h)
+          ctx.lineTo(x + d + h, y0)
+        }
+        ctx.stroke()
+        ctx.restore()
+      }
+
+      ctx.strokeStyle = hexToRgba(color, 0.95 * strength)
+      ctx.lineWidth = status === 'active' ? 1.6 : 1.1
+      ctx.setLineDash(estimated ? [3, 3] : [])
+      ctx.stroke(shape)
+      ctx.setLineDash([])
+
+      if (h >= fontSize + 6) {
+        let text = label
+        const maxW = w - 10
+        while (text.length > 1 && ctx.measureText(text).width > maxW) text = text.slice(0, -1)
+        ctx.fillStyle = hexToRgba(color, Math.min(1, strength + 0.15))
+        ctx.fillText(text, x + w - 5, y0 + 4)
+      }
+    }
+  }
+  ctx.restore()
 }
 
 // 管线左右轨 X 偏移（相对于列起点）
@@ -1221,7 +1380,9 @@ function ScrollingZoneLabels({ params }: { params: GridParams }) {
 
 // ── 主组件 ──
 
-export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes, activityPalette, recordLayer, onRecordLayerChange, editMode, selectedTagId, selectedPlanNodeId, onEditModeToggle, canUndo = false, canRedo = false, onUndo, onRedo, onApplyDrag, perceptionSpans: rawPerceptionSpans = [], biliSpans = [], selectedDate, onSpanClick, onSpanHover, onAppSpanHover, onBiliSpanHover, trackMode = 'apps', onTrackModeChange, pinnedPos, onPinPos }: Props) {
+const NO_ISLANDS: readonly IslandPlacement[] = []
+
+export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes, islandPlacements = NO_ISLANDS, activityPalette, recordLayer, onRecordLayerChange, editMode, selectedTagId, selectedPlanNodeId, onEditModeToggle, canUndo = false, canRedo = false, onUndo, onRedo, onApplyDrag, perceptionSpans: rawPerceptionSpans = [], biliSpans = [], selectedDate, onSpanClick, onSpanHover, onAppSpanHover, onBiliSpanHover, trackMode = 'apps', onTrackModeChange, pinnedPos, onPinPos }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const hoveredIdRef = useRef<string | null>(null)
@@ -1330,11 +1491,12 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
   }, [recordLayer, activityBlocks, plannedBlocks])
 
   // ── 活动记录块 → 合并连续同 tag 的虚拟 PerceptionSpan（track='tags'），喂给现有渲染 ──
+  // 实际记录永远画（实心）；visibleBlocks 只给拖刷用，跟着右侧栏所在层走
   const blockSpans = useMemo<PerceptionSpan[]>(() => {
-    if (visibleBlocks.length === 0) return []
+    if (activityBlocks.length === 0) return []
     const tagById = new Map(activityPalette.tags.map((t) => [t.id, t]))
     const catById = new Map(activityPalette.categories.map((c) => [c.id, c]))
-    const sorted = [...visibleBlocks].sort((a, b) => a.minute - b.minute)
+    const sorted = activityBlocks.map((b) => ({ minute: b.minute, tagId: b.tagId })).sort((a, b) => a.minute - b.minute)
     const fmt = (min: number) => {
       const h = Math.floor(min / 60)
       const m = min % 60
@@ -1376,7 +1538,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
       })
     }
     return out
-  }, [visibleBlocks, activityPalette, selectedDateStr])
+  }, [activityBlocks, activityPalette, selectedDateStr])
 
   const planBlockSpans = useMemo<PerceptionSpan[]>(() => {
     if (plannedBlocks.length === 0) return []
@@ -1393,7 +1555,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
       const tag = node ? tagById.get(node.projectTagId) : undefined
       const cat = tag ? catById.get(tag.categoryId) : undefined
       out.push({
-        id: -(out.length + 1) * 1000 - group.nodeId,
+        id: PLAN_SPAN_ID_BASE - (out.length + 1) * 1000 - group.nodeId, // 和实际记录的负 id 错开
         track: 'tags',
         start_at: fmt(group.startMin),
         end_at: fmt(group.endMin),
@@ -1501,7 +1663,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     ctx.fillRect(0, 0, p.totalW, p.totalH)
 
     drawZoneBands(ctx, p)
-    drawTagFills(ctx, p, perceptionSpans, hoveredSpanId, recordLayer)
+    drawTagFills(ctx, p, blockSpans, hoveredSpanId)
     drawGrid(ctx, p)
     drawTimeLabels(ctx, p)
 
@@ -1542,7 +1704,9 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     } else {
       drawBiliTracesInPipe(ctx, p, adjustedBiliSpans)
     }
-    drawTagTitles(ctx, p, perceptionSpans)
+    drawTagTitles(ctx, p, blockSpans)
+    drawPlanOutlines(ctx, p, planBlockSpans, hoveredSpanId, recordLayer === 'plan')
+    drawIslands(ctx, p, islandPlacements, activityPalette)
 
     // 拖刷预览（覆盖在 tag 填充之上）
     const drag = dragRef.current
@@ -1567,7 +1731,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     }
 
     ctx.restore()
-  }, [p, perceptionSpans, adjustedBiliSpans, trackMode, recordLayer, isToday, dpr, pinnedPos]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [p, perceptionSpans, blockSpans, planBlockSpans, islandPlacements, activityPalette, adjustedBiliSpans, trackMode, recordLayer, isToday, dpr, pinnedPos]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     draw()
@@ -1964,7 +2128,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
   // 只在日期切换时触发，不随活动增删重置位置
   const scrollKeyRef = useRef('')
   useEffect(() => {
-    const key = `${selectedDate.toDateString()}:${recordLayer}`
+    const key = selectedDate.toDateString()
     if (scrollKeyRef.current === key) return
     scrollKeyRef.current = key
 
@@ -1976,8 +2140,8 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
       targetMin = now.getHours() * 60 + now.getMinutes()
     } else {
       // 非今天：滚到最早的活动块（如果有），否则 0 点
-      const earliest = visibleBlocks.length > 0
-        ? Math.min(...visibleBlocks.map((b) => b.minute))
+      const earliest = activityBlocks.length > 0
+        ? Math.min(...activityBlocks.map((b) => b.minute))
         : 0
       targetMin = Math.max(0, earliest - p.minutesPerCol)
     }
@@ -1985,7 +2149,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     const scrollX = targetCol * p.colStride
     setTimeout(() => { container.scrollLeft = scrollX }, 100)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDate, recordLayer, isToday, p.minutesPerCol, p.colStride])
+  }, [selectedDate, isToday, p.minutesPerCol, p.colStride])
 
   // 图例：从感知 tags 提取一级标签，带每分类累计时长 + 子标签明细
   const tagLegend = useMemo(() => {
@@ -1996,7 +2160,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     }
     type Entry = { color: string; mins: number; subTagMap: Map<string, number> }
     const map = new Map<string, Entry>()
-    ;(perceptionSpans ?? []).filter((s) => s.track === 'tags').forEach((s) => {
+    ;blockSpans.forEach((s) => {
       const { parts } = parseTagTitle(s.title)
       const firstName = parts[0]
       if (!firstName) return
@@ -2014,7 +2178,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
         subTags: [...v.subTagMap.entries()].map(([n, m]) => ({ name: n, mins: m })).sort((a, b) => b.mins - a.mins),
       }))
       .sort((a, b) => b.mins - a.mins)
-  }, [perceptionSpans])
+  }, [blockSpans])
 
   const [legendOpen, setLegendOpen] = useState(false)
   const [expandedChip, setExpandedChip] = useState<string | null>(null)
@@ -2035,7 +2199,7 @@ export default function DayNightChart({ activityBlocks, plannedBlocks, planNodes
     }
   }
 
-  const tagSpans = (perceptionSpans ?? []).filter((s) => s.track === 'tags')
+  const tagSpans = blockSpans
   const totalTagMinutes = tagSpans.reduce((sum, s) => {
     const toMin = (dt: string) => {
       const t = dt.split(' ')[1] ?? ''

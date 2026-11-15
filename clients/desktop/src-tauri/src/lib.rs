@@ -10,6 +10,7 @@ mod sync_auth;
 mod notes;
 mod notes_api;
 mod jev;
+mod islands;
 mod protocol;
 mod protocol_genesis;
 mod anthropic;

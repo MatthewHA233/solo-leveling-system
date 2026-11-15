@@ -2012,6 +2012,7 @@ pub fn create_router(
         .route("/api/anchors/{id}", patch(update_anchor))
         .merge(crate::notes_api::routes())
         .merge(crate::protocols_api::routes())
+        .merge(crate::islands::routes())
         .merge(crate::network::routes())
         .merge(crate::anthropic::routes())
         // axum 默认只收 2MB，全量同步一超过就 413，整轮失败
