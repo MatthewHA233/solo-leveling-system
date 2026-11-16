@@ -415,6 +415,7 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 - 合并规则两端各有一份（`db.rs chat_sync_import`、`SolevupDb.kt importChatPage`）。改规则要同时改两端，并更新和运行 `python3 clients/mobile/alignment/chat_sync_sim.py`。
 - 聊天图片文件在 `<数据目录>/chat-images/`，消息正文开头的 `[图片:id1,id2]` 标记随聊天同步。每轮同步后，发起方经 `GET /api/sync/chat-image/{id}`（要令牌）拉本机缺的文件，还没拉到时显示占位。标记规则两端各有一份（两端 `chat-images.ts`、`db.rs chat_image_ids`、`SolevupDb.kt chatImageIds`），拉取规则也是（`sync_engine.rs pull_chat_images`、`SyncClient.kt pullChatImages`），改规则要同时改两端。
 - 昼夜表的计划层（任务 `plan_nodes`、计划块 `planned_blocks`、浮岛 `plan_islands`、浮岛勾选 `plan_island_checks`）：跟着全量同步，`updated_at` 新的赢，删除是软删。本机每次改动的 `updated_at` 和上次同一秒就往后挪一秒；时间相同、对面是删除而本地还在，也采用（删除赢）。任务的截止日、优先级、备注、完成时间放在任务行可选的 `detail` 里，老版本不带就不覆盖本地。浮岛按 id、勾选按（日期, 浮岛, 事项）合并。规则两端各有一份（`islands.rs` 文件头、`PlanStore.kt` 文件头），改规则要同时改两端。
+- 标签说法：Fairy 记下的「主人这样说就是这个标签」存在标签行的 `aliases`（JSON 字符串数组），跟着标签行全量同步，`updated_at` 新的赢；老版本不带这个字段时不覆盖本地。Fairy 找标签先查它，对话背景里带最近用过的 30 条。规则两端各有一份（`db.rs set_activity_tag_aliases` 和 `import_sync` 的标签一段、`SolevupDb.kt setTagAliases` 和 `importSync`），改规则要同时改两端。
 - 想法卡、锚点等表没有 `updated_at`，不在同步协议里，桌面端是唯一数据源。手机端经 `src/lib/desktop-api.ts` 直接读写已配对的桌面端，连不上时写入进待发送队列（`src/lib/ai/anchor-outbox.ts`）。
 - 手机代理不走同步，每台设备自己的（Fairy 设置 → 网络，`android/.../net/AppProxy.kt`、`src/lib/network.ts`）。只有 Anthropic、Fish 和 models.dev（模型清单）走这个本机端口，留空时跟随系统代理或 VPN。
 
@@ -492,7 +493,7 @@ python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
 ### Fairy（对应 desktop 的 `App.tsx` 聊天部分、`ChatPanel`、`FairyWindow`、`lib/agent`、`lib/ai`、`lib/llm`、`lib/voice`）
 
 - `src/lib/agent/chat-controller.ts` — 全局单例，只做组装；流程在 `chat-core`（状态和订阅）、`chat-sessions`（会话）、`chat-prompt`（提示词取数）、`chat-send`（发送主流程）、`chat-distill`（想法沉淀）、`chat-voice`（按住说话）、`chat-omni`（实时语音）。React 侧用 `use-chat-controller.ts`
-- `src/lib/agent/tools/` — 工具定义和实现，按领域分文件；提示词在 `src/lib/ai/prompt-templates.ts`。昼夜表工具 `daynight-tools.ts` 和 desktop `lib/agent/agent-tools-daynight.ts` 除导入外逐字一致，改要两端一起改
+- `src/lib/agent/tools/` — 工具定义和实现，按领域分文件；提示词在 `src/lib/ai/prompt-templates.ts`。昼夜表工具 `daynight-tools.ts` 和 desktop `lib/agent/agent-tools-daynight.ts` 除导入外逐字一致，改要两端一起改。找标签分三档（有把握直接记；只对上一个但不完全一样就记上并提醒跟主人说；好几个都像或对不上就不写、先问主人），主人定了用 `RememberTagAlias` 记下说法
 - `src/lib/llm/` — 流式调用、Anthropic 通道、`context-window`（静态前缀 + 每轮 reminder + 压缩）、`query-loop`（工具循环）
 - 上下文压缩：`lib/llm/context-window.ts`（门槛和清理）、`lib/llm/compact.ts`（模型写摘要）、`lib/agent/chat-compaction.ts`（时机）、`lib/agent/chat-history.ts`（库行 ↔ 历史），两端逐字一致，改要两端一起改。方案见 `docs/AI系统/上下文压缩与长期记忆-调研交接.md` 第九节
 - 聊天里的工具调用：每次调用单独一行，点开看参数和结果、可以复制；重开会话时从 `tool_trace` 行还原。数据和文字规则在两端的 `lib/agent/tool-call-view.ts`（逐字一致，改要同时改两端），工具的中文名也在里面，新加工具要补一行；样子各画各的（桌面端 `components/ToolCallRow.tsx`，手机端 `components/fairy/ToolCallRow.tsx`）

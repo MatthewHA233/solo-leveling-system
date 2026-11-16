@@ -29,6 +29,7 @@ object SyncJson {
         put("created_at", r.createdAt); put("last_used_at", r.lastUsedAt)
         put("updated_at", r.updatedAt)
         if (r.deletedAt != null) put("deleted_at", r.deletedAt)
+        if (r.aliases != null) put("aliases", r.aliases)
       })
     })
     o.put("activity_blocks", JSONArray().apply {
@@ -221,6 +222,7 @@ object SyncJson {
           createdAt = it.optString("created_at"), lastUsedAt = it.optString("last_used_at"),
           updatedAt = it.optString("updated_at"),
           deletedAt = nullable(it, "deleted_at"),
+          aliases = nullable(it, "aliases"),
         )
       },
       activityBlocks = arr(o, "activity_blocks") {

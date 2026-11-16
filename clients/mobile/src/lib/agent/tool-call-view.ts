@@ -48,6 +48,7 @@ const TOOL_LABELS: Record<string, string> = {
   DeleteIsland: '删除浮岛 / 约束',
   CheckIslandItem: '勾掉浮岛里的事',
   CreatePlanTask: '新建计划任务',
+  RememberTagAlias: '记住标签说法',
 }
 
 export function toolLabel(name: string): string {

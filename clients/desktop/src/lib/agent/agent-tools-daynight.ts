@@ -4,7 +4,7 @@
 //   手机端 src/lib/agent/tools/daynight-tools.ts 导入之外逐字一致，改工具要两端一起改
 // ══════════════════════════════════════════════
 
-import { addPlanNode, fetchActivityBlocks, fetchActivityPalette, paintActivityBlocks } from '../local-api'
+import { addPlanNode, fetchActivityBlocks, fetchActivityPalette, paintActivityBlocks, setActivityTagAliases } from '../local-api'
 import type { ActivityPalette, ActivityTag } from '../../types'
 import type { ToolDefinition } from '../llm/types'
 import {
@@ -25,6 +25,9 @@ export interface DayNightTool {
 /** 不说时长时，最多自动往回填这么久的空档；再长就要主人说清楚 */
 const MAX_AUTO_FILL_MIN = 180
 const TAG_CANDIDATE_LIMIT = 6
+/** 每个标签最多记几种说法；对话背景里最多带几条 */
+const MAX_ALIASES_PER_TAG = 8
+const ALIAS_CONTEXT_LIMIT = 30
 const STATUS_TEXT: Record<IslandPlacement['status'], string> = { done: '做完了', active: '进行中', upcoming: '还没到', missed: '没做' }
 
 // ── 小工具 ──
@@ -62,29 +65,88 @@ function numberArg(value: unknown, name: string): number | undefined {
   return n
 }
 
+function sameText(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase()
+}
+
+/** 0 = 对不上。分档见 resolveTag：≥ 90 是叫法对上，≥ 50 是名字里有这几个字，再低只是字面沾边 */
 function scoreTag(tag: ActivityTag, query: string): number {
-  const q = query.toLowerCase()
+  const q = query.trim().toLowerCase().replace(/\s*[,，]\s*/g, ',')
   const path = tag.fullPath.toLowerCase()
   const leaf = tag.leafName.toLowerCase()
+  const aliases = (tag.aliases ?? []).map((a) => a.toLowerCase())
+  if (aliases.includes(q)) return 110
   if (path === q) return 100
   if (leaf === q) return 90
   if (leaf.includes(q)) return 70
+  if (aliases.some((a) => a.includes(q) || q.includes(a))) return 60
   if (path.includes(q)) return 50
   const tokens = q.split(/[\s,，、/]+/).filter(Boolean)
-  return tokens.length > 1 && tokens.every((t) => path.includes(t)) ? 40 : 0
+  if (tokens.length > 1 && tokens.every((t) => path.includes(t))) return 40
+  // 字面上沾边：说法里一半以上的汉字出现在叶子名或记过的说法里（「跑步」和「晨跑」），只当候选
+  const chars = [...new Set(q.match(/[\u4e00-\u9fff]/g) ?? [])]
+  const pool = leaf + aliases.join('')
+  const hits = chars.filter((c) => pool.includes(c)).length
+  return chars.length >= 2 && hits * 2 >= chars.length ? 20 + hits : 0
 }
 
-/** 按主人的说法找标签：分数最高的那个；同分取最近用过的。找不到抛错并列出最近用过的几个 */
-function resolveTag(query: string, palette: ActivityPalette): { tag: ActivityTag; others: ActivityTag[] } {
+function recentTagList(palette: ActivityPalette): string {
+  const recent = [...palette.tags].sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt)).slice(0, TAG_CANDIDATE_LIMIT)
+  return recent.map((t) => t.fullPath).join(' / ') || '（空）'
+}
+
+/** 对话背景里带的标签说法：最近用过的标签在前，最多 ALIAS_CONTEXT_LIMIT 条 */
+export function tagAliasRecords(palette: ActivityPalette): { alias: string; fullPath: string }[] {
+  return [...palette.tags]
+    .filter((t) => (t.aliases ?? []).length > 0)
+    .sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt))
+    .flatMap((t) => (t.aliases ?? []).map((alias) => ({ alias, fullPath: t.fullPath })))
+    .slice(0, ALIAS_CONTEXT_LIMIT)
+}
+
+interface TagMatch {
+  readonly tag: ActivityTag
+  readonly score: number
+  /**
+   * sure：主人记过的说法、完整路径，或者只有一个标签叶子名对上
+   * likely：只有这一个标签名字里有这几个字，可以记，但要跟主人说记到了哪
+   * unsure：好几个都像，或者只是字面沾边，不写，先问主人
+   */
+  readonly level: 'sure' | 'likely' | 'unsure'
+  readonly others: ActivityTag[]
+}
+
+/** 按主人的说法找标签：分数最高的那个；同分取最近用过的。一个都对不上就抛错，让模型去问主人 */
+function resolveTag(query: string, palette: ActivityPalette): TagMatch {
   const ranked = palette.tags
     .map((tag) => ({ tag, score: scoreTag(tag, query) }))
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score || b.tag.lastUsedAt.localeCompare(a.tag.lastUsedAt))
   if (ranked.length === 0) {
-    const recent = [...palette.tags].sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt)).slice(0, TAG_CANDIDATE_LIMIT)
-    throw new Error(`标签库里没有和「${query}」对得上的标签。最近用过的：${recent.map((t) => t.fullPath).join(' / ') || '（空）'}。换个说法再试，或请主人先在昼夜表里建这个标签`)
+    throw new Error(
+      `标签库里没有和「${query}」对得上的标签。最近用过的：${recentTagList(palette)}。` +
+      '按意思挑一两个最像的问主人是不是，主人说了算；还没有这个标签就请主人先在昼夜表里建。主人定了以后用完整路径重新调用，再用 RememberTagAlias 记下这个说法',
+    )
   }
-  return { tag: ranked[0].tag, others: ranked.slice(1, TAG_CANDIDATE_LIMIT).map((entry) => entry.tag) }
+  const [best, next] = ranked
+  const level = best.score >= 100 || (best.score >= 90 && (next == null || next.score < best.score))
+    ? 'sure'
+    : best.score >= 50 && (next == null || next.score < 40) ? 'likely' : 'unsure'
+  return { tag: best.tag, score: best.score, level, others: ranked.slice(1, TAG_CANDIDATE_LIMIT).map((entry) => entry.tag) }
+}
+
+/** 没把握时不写：列出候选，要模型先问主人 */
+function unsureMessage(query: string, match: TagMatch): string {
+  const candidates = [match.tag, ...match.others].map((t) => t.fullPath).join(' / ')
+  return `没把握「${query}」指哪个标签，这次没有写。可能是：${candidates}。` +
+    `先问主人是哪一个（也可能都不是），不要自己挑；主人定了以后用完整路径重新调用，再用 RememberTagAlias 记下「${query}」这个说法`
+}
+
+/** 要写进库的地方用：好几个都像就抛错 */
+function requireTag(query: string, palette: ActivityPalette): TagMatch {
+  const match = resolveTag(query, palette)
+  if (match.level === 'unsure') throw new Error(unsureMessage(query, match))
+  return match
 }
 
 async function loadPlacements(date: Date, palette: ActivityPalette, islands?: readonly Island[]): Promise<IslandPlacement[]> {
@@ -140,11 +202,13 @@ const recordActivity: DayNightTool = {
         '默认做法：结束时刻取现在，按 5 分钟四舍五入；开始时刻取当天上一段记录的结尾，把中间空着的格子填上，已有记录的格子不动。' +
         '主人说了做了多久就传 minutes，说了几点开始或结束就传 start_time / end_time。' +
         '空档超过 3 小时又没说时长时不会乱填，会回来要你问主人。' +
+        '标签好几个都像或对不上时不会写，会列出候选要你问主人；只对上一个但不完全一样时会记上，并提醒你跟主人说记到了哪。主人定了标签就用完整路径重记，再用 RememberTagAlias 记下主人的说法，下次就不用再问。' +
+        '主人纠正标签（「不对，是 XX」）时带 overwrite=true 重记这一段，同样记下说法。' +
         '只有收到「已记录」的结果才算记上了。',
       parameters: {
         type: 'object',
         properties: {
-          tag: { type: 'string', description: '做的是什么，用来在标签库里找标签。写主人的说法即可，例如「洗澡」「吃饭」「夜晚睡眠」；也可以写完整路径' },
+          tag: { type: 'string', description: '做的是什么，用来在标签库里找标签。写主人的说法即可，例如「洗澡」「吃饭」「夜晚睡眠」，会先查主人记过的说法；也可以写完整路径' },
           minutes: { type: 'number', description: '持续了多少分钟（主人说了才传）' },
           start_time: { type: 'string', description: '开始时刻 HH:mm（主人说了才传）' },
           end_time: { type: 'string', description: '结束时刻 HH:mm，不传 = 现在' },
@@ -168,7 +232,9 @@ const recordActivity: DayNightTool = {
     const minutes = numberArg(args.minutes, 'minutes')
 
     const [palette, blocks] = await Promise.all([fetchActivityPalette(), fetchActivityBlocks(date)])
-    const { tag, others } = resolveTag(query, palette)
+    const match = resolveTag(query, palette)
+    if (match.level === 'unsure') return unsureMessage(query, match)
+    const { tag, others } = match
     const taken = new Set(blocks.map((b) => b.minute))
 
     let start: number
@@ -199,8 +265,13 @@ const recordActivity: DayNightTool = {
 
     const skipped = (end - start) / BLOCK_MINUTES - slots.length
     const lines = [`已记录「${tag.fullPath}」${minuteToHHmm(start)}–${minuteToHHmm(end)}，填了 ${slots.length * BLOCK_MINUTES} 分钟`]
+    if (match.score > 100) lines.push(`「${query}」是按主人记过的说法对上的`)
     if (skipped > 0) lines.push(`其中 ${skipped * BLOCK_MINUTES} 分钟已有别的记录，没有动`)
-    if (others.length > 0) lines.push(`对得上的标签还有：${others.map((t) => t.fullPath).join(' / ')}。如果该用别的，告诉主人并重记`)
+    if (match.level === 'likely') {
+      lines.push(`「${query}」没有完全对上，是按名字记到「${tag.fullPath}」的。跟主人说一声记到了哪：主人认了就用 RememberTagAlias 记下「${query}」，不对就带 overwrite=true 改记`)
+    } else if (others.length > 0 && match.score < 100) {
+      lines.push(`对得上的标签还有：${others.map((t) => t.fullPath).join(' / ')}。如果该用别的，告诉主人并重记`)
+    }
     return lines.join('\n')
   },
 }
@@ -287,7 +358,7 @@ const saveIsland: DayNightTool = {
     const base: Partial<IslandRule> = existing?.rule ?? {}
 
     const anchorQuery = text(args.anchor_tag)
-    const anchorTagId = anchorQuery ? resolveTag(anchorQuery, palette).tag.id : base.anchorTagId ?? null
+    const anchorTagId = anchorQuery ? requireTag(anchorQuery, palette).tag.id : base.anchorTagId ?? null
     const latestArg = args.latest_start === '' ? null : timeArg(args.latest_start, 'latest_start')
     const titles = Array.isArray(args.items) ? args.items.map(text).filter(Boolean) : null
 
@@ -420,10 +491,60 @@ const createPlanTask: DayNightTool = {
     if (!query) return '缺少参数：project_tag'
     const dueDate = text(args.due_date)
     if (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return 'due_date 要写成 YYYY-MM-DD'
-    const { tag } = resolveTag(query, await fetchActivityPalette())
+    const { tag } = requireTag(query, await fetchActivityPalette())
     const node = await addPlanNode(tag.id, title, null, { dueDate: dueDate || null })
     notifyDayNightChanged()
     return `已新建任务「${node.title}」，挂在「${tag.fullPath}」下面${dueDate ? `，截止 ${dueDate}` : ''}`
+  },
+}
+
+// ── RememberTagAlias ──
+
+const rememberTagAlias: DayNightTool = {
+  definition: {
+    type: 'function',
+    function: {
+      name: 'RememberTagAlias',
+      description:
+        '记住主人对某个活动标签的说法，例如主人说「跑步」指的是「运动,晨跑」。记下后 RecordActivity 等工具按这个说法直接找到标签，对话背景里也会带上。' +
+        '只在主人确认或纠正过标签之后记，自己猜的不要记。这个说法已经记在别的标签上时会改过来；主人说记错了就带 forget=true 删掉。',
+      parameters: {
+        type: 'object',
+        properties: {
+          alias: { type: 'string', description: '主人的说法，照主人的原话写' },
+          tag: { type: 'string', description: '对应标签的完整路径，例如「运动,晨跑」。forget 时不用写' },
+          forget: { type: 'boolean', description: '删掉这个说法' },
+        },
+        required: ['alias'],
+      },
+    },
+  },
+  async execute(args) {
+    const alias = text(args.alias)
+    if (!alias) return '缺少参数：alias'
+    const palette = await fetchActivityPalette()
+    const holders = palette.tags.filter((t) => (t.aliases ?? []).some((a) => sameText(a, alias)))
+    const without = (t: ActivityTag) => (t.aliases ?? []).filter((a) => !sameText(a, alias))
+
+    if (args.forget === true) {
+      if (holders.length === 0) return `没有记过「${alias}」这个说法`
+      for (const t of holders) await setActivityTagAliases(t.id, without(t))
+      return `已忘掉「${alias}」（原来指「${holders.map((t) => t.fullPath).join(' / ')}」）`
+    }
+
+    const query = text(args.tag)
+    if (!query) return '缺少参数：tag'
+    // 找目标标签时不看已记的说法：要改的正是它们，记错的那条会把目标带偏
+    const target = requireTag(query, { ...palette, tags: palette.tags.map((t) => ({ ...t, aliases: [] })) }).tag
+    const tag = palette.tags.find((t) => t.id === target.id) ?? target
+    if (sameText(alias, tag.fullPath)) return `「${alias}」就是这个标签的完整路径，不用记`
+    const moved = holders.filter((t) => t.id !== tag.id)
+    for (const t of moved) await setActivityTagAliases(t.id, without(t))
+    if (!holders.some((t) => t.id === tag.id)) {
+      await setActivityTagAliases(tag.id, [...(tag.aliases ?? []), alias].slice(-MAX_ALIASES_PER_TAG))
+    }
+    const note = moved.length > 0 ? `（原来记在「${moved.map((t) => t.fullPath).join(' / ')}」上，已改过来）` : ''
+    return `记住了：主人说「${alias}」就是「${tag.fullPath}」${note}`
   },
 }
 
@@ -434,4 +555,5 @@ export const DAYNIGHT_TOOLS: readonly DayNightTool[] = [
   deleteIslandTool,
   checkIslandItem,
   createPlanTask,
+  rememberTagAlias,
 ]

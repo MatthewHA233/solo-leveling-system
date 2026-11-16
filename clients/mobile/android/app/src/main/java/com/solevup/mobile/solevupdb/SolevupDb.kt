@@ -68,6 +68,7 @@ class SolevupDb(context: Context) :
       if (rev < 2) applyRevision2(db)
       if (rev < 3) applyRevision3(db)
       if (rev < 4) applyRevision4(db)
+      if (rev < 5) applyRevision5(db)
       db.execSQL(
         "INSERT OR REPLACE INTO sync_meta (key, value, updated_at) VALUES ('schema_rev', ?, ?)",
         arrayOf(SCHEMA_REV.toString(), nowIso()),
@@ -76,6 +77,11 @@ class SolevupDb(context: Context) :
     } finally {
       db.endTransaction()
     }
+  }
+
+  private fun applyRevision5(db: SQLiteDatabase) {
+    // 主人对标签的说法（Fairy 记下的「吃饭 → 生活,用餐」），JSON 字符串数组，跟着标签行同步（desktop activity_tags 同一列）
+    addColumnIfMissing(db, "activity_tags", "aliases", "aliases TEXT")
   }
 
   private fun applyRevision4(db: SQLiteDatabase) {
@@ -522,7 +528,7 @@ class SolevupDb(context: Context) :
   data class TagRow(
     val id: Long, val syncId: String, val categoryId: Long, val fullPath: String,
     val leafName: String, val depth: Int, val createdAt: String, val lastUsedAt: String,
-    val updatedAt: String, val deletedAt: String?,
+    val updatedAt: String, val deletedAt: String?, val aliases: String?,
   )
 
   data class BlockRow(
@@ -550,7 +556,7 @@ class SolevupDb(context: Context) :
   fun listTags(): List<TagRow> {
     val out = ArrayList<TagRow>()
     readableDatabase.rawQuery(
-      """SELECT id, sync_id, category_id, full_path, leaf_name, depth, created_at, last_used_at, updated_at, deleted_at
+      """SELECT id, sync_id, category_id, full_path, leaf_name, depth, created_at, last_used_at, updated_at, deleted_at, aliases
          FROM activity_tags WHERE deleted_at IS NULL ORDER BY category_id, id""".trimIndent(),
       null,
     ).use { c ->
@@ -558,7 +564,7 @@ class SolevupDb(context: Context) :
         TagRow(
           c.getLong(0), c.getString(1), c.getLong(2), c.getString(3),
           c.getString(4), c.getInt(5), c.getString(6), c.getString(7),
-          c.getString(8), c.getString(9),
+          c.getString(8), c.getString(9), c.getString(10),
         ),
       )
     }
@@ -686,6 +692,26 @@ class SolevupDb(context: Context) :
     } finally {
       db.endTransaction()
     }
+  }
+
+  /** 改主人对标签的说法（整组替换，传 JSON 字符串数组）。updated_at 同一秒就往后挪一秒，好跟着标签行同步过去（desktop db.rs set_activity_tag_aliases） */
+  fun setTagAliases(tagId: Long, aliasesJson: String): Boolean {
+    val aliases = ArrayList<String>()
+    val arr = org.json.JSONArray(aliasesJson)
+    for (i in 0 until arr.length()) {
+      val alias = arr.optString(i).trim()
+      if (alias.isNotEmpty() && aliases.none { it.lowercase() == alias.lowercase() }) aliases.add(alias)
+    }
+    val db = writableDatabase
+    db.execSQL(
+      """UPDATE activity_tags SET aliases = ?2,
+           updated_at = CASE WHEN updated_at >= ?1 THEN datetime(updated_at, '+1 second') ELSE ?1 END
+         WHERE id = ?3 AND deleted_at IS NULL""".trimIndent(),
+      arrayOf(nowIso(), org.json.JSONArray(aliases).toString(), tagId),
+    )
+    val changed = db.rawQuery("SELECT changes()", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+    if (changed == 0) error("标签不存在")
+    return true
   }
 
   /** 软删 tag（设 deleted_at + bump updated_at），同时把它挂的 blocks/plan_nodes 也软删，
@@ -933,6 +959,8 @@ class SolevupDb(context: Context) :
     val fullPath: String, val leafName: String, val depth: Int,
     val createdAt: String, val lastUsedAt: String,
     val updatedAt: String, val deletedAt: String?,
+    // 主人对标签的说法。老版本不带，收到 null 时不覆盖本地（desktop db.rs SyncActivityTag 同一条规则）
+    val aliases: String? = null,
   )
 
   data class SyncBlockRow(
@@ -1075,7 +1103,7 @@ class SolevupDb(context: Context) :
     val tags = ArrayList<SyncTagRow>()
     db.rawQuery(
       """SELECT t.sync_id, c.sync_id, t.full_path, t.leaf_name, t.depth,
-                t.created_at, t.last_used_at, t.updated_at, t.deleted_at
+                t.created_at, t.last_used_at, t.updated_at, t.deleted_at, t.aliases
          FROM activity_tags t
          JOIN activity_categories c ON c.id = t.category_id""".trimIndent(),
       null,
@@ -1085,7 +1113,7 @@ class SolevupDb(context: Context) :
         if (!changed(u, d)) continue
         tags.add(SyncTagRow(
           c.getString(0), c.getString(1), c.getString(2), c.getString(3), c.getInt(4),
-          c.getString(5), c.getString(6), u, d,
+          c.getString(5), c.getString(6), u, d, c.getString(9),
         ))
       }
     }
@@ -1385,22 +1413,23 @@ class SolevupDb(context: Context) :
           db.execSQL(
             """UPDATE activity_tags
                SET sync_id=?, leaf_name=?, depth=?, created_at=?, last_used_at=?,
-                   updated_at=?, deleted_at=?
+                   updated_at=?, deleted_at=?, aliases=COALESCE(?, aliases)
                WHERE id=?""".trimIndent(),
             arrayOf(row.syncId, row.leafName, row.depth, row.createdAt, row.lastUsedAt,
-                    row.updatedAt, row.deletedAt, existingByPath),
+                    row.updatedAt, row.deletedAt, row.aliases, existingByPath),
           )
         } else {
           db.execSQL(
             """INSERT INTO activity_tags
-                 (sync_id, category_id, full_path, leaf_name, depth, created_at, last_used_at, updated_at, deleted_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 (sync_id, category_id, full_path, leaf_name, depth, created_at, last_used_at, updated_at, deleted_at, aliases)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(sync_id) DO UPDATE SET
                  category_id=excluded.category_id, full_path=excluded.full_path, leaf_name=excluded.leaf_name,
                  depth=excluded.depth, created_at=excluded.created_at, last_used_at=excluded.last_used_at,
-                 updated_at=excluded.updated_at, deleted_at=excluded.deleted_at""".trimIndent(),
+                 updated_at=excluded.updated_at, deleted_at=excluded.deleted_at,
+                 aliases=COALESCE(excluded.aliases, activity_tags.aliases)""".trimIndent(),
             arrayOf(row.syncId, categoryId, row.fullPath, row.leafName, row.depth,
-                    row.createdAt, row.lastUsedAt, row.updatedAt, row.deletedAt),
+                    row.createdAt, row.lastUsedAt, row.updatedAt, row.deletedAt, row.aliases),
           )
         }
         tags++
@@ -3085,7 +3114,7 @@ class SolevupDb(context: Context) :
     private const val DB_NAME = "solevup.db"
     private val LEGACY_DB_NAMES = listOf("solo.db")
     private const val DB_VERSION = 1
-    private const val SCHEMA_REV = 4
+    private const val SCHEMA_REV = 5
     private const val CHAT_PAGE_ROWS = 500
     private const val CHAT_MESSAGE_COLUMNS =
       "id, role, content, timestamp, audio_path, duration_ms, usage_json, reasoning, tool_calls, tool_call_id, name"

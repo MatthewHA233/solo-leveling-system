@@ -43,6 +43,7 @@ interface RawTag {
   depth: number
   created_at: string
   last_used_at: string
+  aliases?: string | null
 }
 
 interface RawBlock {
@@ -96,6 +97,18 @@ function mapTag(r: RawTag): ActivityTag {
     depth: r.depth,
     createdAt: r.created_at,
     lastUsedAt: r.last_used_at,
+    aliases: parseTagAliases(r.aliases),
+  }
+}
+
+/** 库里存的是 JSON 字符串数组；没记过或坏掉的当成没有（手机端 api.ts 同一份） */
+function parseTagAliases(raw: string | null | undefined): string[] {
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((a): a is string => typeof a === 'string' && a.trim() !== '') : []
+  } catch {
+    return []
   }
 }
 
@@ -205,6 +218,17 @@ export async function addActivityTag(categoryId: number, fullPath: string): Prom
   const json: ApiResponse<RawTag> = await res.json()
   if (!json.success || !json.data) throw new Error(json.error || '添加标签失败')
   return mapTag(json.data)
+}
+
+/** 改主人对标签的说法（整组替换） */
+export async function setActivityTagAliases(tagId: number, aliases: readonly string[]): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/activities/tags/aliases`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tag_id: tagId, aliases }),
+  })
+  const json: ApiResponse<void> = await res.json()
+  if (!json.success) throw new Error(json.error || '保存标签说法失败')
 }
 
 export async function deleteActivityTag(id: number): Promise<void> {

@@ -39,6 +39,8 @@ export type TagRow = {
   lastUsedAt: string
   updatedAt: string
   deletedAt?: string
+  /** 主人对标签的说法，JSON 字符串数组；没记过时没有这个字段 */
+  aliases?: string
 }
 
 export type BlockRow = {
@@ -86,6 +88,7 @@ export type SyncTagRow = {
   lastUsedAt: string
   updatedAt: string
   deletedAt?: string
+  aliases?: string
 }
 
 export type SyncBlockRow = {
@@ -223,6 +226,7 @@ interface SolevupDbNative {
   deleteCategory(categoryId: number): Promise<number>
   renameCategory(categoryId: number, newName: string, newColor: string): Promise<number>
   renameTagPath(tagId: number, newFullPath: string, cascade: boolean): Promise<number>
+  setTagAliases(tagId: number, aliasesJson: string): Promise<boolean>
   getPref(key: string, fallback: string): Promise<string>
   setPref(key: string, value: string): Promise<boolean>
   listSyncedSettings(): Promise<SyncedSetting[]>
@@ -426,6 +430,12 @@ export async function solevupRenameCategory(
 export async function solevupRenameTagPath(tagId: number, newFullPath: string, cascade = false): Promise<number> {
   if (!Native) return 0
   return Native.renameTagPath(tagId, newFullPath, cascade)
+}
+
+/** 改主人对标签的说法（整组替换） */
+export async function solevupSetTagAliases(tagId: number, aliases: readonly string[]): Promise<void> {
+  if (!Native) return
+  await Native.setTagAliases(tagId, JSON.stringify(aliases))
 }
 
 export interface SyncedSetting {

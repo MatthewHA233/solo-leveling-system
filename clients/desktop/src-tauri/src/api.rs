@@ -25,7 +25,7 @@ use crate::db::{
     BiliHistoryRow, UpsertBiliItem, BiliSpan, BiliDayCount, Goal, PresenceSpan,
     ActivityCategory, ActivityTag, ActivityBlock, ActivityPalette, PlanNode, PlannedBlock,
     ContextFeedItem, BindingRow, AnchorRef, AnchorEmbeddingRow,
-    AddCategoryRequest, AddTagRequest, PaintBlocksRequest, EraseBlocksRequest,
+    AddCategoryRequest, AddTagRequest, SetTagAliasesRequest, PaintBlocksRequest, EraseBlocksRequest,
     AddPlanNodeRequest, UpdatePlanNodeRequest, MovePlanNodeRequest, PaintPlannedBlocksRequest,
     UpdateCategoryRequest, RenamePathRequest, PerceptionSpan, SyncExport, SyncImportResult,
     ChatSyncPage, ChatSyncImportResult, LinkedDevice, SyncSetting,
@@ -432,6 +432,17 @@ async fn add_activity_tag(
 ) -> Json<ApiResponse<ActivityTag>> {
     match state.db.add_activity_tag(body).await {
         Ok(t) => Json(ApiResponse::ok(t)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+/// POST /api/activities/tags/aliases — 改主人对标签的说法（整组替换）
+async fn set_activity_tag_aliases(
+    State(state): State<ApiState>,
+    Json(body): Json<SetTagAliasesRequest>,
+) -> Json<ApiResponse<()>> {
+    match state.db.set_activity_tag_aliases(body).await {
+        Ok(()) => Json(ApiResponse::ok(())),
         Err(e) => Json(ApiResponse::error(&e)),
     }
 }
@@ -1944,6 +1955,7 @@ pub fn create_router(
         .route("/api/activities/tags", post(add_activity_tag))
         .route("/api/activities/tags/{id}", delete(delete_activity_tag))
         .route("/api/activities/tags/rename", post(rename_activity_path))
+        .route("/api/activities/tags/aliases", post(set_activity_tag_aliases))
         .route("/api/activities/blocks", get(get_activity_blocks))
         .route("/api/activities/blocks/paint", post(paint_activity_blocks))
         .route("/api/activities/blocks/erase", post(erase_activity_blocks))

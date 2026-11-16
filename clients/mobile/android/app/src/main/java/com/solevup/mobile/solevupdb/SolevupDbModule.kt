@@ -96,6 +96,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
           putString("lastUsedAt", t.lastUsedAt)
           putString("updatedAt", t.updatedAt)
           t.deletedAt?.let { putString("deletedAt", it) }
+          t.aliases?.let { putString("aliases", it) }
         })
       }
       promise.resolve(arr)
@@ -190,6 +191,16 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
     } catch (e: Throwable) { promise.reject("SOLEVUPDB_RENAME_CAT_FAILED", e.message, e) }
   }
 
+  /** 改主人对标签的说法（整组替换）。aliasesJson 是 JSON 字符串数组 */
+  @ReactMethod
+  fun setTagAliases(tagId: Double, aliasesJson: String, promise: Promise) {
+    try {
+      db.setTagAliases(tagId.toLong(), aliasesJson)
+      SyncRuntime.notifyLocalChange()
+      promise.resolve(true)
+    } catch (e: Throwable) { promise.reject("SOLEVUPDB_TAG_ALIASES_FAILED", e.message, e) }
+  }
+
   @ReactMethod
   fun renameTagPath(tagId: Double, newFullPath: String, cascade: Boolean, promise: Promise) {
     try {
@@ -273,6 +284,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
         lastUsedAt = m.getString("lastUsedAt") ?: "",
         updatedAt = m.getString("updatedAt") ?: "",
         deletedAt = if (m.hasKey("deletedAt")) m.getString("deletedAt") else null,
+        aliases = if (m.hasKey("aliases")) m.getString("aliases") else null,
       ))
     }
     return out
@@ -367,6 +379,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
             putString("lastUsedAt", r.lastUsedAt)
             putString("updatedAt", r.updatedAt)
             r.deletedAt?.let { putString("deletedAt", it) }
+            r.aliases?.let { putString("aliases", it) }
           })
         })
         putArray("activityBlocks", Arguments.createArray().apply {

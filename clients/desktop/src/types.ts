@@ -17,6 +17,8 @@ export interface ActivityTag {
   depth: number       // 1..4
   createdAt: string
   lastUsedAt: string
+  /** 主人对这个标签的说法（Fairy 记下的），找标签时先查它 */
+  aliases?: string[]
 }
 
 export interface ActivityBlock {

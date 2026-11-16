@@ -29,6 +29,7 @@ import {
   solevupPaintBlocks,
   solevupUpsertCategory,
   solevupUpsertTag,
+  solevupSetTagAliases,
   solevupPlans,
   type BlockRow,
   type PlanNodeRow,
@@ -59,6 +60,18 @@ function tagFromRow(r: TagRow): ActivityTag {
     depth: r.depth,
     createdAt: r.createdAt,
     lastUsedAt: r.lastUsedAt,
+    aliases: parseTagAliases(r.aliases),
+  }
+}
+
+/** 库里存的是 JSON 字符串数组；没记过或坏掉的当成没有（desktop local-api.ts 同一份） */
+function parseTagAliases(raw: string | null | undefined): string[] {
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((a): a is string => typeof a === 'string' && a.trim() !== '') : []
+  } catch {
+    return []
   }
 }
 
@@ -133,6 +146,11 @@ export async function createTag(fullPath: string, categoryColor?: string): Promi
     depth: segs.length,
   })
   return fetchPalette()
+}
+
+/** 改主人对标签的说法（整组替换），desktop local-api.ts setActivityTagAliases 同签名 */
+export async function setActivityTagAliases(tagId: number, aliases: readonly string[]): Promise<void> {
+  await solevupSetTagAliases(tagId, aliases)
 }
 
 export async function deleteTag(tagId: number): Promise<ActivityPalette> {

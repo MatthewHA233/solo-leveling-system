@@ -27,6 +27,7 @@ import { desktopRequest } from '../desktop-api'
 import { buildAsrVocabulary } from '../voice/asr-hints'
 import { timestampMs } from './agent-memory'
 import type { ChatCore } from './chat-core'
+import { tagAliasRecords } from './tools/daynight-tools'
 import { fetchBiliSpans, fetchPerceptionSpans } from './tools'
 
 const ACTIVITY_BLOCK_MINUTES = 5
@@ -193,6 +194,8 @@ export function createPromptFlow(core: ChatCore): PromptFlow {
       biliHistory: wantBili ? biliHistory : undefined,
       // 锁定卡不走意图裁剪：体量小且主人随时可能说"这张卡片"
       focusedCard: core.focusedCard ?? undefined,
+      // 标签说法也不裁剪：「刚吃完饭」这种话不一定被认成活动意图，而记标签正要用它
+      tagAliases: tagAliasRecords(currentPalette),
     })
     core.promptParts = { staticPrompt, dynamicContext }
     core.asrVocabulary = buildAsrVocabulary({

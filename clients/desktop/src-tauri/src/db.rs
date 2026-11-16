@@ -61,6 +61,8 @@ pub struct ActivityTag {
     pub depth: i32,          // 1..4（含 category 层）
     pub created_at: String,
     pub last_used_at: String,
+    /// 主人对这个标签的说法（JSON 字符串数组），Fairy 找标签时先查它；没记过是 None
+    pub aliases: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -147,6 +149,9 @@ pub struct SyncActivityTag {
     pub last_used_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
+    /// 主人对标签的说法。老版本不带这个字段，收到 None 时不覆盖本地（手机端 SolevupDb.kt 同一条规则）
+    #[serde(default)]
+    pub aliases: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -419,6 +424,12 @@ pub struct AddCategoryRequest {
 pub struct AddTagRequest {
     pub category_id: i64,
     pub full_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetTagAliasesRequest {
+    pub tag_id: i64,
+    pub aliases: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1054,6 +1065,8 @@ impl Database {
         let _ = conn.execute_batch("ALTER TABLE plan_nodes ADD COLUMN note TEXT");
         let _ = conn.execute_batch("ALTER TABLE plan_nodes ADD COLUMN completed_at TEXT");
         let _ = conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_plan_nodes_due ON plan_nodes(due_date)");
+        // 主人对标签的说法（Fairy 记下的「吃饭 → 生活,用餐」），跟着标签行同步
+        let _ = conn.execute_batch("ALTER TABLE activity_tags ADD COLUMN aliases TEXT");
 
         // 渐进式迁移：bili_video_assets 转录字段（旧数据库无此列时自动追加）
         let _ = conn.execute_batch("ALTER TABLE bili_video_assets ADD COLUMN visual_transcript TEXT");
@@ -1536,7 +1549,7 @@ impl Database {
           .collect();
 
         let mut tag_stmt = conn.prepare(
-            "SELECT id, category_id, full_path, leaf_name, depth, created_at, last_used_at
+            "SELECT id, category_id, full_path, leaf_name, depth, created_at, last_used_at, aliases
              FROM activity_tags
              WHERE deleted_at IS NULL
              ORDER BY full_path ASC"
@@ -1550,6 +1563,7 @@ impl Database {
                 depth: row.get(4)?,
                 created_at: row.get(5)?,
                 last_used_at: row.get(6)?,
+                aliases: row.get(7)?,
             })
         }).map_err(|e| e.to_string())?
           .filter_map(|r| r.ok())
@@ -1723,7 +1737,29 @@ impl Database {
             depth,
             created_at: now.clone(),
             last_used_at: now,
+            aliases: None,
         })
+    }
+
+    /// 改主人对标签的说法（整组替换）。去掉空的和重复的，updated_at 同 BUMPED_UPDATED_AT，好跟着标签行同步过去
+    pub async fn set_activity_tag_aliases(&self, req: SetTagAliasesRequest) -> Result<(), String> {
+        let mut aliases: Vec<String> = Vec::new();
+        for alias in req.aliases {
+            let alias = alias.trim().to_string();
+            if !alias.is_empty() && !aliases.iter().any(|a| a.to_lowercase() == alias.to_lowercase()) {
+                aliases.push(alias);
+            }
+        }
+        let json = serde_json::to_string(&aliases).map_err(|e| e.to_string())?;
+        let conn = self.conn.lock().await;
+        let changed = conn.execute(
+            &format!("UPDATE activity_tags SET aliases = ?2, updated_at = {BUMPED_UPDATED_AT} WHERE id = ?3 AND deleted_at IS NULL"),
+            params![local_now_string(), json, req.tag_id],
+        ).map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err("标签不存在".into());
+        }
+        Ok(())
     }
 
     pub async fn delete_activity_tag(&self, id: i64) -> Result<(), String> {
@@ -2400,7 +2436,7 @@ impl Database {
           .collect::<Vec<_>>();
 
         let mut stmt = conn.prepare(
-            "SELECT t.sync_id, c.sync_id, t.full_path, t.leaf_name, t.depth, t.created_at, t.last_used_at, t.updated_at, t.deleted_at
+            "SELECT t.sync_id, c.sync_id, t.full_path, t.leaf_name, t.depth, t.created_at, t.last_used_at, t.updated_at, t.deleted_at, t.aliases
              FROM activity_tags t
              JOIN activity_categories c ON c.id = t.category_id"
         ).map_err(|e| e.to_string())?;
@@ -2415,6 +2451,7 @@ impl Database {
                 last_used_at: row.get(6)?,
                 updated_at: row.get(7)?,
                 deleted_at: row.get(8)?,
+                aliases: row.get(9)?,
             })
         }).map_err(|e| e.to_string())?
           .filter_map(|r| r.ok())
@@ -2727,19 +2764,20 @@ impl Database {
                 merge_tag_conflict(&conn, &row.sync_id, id)?;
                 conn.execute(
                     "UPDATE activity_tags
-                     SET sync_id=?, leaf_name=?, depth=?, created_at=?, last_used_at=?, updated_at=?, deleted_at=?
+                     SET sync_id=?, leaf_name=?, depth=?, created_at=?, last_used_at=?, updated_at=?, deleted_at=?, aliases=COALESCE(?, aliases)
                      WHERE id=?",
-                    params![&row.sync_id, &row.leaf_name, row.depth, &row.created_at, &row.last_used_at, &row.updated_at, &row.deleted_at, id],
+                    params![&row.sync_id, &row.leaf_name, row.depth, &row.created_at, &row.last_used_at, &row.updated_at, &row.deleted_at, &row.aliases, id],
                 ).map_err(|e| e.to_string())?;
             } else {
                 conn.execute(
-                    "INSERT INTO activity_tags (sync_id, category_id, full_path, leaf_name, depth, created_at, last_used_at, updated_at, deleted_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    "INSERT INTO activity_tags (sync_id, category_id, full_path, leaf_name, depth, created_at, last_used_at, updated_at, deleted_at, aliases)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT(sync_id) DO UPDATE SET
                        category_id=excluded.category_id, full_path=excluded.full_path, leaf_name=excluded.leaf_name,
                        depth=excluded.depth, created_at=excluded.created_at, last_used_at=excluded.last_used_at,
-                       updated_at=excluded.updated_at, deleted_at=excluded.deleted_at",
-                    params![&row.sync_id, category_id, &row.full_path, &row.leaf_name, row.depth, &row.created_at, &row.last_used_at, &row.updated_at, &row.deleted_at],
+                       updated_at=excluded.updated_at, deleted_at=excluded.deleted_at,
+                       aliases=COALESCE(excluded.aliases, activity_tags.aliases)",
+                    params![&row.sync_id, category_id, &row.full_path, &row.leaf_name, row.depth, &row.created_at, &row.last_used_at, &row.updated_at, &row.deleted_at, &row.aliases],
                 ).map_err(|e| e.to_string())?;
             }
             result.activity_tags += 1;

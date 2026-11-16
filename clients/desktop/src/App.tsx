@@ -28,6 +28,7 @@ import { configUpdatesFromSettings, seedWrites, settingWrites } from './lib/agen
 import { getFeatureModel, getFishApiKey, getModelDef, logModelUsage, modelSeesImages, pullAnthropicModels, realtimeUsageToDashScope, saveFishApiKey, type RealtimeUsage } from './lib/model-audit'
 import { buildStaticPrompt, buildDynamicContext, buildConversationSummary } from './lib/ai/prompt-templates'
 import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from './lib/ai/prompt-templates'
+import { tagAliasRecords } from './lib/agent/agent-tools-daynight'
 import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
 
 // LLM Engine（新）
@@ -2502,6 +2503,8 @@ export default function App() {
       presence: presenceRef.current,
       // 锁定卡不走意图裁剪：体量小且主人随时可能说"这张卡片"
       focusedCard: focusedCardRef.current ?? undefined,
+      // 标签说法也不裁剪：「刚吃完饭」这种话不一定被认成活动意图，而记标签正要用它
+      tagAliases: tagAliasRecords(currentPalette),
     })
     promptPartsRef.current = { staticPrompt, dynamicContext }
     asrVocabularyRef.current = buildAsrVocabulary({
