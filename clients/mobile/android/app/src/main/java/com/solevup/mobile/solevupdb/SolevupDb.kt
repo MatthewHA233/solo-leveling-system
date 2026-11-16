@@ -657,7 +657,9 @@ class SolevupDb(context: Context) :
              VALUES (?, ?, ?, ?, NULL, ?, ?, NULL)
              ON CONFLICT(date, minute) DO UPDATE SET
                tag_id = excluded.tag_id, created_at = excluded.created_at,
-               updated_at = excluded.updated_at, deleted_at = NULL""".trimIndent(),
+               updated_at = CASE WHEN activity_blocks.updated_at >= excluded.updated_at
+                 THEN datetime(activity_blocks.updated_at, '+1 second') ELSE excluded.updated_at END,
+               deleted_at = NULL""".trimIndent(),
           arrayOf(date, m, sid, tagId, now, now),
         )
       }
@@ -884,6 +886,8 @@ class SolevupDb(context: Context) :
   }
 
   /** Erase：soft delete + bump updated_at（LWW 同步时另一端能看到删除）。 */
+  // 时间戳只到秒：同一格每次本机改动的 updated_at 都要比上一次大（同一秒就往后挪一秒），
+  // 否则涂了马上擦、擦了马上涂，对端会当成没变。paintBlocks 的 ON CONFLICT 同理（规则两端一致，desktop db.rs BUMPED_UPDATED_AT）
   fun eraseBlocks(date: String, minutes: IntArray) {
     if (minutes.isEmpty()) return
     val now = nowIso()
@@ -892,9 +896,10 @@ class SolevupDb(context: Context) :
     try {
       for (m in minutes) {
         db.execSQL(
-          """UPDATE activity_blocks SET deleted_at = ?, updated_at = ?
-             WHERE date = ? AND minute = ?""".trimIndent(),
-          arrayOf(now, now, date, m),
+          """UPDATE activity_blocks SET deleted_at = ?1,
+               updated_at = CASE WHEN updated_at >= ?1 THEN datetime(updated_at, '+1 second') ELSE ?1 END
+             WHERE date = ?2 AND minute = ?3""".trimIndent(),
+          arrayOf(now, date, m),
         )
       }
       db.setTransactionSuccessful()
@@ -1413,7 +1418,7 @@ class SolevupDb(context: Context) :
       //   有 → 删旧槽位 + 在新槽位 UPSERT（保证 sync_id 唯一性）
       //   无 → 直接 UPSERT 到 (date, minute) 槽，槽里有别人覆盖
       for (row in payload.activityBlocks) {
-        if (!shouldApplySyncRow(db, "activity_blocks", row.syncId, row.updatedAt)) {
+        if (!shouldApplyBlockRow(db, "activity_blocks", row.syncId, row.updatedAt, row.deletedAt != null)) {
           skipped++; continue
         }
         if (!shouldApplySlotRow(db, "activity_blocks", row.date, row.minute, row.syncId, row.updatedAt)) {
@@ -1442,7 +1447,7 @@ class SolevupDb(context: Context) :
 
       // ── planned_blocks ── (要先有 plan_nodes) ── 同 activity_blocks 双键处理
       for (row in payload.plannedBlocks) {
-        if (!shouldApplySyncRow(db, "planned_blocks", row.syncId, row.updatedAt)) {
+        if (!shouldApplyBlockRow(db, "planned_blocks", row.syncId, row.updatedAt, row.deletedAt != null)) {
           skipped++; continue
         }
         if (!shouldApplySlotRow(db, "planned_blocks", row.date, row.minute, row.syncId, row.updatedAt)) {
@@ -2740,6 +2745,20 @@ class SolevupDb(context: Context) :
     val local = queryString(db, "SELECT updated_at FROM $table WHERE sync_id = ?", arrayOf(syncId))
     return local == null || incomingUpdatedAt > local
   }
+
+  /**
+   * 昼夜表的格子（activity_blocks / planned_blocks）：比本地新就采用；时间戳相同、对面是删除而本地还在，也采用（删除赢）。
+   * 后一条兜住旧数据：以前同一秒里涂了又擦，两次的 updated_at 一样，删除一直传不过来（desktop should_apply_block_row 同一条规则）。
+   */
+  private fun shouldApplyBlockRow(
+    db: SQLiteDatabase, table: String, syncId: String, incomingUpdatedAt: String, incomingDeleted: Boolean,
+  ): Boolean =
+    db.rawQuery("SELECT updated_at, deleted_at FROM $table WHERE sync_id = ?", arrayOf(syncId)).use { c ->
+      if (!c.moveToFirst()) return@use true
+      val localUpdatedAt = c.getString(0) ?: return@use true
+      incomingUpdatedAt > localUpdatedAt ||
+        (incomingUpdatedAt == localUpdatedAt && incomingDeleted && c.isNull(1))
+    }
 
   private fun shouldApplyExistingId(
     db: SQLiteDatabase, table: String, id: Long, incomingUpdatedAt: String,

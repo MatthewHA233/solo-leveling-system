@@ -1808,7 +1808,8 @@ impl Database {
                  ON CONFLICT(date, minute) DO UPDATE SET
                      tag_id = excluded.tag_id,
                      created_at = excluded.created_at,
-                     updated_at = excluded.updated_at,
+                     updated_at = CASE WHEN activity_blocks.updated_at >= excluded.updated_at
+                          THEN datetime(activity_blocks.updated_at, '+1 second') ELSE excluded.updated_at END,
                      deleted_at = NULL",
                 params![Uuid::new_v4().to_string(), &req.date, minute, req.tag_id, &now, &now],
             ).map_err(|e| e.to_string())?;
@@ -1834,10 +1835,10 @@ impl Database {
         let now = local_now_string();
         let placeholders = req.minutes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "UPDATE activity_blocks SET deleted_at = ?, updated_at = ? WHERE date = ? AND minute IN ({})",
-            placeholders
+            "UPDATE activity_blocks SET deleted_at = ?1, updated_at = {} WHERE date = ?2 AND minute IN ({})",
+            BUMPED_UPDATED_AT, placeholders
         );
-        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(now.clone()), Box::new(now), Box::new(req.date.clone())];
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(now), Box::new(req.date.clone())];
         for m in &req.minutes {
             params_vec.push(Box::new(*m));
         }
@@ -2140,7 +2141,8 @@ impl Database {
                  ON CONFLICT(date, minute) DO UPDATE SET
                      plan_node_id = excluded.plan_node_id,
                      created_at = excluded.created_at,
-                     updated_at = excluded.updated_at,
+                     updated_at = CASE WHEN planned_blocks.updated_at >= excluded.updated_at
+                          THEN datetime(planned_blocks.updated_at, '+1 second') ELSE excluded.updated_at END,
                      deleted_at = NULL",
                 params![Uuid::new_v4().to_string(), &req.date, minute, req.plan_node_id, &now, &now],
             ).map_err(|e| e.to_string())?;
@@ -2166,10 +2168,10 @@ impl Database {
         let now = local_now_string();
         let placeholders = req.minutes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "UPDATE planned_blocks SET deleted_at = ?, updated_at = ? WHERE date = ? AND minute IN ({})",
-            placeholders
+            "UPDATE planned_blocks SET deleted_at = ?1, updated_at = {} WHERE date = ?2 AND minute IN ({})",
+            BUMPED_UPDATED_AT, placeholders
         );
-        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(now.clone()), Box::new(now), Box::new(req.date.clone())];
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(now), Box::new(req.date.clone())];
         for m in &req.minutes {
             params_vec.push(Box::new(*m));
         }
@@ -2752,7 +2754,7 @@ impl Database {
         }
 
         for row in payload.activity_blocks {
-            if !should_apply_sync_row(&conn, "activity_blocks", &row.sync_id, &row.updated_at)? {
+            if !should_apply_block_row(&conn, "activity_blocks", &row.sync_id, &row.updated_at, row.deleted_at.is_some())? {
                 result.skipped += 1;
                 continue;
             }
@@ -2785,7 +2787,7 @@ impl Database {
         }
 
         for row in payload.planned_blocks {
-            if !should_apply_sync_row(&conn, "planned_blocks", &row.sync_id, &row.updated_at)? {
+            if !should_apply_block_row(&conn, "planned_blocks", &row.sync_id, &row.updated_at, row.deleted_at.is_some())? {
                 result.skipped += 1;
                 continue;
             }
@@ -5179,6 +5181,26 @@ fn should_apply_sync_row(conn: &Connection, table: &str, sync_id: &str, incoming
         .optional()
         .map_err(|e| e.to_string())?;
     Ok(local.as_deref().map(|ts| incoming_updated_at > ts).unwrap_or(true))
+}
+
+/// 擦格子时的 updated_at（?1 = 现在）：这一格上次改动就在同一秒或更晚时，往后挪一秒。
+/// 时间戳只到秒，同一格每次本机改动都要比上一次大，对端才认（规则两端一致，手机端 SolevupDb.kt eraseBlocks / paintBlocks）
+const BUMPED_UPDATED_AT: &str = "CASE WHEN updated_at >= ?1 THEN datetime(updated_at, '+1 second') ELSE ?1 END";
+
+/// 昼夜表的格子（activity_blocks / planned_blocks）：比本地新就采用；时间戳相同、对面是删除而本地还在，也采用（删除赢）。
+/// 后一条兜住旧数据：以前同一秒里涂了又擦，两次的 updated_at 一样，删除一直传不过来（手机端 shouldApplyBlockRow 同一条规则）
+fn should_apply_block_row(conn: &Connection, table: &str, sync_id: &str, incoming_updated_at: &str, incoming_deleted: bool) -> Result<bool, String> {
+    let sql = format!("SELECT updated_at, deleted_at FROM {} WHERE sync_id = ?", table);
+    let local: Option<(String, Option<String>)> = conn.query_row(&sql, params![sync_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(match local {
+        None => true,
+        Some((updated_at, deleted_at)) => {
+            incoming_updated_at > updated_at.as_str()
+                || (incoming_updated_at == updated_at.as_str() && incoming_deleted && deleted_at.is_none())
+        }
+    })
 }
 
 fn should_apply_existing_id(conn: &Connection, table: &str, id: i64, incoming_updated_at: &str) -> Result<bool, String> {
