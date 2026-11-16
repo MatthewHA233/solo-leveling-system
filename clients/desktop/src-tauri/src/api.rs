@@ -2036,7 +2036,11 @@ async fn notify_daynight_change(request: Request, next: Next) -> Response {
     let path = request.uri().path();
     let watched = request.method() != axum::http::Method::GET
         && request.method() != axum::http::Method::OPTIONS
-        && (path.starts_with("/api/activities/") || path.starts_with("/api/plans/") || path == "/api/sync/settings");
+        && (path.starts_with("/api/activities/")
+            || path.starts_with("/api/plans/")
+            || path.starts_with("/api/islands")
+            || path == "/api/island-checks"
+            || path == "/api/sync/settings");
     let response = next.run(request).await;
     if watched && response.status().is_success() {
         sync_engine::note_local_change();

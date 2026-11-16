@@ -7,6 +7,7 @@ import { isDesktopUnreachable } from '../../desktop-api'
 import type { ToolDefinition } from '../../llm/types'
 import { getActivityTags } from './activity-tools'
 import { getAnchors, updateAnchor } from './anchor-tools'
+import { DAYNIGHT_TOOLS } from './daynight-tools'
 import { getBiliHistory } from './bili-tools'
 import { editFile, readFile, writeFile } from './file-tools'
 import { getAppUsage, getComputerStatus } from './perception-tools'
@@ -50,6 +51,7 @@ const ALL_TOOLS: readonly Tool[] = [
   readFile,
   writeFile,
   editFile,
+  ...DAYNIGHT_TOOLS,
 ]
 
 /** 发给 AI 的工具定义列表（OpenAI function calling 格式） */

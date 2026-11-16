@@ -33,6 +33,8 @@ object SyncLog {
       "实际块" to r.activityBlocks,
       "计划节点" to r.planNodes,
       "计划块" to r.plannedBlocks,
+      "浮岛" to r.planIslands,
+      "浮岛勾选" to r.planIslandChecks,
       "用量日志" to r.modelCallLog,
       "API key" to r.modelApiKeys,
       "免费额度" to r.modelFreeQuota,

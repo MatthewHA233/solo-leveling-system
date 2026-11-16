@@ -423,6 +423,192 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
     } catch (e: Throwable) { promise.reject("SOLEVUPDB_ERASE_FAILED", e.message, e) }
   }
 
+  // ── 计划层：计划任务、计划块、浮岛与约束（实现在 PlanStore.kt，对应 desktop /api/plans/* 和 /api/islands*） ──
+
+  private fun planNodeMap(n: PlanNodeRow) = Arguments.createMap().apply {
+    putDouble("id", n.id.toDouble())
+    putDouble("projectTagId", n.projectTagId.toDouble())
+    if (n.parentId != null) putDouble("parentId", n.parentId.toDouble()) else putNull("parentId")
+    putString("title", n.title)
+    putString("status", n.status)
+    putInt("sortOrder", n.sortOrder)
+    putString("createdAt", n.createdAt)
+    putString("updatedAt", n.updatedAt)
+    putString("dueDate", n.dueDate)
+    putInt("priority", n.priority)
+    putString("note", n.note)
+    putString("completedAt", n.completedAt)
+  }
+
+  private fun islandMap(r: IslandRow) = Arguments.createMap().apply {
+    putString("id", r.id)
+    putString("doc", r.doc)
+    putDouble("sortOrder", r.sortOrder.toDouble())
+    putString("createdAt", r.createdAt)
+    putString("updatedAt", r.updatedAt)
+  }
+
+  private fun optString(args: ReadableMap, key: String): String? =
+    if (args.hasKey(key) && !args.isNull(key)) args.getString(key) else null
+
+  /** projectTagId < 0 = 全部清单 */
+  @ReactMethod
+  fun listPlanNodes(projectTagId: Double, promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (n in db.listPlanNodes(if (projectTagId < 0) null else projectTagId.toLong())) arr.pushMap(planNodeMap(n))
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("PLAN_LIST_FAILED", e.message, e) }
+  }
+
+  /** args: projectTagId, title, 可选 parentId / dueDate / priority */
+  @ReactMethod
+  fun addPlanNode(args: ReadableMap, promise: Promise) {
+    try {
+      val node = db.addPlanNode(
+        projectTagId = args.getDouble("projectTagId").toLong(),
+        parentId = if (args.hasKey("parentId") && !args.isNull("parentId")) args.getDouble("parentId").toLong() else null,
+        rawTitle = args.getString("title") ?: "",
+        dueDate = optString(args, "dueDate"),
+        priority = if (args.hasKey("priority") && !args.isNull("priority")) args.getInt("priority") else null,
+      )
+      SyncRuntime.notifyLocalChange()
+      promise.resolve(planNodeMap(node))
+    } catch (e: Throwable) { promise.reject("PLAN_ADD_FAILED", e.message, e) }
+  }
+
+  /** args: 不带的字段 = 不改；dueDate / note 传空串 = 清除 */
+  @ReactMethod
+  fun updatePlanNode(id: Double, args: ReadableMap, promise: Promise) {
+    try {
+      db.updatePlanNode(
+        id = id.toLong(),
+        title = optString(args, "title"),
+        status = optString(args, "status"),
+        dueDate = optString(args, "dueDate"),
+        priority = if (args.hasKey("priority") && !args.isNull("priority")) args.getInt("priority") else null,
+        note = optString(args, "note"),
+      )
+      SyncRuntime.notifyLocalChange()
+      promise.resolve(true)
+    } catch (e: Throwable) { promise.reject("PLAN_UPDATE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun deletePlanNode(id: Double, promise: Promise) {
+    try {
+      db.deletePlanNode(id.toLong())
+      SyncRuntime.notifyLocalChange()
+      promise.resolve(true)
+    } catch (e: Throwable) { promise.reject("PLAN_DELETE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun listPlannedBlocksForDate(date: String, promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (b in db.listPlannedBlocksForDate(date)) arr.pushMap(Arguments.createMap().apply {
+        putString("date", b.date)
+        putInt("minute", b.minute)
+        putDouble("planNodeId", b.planNodeId.toDouble())
+        putString("note", b.note)
+        putString("createdAt", b.createdAt)
+      })
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("PLAN_BLOCKS_LIST_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun paintPlannedBlocks(date: String, minutes: ReadableArray, planNodeId: Double, promise: Promise) {
+    try {
+      val n = db.paintPlannedBlocks(date, IntArray(minutes.size()) { minutes.getInt(it) }, planNodeId.toLong())
+      SyncRuntime.notifyLocalChange()
+      promise.resolve(n.toDouble())
+    } catch (e: Throwable) { promise.reject("PLAN_PAINT_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun erasePlannedBlocks(date: String, minutes: ReadableArray, promise: Promise) {
+    try {
+      val n = db.erasePlannedBlocks(date, IntArray(minutes.size()) { minutes.getInt(it) })
+      SyncRuntime.notifyLocalChange()
+      promise.resolve(n.toDouble())
+    } catch (e: Throwable) { promise.reject("PLAN_ERASE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun listIslands(promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (r in db.listIslands()) arr.pushMap(islandMap(r))
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("ISLAND_LIST_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun createIsland(doc: String, promise: Promise) {
+    try {
+      val r = db.createIsland(doc)
+      SyncRuntime.notifyLocalChange()
+      promise.resolve(islandMap(r))
+    } catch (e: Throwable) { promise.reject("ISLAND_CREATE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun updateIsland(id: String, doc: String, promise: Promise) {
+    try {
+      val r = db.updateIsland(id, doc)
+      SyncRuntime.notifyLocalChange()
+      promise.resolve(islandMap(r))
+    } catch (e: Throwable) { promise.reject("ISLAND_UPDATE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun deleteIsland(id: String, promise: Promise) {
+    try {
+      db.deleteIsland(id)
+      SyncRuntime.notifyLocalChange()
+      promise.resolve(true)
+    } catch (e: Throwable) { promise.reject("ISLAND_DELETE_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun listIslandChecks(date: String, promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (c in db.islandChecksForDate(date)) arr.pushMap(Arguments.createMap().apply {
+        putString("islandId", c.islandId)
+        putString("itemId", c.itemId)
+        putString("doneAt", c.doneAt)
+      })
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("ISLAND_CHECKS_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun setIslandCheck(date: String, islandId: String, itemId: String, done: Boolean, promise: Promise) {
+    try {
+      db.setIslandCheck(date, islandId, itemId, done)
+      SyncRuntime.notifyLocalChange()
+      promise.resolve(true)
+    } catch (e: Throwable) { promise.reject("ISLAND_CHECK_FAILED", e.message, e) }
+  }
+
+  @ReactMethod
+  fun listBlocksInRange(from: String, to: String, promise: Promise) {
+    try {
+      val arr = Arguments.createArray()
+      for (b in db.listBlocksInRange(from, to)) arr.pushMap(Arguments.createMap().apply {
+        putString("date", b.date)
+        putInt("minute", b.minute)
+        putDouble("tagId", b.tagId.toDouble())
+        putString("note", b.note)
+        putString("createdAt", b.createdAt)
+      })
+      promise.resolve(arr)
+    } catch (e: Throwable) { promise.reject("BLOCKS_RANGE_FAILED", e.message, e) }
+  }
+
   // ── 设备本地偏好（SharedPreferences）——
   // 跟 SolevupDb sqlite 解耦：zoom / focus 这些设备本地的 UI 偏好不走 LWW 同步，
   // 每台设备独立。重装 app 才会丢。

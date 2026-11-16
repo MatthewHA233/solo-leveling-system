@@ -156,6 +156,8 @@ class SyncServerModule(private val reactContext: ReactApplicationContext) :
         putInt("activityBlocks", result.activityBlocks)
         putInt("planNodes", result.planNodes)
         putInt("plannedBlocks", result.plannedBlocks)
+        putInt("planIslands", result.planIslands)
+        putInt("planIslandChecks", result.planIslandChecks)
         putInt("modelApiKeys", result.modelApiKeys)
         putInt("modelCallLog", result.modelCallLog)
         putInt("modelFreeQuota", result.modelFreeQuota)

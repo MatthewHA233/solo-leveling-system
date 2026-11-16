@@ -1,6 +1,7 @@
 // ══════════════════════════════════════════════
 // Fairy 的昼夜表工具：快捷记录、浮岛与约束、计划任务
 //   写完都会通知主窗口重新取数（聊天可能跑在 Fairy 自己的窗口里）
+//   手机端 src/lib/agent/tools/daynight-tools.ts 导入之外逐字一致，改工具要两端一起改
 // ══════════════════════════════════════════════
 
 import { addPlanNode, fetchActivityBlocks, fetchActivityPalette, paintActivityBlocks } from '../local-api'

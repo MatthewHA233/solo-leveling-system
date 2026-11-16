@@ -404,7 +404,7 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 
 - 配对：一边显示 6 位配对码（5 分钟有效、用一次就失效、错 5 次作废），另一边用它调 `POST /api/sync/pair` 换长期令牌，两边都存进 `linked_devices.auth_token`。之后的请求带 `Authorization: Bearer`，发现到的新地址要通过挑战应答才用。只有 `hello`、`pair`（手机端还有 `ping`）不要令牌。流量仍是明文 HTTP。规则两端各有一份（`sync_auth.rs`、`SyncPairing.kt`），改规则要同时改两端。
 - 只传变过的：每台对端存一对游标（桌面端表 `sync_cursors`，手机端存在 `sync_meta` 里），记上次拉到、推到哪个时刻。一轮只拉 `export?since=` 游标之后的、只推游标之后的，各往回多带 26 小时（有几张表存 UTC 时间，和本地时间的游标按字符串比会差出时区）；没有游标或重新配对后整份传一次，之后每 24 小时在后台整份对一次，不在刚启动的 10 分钟内做。协议没改，`export(since)` 和 `import` 本来就支持。规则两端各有一份（`sync_engine.rs` 文件头有完整说明、`SyncClient.kt` + `SyncCoordinator.kt`），改规则要同时改两端。
-- 写入后直推：会同步的数据一写成功，攒 300 毫秒，把推游标之后的变化直接 POST 给对端的 `import`，不拉、不发界面事件；对端不在线就 30 秒后再试，期间的变化下次一起带。桌面端在 API 层挂了一层（`api.rs notify_daynight_change`，管 `/api/activities/*`、`/api/plans/*`、`/api/sync/settings`；Key 和模型绑定走 Tauri 命令，不经过这层，等整轮带）；手机端在 `SolevupDbModule.kt` 各个写入方法里调 `SyncRuntime.notifyLocalChange()`，新加会同步的写入方法要补一行。发现触发的整轮只是兜底，两端都是一分钟冷却。
+- 写入后直推：会同步的数据一写成功，攒 300 毫秒，把推游标之后的变化直接 POST 给对端的 `import`，不拉、不发界面事件；对端不在线就 30 秒后再试，期间的变化下次一起带。桌面端在 API 层挂了一层（`api.rs notify_daynight_change`，管 `/api/activities/*`、`/api/plans/*`、`/api/islands*`、`/api/island-checks`、`/api/sync/settings`；Key 和模型绑定走 Tauri 命令，不经过这层，等整轮带）；手机端在 `SolevupDbModule.kt` 各个写入方法里调 `SyncRuntime.notifyLocalChange()`，新加会同步的写入方法要补一行。发现触发的整轮只是兜底，两端都是一分钟冷却。
 - 全量 `/api/sync/{hello,export,import}`：活动数据、Key、模型用量，按 LWW 合并。Fish Key 也在 Key 库里（`provider='fish'`、`id='fish-audio'`）。
 - Key 启用：每个提供商一把。没有启用的就启用最近更新的一把，不改 `updated_at`，打开数据库和同步导入后都检查。规则两端各有一份（`db.rs ensure_provider_active_keys`、`SolevupDb.kt ensureProviderActiveKeys`），改规则要同时改两端。
 - 设置：表 `synced_settings`，跟着全量同步，按 `updated_at` 取新。现在只有 Fish 音色和模型，其他配置每台设备各管各的。手动改才写表，同步进来的只更新配置，不写回。规则两端各有一份（两端 `lib/agent/synced-settings.ts`、`db.rs SYNCED_SETTING_KEYS`、`SolevupDb.kt SYNCED_SETTING_KEYS`），改规则要同时改两端。
@@ -413,6 +413,7 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 - 聊天里还有两种 `role='tool'` 的行跟着聊天增量走：`compact_summary`（压缩摘要）和 `tool_trace`（一轮的工具调用和结果）。格式和恢复规则两端各有一份（两端 `lib/agent/chat-history.ts`，逐字一致），改要同时改两端；搜索会话时两端都排除 tool 行。
 - 合并规则两端各有一份（`db.rs chat_sync_import`、`SolevupDb.kt importChatPage`）。改规则要同时改两端，并更新和运行 `python3 clients/mobile/alignment/chat_sync_sim.py`。
 - 聊天图片文件在 `<数据目录>/chat-images/`，消息正文开头的 `[图片:id1,id2]` 标记随聊天同步。每轮同步后，发起方经 `GET /api/sync/chat-image/{id}`（要令牌）拉本机缺的文件，还没拉到时显示占位。标记规则两端各有一份（两端 `chat-images.ts`、`db.rs chat_image_ids`、`SolevupDb.kt chatImageIds`），拉取规则也是（`sync_engine.rs pull_chat_images`、`SyncClient.kt pullChatImages`），改规则要同时改两端。
+- 昼夜表的计划层（任务 `plan_nodes`、计划块 `planned_blocks`、浮岛 `plan_islands`、浮岛勾选 `plan_island_checks`）：跟着全量同步，`updated_at` 新的赢，删除是软删。本机每次改动的 `updated_at` 和上次同一秒就往后挪一秒；时间相同、对面是删除而本地还在，也采用（删除赢）。任务的截止日、优先级、备注、完成时间放在任务行可选的 `detail` 里，老版本不带就不覆盖本地。浮岛按 id、勾选按（日期, 浮岛, 事项）合并。规则两端各有一份（`islands.rs` 文件头、`PlanStore.kt` 文件头），改规则要同时改两端。
 - 想法卡、锚点等表没有 `updated_at`，不在同步协议里，桌面端是唯一数据源。手机端经 `src/lib/desktop-api.ts` 直接读写已配对的桌面端，连不上时写入进待发送队列（`src/lib/ai/anchor-outbox.ts`）。
 - 手机代理不走同步，每台设备自己的（Fairy 设置 → 网络，`android/.../net/AppProxy.kt`、`src/lib/network.ts`）。只有 Anthropic、Fish 和 models.dev（模型清单）走这个本机端口，留空时跟随系统代理或 VPN。
 
@@ -484,12 +485,13 @@ python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
 - `src/components/TabBar.tsx` — 底部 Tab 极简栏
 - `src/screens/DayNightScreen.tsx` — 鱼眼焦点网格：18 完整行（12×5min）+ 上下缩进行；编辑模式 PanResponder 区间拖拽涂色；色块按 horizontal run 绝对定位渲染（解决凹凸 / 列对齐）
 - `src/lib/time.ts` — 日期/分钟格式化
-- `src/lib/api.ts` — 昼夜表数据层，读写 SolevupDb
+- `src/lib/api.ts` — 昼夜表数据层，读写 SolevupDb（实际记录 + 计划任务 / 计划块，函数和 desktop `local-api.ts` 同名同签名）
+- 昼夜表计划层（对应 desktop `components/daynight/`、`TodoListPanel`、`lib/islands/`）：原生在 `android/.../solevupdb/PlanStore.kt`；`src/lib/islands/` 的 `island-model.ts`、`use-islands.ts` 两端逐字一致，`island-api.ts` 同签名；底部弹窗 `src/components/daynight/PlanSheet.tsx`（浮岛与约束 / 计划安排）。DayNightScreen 实际和计划两层同屏，编辑时选一层涂
 
 ### Fairy（对应 desktop 的 `App.tsx` 聊天部分、`ChatPanel`、`FairyWindow`、`lib/agent`、`lib/ai`、`lib/llm`、`lib/voice`）
 
 - `src/lib/agent/chat-controller.ts` — 全局单例，只做组装；流程在 `chat-core`（状态和订阅）、`chat-sessions`（会话）、`chat-prompt`（提示词取数）、`chat-send`（发送主流程）、`chat-distill`（想法沉淀）、`chat-voice`（按住说话）、`chat-omni`（实时语音）。React 侧用 `use-chat-controller.ts`
-- `src/lib/agent/tools/` — 工具定义和实现，按领域分文件；提示词在 `src/lib/ai/prompt-templates.ts`
+- `src/lib/agent/tools/` — 工具定义和实现，按领域分文件；提示词在 `src/lib/ai/prompt-templates.ts`。昼夜表工具 `daynight-tools.ts` 和 desktop `lib/agent/agent-tools-daynight.ts` 除导入外逐字一致，改要两端一起改
 - `src/lib/llm/` — 流式调用、Anthropic 通道、`context-window`（静态前缀 + 每轮 reminder + 压缩）、`query-loop`（工具循环）
 - 上下文压缩：`lib/llm/context-window.ts`（门槛和清理）、`lib/llm/compact.ts`（模型写摘要）、`lib/agent/chat-compaction.ts`（时机）、`lib/agent/chat-history.ts`（库行 ↔ 历史），两端逐字一致，改要两端一起改。方案见 `docs/AI系统/上下文压缩与长期记忆-调研交接.md` 第九节
 - 聊天里的工具调用：每次调用单独一行，点开看参数和结果、可以复制；重开会话时从 `tool_trace` 行还原。数据和文字规则在两端的 `lib/agent/tool-call-view.ts`（逐字一致，改要同时改两端），工具的中文名也在里面，新加工具要补一行；样子各画各的（桌面端 `components/ToolCallRow.tsx`，手机端 `components/fairy/ToolCallRow.tsx`）

@@ -172,6 +172,18 @@ pub struct SyncPlanNode {
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
+    /// 截止日期、优先级、备注、完成时间。旧版本不带这一项：导入时没有就不动本地这几列，免得被旧版冲掉
+    /// （规则两端一致，手机端 SolevupDb.kt importSync 的 plan_nodes 一段）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<SyncPlanNodeDetail>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncPlanNodeDetail {
+    pub due_date: Option<String>,
+    pub priority: i32,
+    pub note: Option<String>,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -209,6 +221,11 @@ pub struct SyncExport {
     /// 模型库，只在全量导出时带上（含删除标记的行）。两端都导出，收到后按行合并：updated_at 取新
     #[serde(default)]
     pub model_registry: Vec<ModelDef>,
+    /// 昼夜表的浮岛与约束（规则见 islands.rs 文件头）
+    #[serde(default)]
+    pub plan_islands: Vec<crate::islands::SyncIsland>,
+    #[serde(default)]
+    pub plan_island_checks: Vec<crate::islands::SyncIslandCheck>,
 }
 
 /// 在设备间共享的设置（Fish 音色和模型）。规则两端相同，改了要同时改（手机端 SolevupDb.kt）：
@@ -379,6 +396,10 @@ pub struct SyncImportResult {
     /// 这一轮拉到的聊天图片文件（不进数据库）
     #[serde(default)]
     pub chat_images: usize,
+    #[serde(default)]
+    pub plan_islands: usize,
+    #[serde(default)]
+    pub plan_island_checks: usize,
     pub skipped: usize,
 }
 
@@ -2083,30 +2104,25 @@ impl Database {
         Ok(())
     }
 
+    /// 连同子任务、它们的计划块一起软删。updated_at 同 BUMPED_UPDATED_AT：刚涂上就删也能传到对端
+    /// （规则两端一致，手机端 PlanStore.kt deletePlanNode）
     pub async fn delete_plan_node(&self, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().await;
         let now = local_now_string();
-        conn.execute(
-            "WITH RECURSIVE subtree(id) AS (
-                SELECT id FROM plan_nodes WHERE id = ?
+        let subtree = "WITH RECURSIVE subtree(id) AS (
+                SELECT id FROM plan_nodes WHERE id = ?2
                 UNION ALL
                 SELECT n.id FROM plan_nodes n JOIN subtree s ON n.parent_id = s.id
-             )
-             UPDATE plan_nodes
-             SET deleted_at = ?, updated_at = ?
-             WHERE id IN (SELECT id FROM subtree)",
-            params![id, &now, &now],
+             )";
+        conn.execute(
+            &format!("{subtree} UPDATE plan_nodes SET deleted_at = ?1, updated_at = {BUMPED_UPDATED_AT}
+             WHERE id IN (SELECT id FROM subtree)"),
+            params![&now, id],
         ).map_err(|e| e.to_string())?;
         conn.execute(
-            "WITH RECURSIVE subtree(id) AS (
-                SELECT id FROM plan_nodes WHERE id = ?
-                UNION ALL
-                SELECT n.id FROM plan_nodes n JOIN subtree s ON n.parent_id = s.id
-             )
-             UPDATE planned_blocks
-             SET deleted_at = ?, updated_at = ?
-             WHERE plan_node_id IN (SELECT id FROM subtree)",
-            params![id, &now, &now],
+            &format!("{subtree} UPDATE planned_blocks SET deleted_at = ?1, updated_at = {BUMPED_UPDATED_AT}
+             WHERE plan_node_id IN (SELECT id FROM subtree) AND deleted_at IS NULL"),
+            params![&now, id],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -2118,8 +2134,9 @@ impl Database {
         let conn = self.conn.lock().await;
         let now = local_now_string();
 
+        // 已删的任务不再涂（界面拿着旧列表时会这样）；手机端 paintPlannedBlocks 同样
         let project_tag_id: i64 = conn.query_row(
-            "SELECT project_tag_id FROM plan_nodes WHERE id = ?",
+            "SELECT project_tag_id FROM plan_nodes WHERE id = ? AND deleted_at IS NULL",
             params![req.plan_node_id],
             |row| row.get(0),
         ).map_err(|_| "计划节点不存在".to_string())?;
@@ -2423,7 +2440,8 @@ impl Database {
           .collect::<Vec<_>>();
 
         let mut stmt = conn.prepare(
-            "SELECT n.sync_id, t.sync_id, p.sync_id, n.title, n.status, n.sort_order, n.created_at, n.updated_at, n.deleted_at
+            "SELECT n.sync_id, t.sync_id, p.sync_id, n.title, n.status, n.sort_order, n.created_at, n.updated_at, n.deleted_at,
+                    n.due_date, n.priority, n.note, n.completed_at
              FROM plan_nodes n
              JOIN activity_tags t ON t.id = n.project_tag_id
              LEFT JOIN plan_nodes p ON p.id = n.parent_id
@@ -2440,6 +2458,12 @@ impl Database {
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
                 deleted_at: row.get(8)?,
+                detail: Some(SyncPlanNodeDetail {
+                    due_date: row.get(9)?,
+                    priority: row.get::<_, Option<i32>>(10)?.unwrap_or(0),
+                    note: row.get(11)?,
+                    completed_at: row.get(12)?,
+                }),
             })
         }).map_err(|e| e.to_string())?
           .filter_map(|r| r.ok())
@@ -2578,6 +2602,8 @@ impl Database {
             updated_at: row.get(2)?,
         })).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect::<Vec<_>>();
 
+        let (plan_islands, plan_island_checks) = Self::export_islands(&conn, since.as_deref())?;
+
         Ok(SyncExport {
             device_id,
             exported_at: exported_at.clone(),
@@ -2593,6 +2619,8 @@ impl Database {
             feature_bindings,
             settings,
             model_registry,
+            plan_islands,
+            plan_island_checks,
         })
     }
 
@@ -2613,6 +2641,8 @@ impl Database {
             chat_messages: 0,
             settings: 0,
             chat_images: 0,
+            plan_islands: 0,
+            plan_island_checks: 0,
             skipped: 0,
         };
 
@@ -2742,6 +2772,14 @@ impl Database {
                    created_at=excluded.created_at, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at",
                 params![&row.sync_id, project_tag_id, parent_id, &row.title, &row.status, row.sort_order, &row.created_at, &row.updated_at, &row.deleted_at],
             ).map_err(|e| e.to_string())?;
+            // 旧版对端不带 detail：不动本地的截止日期、优先级、备注、完成时间
+            if let Some(detail) = &row.detail {
+                let due_date = normalize_due_date(detail.due_date.as_deref()).unwrap_or(None);
+                conn.execute(
+                    "UPDATE plan_nodes SET due_date = ?, priority = ?, note = ?, completed_at = ? WHERE sync_id = ?",
+                    params![due_date, detail.priority.clamp(0, 3), &detail.note, &detail.completed_at, &row.sync_id],
+                ).map_err(|e| e.to_string())?;
+            }
             result.plan_nodes += 1;
         }
         for (sync_id, parent_sync_id) in unresolved_parents {
@@ -3002,6 +3040,11 @@ impl Database {
             }
             result.model_registry += 1;
         }
+
+        let (islands, checks, skipped) = Self::import_islands(&conn, payload.plan_islands, payload.plan_island_checks)?;
+        result.plan_islands += islands;
+        result.plan_island_checks += checks;
+        result.skipped += skipped;
 
         Ok(result)
     }

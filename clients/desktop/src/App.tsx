@@ -9,7 +9,7 @@ import BiliIcon from './components/icons/BiliIcon'
 import {
   fetchPerceptionSpans, fetchBiliSpans, searchBiliHistory, fetchGoals, parseGoalTags,
   fetchActivityPalette, fetchActivityBlocks, paintActivityBlocks, eraseActivityBlocks,
-  fetchPlanNodes, fetchPlannedBlocks, paintPlannedBlocks, erasePlannedBlocks,
+  fetchAllPlanNodes, fetchPlanNodes, fetchPlannedBlocks, paintPlannedBlocks, erasePlannedBlocks,
   fetchSyncLinks, fetchSyncPeers, runSyncLink, fetchSyncedSettings, saveSyncedSetting,
   addContextCard, addBinding,
 } from './lib/local-api'
@@ -986,6 +986,21 @@ export default function App() {
     refreshPlanNodes()
   }, [refreshPlanNodes])
 
+  // 昼夜表画计划块要按任务找标题和颜色：当天的块可能属于别的清单，只拿当前清单的任务会显示成光秃秃的「计划」。
+  // 当前清单的任务变了、或当天块涉及的任务变了，就重取一次全部任务（手机端 DayNightScreen 同样用全部任务）
+  const [chartPlanNodes, setChartPlanNodes] = useState<PlanNode[]>([])
+  const plannedNodeIdsKey = useMemo(
+    () => [...new Set(plannedBlocks.map((b) => b.planNodeId))].sort((a, b) => a - b).join(','),
+    [plannedBlocks],
+  )
+  useEffect(() => {
+    let alive = true
+    fetchAllPlanNodes()
+      .then((nodes) => { if (alive) setChartPlanNodes(nodes) })
+      .catch((err) => console.error('[Plans] 获取全部任务失败:', err))
+    return () => { alive = false }
+  }, [planNodes, plannedNodeIdsKey])
+
   // Ctrl+E 切换编辑模式
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1080,7 +1095,7 @@ export default function App() {
       const { listen } = await import('@tauri-apps/api/event')
       if (cancelled) return
       // 拆解 SyncImportResult / SyncRoundResult 成简洁中文行
-      const fmtImport = (r: { activity_categories?: number; activity_tags?: number; activity_blocks?: number; plan_nodes?: number; planned_blocks?: number; model_call_log?: number; model_api_keys?: number; model_free_quota?: number; feature_bindings?: number; model_registry?: number; chat_sessions?: number; chat_messages?: number; settings?: number; chat_images?: number; skipped?: number } | null | undefined): string => {
+      const fmtImport = (r: { activity_categories?: number; activity_tags?: number; activity_blocks?: number; plan_nodes?: number; planned_blocks?: number; plan_islands?: number; plan_island_checks?: number; model_call_log?: number; model_api_keys?: number; model_free_quota?: number; feature_bindings?: number; model_registry?: number; chat_sessions?: number; chat_messages?: number; settings?: number; chat_images?: number; skipped?: number } | null | undefined): string => {
         if (!r) return '0 条'
         const parts: string[] = []
         if (r.activity_categories) parts.push(`分类×${r.activity_categories}`)
@@ -1088,6 +1103,8 @@ export default function App() {
         if (r.activity_blocks) parts.push(`实际块×${r.activity_blocks}`)
         if (r.plan_nodes) parts.push(`计划节点×${r.plan_nodes}`)
         if (r.planned_blocks) parts.push(`计划块×${r.planned_blocks}`)
+        if (r.plan_islands) parts.push(`浮岛×${r.plan_islands}`)
+        if (r.plan_island_checks) parts.push(`浮岛勾选×${r.plan_island_checks}`)
         if (r.model_call_log) parts.push(`用量日志×${r.model_call_log}`)
         if (r.model_api_keys) parts.push(`API key×${r.model_api_keys}`)
         if (r.model_free_quota) parts.push(`免费额度×${r.model_free_quota}`)
@@ -1113,6 +1130,7 @@ export default function App() {
           if (e.payload?.result?.settings > 0) {
             applySyncedSettings().catch((err) => console.warn('[Sync] 读取同步设置失败', err))
           }
+          if ((e.payload?.result?.plan_islands ?? 0) + (e.payload?.result?.plan_island_checks ?? 0) > 0) reloadIslands()
           // 触发刷新；每个 fetch 完成后再各打一行确认本地真实落库行数
           const dateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`
           Promise.all([
@@ -1200,6 +1218,7 @@ export default function App() {
               applySyncedSettings().catch((err) => console.warn('[Sync] 读取同步设置失败', err))
             }
             if ((pulled?.chat_images ?? 0) > 0) window.dispatchEvent(new Event(CHAT_IMAGES_UPDATED))
+            if ((pulled?.plan_islands ?? 0) + (pulled?.plan_island_checks ?? 0) > 0) reloadIslands()
             // AUDIT-035：pulledCount 也必须包含模型 4 表，否则纯模型同步时
             // pulledCount=0，下面的重渲染分支永远不会触发，前端永远拿不到新模型设置
             const pulledCount =
@@ -1267,7 +1286,7 @@ export default function App() {
       cancelled = true
       unlisteners.forEach((u) => u())
     }
-  }, [refreshActivityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshPlanNodes, selectedDate, pushSyncLog, applySyncedSettings])
+  }, [refreshActivityPalette, refreshActivityBlocks, refreshPlannedBlocks, refreshPlanNodes, selectedDate, pushSyncLog, applySyncedSettings, reloadIslands])
 
   // 定时刷新 discovered peers（每 5 秒）—— 顶栏判断 linked 设备在线/离线
   useEffect(() => {
@@ -3455,7 +3474,7 @@ export default function App() {
                   activityBlocks={activityBlocks}
                   plannedBlocks={plannedBlocks}
                   islandPlacements={islandPlacements}
-                  planNodes={planNodes}
+                  planNodes={chartPlanNodes.length > 0 ? chartPlanNodes : planNodes}
                   activityPalette={activityPalette}
                   recordLayer={recordLayer}
                   onRecordLayerChange={setRecordLayer}

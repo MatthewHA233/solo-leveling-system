@@ -47,6 +47,28 @@ object SyncJson {
         put("title", r.title); put("status", r.status); put("sort_order", r.sortOrder)
         put("created_at", r.createdAt); put("updated_at", r.updatedAt)
         if (r.deletedAt != null) put("deleted_at", r.deletedAt)
+        r.detail?.let { dt ->
+          put("detail", JSONObject().apply {
+            if (dt.dueDate != null) put("due_date", dt.dueDate)
+            put("priority", dt.priority)
+            if (dt.note != null) put("note", dt.note)
+            if (dt.completedAt != null) put("completed_at", dt.completedAt)
+          })
+        }
+      })
+    })
+    o.put("plan_islands", JSONArray().apply {
+      for (r in ex.planIslands) put(JSONObject().apply {
+        put("id", r.id); put("doc", r.doc); put("sort_order", r.sortOrder)
+        put("created_at", r.createdAt); put("updated_at", r.updatedAt)
+        if (r.deletedAt != null) put("deleted_at", r.deletedAt)
+      })
+    })
+    o.put("plan_island_checks", JSONArray().apply {
+      for (r in ex.planIslandChecks) put(JSONObject().apply {
+        put("date", r.date); put("island_id", r.islandId); put("item_id", r.itemId)
+        put("done_at", r.doneAt); put("updated_at", r.updatedAt)
+        if (r.deletedAt != null) put("deleted_at", r.deletedAt)
       })
     })
     o.put("planned_blocks", JSONArray().apply {
@@ -219,6 +241,26 @@ object SyncJson {
           sortOrder = it.optInt("sort_order"),
           createdAt = it.optString("created_at"), updatedAt = it.optString("updated_at"),
           deletedAt = nullable(it, "deleted_at"),
+          detail = it.optJSONObject("detail")?.let { dt ->
+            SolevupDb.SyncPlanNodeDetail(
+              dueDate = nullable(dt, "due_date"), priority = dt.optInt("priority"),
+              note = nullable(dt, "note"), completedAt = nullable(dt, "completed_at"),
+            )
+          },
+        )
+      },
+      planIslands = arr(o, "plan_islands") {
+        SyncIslandRow(
+          id = it.getString("id"), doc = it.getString("doc"), sortOrder = it.optLong("sort_order"),
+          createdAt = it.getString("created_at"), updatedAt = it.getString("updated_at"),
+          deletedAt = nullable(it, "deleted_at"),
+        )
+      },
+      planIslandChecks = arr(o, "plan_island_checks") {
+        SyncIslandCheckRow(
+          date = it.getString("date"), islandId = it.getString("island_id"), itemId = it.getString("item_id"),
+          doneAt = it.getString("done_at"), updatedAt = it.getString("updated_at"),
+          deletedAt = nullable(it, "deleted_at"),
         )
       },
       plannedBlocks = arr(o, "planned_blocks") {
@@ -255,6 +297,8 @@ object SyncJson {
     put("model_registry", r.modelRegistry)
     put("settings", r.settings)
     put("chat_images", r.chatImages)
+    put("plan_islands", r.planIslands)
+    put("plan_island_checks", r.planIslandChecks)
     put("skipped", r.skipped)
   }
 
@@ -273,6 +317,8 @@ object SyncJson {
     modelRegistry = o.optInt("model_registry"),
     settings = o.optInt("settings"),
     chatImages = o.optInt("chat_images"),
+    planIslands = o.optInt("plan_islands"),
+    planIslandChecks = o.optInt("plan_island_checks"),
     skipped = o.optInt("skipped"),
   )
 

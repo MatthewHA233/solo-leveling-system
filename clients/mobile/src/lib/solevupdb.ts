@@ -133,6 +133,49 @@ export type SyncExport = {
   plannedBlocks: SyncPlannedBlockRow[]
 }
 
+export type PlanNodeRow = {
+  id: number
+  projectTagId: number
+  parentId: number | null
+  title: string
+  status: string
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+  dueDate: string | null
+  priority: number
+  note: string | null
+  completedAt: string | null
+}
+
+export type PlannedBlockRow = {
+  date: string
+  minute: number
+  planNodeId: number
+  note: string | null
+  createdAt: string
+}
+
+/** 浮岛规则一行：doc 是 JSON 文本（结构见 lib/islands/island-model.ts） */
+export type IslandRow = {
+  id: string
+  doc: string
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type IslandCheckRow = { islandId: string; itemId: string; doneAt: string }
+
+/** 改任务：不带的字段 = 不改；dueDate / note 传空串 = 清除 */
+export type PlanNodePatchArgs = {
+  title?: string
+  status?: string
+  dueDate?: string
+  priority?: number
+  note?: string
+}
+
 export type UpsertTagArgs = {
   categoryId: number
   fullPath: string
@@ -156,6 +199,26 @@ interface SolevupDbNative {
   upsertTag(args: UpsertTagArgs): Promise<number>
   paintBlocks(date: string, minutes: number[], tagId: number): Promise<number>
   eraseBlocks(date: string, minutes: number[]): Promise<number>
+  listPlanNodes(projectTagId: number): Promise<PlanNodeRow[]>
+  addPlanNode(args: {
+    projectTagId: number
+    title: string
+    parentId?: number | null
+    dueDate?: string | null
+    priority?: number | null
+  }): Promise<PlanNodeRow>
+  updatePlanNode(id: number, args: PlanNodePatchArgs): Promise<boolean>
+  deletePlanNode(id: number): Promise<boolean>
+  listPlannedBlocksForDate(date: string): Promise<PlannedBlockRow[]>
+  paintPlannedBlocks(date: string, minutes: number[], planNodeId: number): Promise<number>
+  erasePlannedBlocks(date: string, minutes: number[]): Promise<number>
+  listIslands(): Promise<IslandRow[]>
+  createIsland(doc: string): Promise<IslandRow>
+  updateIsland(id: string, doc: string): Promise<IslandRow>
+  deleteIsland(id: string): Promise<boolean>
+  listIslandChecks(date: string): Promise<IslandCheckRow[]>
+  setIslandCheck(date: string, islandId: string, itemId: string, done: boolean): Promise<boolean>
+  listBlocksInRange(from: string, to: string): Promise<BlockRow[]>
   deleteTag(tagId: number): Promise<number>
   deleteCategory(categoryId: number): Promise<number>
   renameCategory(categoryId: number, newName: string, newColor: string): Promise<number>
@@ -313,6 +376,32 @@ export async function solevupPaintBlocks(date: string, minutes: number[], tagId:
 export async function solevupEraseBlocks(date: string, minutes: number[]): Promise<number> {
   if (!Native) return 0
   return Native.eraseBlocks(date, minutes)
+}
+
+// ── 计划层（PlanStore.kt）：没有原生模块时（非 Android）直接报错，避免静默丢数据 ──
+
+function planNative(): SolevupDbNative {
+  if (!Native) throw new Error('本机数据库不可用')
+  return Native
+}
+
+export const solevupPlans = {
+  listNodes: (projectTagId: number | null) => planNative().listPlanNodes(projectTagId ?? -1),
+  addNode: (args: Parameters<SolevupDbNative['addPlanNode']>[0]) => planNative().addPlanNode(args),
+  updateNode: (id: number, args: PlanNodePatchArgs) => planNative().updatePlanNode(id, args),
+  deleteNode: (id: number) => planNative().deletePlanNode(id),
+  listBlocks: (date: string) => planNative().listPlannedBlocksForDate(date),
+  paintBlocks: (date: string, minutes: number[], planNodeId: number) =>
+    planNative().paintPlannedBlocks(date, minutes, planNodeId),
+  eraseBlocks: (date: string, minutes: number[]) => planNative().erasePlannedBlocks(date, minutes),
+  listIslands: () => planNative().listIslands(),
+  createIsland: (doc: string) => planNative().createIsland(doc),
+  updateIsland: (id: string, doc: string) => planNative().updateIsland(id, doc),
+  deleteIsland: (id: string) => planNative().deleteIsland(id),
+  listIslandChecks: (date: string) => planNative().listIslandChecks(date),
+  setIslandCheck: (date: string, islandId: string, itemId: string, done: boolean) =>
+    planNative().setIslandCheck(date, islandId, itemId, done),
+  listBlocksInRange: (from: string, to: string) => planNative().listBlocksInRange(from, to),
 }
 
 export async function solevupDeleteTag(tagId: number): Promise<number> {

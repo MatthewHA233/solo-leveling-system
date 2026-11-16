@@ -5,6 +5,13 @@
 //   每天里面几件事做没做完，记在 plan_island_checks
 //   新表，不改其他表；只多一个按日期范围读 activity_blocks 的只读接口（估「近 7 天平均」用）
 //
+//   两张表都跟着局域网全量同步走（export_sync / import_sync 调这里的 export_islands / import_islands），
+//   规则两端各有一份（手机端 SolevupDb.kt 浮岛一段），改要同时改：
+//     · 规则按 id 合并，勾选按 (date, island_id, item_id) 合并，updated_at 新的赢
+//     · 删除留 deleted_at 标记：删规则、取消勾都是软删，对端才知道
+//     · 时间戳只到秒：同一行每次本机改动的 updated_at 都比上一次大（同一秒就往后挪一秒，同 db.rs BUMPED_UPDATED_AT）；
+//       导入时时间戳相同、对面是删除而本地还在，也采用（删除赢，同 should_apply_block_row）
+//
 //   GET    /api/islands                                规则列表
 //   POST   /api/islands                                新建 { doc }
 //   PUT    /api/islands/{id}                           覆盖 { doc }
@@ -49,6 +56,28 @@ pub struct IslandCheck {
     pub done_at: String,
 }
 
+/// 同步用：规则一行（doc 原样传 JSON 文本）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncIsland {
+    pub id: String,
+    pub doc: String,
+    pub sort_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
+/// 同步用：某天勾掉的一件事
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncIslandCheck {
+    pub date: String,
+    pub island_id: String,
+    pub item_id: String,
+    pub done_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub struct SaveIslandRequest {
     doc: serde_json::Value,
@@ -88,13 +117,26 @@ pub(crate) fn init_island_tables(conn: &Connection) -> Result<(), String> {
             island_id TEXT NOT NULL,
             item_id TEXT NOT NULL,
             done_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
             PRIMARY KEY (date, island_id, item_id)
         );
-    "#).map_err(|e| format!("创建浮岛表失败: {}", e))
+    "#).map_err(|e| format!("创建浮岛表失败: {}", e))?;
+    // 第一版的勾选表没有 updated_at / deleted_at（取消勾是直接删行，传不到对端）；已经有这两列时 ALTER 会报错，忽略
+    let _ = conn.execute_batch("ALTER TABLE plan_island_checks ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
+    let _ = conn.execute_batch("ALTER TABLE plan_island_checks ADD COLUMN deleted_at TEXT");
+    conn.execute_batch("UPDATE plan_island_checks SET updated_at = done_at WHERE updated_at = ''")
+        .map_err(|e| format!("补浮岛勾选时间失败: {}", e))
 }
 
 fn now_str() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// 本机改一行时的 updated_at：这一行上次改动就在同一秒或更晚时，往后挪一秒。
+/// column 是要比的列（UPSERT 里要带表名），now 是「现在」的占位符
+fn bumped(column: &str, now: &str) -> String {
+    format!("CASE WHEN {column} >= {now} THEN datetime({column}, '+1 second') ELSE {now} END")
 }
 
 fn doc_text(doc: &serde_json::Value) -> Result<String, String> {
@@ -106,6 +148,11 @@ fn doc_text(doc: &serde_json::Value) -> Result<String, String> {
         return Err("浮岛规则太大了".into());
     }
     Ok(text)
+}
+
+/// 对端传来的 id：非空、不太长
+fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= MAX_ID_CHARS
 }
 
 fn parse_date(s: &str) -> Result<NaiveDate, String> {
@@ -171,8 +218,8 @@ impl Database {
         let conn = self.conn.lock().await;
         let n = conn
             .execute(
-                "UPDATE plan_islands SET doc = ?2, updated_at = ?3 WHERE id = ?1 AND deleted_at IS NULL",
-                params![id, text, now_str()],
+                &format!("UPDATE plan_islands SET doc = ?3, updated_at = {} WHERE id = ?1 AND deleted_at IS NULL", bumped("updated_at", "?2")),
+                params![id, now_str(), text],
             )
             .map_err(|e| e.to_string())?;
         if n == 0 {
@@ -184,7 +231,10 @@ impl Database {
     pub async fn islands_delete(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
         let n = conn
-            .execute("UPDATE plan_islands SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL", params![id, now_str()])
+            .execute(
+                &format!("UPDATE plan_islands SET deleted_at = ?2, updated_at = {} WHERE id = ?1 AND deleted_at IS NULL", bumped("updated_at", "?2")),
+                params![id, now_str()],
+            )
             .map_err(|e| e.to_string())?;
         if n == 0 {
             return Err("找不到这条浮岛规则".into());
@@ -196,7 +246,7 @@ impl Database {
         parse_date(date)?;
         let conn = self.conn.lock().await;
         let mut stmt = conn
-            .prepare("SELECT island_id, item_id, done_at FROM plan_island_checks WHERE date = ?1")
+            .prepare("SELECT island_id, item_id, done_at FROM plan_island_checks WHERE date = ?1 AND deleted_at IS NULL")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![date], |r| Ok(IslandCheck { island_id: r.get(0)?, item_id: r.get(1)?, done_at: r.get(2)? }))
@@ -211,18 +261,129 @@ impl Database {
         }
         let conn = self.conn.lock().await;
         if req.done {
+            // 已经勾着的不动（保留原来的勾选时刻）；取消过的重新勾上
             conn.execute(
-                "INSERT OR IGNORE INTO plan_island_checks (date, island_id, item_id, done_at) VALUES (?1, ?2, ?3, ?4)",
+                &format!(
+                    "INSERT INTO plan_island_checks (date, island_id, item_id, done_at, updated_at, deleted_at)
+                     VALUES (?1, ?2, ?3, ?4, ?4, NULL)
+                     ON CONFLICT(date, island_id, item_id) DO UPDATE SET
+                         done_at = excluded.done_at, updated_at = {}, deleted_at = NULL
+                     WHERE plan_island_checks.deleted_at IS NOT NULL",
+                    bumped("plan_island_checks.updated_at", "?4"),
+                ),
                 params![req.date, req.island_id, req.item_id, now_str()],
             )
         } else {
             conn.execute(
-                "DELETE FROM plan_island_checks WHERE date = ?1 AND island_id = ?2 AND item_id = ?3",
-                params![req.date, req.island_id, req.item_id],
+                &format!(
+                    "UPDATE plan_island_checks SET deleted_at = ?4, updated_at = {}
+                     WHERE date = ?1 AND island_id = ?2 AND item_id = ?3 AND deleted_at IS NULL",
+                    bumped("updated_at", "?4"),
+                ),
+                params![req.date, req.island_id, req.item_id, now_str()],
             )
         }
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// 全量同步导出：since 之后变过的规则和勾选（含删除标记）。规则两端一致，见文件头
+    pub(crate) fn export_islands(
+        conn: &Connection,
+        since: Option<&str>,
+    ) -> Result<(Vec<SyncIsland>, Vec<SyncIslandCheck>), String> {
+        let changed = |updated_at: &str, deleted_at: Option<&str>| match since {
+            Some(cursor) => updated_at > cursor || deleted_at.is_some_and(|d| d > cursor),
+            None => true,
+        };
+        let mut stmt = conn
+            .prepare("SELECT id, doc, sort_order, created_at, updated_at, deleted_at FROM plan_islands")
+            .map_err(|e| e.to_string())?;
+        let islands = stmt
+            .query_map([], |r| {
+                Ok(SyncIsland {
+                    id: r.get(0)?,
+                    doc: r.get(1)?,
+                    sort_order: r.get(2)?,
+                    created_at: r.get(3)?,
+                    updated_at: r.get(4)?,
+                    deleted_at: r.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .filter(|r| changed(&r.updated_at, r.deleted_at.as_deref()))
+            .collect();
+        let mut stmt = conn
+            .prepare("SELECT date, island_id, item_id, done_at, updated_at, deleted_at FROM plan_island_checks")
+            .map_err(|e| e.to_string())?;
+        let checks = stmt
+            .query_map([], |r| {
+                Ok(SyncIslandCheck {
+                    date: r.get(0)?,
+                    island_id: r.get(1)?,
+                    item_id: r.get(2)?,
+                    done_at: r.get(3)?,
+                    updated_at: r.get(4)?,
+                    deleted_at: r.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .filter(|r| changed(&r.updated_at, r.deleted_at.as_deref()))
+            .collect();
+        Ok((islands, checks))
+    }
+
+    /// 全量同步导入，返回 (写进去的规则数, 写进去的勾选数, 跳过数)。规则两端一致，见文件头
+    pub(crate) fn import_islands(
+        conn: &Connection,
+        islands: Vec<SyncIsland>,
+        checks: Vec<SyncIslandCheck>,
+    ) -> Result<(usize, usize, usize), String> {
+        let (mut applied_islands, mut applied_checks, mut skipped) = (0, 0, 0);
+        for row in islands {
+            let doc_ok = row.doc.len() <= MAX_DOC_BYTES
+                && serde_json::from_str::<serde_json::Value>(&row.doc).is_ok_and(|v| v.is_object());
+            if !valid_id(&row.id) || !doc_ok {
+                skipped += 1;
+                continue;
+            }
+            let n = conn
+                .execute(
+                    "INSERT INTO plan_islands (id, doc, sort_order, created_at, updated_at, deleted_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(id) DO UPDATE SET
+                         doc = excluded.doc, sort_order = excluded.sort_order, created_at = excluded.created_at,
+                         updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+                     WHERE excluded.updated_at > plan_islands.updated_at
+                        OR (excluded.updated_at = plan_islands.updated_at
+                            AND excluded.deleted_at IS NOT NULL AND plan_islands.deleted_at IS NULL)",
+                    params![row.id, row.doc, row.sort_order, row.created_at, row.updated_at, row.deleted_at],
+                )
+                .map_err(|e| e.to_string())?;
+            if n > 0 { applied_islands += 1 } else { skipped += 1 }
+        }
+        for row in checks {
+            if parse_date(&row.date).is_err() || !valid_id(&row.island_id) || !valid_id(&row.item_id) {
+                skipped += 1;
+                continue;
+            }
+            let n = conn
+                .execute(
+                    "INSERT INTO plan_island_checks (date, island_id, item_id, done_at, updated_at, deleted_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(date, island_id, item_id) DO UPDATE SET
+                         done_at = excluded.done_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+                     WHERE excluded.updated_at > plan_island_checks.updated_at
+                        OR (excluded.updated_at = plan_island_checks.updated_at
+                            AND excluded.deleted_at IS NOT NULL AND plan_island_checks.deleted_at IS NULL)",
+                    params![row.date, row.island_id, row.item_id, row.done_at, row.updated_at, row.deleted_at],
+                )
+                .map_err(|e| e.to_string())?;
+            if n > 0 { applied_checks += 1 } else { skipped += 1 }
+        }
+        Ok((applied_islands, applied_checks, skipped))
     }
 
     /// 一段日期内的实际记录（只读）

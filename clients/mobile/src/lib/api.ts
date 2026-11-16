@@ -12,6 +12,8 @@ import type {
   ActivityPalette,
   ActivityTag,
   AiMode,
+  PlanNode,
+  PlannedBlock,
 } from '../types'
 import { toLocalDateStr } from './time'
 import { mockReply } from './mock'
@@ -27,7 +29,9 @@ import {
   solevupPaintBlocks,
   solevupUpsertCategory,
   solevupUpsertTag,
+  solevupPlans,
   type BlockRow,
+  type PlanNodeRow,
   type CategoryRow,
   type TagRow,
 } from './solevupdb'
@@ -172,6 +176,99 @@ export async function paintBlocks(
 
 export async function eraseBlocks(date: Date, minutes: number[]): Promise<void> {
   await solevupEraseBlocks(toLocalDateStr(date), minutes)
+}
+
+// ── 计划任务：挂在项目标签下的任务树（与 desktop lib/local-api.ts 同名同签名，数据在本机库） ──
+
+function planNodeFromRow(r: PlanNodeRow): PlanNode {
+  const status = r.status === 'done' || r.status === 'archived' ? r.status : 'active'
+  const priority = Math.min(3, Math.max(0, Math.round(r.priority || 0))) as PlanNode['priority']
+  return {
+    id: r.id,
+    projectTagId: r.projectTagId,
+    parentId: r.parentId ?? null,
+    title: r.title,
+    status,
+    sortOrder: r.sortOrder,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    dueDate: r.dueDate ?? null,
+    priority,
+    note: r.note ?? null,
+    completedAt: r.completedAt ?? null,
+  }
+}
+
+export async function fetchPlanNodes(projectTagId: number): Promise<PlanNode[]> {
+  return (await solevupPlans.listNodes(projectTagId)).map(planNodeFromRow)
+}
+
+/** 全部任务（跨清单） */
+export async function fetchAllPlanNodes(): Promise<PlanNode[]> {
+  return (await solevupPlans.listNodes(null)).map(planNodeFromRow)
+}
+
+export async function addPlanNode(
+  projectTagId: number,
+  title: string,
+  parentId: number | null = null,
+  extra: { dueDate?: string | null; priority?: PlanNode['priority'] } = {},
+): Promise<PlanNode> {
+  const row = await solevupPlans.addNode({
+    projectTagId,
+    title,
+    parentId,
+    dueDate: extra.dueDate ?? null,
+    priority: extra.priority ?? null,
+  })
+  return planNodeFromRow(row)
+}
+
+export async function updatePlanNode(
+  id: number,
+  patch: {
+    title?: string
+    status?: PlanNode['status']
+    /** null = 清除日期 */
+    dueDate?: string | null
+    priority?: PlanNode['priority']
+    /** null / 空串 = 清除备注 */
+    note?: string | null
+  },
+): Promise<void> {
+  // 原生层约定：字段不传 = 不改；传空串 = 清除
+  await solevupPlans.updateNode(id, {
+    ...(patch.title !== undefined ? { title: patch.title } : {}),
+    ...(patch.status !== undefined ? { status: patch.status } : {}),
+    ...(patch.dueDate !== undefined ? { dueDate: patch.dueDate ?? '' } : {}),
+    ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+    ...(patch.note !== undefined ? { note: patch.note ?? '' } : {}),
+  })
+}
+
+export async function deletePlanNode(id: number): Promise<void> {
+  await solevupPlans.deleteNode(id)
+}
+
+// ── 计划块：同样 5 分钟一格，存在另一张表 ──
+
+export async function fetchPlannedBlocks(date: Date): Promise<PlannedBlock[]> {
+  const rows = await solevupPlans.listBlocks(toLocalDateStr(date))
+  return rows.map((r) => ({
+    date: r.date,
+    minute: r.minute,
+    planNodeId: r.planNodeId,
+    note: r.note ?? null,
+    createdAt: r.createdAt,
+  }))
+}
+
+export async function paintPlannedBlocks(date: Date, minutes: number[], planNodeId: number): Promise<number> {
+  return solevupPlans.paintBlocks(toLocalDateStr(date), minutes, planNodeId)
+}
+
+export async function erasePlannedBlocks(date: Date, minutes: number[]): Promise<number> {
+  return solevupPlans.eraseBlocks(toLocalDateStr(date), minutes)
 }
 
 // ── 聊天 API ──

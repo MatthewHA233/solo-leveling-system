@@ -41,6 +41,37 @@ export interface ActivityPalette {
   tags: ActivityTag[]
 }
 
+// ── 计划层（与 desktop src/types.ts 一致） ──
+
+export interface PlanNode {
+  id: number
+  projectTagId: number
+  parentId: number | null
+  title: string
+  status: 'active' | 'done' | 'archived'
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+  /** 截止日期 'YYYY-MM-DD' */
+  dueDate: string | null
+  /** 0 无 / 1 低 / 2 中 / 3 高 */
+  priority: PlanPriority
+  note: string | null
+  completedAt: string | null
+}
+
+export type PlanPriority = 0 | 1 | 2 | 3
+
+export interface PlannedBlock {
+  date: string
+  minute: number
+  planNodeId: number
+  note: string | null
+  createdAt: string
+}
+
+export type RecordLayer = 'actual' | 'plan'
+
 // ── 多模态聊天 ──
 
 export type ChatRole = 'user' | 'agent' | 'system'

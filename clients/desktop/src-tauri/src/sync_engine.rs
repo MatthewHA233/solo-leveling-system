@@ -238,7 +238,10 @@ async fn push_changes_to(db: &Arc<Database>, link: &LinkedDevice) -> Result<Opti
         return Err(format!("对端 import 错误: {}", resp.error.unwrap_or_default()));
     }
     db.save_sync_cursor(&link.device_id, None, Some(&exported_at), None).await?;
-    let applied = resp.data.map(|r| r.activity_categories + r.activity_tags + r.activity_blocks + r.plan_nodes + r.planned_blocks).unwrap_or(0);
+    let applied = resp.data.map(|r| {
+        r.activity_categories + r.activity_tags + r.activity_blocks + r.plan_nodes + r.planned_blocks
+            + r.plan_islands + r.plan_island_checks
+    }).unwrap_or(0);
     Ok(Some(applied))
 }
 

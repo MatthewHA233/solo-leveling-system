@@ -41,8 +41,8 @@ export function useIslands(selectedDate: Date, activityBlocks: readonly Activity
   const dateKey = toDateKey(selectedDate)
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), NOW_TICK_MS)
-    return () => window.clearInterval(timer)
+    const timer = setInterval(() => setNow(new Date()), NOW_TICK_MS)
+    return () => clearInterval(timer)
   }, [])
 
   useEffect(() => {

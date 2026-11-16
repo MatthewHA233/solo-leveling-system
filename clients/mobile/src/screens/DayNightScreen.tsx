@@ -24,7 +24,7 @@ import {
 } from 'react-native'
 import type { LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import Svg, { Path } from 'react-native-svg'
+import Svg, { Defs, Line, Path, Pattern, Rect } from 'react-native-svg'
 import CalendarPopover from '../components/CalendarPopover'
 import ConfirmDialog from '../components/ConfirmDialog'
 import SharedDateHeader from '../components/SharedDateHeader'
@@ -34,8 +34,19 @@ import type {
   ActivityCategory,
   ActivityPalette,
   ActivityTag,
+  PlanNode,
+  PlannedBlock,
+  RecordLayer,
 } from '../types'
-import { CATEGORY_PALETTE_COLORS, createTag, deleteCategory, deleteTag, eraseBlocks, fetchBlocks, fetchPalette, paintBlocks, renameCategory, renameTagPath } from '../lib/api'
+import {
+  CATEGORY_PALETTE_COLORS, createTag, deleteCategory, deleteTag, eraseBlocks, erasePlannedBlocks, fetchAllPlanNodes,
+  fetchBlocks, fetchPalette, fetchPlannedBlocks, paintBlocks, paintPlannedBlocks, renameCategory, renameTagPath,
+} from '../lib/api'
+import PlanSheet from '../components/daynight/PlanSheet'
+import { DAYNIGHT_CHANGED_EVENT } from '../lib/islands/island-api'
+import { islandColor } from '../lib/islands/island-model'
+import type { IslandPlacement } from '../lib/islands/island-model'
+import { useIslands } from '../lib/islands/use-islands'
 import { DAY_PERIOD_START_HOURS, dayPeriodForHour, type DayPeriodInfo } from '../lib/dayPeriods'
 import { loadDayNightZoomPrefs, saveDayNightZoomPrefs } from '../lib/prefs'
 import { fmtMinute, isSameDay, toLocalDateStr } from '../lib/time'
@@ -126,23 +137,6 @@ type HitCell =
   | { kind: 'full'; hour: number; col: number; minute: number }
   | { kind: 'compressed'; hour: number }
 
-interface PlannedTask {
-  id: string
-  title: string
-  icon: string
-  color: string
-  durationMin: number
-  scheduledStartMin: number | null
-}
-
-interface PlanMeta {
-  icon: string
-  color: string
-  label: string
-}
-
-const PLAN_SUGGESTIONS = ['复盘今天', '写论文初稿', 'React Native 动效', '整理收件箱']
-
 // 空 palette 时一键初始化的默认分类 + 标签（与 desktop ActivityTagPalette
 // DEFAULT_PALETTE 一致，让 desktop / mobile 用户初次体验对齐）
 // 不预置"编程"分类 — 不是所有人都适合
@@ -161,19 +155,6 @@ function suggestCategoryColor(categories: ActivityCategory[]): string {
   return CATEGORY_PALETTE_COLORS.find((c) => !used.has(c)) ??
     CATEGORY_PALETTE_COLORS[categories.length % CATEGORY_PALETTE_COLORS.length]
 }
-
-const PLAN_PRESETS: { pattern: RegExp; meta: PlanMeta }[] = [
-  { pattern: /邮件|消息|沟通|回复|email|mail/i, meta: { icon: '@', color: '#4C86E0', label: '沟通' } },
-  { pattern: /跑|健身|运动|训练|workout|run/i, meta: { icon: '>', color: '#3FA86A', label: '运动' } },
-  { pattern: /写|论文|文章|文档|draft|write/i, meta: { icon: '#', color: '#8A63C9', label: '写作' } },
-  { pattern: /读|阅读|书|read/i, meta: { icon: 'R', color: '#BE8A4A', label: '阅读' } },
-  { pattern: /学|课程|复习|学习|study|learn/i, meta: { icon: 'A', color: '#3FA86A', label: '学习' } },
-  { pattern: /设计|交互|动画|动效|ui|ux/i, meta: { icon: '*', color: '#46A86B', label: '设计' } },
-  { pattern: /bug|测试|紧急|风险|test|fix/i, meta: { icon: '!', color: '#D26591', label: '警戒' } },
-  { pattern: /会|会议|同步|meeting/i, meta: { icon: 'M', color: '#7E8590', label: '会议' } },
-]
-
-const DEFAULT_PLAN_META: PlanMeta = { icon: '+', color: '#3E63DD', label: '任务' }
 
 function buildSpans(blocks: ActivityBlock[]): Span[] {
   const sorted = [...blocks].sort((a, b) => a.minute - b.minute)
@@ -259,10 +240,6 @@ function buildProbeAppRuns(segments: AppMonitorSegment[], segmentEndMs: number):
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v))
-}
-
-function snapMinute(minute: number): number {
-  return clamp(Math.round(minute / 5) * 5, 0, 1435)
 }
 
 function rowStartHour(row: Row): number {
@@ -820,16 +797,38 @@ function fmtHHMMms(ms: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-function inferPlanMeta(title: string): PlanMeta {
-  const hit = PLAN_PRESETS.find((p) => p.pattern.test(title))
-  return hit?.meta ?? DEFAULT_PLAN_META
+/** 计划块、计划画笔的默认色（清单标签没有分类色时；desktop 用 warningOrange） */
+const PLAN_COLOR = '#D9822B'
+/** 计划块虚线框、浮岛框相对格子的内缩（desktop PLAN_INSET 2.5 / ISLAND_INSET 4，手机格子小，收一点） */
+const PLAN_INSET = 1
+const ISLAND_INSET = 3
+const R_PLAN = 9
+const R_ISLAND = 7
+/** 约束的斜纹间距（desktop ISLAND_HATCH_STEP） */
+const ISLAND_HATCH_STEP = 7
+/** 浮岛过了没做 */
+const ISLAND_MISSED_COLOR = '#8E8982'
+const EMPTY_PALETTE: ActivityPalette = { categories: [], tags: [] }
+
+/** 计划块按「格子 → 任务 id」借用 ActivityBlock 的形状，拖拽 / 撤销两层共用一套 */
+function plannedAsBlocks(pbs: readonly PlannedBlock[]): ActivityBlock[] {
+  return pbs.map((b) => ({ date: b.date, minute: b.minute, tagId: b.planNodeId, note: b.note, createdAt: b.createdAt }))
 }
 
-function nextPlanId(): string {
-  return `plan-${Date.now()}-${Math.random().toString(16).slice(2)}`
+function blocksAsPlanned(bs: readonly ActivityBlock[]): PlannedBlock[] {
+  return bs.map((b) => ({ date: b.date, minute: b.minute, planNodeId: b.tagId, note: b.note, createdAt: b.createdAt }))
+}
+
+function plannedSignature(pbs: readonly PlannedBlock[]): string {
+  return [...pbs].sort((a, b) => a.minute - b.minute).map((b) => `${b.minute}:${b.planNodeId}`).join('|')
+}
+
+function planNodesSignature(nodes: readonly PlanNode[]): string {
+  return nodes.map((n) => `${n.id}:${n.updatedAt}:${n.status}`).join('|')
 }
 
 interface Interaction {
+  layer: RecordLayer
   editMode: boolean
   selectedTagId: number | null
   rows: Row[]
@@ -840,6 +839,8 @@ interface Interaction {
 }
 
 interface DragState {
+  /** 按下时所在的层：拖到一半切层也写回原来那层（对齐 desktop dragRef 的 layer 戳） */
+  layer: RecordLayer
   mode: 'paint' | 'erase'      // 仅起点判定的"主导意图"，commit 仍按每 cell 独立判断
   startMin: number | null      // 拖拽起点（5min 对齐）
   lastMin: number | null       // 上一次 move 命中的 minute
@@ -853,6 +854,7 @@ interface DragState {
 }
 
 type PaintCommit = {
+  layer: RecordLayer
   date: Date
   tagId: number | null
   paintArr: number[]
@@ -930,12 +932,17 @@ export default function DayNightScreen() {
   const [undoStack, setUndoStack] = useState<readonly ActivityBlock[][]>([])
   const [redoStack, setRedoStack] = useState<readonly ActivityBlock[][]>([])
   const UNDO_LIMIT = 30
-  const [planOpen, setPlanOpen] = useState(false)
-  const [composerOpen, setComposerOpen] = useState(false)
-  const [composerStage, setComposerStage] = useState<'quick' | 'details'>('quick')
-  const [composerTitle, setComposerTitle] = useState('')
-  const [composerDuration, setComposerDuration] = useState(25)
-  const [plannedTasks, setPlannedTasks] = useState<PlannedTask[]>([])
+  // ── 计划层（对齐 desktop App.tsx）：实际 / 计划两层同屏，编辑时选一层涂 ──
+  const [recordLayer, setRecordLayer] = useState<RecordLayer>('actual')
+  const [plannedBlocks, setPlannedBlocks] = useState<PlannedBlock[]>([])
+  // 全部任务：画计划块要按任务找标题和颜色，不止当前清单的（desktop 只取当前清单，别的清单的块会没名字）
+  const [allPlanNodes, setAllPlanNodes] = useState<PlanNode[]>([])
+  const [selectedProjectTagId, setSelectedProjectTagId] = useState<number | null>(null)
+  const [selectedPlanNodeId, setSelectedPlanNodeId] = useState<number | null>(null)
+  const [planUndoStack, setPlanUndoStack] = useState<readonly PlannedBlock[][]>([])
+  const [planRedoStack, setPlanRedoStack] = useState<readonly PlannedBlock[][]>([])
+  // 计划弹窗：null = 关；打开时停在哪一页
+  const [planSheet, setPlanSheet] = useState<null | 'islands' | 'todo'>(null)
 
   // ── refs（供手势回调读取最新值）──
   const gridHRef = useRef(0)
@@ -944,6 +951,7 @@ export default function DayNightScreen() {
   const areaRef = useRef({ x: 0, y: 0, w: 0, h: 0 })
   const cellAreaRef = useRef<View>(null)
   const interactionRef = useRef<Interaction>({
+    layer: 'actual',
     editMode: false,
     selectedTagId: null,
     rows: [],
@@ -953,6 +961,7 @@ export default function DayNightScreen() {
     selectedDate: new Date(),
   })
   const dragRef = useRef<DragState>({
+    layer: 'actual',
     mode: 'paint',
     startMin: null,
     lastMin: null,
@@ -964,13 +973,16 @@ export default function DayNightScreen() {
     tapCell: null,
     grantTs: 0,
   })
-  const plannedTasksRef = useRef<PlannedTask[]>([])
+  const plannedBlocksRef = useRef<PlannedBlock[]>([])
+  const allPlanNodesRef = useRef<PlanNode[]>([])
+  const reloadIslandsRef = useRef<() => void>(() => {})
   const selectedDateRef = useRef(selectedDate)
   const selectedTagIdRef = useRef(selectedTagId)
   const blocksRef = useRef<ActivityBlock[]>([])
 
   focusStartRef.current = focusStart
-  plannedTasksRef.current = plannedTasks
+  plannedBlocksRef.current = plannedBlocks
+  allPlanNodesRef.current = allPlanNodes
   selectedDateRef.current = selectedDate
   selectedTagIdRef.current = selectedTagId
   blocksRef.current = blocks
@@ -1173,29 +1185,59 @@ export default function DayNightScreen() {
     // 撤回栈是当日 blocks 的快照，带到别的日期撤回会写错日期（对齐 desktop App.tsx）
     setUndoStack([])
     setRedoStack([])
+    setPlanUndoStack([])
+    setPlanRedoStack([])
     fetchBlocks(selectedDate).then((bs) => {
       if (!alive) return
       setBlocks(bs)
       setLoading(false)
     })
+    fetchPlannedBlocks(selectedDate)
+      .then((pbs) => { if (alive) setPlannedBlocks(pbs) })
+      .catch((e: any) => console.warn('[daynight] 读计划块失败:', e?.message ?? e))
     return () => {
       alive = false
     }
   }, [selectedDate])
+
+  // 任务列表：启动取一次；之后由同步 / 计划面板 / Fairy 工具触发刷新
+  const refreshPlanNodes = () => {
+    fetchAllPlanNodes()
+      .then((nodes) => {
+        setAllPlanNodes((cur) => (planNodesSignature(cur) === planNodesSignature(nodes) ? cur : nodes))
+        setSelectedPlanNodeId((id) => (id != null && nodes.some((n) => n.id === id && n.status !== 'archived') ? id : null))
+      })
+      .catch((e: any) => console.warn('[daynight] 读计划任务失败:', e?.message ?? e))
+  }
+  const refreshPlanNodesRef = useRef(refreshPlanNodes)
+  refreshPlanNodesRef.current = refreshPlanNodes
+  useEffect(() => { refreshPlanNodesRef.current() }, [])
 
   // 桌面端推同步时，native SolevupDb 已经写库，但当前 mounted 的昼夜表不会自动重读。
   // 同步 HTTP server 在 import 成功后发 SolevupDbChanged；这里只在事件到达/回前台时重读。
   useEffect(() => {
     let alive = true
     let inFlight = false
+    let again = false
     const refreshVisibleData = async () => {
-      if (inFlight) return
+      // 正在读时又来一次：读完再读一遍，免得漏掉后来的改动
+      if (inFlight) { again = true; return }
       inFlight = true
       const date = selectedDateRef.current
       const dateKey = toLocalDateStr(date)
       try {
-        const [nextPalette, nextBlocks] = await Promise.all([fetchPalette(), fetchBlocks(date)])
+        const [nextPalette, nextBlocks, nextPlanned] = await Promise.all([
+          fetchPalette(), fetchBlocks(date), fetchPlannedBlocks(date),
+        ])
         if (!alive) return
+        refreshPlanNodesRef.current()
+        reloadIslandsRef.current()
+        if (toLocalDateStr(selectedDateRef.current) === dateKey &&
+            plannedSignature(nextPlanned) !== plannedSignature(plannedBlocksRef.current)) {
+          setPlannedBlocks(nextPlanned)
+          setPlanUndoStack([])
+          setPlanRedoStack([])
+        }
         const currentPalette = paletteRef.current
         if (!currentPalette || paletteSignature(nextPalette) !== paletteSignature(currentPalette)) {
           setPalette(nextPalette)
@@ -1216,9 +1258,14 @@ export default function DayNightScreen() {
         console.warn('[daynight-refresh] failed:', e?.message ?? e)
       } finally {
         inFlight = false
+        if (again && alive) { again = false; void refreshVisibleData() }
       }
     }
     const dbSub = DeviceEventEmitter.addListener('SolevupDbChanged', () => {
+      void refreshVisibleData()
+    })
+    // Fairy 的昼夜表工具、计划面板写完发这个（desktop 同名 Tauri 事件）
+    const dayNightSub = DeviceEventEmitter.addListener(DAYNIGHT_CHANGED_EVENT, () => {
       void refreshVisibleData()
     })
     const sub = AppState.addEventListener('change', (state) => {
@@ -1227,6 +1274,7 @@ export default function DayNightScreen() {
     return () => {
       alive = false
       dbSub.remove()
+      dayNightSub.remove()
       sub.remove()
     }
   }, [])
@@ -1453,17 +1501,44 @@ export default function DayNightScreen() {
     return { total: blocks.length * 5, rows }
   }, [blocks, tagById, categoryById])
 
-  const inboxTasks = useMemo(
-    () => plannedTasks.filter((task) => task.scheduledStartMin == null),
-    [plannedTasks],
-  )
+  // ── 计划层派生数据 ──
+  const { islands, placements: islandPlacements, error: islandsError, reload: reloadIslands } =
+    useIslands(selectedDate, blocks, palette ?? EMPTY_PALETTE)
+  reloadIslandsRef.current = reloadIslands
 
-  const scheduledTasks = useMemo(
-    () => plannedTasks.filter((task) => task.scheduledStartMin != null),
-    [plannedTasks],
+  const planNodeById = useMemo(() => new Map(allPlanNodes.map((n) => [n.id, n])), [allPlanNodes])
+  const projectPlanNodes = useMemo(
+    () => allPlanNodes.filter((n) => n.projectTagId === selectedProjectTagId),
+    [allPlanNodes, selectedProjectTagId],
   )
+  const plannedByMinute = useMemo(() => {
+    const m = new Map<number, number>()
+    plannedBlocks.forEach((b) => m.set(b.minute, b.planNodeId))
+    return m
+  }, [plannedBlocks])
 
-  const composerMeta = useMemo(() => inferPlanMeta(composerTitle), [composerTitle])
+  // 默认清单：最近改过的任务所在的清单；还没有任务时用最近用过的标签（desktop 取第一个标签）
+  useEffect(() => {
+    if (selectedProjectTagId != null || !palette || palette.tags.length === 0) return
+    const latest = [...allPlanNodes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]
+    const fallback = latest?.projectTagId ?? mostRecentTagId(palette) ?? palette.tags[0].id
+    setSelectedProjectTagId(fallback)
+  }, [selectedProjectTagId, palette, allPlanNodes])
+
+  /** 任务的颜色 = 它所在清单标签的分类色 */
+  const planColorOf = (nodeId: number): string => {
+    const node = planNodeById.get(nodeId)
+    const tag = node ? tagById.get(node.projectTagId) : undefined
+    const cat = tag ? categoryById.get(tag.categoryId) : undefined
+    return cat?.color ?? PLAN_COLOR
+  }
+
+  const islandColorOf = (p: IslandPlacement): string =>
+    p.status === 'missed' ? ISLAND_MISSED_COLOR : islandColor(p.island.rule, palette ?? EMPTY_PALETTE, PLAN_COLOR)
+
+  const selectedPlanNode = selectedPlanNodeId != null ? planNodeById.get(selectedPlanNodeId) ?? null : null
+  const activeUndo = recordLayer === 'plan' ? planUndoStack : undoStack
+  const activeRedo = recordLayer === 'plan' ? planRedoStack : redoStack
 
   const isToday = isSameDay(new Date(), selectedDate)
 
@@ -1484,7 +1559,15 @@ export default function DayNightScreen() {
   rowsLenRef.current = rows.length
 
   // 同步 refs
-  interactionRef.current = { editMode, selectedTagId, rows, blocks, blockByMinute, spans, selectedDate }
+  if (recordLayer === 'plan') {
+    const planBlocks = plannedAsBlocks(plannedBlocks)
+    interactionRef.current = {
+      layer: 'plan', editMode, selectedTagId: selectedPlanNodeId, rows,
+      blocks: planBlocks, blockByMinute: new Map(planBlocks.map((b) => [b.minute, b])), spans, selectedDate,
+    }
+  } else {
+    interactionRef.current = { layer: 'actual', editMode, selectedTagId, rows, blocks, blockByMinute, spans, selectedDate }
+  }
 
   // ── 点 → 命中格子 ──
   // cellArea 自己的手势使用本地坐标 locationX/locationY，不再依赖
@@ -1503,12 +1586,6 @@ export default function DayNightScreen() {
     }
     const col = clamp(Math.floor(lx / (area.w / row.hours.length)), 0, row.hours.length - 1)
     return { kind: 'compressed', hour: row.hours[col] }
-  }
-
-  // 外部拖放仍然拿 pageX/pageY，这里才用 measureInWindow 的 x/y 转成本地坐标。
-  const cellFromPagePoint = (px: number, py: number): HitCell | null => {
-    const area = areaRef.current
-    return cellFromLocalPoint(px - area.x, py - area.y)
   }
 
   // 经过旧色块的逻辑（对齐 desktop DayNightChart commitDragOrCancel）：
@@ -1554,7 +1631,8 @@ export default function DayNightScreen() {
     paintMins.forEach((m) => {
       out.push({ date: dateStr, minute: m, tagId: tagId as number, note: null, createdAt: stamp })
     })
-    setBlocks(out)
+    if (d.layer === 'plan') setPlannedBlocks(blocksAsPlanned(out))
+    else setBlocks(out)
     // 记到 dragRef 给 release 时分批 commit
     d.paintMins = paintMins
     d.eraseMins = eraseMins
@@ -1562,6 +1640,8 @@ export default function DayNightScreen() {
   }
 
   const buildFullRowReplaceWarning = (commit: PaintCommit): FullRowReplaceWarning | null => {
+    // 计划层改的是打算，不是记录，盖掉不用确认（desktop 两层都不确认）
+    if (commit.layer === 'plan') return null
     if (commit.tagId == null || commit.paintArr.length === 0) return null
     const paintSet = new Set(commit.paintArr)
     const before = new Map<number, number>()
@@ -1614,7 +1694,38 @@ export default function DayNightScreen() {
     }
   }
 
+  // 注意：cellPan 是 useRef(PanResponder.create(...))，这里拿到的是首帧的函数，只能读 ref 和 setState
+  const commitPlanEdit = (commit: PaintCommit) => {
+    const { date, tagId, paintArr, eraseArr } = commit
+    const snapshot = blocksAsPlanned(commit.snapshot)
+    setPlanUndoStack((prev) => [...prev.slice(-(UNDO_LIMIT - 1)), snapshot])
+    setPlanRedoStack([])
+    const tasks: Promise<unknown>[] = []
+    if (paintArr.length > 0 && tagId != null) tasks.push(paintPlannedBlocks(date, paintArr, tagId))
+    if (eraseArr.length > 0) tasks.push(erasePlannedBlocks(date, eraseArr))
+    Promise.all(tasks)
+      .then(() => { if (tagId != null) fetchPalette().then(setPalette).catch(() => {}) })
+      .catch((e: any) => {
+        console.warn('[plan paint] 写入失败，回滚:', e?.message ?? e)
+        setPlannedBlocks(snapshot)
+        fetchPlannedBlocks(date).then(setPlannedBlocks).catch(() => {})
+      })
+    if (paintArr.length > 0 && tagId != null) {
+      const sorted = [...paintArr].sort((a, b) => a - b)
+      const node = allPlanNodesRef.current.find((n) => n.id === tagId)
+      const tag = node ? paletteRef.current?.tags.find((t) => t.id === node.projectTagId) : undefined
+      showPaintToast({
+        name: `计划：${node?.title ?? '任务'}${tag ? ` · ${tag.leafName}` : ''}`,
+        time: `${fmtMinute(sorted[0])} – ${fmtMinute(sorted[sorted.length - 1] + 5)}`,
+      })
+    }
+  }
+
   const commitPaintEdit = (commit: PaintCommit) => {
+    if (commit.layer === 'plan') {
+      commitPlanEdit(commit)
+      return
+    }
     const { date, tagId, paintArr, eraseArr, snapshot } = commit
     // 推 undo（snapshot = 操作前的 blocks），清空 redo
     setUndoStack((prev) => [...prev.slice(-(UNDO_LIMIT - 1)), snapshot])
@@ -1668,6 +1779,7 @@ export default function DayNightScreen() {
         const cell = cellFromLocalPoint(e.nativeEvent.locationX, e.nativeEvent.locationY)
         const { editMode: em, blockByMinute: bm, selectedTagId: tagId } = interactionRef.current
         const d: DragState = {
+          layer: interactionRef.current.layer,
           mode: 'paint',
           startMin: cell && cell.kind === 'full' ? cell.minute : null,
           lastMin: cell && cell.kind === 'full' ? cell.minute : null,
@@ -1763,7 +1875,7 @@ export default function DayNightScreen() {
           const paintArr = Array.from(d.paintMins)
           const eraseArr = Array.from(d.eraseMins)
           if (paintArr.length === 0 && eraseArr.length === 0) return
-          const commit: PaintCommit = { date, tagId, paintArr, eraseArr, snapshot: d.snapshot }
+          const commit: PaintCommit = { layer: d.layer, date, tagId, paintArr, eraseArr, snapshot: d.snapshot }
           const warning = buildFullRowReplaceWarning(commit)
           if (warning) {
             setPendingFullRowReplace(warning)
@@ -1852,7 +1964,43 @@ export default function DayNightScreen() {
     }
   }
 
+  // 计划层的差异写回（desktop applyPlannedBlocksDelta）
+  const applyPlannedBlocksDelta = async (fromBlocks: PlannedBlock[], toBlocks: PlannedBlock[]) => {
+    const fromMap = new Map(fromBlocks.map((b) => [b.minute, b.planNodeId]))
+    const toMap = new Map(toBlocks.map((b) => [b.minute, b.planNodeId]))
+    const paintByNode = new Map<number, number[]>()
+    const eraseMinutes: number[] = []
+    for (const [m, fromNode] of fromMap) {
+      const toNode = toMap.get(m)
+      if (toNode === undefined) eraseMinutes.push(m)
+      else if (toNode !== fromNode) paintByNode.set(toNode, [...(paintByNode.get(toNode) ?? []), m])
+    }
+    for (const [m, toNode] of toMap) {
+      if (!fromMap.has(m)) paintByNode.set(toNode, [...(paintByNode.get(toNode) ?? []), m])
+    }
+    if (eraseMinutes.length > 0) await erasePlannedBlocks(selectedDate, eraseMinutes)
+    for (const [nodeId, mins] of paintByNode) {
+      if (mins.length > 0) await paintPlannedBlocks(selectedDate, mins, nodeId)
+    }
+  }
+
+  const stepPlanHistory = (from: readonly PlannedBlock[][], kind: 'undo' | 'redo') => {
+    if (from.length === 0) return
+    const popped = from[from.length - 1]
+    const current = plannedBlocks
+    const pushTo = kind === 'undo' ? setPlanRedoStack : setPlanUndoStack
+    const popFrom = kind === 'undo' ? setPlanUndoStack : setPlanRedoStack
+    pushTo((prev) => [...prev.slice(-(UNDO_LIMIT - 1)), current])
+    popFrom((prev) => prev.slice(0, -1))
+    setPlannedBlocks(popped)
+    applyPlannedBlocksDelta(current, popped).catch((e: any) => {
+      console.warn('[plan undo] 写入失败:', e?.message ?? e)
+      fetchPlannedBlocks(selectedDate).then(setPlannedBlocks).catch(() => {})
+    })
+  }
+
   const handleUndo = () => {
+    if (recordLayer === 'plan') { stepPlanHistory(planUndoStack, 'undo'); return }
     if (undoStack.length === 0) return
     const popped = undoStack[undoStack.length - 1]
     const current = blocks
@@ -1863,6 +2011,7 @@ export default function DayNightScreen() {
   }
 
   const handleRedo = () => {
+    if (recordLayer === 'plan') { stepPlanHistory(planRedoStack, 'redo'); return }
     if (redoStack.length === 0) return
     const popped = redoStack[redoStack.length - 1]
     const current = blocks
@@ -1872,74 +2021,42 @@ export default function DayNightScreen() {
     void applyBlocksDelta(current, popped)
   }
 
-  const hasActivityInRange = (start: number, end: number): boolean => {
-    for (let m = start; m < end; m += 5) {
-      if (blockByMinute.has(m)) return true
+  // 折叠行（1 小时 1 格）放不下框：计划块和浮岛画成格子底部的两条细条，只表示「这一小时里有安排」
+  const renderCompressedPlanMarks = (h: number) => {
+    const from = h * 60
+    const to = from + 60
+    const planBars: { left: number; width: number; color: string }[] = []
+    for (let m = from; m < to;) {
+      const id = plannedByMinute.get(m)
+      if (id == null) { m += 5; continue }
+      let end = m + 5
+      while (end < to && plannedByMinute.get(end) === id) end += 5
+      planBars.push({ left: (m - from) / 60, width: (end - m) / 60, color: planColorOf(id) })
+      m = end
     }
-    return false
-  }
-
-  const hasPlanInRange = (taskId: string, start: number, end: number): boolean =>
-    plannedTasksRef.current.some((task) => {
-      if (task.id === taskId || task.scheduledStartMin == null) return false
-      const taskEnd = task.scheduledStartMin + task.durationMin
-      return start < taskEnd && end > task.scheduledStartMin
+    const islandBars = islandPlacements.flatMap((p) => {
+      if (p.start == null || p.end == null) return []
+      const s = Math.max(p.start, from)
+      const e = Math.min(p.end, to)
+      return e > s ? [{ left: (s - from) / 60, width: (e - s) / 60, color: islandColorOf(p) }] : []
     })
-
-  const findPlanSlot = (task: PlannedTask): number => {
-    const startBase = snapMinute(Math.max(focusStart * 60, isToday ? new Date().getHours() * 60 : 8 * 60))
-    const latest = 23 * 60
-    for (let m = startBase; m <= latest; m += 5) {
-      const end = m + task.durationMin
-      if (end > 1440) break
-      if (!hasActivityInRange(m, end) && !hasPlanInRange(task.id, m, end)) return m
-    }
-    return clamp(startBase, 0, 1440 - task.durationMin)
-  }
-
-  const scheduleTaskAt = (taskId: string, startMin: number | null) => {
-    setPlannedTasks((prev) =>
-      prev.map((task) => {
-        if (task.id !== taskId) return task
-        const start = startMin == null ? findPlanSlot(task) : snapMinute(startMin)
-        return {
-          ...task,
-          scheduledStartMin: clamp(start, 0, 1440 - task.durationMin),
-        }
-      }),
+    if (planBars.length === 0 && islandBars.length === 0) return null
+    return (
+      <View pointerEvents="none" style={styles.compressedMarks}>
+        {islandBars.map((b, i) => (
+          <View
+            key={`i${i}`}
+            style={[styles.compressedIslandBar, { left: `${b.left * 100}%`, width: `${b.width * 100}%`, backgroundColor: alpha(b.color, 0.75) }]}
+          />
+        ))}
+        {planBars.map((b, i) => (
+          <View
+            key={`p${i}`}
+            style={[styles.compressedPlanBar, { left: `${b.left * 100}%`, width: `${b.width * 100}%`, backgroundColor: alpha(b.color, 0.9) }]}
+          />
+        ))}
+      </View>
     )
-  }
-
-  const scheduleTaskFromPoint = (taskId: string, pageX: number, pageY: number) => {
-    const cell = cellFromPagePoint(pageX, pageY)
-    if (cell?.kind === 'full') scheduleTaskAt(taskId, cell.minute)
-    else scheduleTaskAt(taskId, null)
-  }
-
-  const openComposer = (seed = '') => {
-    setComposerTitle(seed)
-    setComposerDuration(25)
-    setComposerStage('quick')
-    setComposerOpen(true)
-  }
-
-  const createInboxTask = () => {
-    const title = composerTitle.trim()
-    if (!title) return
-    const meta = inferPlanMeta(title)
-    setPlannedTasks((prev) => [
-      {
-        id: nextPlanId(),
-        title,
-        icon: meta.icon,
-        color: meta.color,
-        durationMin: composerDuration,
-        scheduledStartMin: null,
-      },
-      ...prev,
-    ])
-    setComposerOpen(false)
-    setPlanOpen(true)
   }
 
   const detailTag = detail ? tagById.get(detail.tagId) : undefined
@@ -2014,76 +2131,114 @@ export default function DayNightScreen() {
           }}
         >
           {!editMode ? (
-            <Pressable onPress={() => setEditMode(true)} style={styles.editFullBtn}>
-              <SlidersGlyph color="#FFF" size={15} />
-              <Text style={styles.editFullText}>编辑昼夜表</Text>
-            </Pressable>
+            <View style={styles.idleRow}>
+              <Pressable onPress={() => setEditMode(true)} style={[styles.editFullBtn, styles.idleEditBtn]}>
+                <SlidersGlyph color="#FFF" size={15} />
+                <Text style={styles.editFullText}>编辑昼夜表</Text>
+              </Pressable>
+              {/* 浮岛与约束、计划安排（desktop 右侧栏的「计划」） */}
+              <Pressable onPress={() => setPlanSheet('islands')} style={styles.planOpenBtn}>
+                <Text style={styles.planOpenText}>计划</Text>
+              </Pressable>
+            </View>
           ) : (
             <View style={styles.editingChips}>
-              {/* 搜索按钮：单独入口，点开后自动 focus 输入框 */}
-              <Pressable
-                onPress={() =>
-                  setPickerMode((m) => (m === 'search' ? null : 'search'))
-                }
-                style={[
-                  styles.iconBtn,
-                  pickerMode === 'search' && styles.iconBtnActive,
-                ]}
-              >
-                <SearchGlyph
-                  color={pickerMode === 'search' ? theme.accent : theme.ink}
-                  size={14}
-                />
-              </Pressable>
-              {/* 当前标签按钮：点开浏览模式（不 focus 输入框，直接看标签云） */}
-              <Pressable
-                onPress={() =>
-                  setPickerMode((m) => (m === 'browse' ? null : 'browse'))
-                }
-                style={[
-                  styles.currentTagBtn,
-                  pickerMode === 'browse' && styles.currentTagBtnActive,
-                ]}
-              >
-                <Text style={styles.currentTagText} numberOfLines={1}>
-                  {selectedTagId != null
-                    ? tagById.get(selectedTagId)?.leafName ?? '选标签'
-                    : '选标签'}
-                </Text>
-                <CaretGlyph
-                  color={theme.inkSoft}
-                  size={9}
-                  direction={pickerMode === 'browse' ? 'up' : 'down'}
-                />
-              </Pressable>
+              {/* 涂哪一层：实际记录 / 计划（desktop DayNightToolbar 的两段切换） */}
+              <View style={styles.layerToggle}>
+                {(['actual', 'plan'] as const).map((layer) => (
+                  <Pressable
+                    key={layer}
+                    onPress={() => {
+                      setRecordLayer(layer)
+                      setPickerMode(null)
+                    }}
+                    style={[styles.layerKey, recordLayer === layer && styles.layerKeyActive]}
+                  >
+                    <Text style={[styles.layerKeyText, recordLayer === layer && styles.layerKeyTextActive]}>
+                      {layer === 'actual' ? '实际' : '计划'}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              {recordLayer === 'actual' ? (
+                <>
+                  {/* 搜索按钮：单独入口，点开后自动 focus 输入框 */}
+                  <Pressable
+                    onPress={() =>
+                      setPickerMode((m) => (m === 'search' ? null : 'search'))
+                    }
+                    style={[
+                      styles.iconBtn,
+                      pickerMode === 'search' && styles.iconBtnActive,
+                    ]}
+                  >
+                    <SearchGlyph
+                      color={pickerMode === 'search' ? theme.accent : theme.ink}
+                      size={14}
+                    />
+                  </Pressable>
+                  {/* 当前标签按钮：点开浏览模式（不 focus 输入框，直接看标签云） */}
+                  <Pressable
+                    onPress={() =>
+                      setPickerMode((m) => (m === 'browse' ? null : 'browse'))
+                    }
+                    style={[
+                      styles.currentTagBtn,
+                      pickerMode === 'browse' && styles.currentTagBtnActive,
+                    ]}
+                  >
+                    <Text style={styles.currentTagText} numberOfLines={1}>
+                      {selectedTagId != null
+                        ? tagById.get(selectedTagId)?.leafName ?? '选标签'
+                        : '选标签'}
+                    </Text>
+                    <CaretGlyph
+                      color={theme.inkSoft}
+                      size={9}
+                      direction={pickerMode === 'browse' ? 'up' : 'down'}
+                    />
+                  </Pressable>
+                </>
+              ) : (
+                /* 计划画笔：当前任务；点开计划安排换一个 */
+                <Pressable onPress={() => setPlanSheet('todo')} style={styles.currentTagBtn}>
+                  {selectedPlanNode ? (
+                    <View style={[styles.planBrushDot, { borderColor: planColorOf(selectedPlanNode.id) }]} />
+                  ) : null}
+                  <Text style={styles.currentTagText} numberOfLines={1}>
+                    {selectedPlanNode?.title ?? '选任务'}
+                  </Text>
+                  <CaretGlyph color={theme.inkSoft} size={9} direction="down" />
+                </Pressable>
+              )}
               <Pressable
                 onPress={handleUndo}
-                disabled={undoStack.length === 0}
+                disabled={activeUndo.length === 0}
                 style={[
                   styles.iconBtn,
                   { marginLeft: 'auto' },
-                  undoStack.length === 0 && styles.iconBtnDisabled,
+                  activeUndo.length === 0 && styles.iconBtnDisabled,
                 ]}
               >
                 <Text
                   style={[
                     styles.iconBtnText,
-                    undoStack.length === 0 && styles.iconBtnTextDisabled,
+                    activeUndo.length === 0 && styles.iconBtnTextDisabled,
                   ]}
                 >↶</Text>
               </Pressable>
               <Pressable
                 onPress={handleRedo}
-                disabled={redoStack.length === 0}
+                disabled={activeRedo.length === 0}
                 style={[
                   styles.iconBtn,
-                  redoStack.length === 0 && styles.iconBtnDisabled,
+                  activeRedo.length === 0 && styles.iconBtnDisabled,
                 ]}
               >
                 <Text
                   style={[
                     styles.iconBtnText,
-                    redoStack.length === 0 && styles.iconBtnTextDisabled,
+                    activeRedo.length === 0 && styles.iconBtnTextDisabled,
                   ]}
                 >↷</Text>
               </Pressable>
@@ -2248,6 +2403,7 @@ export default function DayNightScreen() {
                               )
                             })}
                           </View>
+                          {renderCompressedPlanMarks(h)}
                           {/* 折叠 hour 标记：左上角"N点"，告诉用户每格代表第几小时 */}
                           <Text style={styles.compressedHourMark}>{h}点</Text>
                         </View>
@@ -2272,17 +2428,22 @@ export default function DayNightScreen() {
                 if (last && last.tag === t && last.r === col - 1) last.r = col
                 else runs.push({ l: col, r: col, tag: t })
               }
-              const planRuns = scheduledTasks
-                .filter((task): task is PlannedTask & { scheduledStartMin: number } => {
-                  if (task.scheduledStartMin == null) return false
-                  return task.scheduledStartMin < rowStart + rowMinutes
-                    && task.scheduledStartMin + task.durationMin > rowStart
-                })
-                .map((task) => {
-                  const start = Math.max(task.scheduledStartMin, rowStart)
-                  const end = Math.min(task.scheduledStartMin + task.durationMin, rowStart + rowMinutes)
-                  return { task, start, end }
-                })
+              // 计划块：同一任务连着的格子合成一段，画虚线框（desktop drawPlanOutlines）
+              const planRowRuns: { l: number; r: number; nodeId: number }[] = []
+              for (let col = 0; col < rowCols; col++) {
+                const id = plannedByMinute.get(rowStart + col * 5)
+                if (id == null) continue
+                const last = planRowRuns[planRowRuns.length - 1]
+                if (last && last.nodeId === id && last.r === col - 1) last.r = col
+                else planRowRuns.push({ l: col, r: col, nodeId: id })
+              }
+              // 浮岛与约束落在这一行的部分（desktop drawIslands）
+              const islandSegs = islandPlacements.flatMap((p) => {
+                if (p.start == null || p.end == null || p.end <= p.start) return []
+                const s = Math.max(p.start, rowStart)
+                const e = Math.min(p.end, rowStart + rowMinutes)
+                return e > s ? [{ p, s, e, isFirst: s === p.start }] : []
+              })
               return (
                 <View key={i} style={[styles.cellRow, { backgroundColor: alpha(period.accent, 0.04) }]}>
                   {Array.from({ length: rowCols }, (_, col) => (
@@ -2348,6 +2509,105 @@ export default function DayNightScreen() {
                       </View>
                     )
                   })}
+                  {planRowRuns.map((run) => {
+                    const color = planColorOf(run.nodeId)
+                    const active = recordLayer === 'plan'
+                    // 上一行末尾是同一任务 = 换行延续，标题只在开头那段写
+                    const continues = run.l === 0 && plannedByMinute.get(rowStart - 5) === run.nodeId
+                    const showLabel = !continues && (active || !blockByMinute.has(rowStart + run.l * 5))
+                    return (
+                      <View
+                        key={`p${run.l}`}
+                        pointerEvents="none"
+                        style={[
+                          styles.planRunWrap,
+                          {
+                            left: `${(run.l / rowCols) * 100}%`,
+                            width: `${((run.r - run.l + 1) / rowCols) * 100}%`,
+                          },
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.planRun,
+                            {
+                              borderColor: alpha(color, active ? 0.95 : 0.7),
+                              backgroundColor: alpha(color, active ? 0.14 : 0.07),
+                              borderWidth: active ? 1.5 : 1.2,
+                            },
+                          ]}
+                        >
+                          {showLabel ? (
+                            <Text numberOfLines={1} style={[styles.planLabel, { color }]}>
+                              {planNodeById.get(run.nodeId)?.title ?? '计划'}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    )
+                  })}
+                  {islandSegs.map(({ p, s, e, isFirst }) => {
+                    const color = islandColorOf(p)
+                    const fixed = p.island.rule.kind === 'fixed'
+                    const estimated = p.basis === 'estimated'
+                    const strength = p.status === 'active' ? 1 : p.status === 'done' ? 0.5
+                      : p.status === 'missed' ? 0.6 : estimated ? 0.65 : 0.85
+                    const label = `${p.status === 'done' ? '✓ ' : estimated ? '≈ ' : ''}${p.island.rule.name}`
+                    const hatchId = `hatch-${p.island.id}-${rowStart}`
+                    return (
+                      <View
+                        key={`i${p.island.id}`}
+                        pointerEvents="none"
+                        style={[
+                          styles.islandWrap,
+                          {
+                            left: `${((s - rowStart) / rowMinutes) * 100}%`,
+                            width: `${((e - s) / rowMinutes) * 100}%`,
+                          },
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.islandBox,
+                            {
+                              // 浮岛圆角、约束直角；位置是估的画虚线
+                              borderRadius: fixed ? 2 : R_ISLAND,
+                              borderColor: alpha(color, 0.95 * strength),
+                              borderStyle: estimated ? 'dashed' : 'solid',
+                              borderWidth: p.status === 'active' ? 1.6 : 1.1,
+                              backgroundColor: alpha(color, (p.status === 'active' ? 0.18 : 0.08) * strength),
+                            },
+                          ]}
+                        >
+                          {fixed ? (
+                            // 约束：钉在钟点上，加斜纹（desktop 同样）
+                            <Svg style={StyleSheet.absoluteFill}>
+                              <Defs>
+                                <Pattern
+                                  id={hatchId}
+                                  width={ISLAND_HATCH_STEP}
+                                  height={ISLAND_HATCH_STEP}
+                                  patternUnits="userSpaceOnUse"
+                                  patternTransform="rotate(45)"
+                                >
+                                  <Line x1="0" y1="0" x2="0" y2={ISLAND_HATCH_STEP} stroke={alpha(color, 0.22 * strength)} strokeWidth="1" />
+                                </Pattern>
+                              </Defs>
+                              <Rect width="100%" height="100%" fill={`url(#${hatchId})`} />
+                            </Svg>
+                          ) : null}
+                          {isFirst ? (
+                            <Text
+                              numberOfLines={1}
+                              style={[styles.islandLabel, { color: alpha(color, Math.min(1, strength + 0.15)) }]}
+                            >
+                              {label}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    )
+                  })}
                   {/* 当前时间游标：锤子型，chip 紧贴色块上沿 + I 形 cap，
                       位置按秒级精度 = (nowMin - rowStart) + sec/60，占行宽比例
                       仅 isToday + nowMinute 落在本 row 内才画；不响应手势 */}
@@ -2393,6 +2653,38 @@ export default function DayNightScreen() {
         </View>
       )}
 
+
+      {/* 浮岛与约束 / 计划安排（desktop 昼夜表右侧栏的「计划」） */}
+      <PlanSheet
+        visible={planSheet != null}
+        initialPage={planSheet ?? 'islands'}
+        onClose={() => setPlanSheet(null)}
+        selectedDate={selectedDate}
+        palette={palette ?? EMPTY_PALETTE}
+        islands={islands}
+        placements={islandPlacements}
+        islandsError={islandsError}
+        onIslandsChanged={reloadIslands}
+        planNodes={projectPlanNodes}
+        selectedProjectTagId={selectedProjectTagId}
+        selectedPlanNodeId={selectedPlanNodeId}
+        onSelectProject={setSelectedProjectTagId}
+        onSelectNode={setSelectedPlanNodeId}
+        onPickNode={(id) => {
+          // 点了任务卡片 = 要拿它去涂计划：直接进计划层的编辑
+          setSelectedPlanNodeId(id)
+          setRecordLayer('plan')
+          setEditMode(true)
+          setPickerMode(null)
+        }}
+        onNodesChange={() => refreshPlanNodes()}
+        onPlanBlocksMayChange={() => {
+          // 删任务会连带软删它的计划块：重读，旧快照不能再撤回（AUDIT-022，同 desktop）
+          fetchPlannedBlocks(selectedDate).then(setPlannedBlocks).catch(() => {})
+          setPlanUndoStack([])
+          setPlanRedoStack([])
+        }}
+      />
 
       {/* 时段详情 */}
       <Modal visible={!!detail} transparent animationType="fade" onRequestClose={() => setDetail(null)}>
@@ -3622,6 +3914,131 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: 'rgba(0,0,0,0.5)',
     fontWeight: '500',
+  },
+  // —— 计划层：计划块虚线框、浮岛 / 约束框、折叠行细条 ——
+  planRunWrap: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    paddingVertical: PLAN_INSET,
+    paddingHorizontal: PLAN_INSET,
+  },
+  planRun: {
+    flex: 1,
+    borderRadius: R_PLAN,
+    borderStyle: 'dashed',
+    overflow: 'hidden',
+    alignItems: 'flex-start',
+    justifyContent: 'flex-start',
+  },
+  // 标签贴左上角，白底小条：底下压着实际色块时也看得清（浮岛标签在右上角，互不挡）
+  planLabel: {
+    marginTop: 2,
+    marginLeft: 3,
+    maxWidth: '92%',
+    paddingHorizontal: 3,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.86)',
+    fontSize: 9,
+    fontWeight: '700',
+    includeFontPadding: false,
+  },
+  islandWrap: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    padding: ISLAND_INSET,
+  },
+  islandBox: {
+    flex: 1,
+    overflow: 'hidden',
+    alignItems: 'flex-end',
+    justifyContent: 'flex-start',
+  },
+  islandLabel: {
+    marginTop: 2,
+    marginRight: 3,
+    maxWidth: '92%',
+    paddingHorizontal: 3,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.86)',
+    fontSize: 9,
+    fontWeight: '700',
+    includeFontPadding: false,
+  },
+  compressedMarks: {
+    position: 'absolute',
+    left: GAP / 2 + 2,
+    right: GAP / 2 + 2,
+    bottom: GAP / 2 + 2,
+    height: 6,
+  },
+  compressedIslandBar: {
+    position: 'absolute',
+    top: 0,
+    height: 2.5,
+    borderRadius: 1.25,
+  },
+  compressedPlanBar: {
+    position: 'absolute',
+    bottom: 0,
+    height: 2.5,
+    borderRadius: 1.25,
+  },
+  // 非编辑时：编辑按钮占满，右边一个「计划」次级按钮
+  idleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  idleEditBtn: {
+    flex: 1,
+  },
+  planOpenBtn: {
+    height: 42,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.surface,
+    borderWidth: 1,
+    borderColor: theme.line,
+  },
+  planOpenText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: theme.ink,
+    letterSpacing: 0.6,
+  },
+  // 实际 / 计划 两段切换
+  layerToggle: {
+    flexDirection: 'row',
+    padding: 2,
+    borderRadius: 14,
+    backgroundColor: alpha(theme.ink, 0.08),
+  },
+  layerKey: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+  },
+  layerKeyActive: {
+    backgroundColor: theme.surface,
+  },
+  layerKeyText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: theme.inkSoft,
+  },
+  layerKeyTextActive: {
+    color: theme.ink,
+  },
+  planBrushDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 3,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
   },
   // —— 顶部操作槽位：固定高度，idle = 整行居中编辑按钮，editing = 横排小按钮 ——
   actionSlot: {

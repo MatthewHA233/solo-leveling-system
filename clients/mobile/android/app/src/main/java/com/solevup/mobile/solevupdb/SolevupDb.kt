@@ -49,6 +49,7 @@ class SolevupDb(context: Context) :
     // 已装设备的昼夜表数据。新表一律幂等 IF NOT EXISTS 在每次打开时补建。
     ensureModelTables(db)
     ensureChatTables(db)
+    ensureIslandTables(db)
     db.execSQL(
       "CREATE TABLE IF NOT EXISTS synced_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);"
     )
@@ -66,6 +67,7 @@ class SolevupDb(context: Context) :
       if (rev < 1) applyRevision1(db)
       if (rev < 2) applyRevision2(db)
       if (rev < 3) applyRevision3(db)
+      if (rev < 4) applyRevision4(db)
       db.execSQL(
         "INSERT OR REPLACE INTO sync_meta (key, value, updated_at) VALUES ('schema_rev', ?, ?)",
         arrayOf(SCHEMA_REV.toString(), nowIso()),
@@ -74,6 +76,14 @@ class SolevupDb(context: Context) :
     } finally {
       db.endTransaction()
     }
+  }
+
+  private fun applyRevision4(db: SQLiteDatabase) {
+    // 计划任务的截止日期、优先级、备注、完成时间（desktop plan_nodes 同样四列）。以前手机端不能改计划，这四列只存在电脑上
+    addColumnIfMissing(db, "plan_nodes", "due_date", "due_date TEXT")
+    addColumnIfMissing(db, "plan_nodes", "priority", "priority INTEGER NOT NULL DEFAULT 0")
+    addColumnIfMissing(db, "plan_nodes", "note", "note TEXT")
+    addColumnIfMissing(db, "plan_nodes", "completed_at", "completed_at TEXT")
   }
 
   private fun applyRevision3(db: SQLiteDatabase) {
@@ -935,6 +945,12 @@ class SolevupDb(context: Context) :
     val syncId: String, val projectTagSyncId: String,
     val parentSyncId: String?, val title: String, val status: String, val sortOrder: Int,
     val createdAt: String, val updatedAt: String, val deletedAt: String?,
+    /** 截止日期、优先级、备注、完成时间。旧版对端不带：导入时没有就不动本地这几列（desktop SyncPlanNode.detail） */
+    val detail: SyncPlanNodeDetail? = null,
+  )
+
+  data class SyncPlanNodeDetail(
+    val dueDate: String?, val priority: Int, val note: String?, val completedAt: String?,
   )
 
   data class SyncPlannedBlockRow(
@@ -1014,6 +1030,9 @@ class SolevupDb(context: Context) :
     val featureBindings: List<SyncFeatureBindingRow> = emptyList(),
     val modelRegistry: List<SyncModelDefRow> = emptyList(),
     val settings: List<SyncSettingRow> = emptyList(),
+    /** 昼夜表的浮岛与约束（规则见 PlanStore.kt 文件头） */
+    val planIslands: List<SyncIslandRow> = emptyList(),
+    val planIslandChecks: List<SyncIslandCheckRow> = emptyList(),
   )
 
   data class SyncSettingRow(val key: String, val value: String, val updatedAt: String)
@@ -1093,7 +1112,8 @@ class SolevupDb(context: Context) :
     db.rawQuery(
       """SELECT n.sync_id, t.sync_id, p.sync_id,
                 n.title, n.status, n.sort_order,
-                n.created_at, n.updated_at, n.deleted_at
+                n.created_at, n.updated_at, n.deleted_at,
+                n.due_date, n.priority, n.note, n.completed_at
          FROM plan_nodes n
          JOIN activity_tags t ON t.id = n.project_tag_id
          LEFT JOIN plan_nodes p ON p.id = n.parent_id
@@ -1107,6 +1127,7 @@ class SolevupDb(context: Context) :
           c.getString(0), c.getString(1), c.getString(2),
           c.getString(3), c.getString(4), c.getInt(5),
           c.getString(6), u, d,
+          SyncPlanNodeDetail(c.getString(9), if (c.isNull(10)) 0 else c.getInt(10), c.getString(11), c.getString(12)),
         ))
       }
     }
@@ -1210,6 +1231,8 @@ class SolevupDb(context: Context) :
       }
     }
 
+    val islands = IslandSync.exportRows(db, since)
+
     return SyncExport(
       deviceId = devId,
       exportedAt = exportedAt,
@@ -1226,6 +1249,8 @@ class SolevupDb(context: Context) :
       settings = listSyncedSettings(),
       // 和 desktop 一样只在全量导出时带模型库，含删除标记的行
       modelRegistry = if (since == null) listModelCatalog(includeDeleted = true) else emptyList(),
+      planIslands = islands.first,
+      planIslandChecks = islands.second,
     )
   }
 
@@ -1281,12 +1306,15 @@ class SolevupDb(context: Context) :
     val modelRegistry: Int = 0,
     val settings: Int = 0,
     val chatImages: Int = 0, // 这一轮拉到的聊天图片文件（不进数据库）
+    val planIslands: Int = 0,
+    val planIslandChecks: Int = 0,
     val skipped: Int = 0,
   ) {
     val hasChanges: Boolean
       get() = activityCategories + activityTags + activityBlocks + planNodes + plannedBlocks +
         modelApiKeys + modelCallLog + modelFreeQuota + featureBindings +
-        chatSessions + chatMessages + modelRegistry + settings + chatImages > 0
+        chatSessions + chatMessages + modelRegistry + settings + chatImages +
+        planIslands + planIslandChecks > 0
   }
 
   fun importSync(payload: SyncExport): ImportResult {
@@ -1403,6 +1431,14 @@ class SolevupDb(context: Context) :
           arrayOf(row.syncId, projectTagId, parentId, row.title, row.status, row.sortOrder,
                   row.createdAt, row.updatedAt, row.deletedAt),
         )
+        // 旧版对端不带 detail：不动本地的截止日期、优先级、备注、完成时间
+        row.detail?.let { dt ->
+          val due = dt.dueDate?.trim()?.takeIf { runCatching { java.time.LocalDate.parse(it) }.isSuccess }
+          db.execSQL(
+            "UPDATE plan_nodes SET due_date = ?, priority = ?, note = ?, completed_at = ? WHERE sync_id = ?",
+            arrayOf(due, dt.priority.coerceIn(0, 3), dt.note, dt.completedAt, row.syncId),
+          )
+        }
         pNodes++
       }
       for ((syncId, parentSyncId) in unresolvedParents) {
@@ -1600,6 +1636,10 @@ class SolevupDb(context: Context) :
         mSettings++
       }
 
+      val (mIslands, mIslandChecks, islandSkipped) =
+        IslandSync.importRows(db, payload.planIslands, payload.planIslandChecks)
+      skipped += islandSkipped
+
       db.setTransactionSuccessful()
       return ImportResult(
         activityCategories = cats, activityTags = tags, activityBlocks = blocks,
@@ -1607,6 +1647,7 @@ class SolevupDb(context: Context) :
         modelApiKeys = mKeys, modelCallLog = mLog, modelFreeQuota = mQuota, featureBindings = mBindings,
         modelRegistry = mRegistry,
         settings = mSettings,
+        planIslands = mIslands, planIslandChecks = mIslandChecks,
         skipped = skipped,
       )
     } finally {
@@ -3044,7 +3085,7 @@ class SolevupDb(context: Context) :
     private const val DB_NAME = "solevup.db"
     private val LEGACY_DB_NAMES = listOf("solo.db")
     private const val DB_VERSION = 1
-    private const val SCHEMA_REV = 3
+    private const val SCHEMA_REV = 4
     private const val CHAT_PAGE_ROWS = 500
     private const val CHAT_MESSAGE_COLUMNS =
       "id, role, content, timestamp, audio_path, duration_ms, usage_json, reasoning, tool_calls, tool_call_id, name"
