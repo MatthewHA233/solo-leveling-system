@@ -1468,6 +1468,7 @@ impl Database {
         crate::protocol::init_protocol_tables(&conn)?;
         crate::protocol_genesis::init_genesis_tables(&conn)?;
         crate::islands::init_island_tables(&conn)?;
+        crate::sync_engine::init_cursor_tables(&conn)?;
         crate::jev::init_jev_tables(&conn)?;
         crate::network::init_network_tables(&conn)?;
 
@@ -2294,6 +2295,9 @@ impl Database {
                alias=excluded.alias, last_base=excluded.last_base, auth_token=excluded.auth_token",
             params![&device_id, &alias, &last_base, &now, &auth_token],
         ).map_err(|e| e.to_string())?;
+        // 重新配对（对端可能重装过、数据清空了）：游标作废，下一轮整份传
+        conn.execute("DELETE FROM sync_cursors WHERE device_id = ?", params![&device_id])
+            .map_err(|e| e.to_string())?;
         let created_at: String = conn.query_row(
             "SELECT created_at FROM linked_devices WHERE device_id = ?",
             params![&device_id],
@@ -2310,6 +2314,9 @@ impl Database {
     pub async fn remove_linked_device(&self, device_id: &str) -> Result<(), String> {
         let conn = self.conn.lock().await;
         conn.execute("DELETE FROM linked_devices WHERE device_id = ?", params![device_id])
+            .map_err(|e| e.to_string())?;
+        // 游标跟着作废：以后再配对要整份传一次
+        conn.execute("DELETE FROM sync_cursors WHERE device_id = ?", params![device_id])
             .map_err(|e| e.to_string())?;
         Ok(())
     }

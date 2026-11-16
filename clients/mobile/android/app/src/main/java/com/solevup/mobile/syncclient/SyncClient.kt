@@ -15,11 +15,16 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Mobile 主动 HTTP client，跟 desktop sync_engine.rs bidirectional_sync 同形态：
- *   1) GET <peerBase>/api/sync/export  → 拉对端 export
+ *   1) GET <peerBase>/api/sync/export[?since=]  → 拉对端 export
  *   2) 本地 importSync()                → LWW 合并
- *   3) 本地 exportSync()                → 本端快照
+ *   3) 本地 exportSync(since)           → 本端快照
  *   4) POST <peerBase>/api/sync/import  → 推给对端
  *   5) /api/sync/chat                   → 聊天记录按序号增量分页；失败不影响前面的结果
+ *
+ * 只传变过的（规则见 desktop sync_engine.rs 文件头，两端一致，改要一起改）：
+ *   每台对端存一对游标，一轮只拉、只推游标之后变过的，各往回多带 ROUND_OVERLAP_S；
+ *   没有游标时整份传一次，之后每 FULL_ROUND_EVERY_MS 在后台整份对一次。
+ *   本机一有写入，pushChanges 把 push 游标之后的变化直接推给对端的 import。
  *
  * 不依赖 OkHttp，纯 java.net.HttpURLConnection 加 UTF-8 编解码。对端都在局域网，不走系统代理（对齐 desktop no_proxy）。
  * 任意 step 失败抛 SyncException，调用方负责打日志或记录到 linked_devices。
@@ -35,6 +40,20 @@ object SyncClient {
   private const val CHAT_IMAGE_BATCH = 32
   private const val CHAT_IMAGE_RETRY_MS = 600_000L // 对端也没有的图片（可能是第三台设备发的），隔这么久再问
   private const val PAIRING_REJECTED = "对方不认这次配对了，可能已经解除。请解除链接后重新配对"
+  // 增量的一轮往回多带这么久：盖住 UTC 存的那几张表和本地时间游标之间的时区差（最大 ±14 小时）
+  private const val ROUND_OVERLAP_S = 26L * 3600L
+  // 写入后直推往回多带这么久：盖住同一秒内的写入
+  private const val PUSH_OVERLAP_S = 5L
+  private const val FULL_ROUND_EVERY_MS = 24L * 3600L * 1000L
+  private const val PUSH_TIMEOUT_MS = 5_000
+
+  /** 一轮同步能不能整份传 */
+  enum class RoundMode {
+    /** 有游标就只传变过的（启动、回前台、手动） */
+    FAST,
+    /** 到了该整份对一次的时候就整份传（后台的发现和定时任务） */
+    ALLOW_FULL,
+  }
 
   data class SyncRoundResult(
     val pulled: SolevupDb.ImportResult,
@@ -98,12 +117,18 @@ object SyncClient {
    * 完整双向同步。对端 base 形如 "http://192.168.0.104:39733"。
    * 调用前先过 verifyPeer。失败任意一步立刻抛错并带上下文。
    */
-  fun bidirectionalSync(db: SolevupDb, peerBase: String, token: String): SyncRoundResult {
+  fun bidirectionalSync(db: SolevupDb, peerBase: String, token: String, deviceId: String, mode: RoundMode): SyncRoundResult {
     val base = SyncProtocol.normalizeBase(peerBase)
-    Log.i(TAG, "bidirectionalSync start: $base")
+
+    // 这一轮传多少：两个游标都在、也没轮到整份对，就只传游标之后变过的
+    val cursor = db.syncCursor(deviceId)
+    val since = if (mode == RoundMode.ALLOW_FULL && fullRoundDue(cursor)) null else roundSince(cursor)
+    Log.i(TAG, "bidirectionalSync start: $base (${if (since == null) "full" else "since ${since.first}"})")
 
     // 1) pull 对端 export
-    val remoteEnvelope = httpGetJson("$base/api/sync/export", token)
+    val exportUrl = since?.let { "$base/api/sync/export?since=${URLEncoder.encode(it.first, "UTF-8")}" }
+      ?: "$base/api/sync/export"
+    val remoteEnvelope = httpGetJson(exportUrl, token)
       ?: throw SyncException("拉取对端 export 失败: 空响应")
     if (!remoteEnvelope.optBoolean("success")) {
       throw SyncException("对端 export 错误: ${remoteEnvelope.optString("error", "unknown")}")
@@ -119,7 +144,7 @@ object SyncClient {
     Log.i(TAG, "pulled: $pulled")
 
     // 3) 本地 export
-    val localSnapshot = db.exportSync(null)
+    val localSnapshot = db.exportSync(since?.second)
 
     // 4) push 对端 import
     val pushEnvelope = httpPostJson("$base/api/sync/import", SyncJson.exportToJson(localSnapshot), token)
@@ -129,6 +154,14 @@ object SyncClient {
     }
     val pushed = SyncJson.jsonToImportResult(pushEnvelope.optJSONObject("data") ?: JSONObject())
     Log.i(TAG, "pushed: $pushed")
+
+    // 两个方向都成功了才挪游标。对端的 exported_at 读不懂（不是约定的本地时间格式）就不记，下一轮整份拉
+    db.saveSyncCursor(
+      deviceId,
+      SolevupDb.cursorBack(remoteSnapshot.exportedAt, 0),
+      localSnapshot.exportedAt,
+      if (since == null) SolevupDb.nowIso() else null,
+    )
 
     // 5) 聊天记录走独立通道
     val (chatPulled, chatPushed) = syncChat(db, base, peerDeviceId, token)
@@ -141,6 +174,36 @@ object SyncClient {
       peerDeviceId,
       peerAlias,
     )
+  }
+
+  /** 拉和推各从哪个时刻起；任何一个游标没有或读不懂 = null（整份传） */
+  private fun roundSince(cursor: SolevupDb.SyncCursor): Pair<String, String>? {
+    val pull = cursor.pull?.let { SolevupDb.cursorBack(it, ROUND_OVERLAP_S) } ?: return null
+    val push = cursor.push?.let { SolevupDb.cursorBack(it, ROUND_OVERLAP_S) } ?: return null
+    return pull to push
+  }
+
+  private fun fullRoundDue(cursor: SolevupDb.SyncCursor): Boolean {
+    val at = cursor.fullAt?.let { SolevupDb.cursorMillis(it) } ?: return true
+    return System.currentTimeMillis() - at >= FULL_ROUND_EVERY_MS
+  }
+
+  /**
+   * 本机刚有写入：把 push 游标之后的变化推给对端的 import，不拉。
+   * 返回对端的导入结果；还没整份同步过（没有游标）返回 null，留给下一轮。
+   * 地址用上次校验过的 lastBase，所以不再过 verifyPeer。
+   */
+  fun pushChanges(db: SolevupDb, peerBase: String, token: String, deviceId: String): SolevupDb.ImportResult? {
+    val since = db.syncCursor(deviceId).push?.let { SolevupDb.cursorBack(it, PUSH_OVERLAP_S) } ?: return null
+    val snapshot = db.exportSync(since)
+    val url = "${SyncProtocol.normalizeBase(peerBase)}/api/sync/import"
+    val envelope = httpPostJson(url, SyncJson.exportToJson(snapshot), token, PUSH_TIMEOUT_MS)
+      ?: throw SyncException("推送失败: 空响应")
+    if (!envelope.optBoolean("success")) {
+      throw SyncException("对端 import 错误: ${envelope.optString("error", "unknown")}")
+    }
+    db.saveSyncCursor(deviceId, null, snapshot.exportedAt, null)
+    return SyncJson.jsonToImportResult(envelope.optJSONObject("data") ?: JSONObject())
   }
 
   /** 消息引用了、本机没有文件的图片，从这台对端拉（规则见 src/lib/agent/chat-images.ts） */
@@ -295,12 +358,12 @@ object SyncClient {
     }
   }
 
-  private fun httpPostJson(url: String, payload: JSONObject, token: String?): JSONObject? {
+  private fun httpPostJson(url: String, payload: JSONObject, token: String?, timeoutMs: Int? = null): JSONObject? {
     val bodyBytes = payload.toString().toByteArray(Charsets.UTF_8)
     val conn = (URL(url).openConnection(Proxy.NO_PROXY) as HttpURLConnection).apply {
       requestMethod = "POST"
-      connectTimeout = CONNECT_TIMEOUT_MS
-      readTimeout = READ_TIMEOUT_MS
+      connectTimeout = timeoutMs ?: CONNECT_TIMEOUT_MS
+      readTimeout = timeoutMs ?: READ_TIMEOUT_MS
       doOutput = true
       setRequestProperty("Accept", "application/json")
       setRequestProperty("Content-Type", "application/json; charset=UTF-8")

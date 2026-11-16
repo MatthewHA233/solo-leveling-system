@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * 进程存活靠常驻前台服务 SyncService（通知栏一条低优先级通知），WorkManager 15 分钟兜底。
  * 不在前台时广播带 sync_after_s，两端都放慢到 5 分钟一轮；回到前台立刻同步。
+ * 改动不等整轮：本机一有写入就直推给对端（notifyLocalChange），整轮只传游标之后变过的。
  */
 object SyncRuntime : SyncCoordinator.Listener {
   interface EventSink {
@@ -75,6 +76,11 @@ object SyncRuntime : SyncCoordinator.Listener {
     appContext = application.applicationContext
     application.registerActivityLifecycleCallbacks(foregroundTracker)
     scheduler.execute { bootstrap() }
+  }
+
+  /** 本机的同步数据刚被改过（数据库模块写入成功后调）。运行时还没起来就不管，启动那一轮会带上 */
+  fun notifyLocalChange() {
+    if (started.get() && ::appContext.isInitialized) coordinator.notifyLocalChange()
   }
 
   /** RN 模块注册；reload 后新模块实例会覆盖旧的。 */

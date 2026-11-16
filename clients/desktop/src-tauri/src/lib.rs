@@ -1904,6 +1904,9 @@ pub fn run() {
                     api::start_server(db_for_api, bili_clone, bailian_clone, bili_dl_clone, app_handle_for_api, 39733).await;
                 });
 
+                // 昼夜表一有写入就把变化推给已链接设备
+                sync_engine::spawn_change_pusher(db_clone.clone());
+
                 // 启动后台同步：等 HTTP server 起来 + 多播广播完成，再扫一遍已链接设备
                 let db_for_startup_sync = db_clone.clone();
                 tauri::async_runtime::spawn(async move {

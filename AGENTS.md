@@ -403,6 +403,8 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 - 后台放慢：一轮要双向传整份数据，手机不在前台时广播带 `sync_after_s=300`，两端都按 5 分钟一轮；回到前台立刻同步。规则两端各有一份（`SyncRuntime.kt`、`sync_engine.rs maybe_sync_on_discover`），改规则要同时改两端。
 
 - 配对：一边显示 6 位配对码（5 分钟有效、用一次就失效、错 5 次作废），另一边用它调 `POST /api/sync/pair` 换长期令牌，两边都存进 `linked_devices.auth_token`。之后的请求带 `Authorization: Bearer`，发现到的新地址要通过挑战应答才用。只有 `hello`、`pair`（手机端还有 `ping`）不要令牌。流量仍是明文 HTTP。规则两端各有一份（`sync_auth.rs`、`SyncPairing.kt`），改规则要同时改两端。
+- 只传变过的：每台对端存一对游标（桌面端表 `sync_cursors`，手机端存在 `sync_meta` 里），记上次拉到、推到哪个时刻。一轮只拉 `export?since=` 游标之后的、只推游标之后的，各往回多带 26 小时（有几张表存 UTC 时间，和本地时间的游标按字符串比会差出时区）；没有游标或重新配对后整份传一次，之后每 24 小时在后台整份对一次，不在刚启动的 10 分钟内做。协议没改，`export(since)` 和 `import` 本来就支持。规则两端各有一份（`sync_engine.rs` 文件头有完整说明、`SyncClient.kt` + `SyncCoordinator.kt`），改规则要同时改两端。
+- 写入后直推：会同步的数据一写成功，攒 300 毫秒，把推游标之后的变化直接 POST 给对端的 `import`，不拉、不发界面事件；对端不在线就 30 秒后再试，期间的变化下次一起带。桌面端在 API 层挂了一层（`api.rs notify_daynight_change`，管 `/api/activities/*`、`/api/plans/*`、`/api/sync/settings`；Key 和模型绑定走 Tauri 命令，不经过这层，等整轮带）；手机端在 `SolevupDbModule.kt` 各个写入方法里调 `SyncRuntime.notifyLocalChange()`，新加会同步的写入方法要补一行。发现触发的整轮只是兜底，两端都是一分钟冷却。
 - 全量 `/api/sync/{hello,export,import}`：活动数据、Key、模型用量，按 LWW 合并。Fish Key 也在 Key 库里（`provider='fish'`、`id='fish-audio'`）。
 - Key 启用：每个提供商一把。没有启用的就启用最近更新的一把，不改 `updated_at`，打开数据库和同步导入后都检查。规则两端各有一份（`db.rs ensure_provider_active_keys`、`SolevupDb.kt ensureProviderActiveKeys`），改规则要同时改两端。
 - 设置：表 `synced_settings`，跟着全量同步，按 `updated_at` 取新。现在只有 Fish 音色和模型，其他配置每台设备各管各的。手动改才写表，同步进来的只更新配置，不写回。规则两端各有一份（两端 `lib/agent/synced-settings.ts`、`db.rs SYNCED_SETTING_KEYS`、`SolevupDb.kt SYNCED_SETTING_KEYS`），改规则要同时改两端。

@@ -5,10 +5,13 @@ import com.solevup.mobile.solevupdb.SolevupDb
 import com.solevup.mobile.syncclient.SyncClient
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 所有同步触发的唯一入口（启动 / 发现 / 网络恢复 / 回前台 / WorkManager / 手动），
- * 语义对应 desktop sync_engine.rs：设备去重 + 冷却，避免多个触发源并发跑全量 export。
+ * 所有同步触发的唯一入口（启动 / 发现 / 网络恢复 / 回前台 / WorkManager / 手动 / 本机写入），
+ * 语义对应 desktop sync_engine.rs：设备去重 + 冷却，避免多个触发源并发跑。
+ * 一轮只传游标之后变过的；本机一有写入就把变化直接推给对端（notifyLocalChange）。
  */
 class SyncCoordinator(
   private val db: SolevupDb,
@@ -36,7 +39,7 @@ class SyncCoordinator(
     val syncError: String?,
   )
 
-  // 一轮是全量 export + import，同一时刻只跑一轮
+  // 同一时刻只跑一轮
   private val roundLock = Any()
   private val queued = ConcurrentHashMap.newKeySet<String>()
   private val syncing = ConcurrentHashMap.newKeySet<String>()
@@ -45,6 +48,14 @@ class SyncCoordinator(
   private val background = Executors.newSingleThreadExecutor { r ->
     Thread(r, "solevup-sync-background").apply { isDaemon = true }
   }
+  private val createdAt = System.currentTimeMillis()
+
+  // 本机写入后的直推：单独一条线程，不排在整轮后面
+  private val pusher = Executors.newSingleThreadScheduledExecutor { r ->
+    Thread(r, "solevup-sync-push").apply { isDaemon = true }
+  }
+  private val pushPending = AtomicBoolean(false)
+  private val pushFailedAt = ConcurrentHashMap<String, Long>()
 
   fun isSyncing(deviceId: String): Boolean = syncing.contains(deviceId)
 
@@ -64,7 +75,7 @@ class SyncCoordinator(
         val hello = SyncClient.verifyPeer(base, db.deviceId(), deviceId, token)
         // 对方可能改过名。校验通过才信
         hello.optString("alias").takeIf { it.isNotBlank() && it != alias }?.let { db.updateLinkAlias(deviceId, it) }
-        val r = SyncClient.bidirectionalSync(db, base, token)
+        val r = SyncClient.bidirectionalSync(db, base, token, deviceId, roundMode(source))
         db.touchLinkSynced(deviceId, SyncProtocol.normalizeBase(base))
         lastSuccessAt[deviceId] = System.currentTimeMillis()
         lastErrors.remove(deviceId)
@@ -86,6 +97,48 @@ class SyncCoordinator(
 
   private fun linkAlias(deviceId: String): String =
     db.listLinkedDevices().find { it.deviceId == deviceId }?.alias ?: deviceId
+
+  // 整份的一轮要十几秒：只在后台触发的那几种里做，且不在刚启动时
+  private fun roundMode(source: String): SyncClient.RoundMode =
+    if (source in FULL_ROUND_SOURCES && System.currentTimeMillis() - createdAt >= FULL_ROUND_MIN_UPTIME_MS) {
+      SyncClient.RoundMode.ALLOW_FULL
+    } else {
+      SyncClient.RoundMode.FAST
+    }
+
+  /** 本机的同步数据刚被改过：攒一小会儿（一次拖刷会连着写好几下），把变化推给各台已链接设备。 */
+  fun notifyLocalChange() {
+    if (!pushPending.compareAndSet(false, true)) return
+    pusher.schedule({ flushLocalChanges() }, PUSH_DEBOUNCE_MS, TimeUnit.MILLISECONDS)
+  }
+
+  private fun flushLocalChanges() {
+    pushPending.set(false)
+    val links = try {
+      db.listLinkedDevices()
+    } catch (t: Throwable) {
+      Log.w(TAG, "push: list links failed: ${t.message}")
+      return
+    }
+    for (link in links) {
+      val failedAt = pushFailedAt[link.deviceId]
+      if (failedAt != null && System.currentTimeMillis() - failedAt < PUSH_RETRY_AFTER_MS) continue
+      // 整轮正在跑：它导出本机数据的时刻可能早于这次写入，等它跑完再推
+      if (syncing.contains(link.deviceId)) {
+        pusher.schedule({ notifyLocalChange() }, PUSH_BUSY_RETRY_MS, TimeUnit.MILLISECONDS)
+        continue
+      }
+      try {
+        val r = SyncClient.pushChanges(db, link.lastBase, link.authToken, link.deviceId)
+        pushFailedAt.remove(link.deviceId)
+        if (r != null) Log.i(TAG, "push ✓ ${link.alias}: ${SyncLog.describe(r)}")
+      } catch (t: Throwable) {
+        // 对端不在线：这段时间的变化留给下一次一起带
+        pushFailedAt[link.deviceId] = System.currentTimeMillis()
+        Log.i(TAG, "push ✗ ${link.alias} (${link.lastBase}): ${t.message}")
+      }
+    }
+  }
 
   /** 后台触发：冷却期内和已排队的直接丢弃，失败只记日志。 */
   fun enqueue(link: SolevupDb.LinkedDevice, source: String, cooldownMs: Long) {
@@ -182,7 +235,13 @@ class SyncCoordinator(
     // desktop 每 30s 广播一次，而且它自己也会反向同步，手机不必每次都跑
     const val DISCOVER_COOLDOWN_MS = 60_000L
     const val FOREGROUND_COOLDOWN_MS = 15_000L
-    // 后台时两端都放慢到这个间隔：一轮要双向传整份数据，常驻后每 30 秒一轮太费电
+    // 后台时两端都放慢到这个间隔：改动靠写入后直推送达，整轮只是兜底，常驻后每 30 秒一轮太费电
     const val BACKGROUND_SYNC_MS = 5 * 60_000L
+    private val FULL_ROUND_SOURCES = setOf("discover", "auto", "worker")
+    private const val FULL_ROUND_MIN_UPTIME_MS = 10 * 60_000L
+    private const val PUSH_DEBOUNCE_MS = 300L
+    // 直推失败（对端不在线）后隔这么久再试
+    private const val PUSH_RETRY_AFTER_MS = 30_000L
+    private const val PUSH_BUSY_RETRY_MS = 2_000L
   }
 }

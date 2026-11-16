@@ -7,6 +7,7 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
+import com.solevup.mobile.sync.SyncRuntime
 
 /**
  * SolevupDb 桥接 —— Phase 0：只暴露 ping / deviceId / stats，验证 SQLite 跑通。
@@ -138,6 +139,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
         lastUsedAt = if (args.hasKey("lastUsedAt")) args.getString("lastUsedAt") else null,
         updatedAt = if (args.hasKey("updatedAt")) args.getString("updatedAt") else null,
       )
+      SyncRuntime.notifyLocalChange()
       promise.resolve(id.toDouble())
     } catch (e: Throwable) { promise.reject("SOLEVUPDB_UPSERT_CAT_FAILED", e.message, e) }
   }
@@ -156,6 +158,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
         lastUsedAt = if (args.hasKey("lastUsedAt")) args.getString("lastUsedAt") else null,
         updatedAt = if (args.hasKey("updatedAt")) args.getString("updatedAt") else null,
       )
+      SyncRuntime.notifyLocalChange()
       promise.resolve(id.toDouble())
     } catch (e: Throwable) { promise.reject("SOLEVUPDB_UPSERT_TAG_FAILED", e.message, e) }
   }
@@ -164,6 +167,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
   fun deleteTag(tagId: Double, promise: Promise) {
     try {
       val n = db.deleteTag(tagId.toLong())
+      SyncRuntime.notifyLocalChange()
       promise.resolve(n.toDouble())
     } catch (e: Throwable) { promise.reject("SOLEVUPDB_DELETE_TAG_FAILED", e.message, e) }
   }
@@ -172,6 +176,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
   fun deleteCategory(categoryId: Double, promise: Promise) {
     try {
       val n = db.deleteCategory(categoryId.toLong())
+      SyncRuntime.notifyLocalChange()
       promise.resolve(n.toDouble())
     } catch (e: Throwable) { promise.reject("SOLEVUPDB_DELETE_CAT_FAILED", e.message, e) }
   }
@@ -180,6 +185,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
   fun renameCategory(categoryId: Double, newName: String?, newColor: String?, promise: Promise) {
     try {
       val n = db.renameCategory(categoryId.toLong(), newName, newColor)
+      SyncRuntime.notifyLocalChange()
       promise.resolve(n.toDouble())
     } catch (e: Throwable) { promise.reject("SOLEVUPDB_RENAME_CAT_FAILED", e.message, e) }
   }
@@ -188,6 +194,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
   fun renameTagPath(tagId: Double, newFullPath: String, cascade: Boolean, promise: Promise) {
     try {
       val n = db.renameTagPath(tagId.toLong(), newFullPath, cascade)
+      SyncRuntime.notifyLocalChange()
       promise.resolve(n.toDouble())
     } catch (e: Throwable) { promise.reject("SOLEVUPDB_RENAME_TAG_FAILED", e.message, e) }
   }
@@ -197,6 +204,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
     try {
       val arr = IntArray(minutes.size()) { minutes.getInt(it) }
       db.paintBlocks(date, arr, tagId.toLong())
+      SyncRuntime.notifyLocalChange()
       promise.resolve(arr.size.toDouble())
     } catch (e: Throwable) { promise.reject("SOLEVUPDB_PAINT_FAILED", e.message, e) }
   }
@@ -410,6 +418,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
     try {
       val arr = IntArray(minutes.size()) { minutes.getInt(it) }
       db.eraseBlocks(date, arr)
+      SyncRuntime.notifyLocalChange()
       promise.resolve(arr.size.toDouble())
     } catch (e: Throwable) { promise.reject("SOLEVUPDB_ERASE_FAILED", e.message, e) }
   }
@@ -435,6 +444,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
   fun saveSyncedSetting(key: String, value: String, seed: Boolean, promise: Promise) {
     try {
       db.saveSyncedSetting(key, value, seed)
+      SyncRuntime.notifyLocalChange()
       promise.resolve(true)
     } catch (e: Throwable) { promise.reject("SETTINGS_SAVE_FAILED", e.message, e) }
   }
@@ -506,19 +516,21 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun upsertModelApiKey(id: String?, label: String, apiKey: String, provider: String?, activate: Boolean, promise: Promise) {
     try {
-      promise.resolve(keyToMap(db.upsertModelApiKey(id, label, apiKey, provider, activate)))
+      val saved = db.upsertModelApiKey(id, label, apiKey, provider, activate)
+      SyncRuntime.notifyLocalChange()
+      promise.resolve(keyToMap(saved))
     } catch (e: Throwable) { promise.reject("MODEL_KEY_UPSERT_FAILED", e.message, e) }
   }
 
   @ReactMethod
   fun setActiveModelApiKey(id: String, promise: Promise) {
-    try { db.setActiveModelApiKey(id); promise.resolve(true) }
+    try { db.setActiveModelApiKey(id); SyncRuntime.notifyLocalChange(); promise.resolve(true) }
     catch (e: Throwable) { promise.reject("MODEL_KEY_ACTIVATE_FAILED", e.message, e) }
   }
 
   @ReactMethod
   fun deleteModelApiKey(id: String, promise: Promise) {
-    try { db.deleteModelApiKey(id); promise.resolve(true) }
+    try { db.deleteModelApiKey(id); SyncRuntime.notifyLocalChange(); promise.resolve(true) }
     catch (e: Throwable) { promise.reject("MODEL_KEY_DELETE_FAILED", e.message, e) }
   }
 
@@ -594,7 +606,7 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun setFeatureBinding(feature: String, modelId: String, promise: Promise) {
-    try { db.setFeatureBinding(feature, modelId); promise.resolve(true) }
+    try { db.setFeatureBinding(feature, modelId); SyncRuntime.notifyLocalChange(); promise.resolve(true) }
     catch (e: Throwable) { promise.reject("BINDING_SET_FAILED", e.message, e) }
   }
 

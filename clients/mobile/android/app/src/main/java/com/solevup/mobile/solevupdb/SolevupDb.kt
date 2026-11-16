@@ -2903,6 +2903,8 @@ class SolevupDb(context: Context) :
            alias=excluded.alias, last_base=excluded.last_base, auth_token=excluded.auth_token""".trimIndent(),
       arrayOf(deviceId, alias, lastBase, now, authToken),
     )
+    // 重新配对（对端可能重装过、数据清空了）：游标作废，下一轮整份传
+    clearSyncCursor(deviceId)
     return LinkedDevice(deviceId, alias, lastBase, null, now, authToken)
   }
 
@@ -2910,7 +2912,45 @@ class SolevupDb(context: Context) :
     writableDatabase.execSQL(
       "DELETE FROM linked_devices WHERE device_id = ?", arrayOf(deviceId),
     )
+    clearSyncCursor(deviceId)
   }
+
+  // ── 同步游标：每台对端一组，存在 sync_meta 里（规则见 desktop sync_engine.rs 文件头，两端一致）──
+  //   pull = 上次拉成功时对端快照的 exported_at（对端的钟）
+  //   push = 上次推成功时本机快照的 exported_at（本机的钟）
+  //   fullAt = 上次整份对完的时刻
+
+  data class SyncCursor(val pull: String?, val push: String?, val fullAt: String?)
+
+  fun syncCursor(deviceId: String): SyncCursor {
+    val db = readableDatabase
+    val read = { kind: String ->
+      queryString(db, "SELECT value FROM sync_meta WHERE key = ?", arrayOf(cursorKey(kind, deviceId)))
+    }
+    return SyncCursor(read(CURSOR_PULL), read(CURSOR_PUSH), read(CURSOR_FULL))
+  }
+
+  /** 只改传了的那几项 */
+  fun saveSyncCursor(deviceId: String, pull: String?, push: String?, fullAt: String?) {
+    val db = writableDatabase
+    val now = nowIso()
+    for ((kind, value) in listOf(CURSOR_PULL to pull, CURSOR_PUSH to push, CURSOR_FULL to fullAt)) {
+      if (value == null) continue
+      db.execSQL(
+        "INSERT OR REPLACE INTO sync_meta (key, value, updated_at) VALUES (?, ?, ?)",
+        arrayOf(cursorKey(kind, deviceId), value, now),
+      )
+    }
+  }
+
+  private fun clearSyncCursor(deviceId: String) {
+    writableDatabase.execSQL(
+      "DELETE FROM sync_meta WHERE key IN (?, ?, ?)",
+      arrayOf(cursorKey(CURSOR_PULL, deviceId), cursorKey(CURSOR_PUSH, deviceId), cursorKey(CURSOR_FULL, deviceId)),
+    )
+  }
+
+  private fun cursorKey(kind: String, deviceId: String): String = "cursor_$kind:$deviceId"
 
   /** 同步成功后 touch lastSyncedAt + 刷新 lastBase（对端 IP 可能变了）。 */
   fun touchLinkSynced(deviceId: String, lastBase: String) {
@@ -3038,6 +3078,21 @@ class SolevupDb(context: Context) :
     }
 
     fun nowIso(): String = localFormat().format(Date())
+
+    private const val CURSOR_PULL = "pull"
+    private const val CURSOR_PUSH = "push"
+    private const val CURSOR_FULL = "full"
+
+    /** 游标（本地时间 `yyyy-MM-dd HH:mm:ss`）换成毫秒；读不懂 = null */
+    fun cursorMillis(cursor: String): Long? = try {
+      localFormat().parse(cursor)?.time
+    } catch (e: java.text.ParseException) {
+      null
+    }
+
+    /** 游标往回挪 seconds 秒；读不懂 = null（调用方按整份传处理） */
+    fun cursorBack(cursor: String, seconds: Long): String? =
+      cursorMillis(cursor)?.let { localFormat().format(Date(it - seconds * 1000L)) }
 
     /** desktop 的 chat_* / feature_bindings / Key 表写 to_rfc3339（UTC），这几张表要用同一格式比较。 */
     fun utcNowIso(): String = utcFormat().format(Date())

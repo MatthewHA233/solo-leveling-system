@@ -3,6 +3,15 @@
 //   · 复用 HTTP /api/sync/export · /api/sync/import 协议
 //   · 启动任务和发现钩子都用它
 //   · 发令牌和数据之前先确认对面持有同一个令牌（规则见 sync_auth.rs）
+//
+// 只传变过的：每台对端存一对游标（sync_cursors）
+//   · pull_cursor = 上次拉成功时对端快照的 exported_at（对端的钟）
+//   · push_cursor = 上次推成功时本机快照的 exported_at（本机的钟）
+//   · 一轮：拉 export?since=pull_cursor、推 export_sync(push_cursor)，都往回多带 ROUND_OVERLAP
+//     （有几张表存的是 UTC 时间，和游标的本地时间按字符串比会差出时区那几个小时；多带的行对面按 LWW 跳过）
+//   · 没有游标时整份传一次；之后每 FULL_ROUND_EVERY 在后台再整份对一次，兜住增量漏掉的
+//   · 昼夜表一有写入（note_local_change）：攒 PUSH_DEBOUNCE 后把 push_cursor 之后的变化直接推给对端的 import，
+//     不拉、不发界面事件
 // ══════════════════════════════════════════════
 
 use crate::db::{ChatSyncImportResult, ChatSyncPage, Database, LinkedDevice, SyncExport, SyncImportResult};
@@ -34,15 +43,204 @@ fn syncing_set() -> &'static std::sync::Mutex<HashSet<String>> {
     CELL.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
 }
 
-/// 上次成功同步时间 —— maybe_sync_on_discover 用，10 秒冷却
+/// 上次成功同步时间 —— maybe_sync_on_discover 用，DISCOVER_COOLDOWN 冷却
 fn last_synced() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
     static CELL: OnceLock<std::sync::Mutex<HashMap<String, Instant>>> = OnceLock::new();
     CELL.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
-const DISCOVER_COOLDOWN: Duration = Duration::from_secs(10);
+/// 改动靠写入后直推送达，发现触发的整轮只是兜底，和手机端 DISCOVER_COOLDOWN_MS 一样一分钟一轮
+const DISCOVER_COOLDOWN: Duration = Duration::from_secs(60);
 /// 广播谁都能发，对端要求的间隔封顶，免得被拖成一直不同步
 const MAX_PEER_SYNC_AFTER: Duration = Duration::from_secs(3600);
+
+/// 增量的一轮往回多带这么久：盖住 UTC 存的那几张表和本地时间游标之间的时区差（最大 ±14 小时）
+const ROUND_OVERLAP_SECS: i64 = 26 * 3600;
+/// 写入后直推往回多带这么久：盖住同一秒内的写入
+const PUSH_OVERLAP_SECS: i64 = 5;
+/// 隔这么久整份对一次
+const FULL_ROUND_EVERY_SECS: i64 = 24 * 3600;
+/// 整份的一轮要十几秒，不在刚启动时做
+const FULL_ROUND_MIN_UPTIME: Duration = Duration::from_secs(600);
+/// 昼夜表写入后攒这么久再推（一次拖刷会连着写好几下）
+const PUSH_DEBOUNCE: Duration = Duration::from_millis(300);
+const PUSH_TIMEOUT: Duration = Duration::from_secs(5);
+/// 直推失败（对端不在线）后隔这么久再试，期间的变化留给下一次一起带
+const PUSH_RETRY_AFTER: Duration = Duration::from_secs(30);
+/// 对端正在跑整轮时，直推等这么久再看
+const PUSH_BUSY_RETRY: Duration = Duration::from_secs(2);
+const CURSOR_TIME_FMT: &str = "%Y-%m-%d %H:%M:%S";
+
+/// 一轮同步能不能整份传
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoundMode {
+    /// 有游标就只传变过的（启动、手动）
+    Fast,
+    /// 到了该整份对一次的时候就整份传（后台的发现钩子）
+    AllowFull,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SyncCursor {
+    pull: Option<String>,
+    push: Option<String>,
+    full_at: Option<String>,
+}
+
+pub(crate) fn init_cursor_tables(conn: &rusqlite::Connection) -> Result<(), String> {
+    conn.execute_batch(r#"
+        CREATE TABLE IF NOT EXISTS sync_cursors (
+            device_id TEXT PRIMARY KEY,
+            pull_cursor TEXT,
+            push_cursor TEXT,
+            full_synced_at TEXT
+        );
+    "#).map_err(|e| format!("创建同步游标表失败: {}", e))
+}
+
+impl Database {
+    async fn sync_cursor(&self, device_id: &str) -> Result<SyncCursor, String> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock().await;
+        let row = conn
+            .query_row(
+                "SELECT pull_cursor, push_cursor, full_synced_at FROM sync_cursors WHERE device_id = ?1",
+                rusqlite::params![device_id],
+                |r| Ok(SyncCursor { pull: r.get(0)?, push: r.get(1)?, full_at: r.get(2)? }),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(row.unwrap_or_default())
+    }
+
+    /// 只改传了的那几项
+    async fn save_sync_cursor(&self, device_id: &str, pull: Option<&str>, push: Option<&str>, full_at: Option<&str>) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO sync_cursors (device_id, pull_cursor, push_cursor, full_synced_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(device_id) DO UPDATE SET
+               pull_cursor = COALESCE(excluded.pull_cursor, pull_cursor),
+               push_cursor = COALESCE(excluded.push_cursor, push_cursor),
+               full_synced_at = COALESCE(excluded.full_synced_at, full_synced_at)",
+            rusqlite::params![device_id, pull, push, full_at],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+/// 游标往回挪 secs 秒；游标读不懂 = None（调用方按整份传处理）
+fn cursor_back(cursor: &str, secs: i64) -> Option<String> {
+    let at = chrono::NaiveDateTime::parse_from_str(cursor, CURSOR_TIME_FMT).ok()?;
+    Some((at - chrono::Duration::seconds(secs)).format(CURSOR_TIME_FMT).to_string())
+}
+
+fn now_cursor() -> String {
+    chrono::Local::now().format(CURSOR_TIME_FMT).to_string()
+}
+
+fn full_round_due(cursor: &SyncCursor) -> bool {
+    let Some(at) = cursor.full_at.as_deref().and_then(|s| chrono::NaiveDateTime::parse_from_str(s, CURSOR_TIME_FMT).ok()) else {
+        return true;
+    };
+    (chrono::Local::now().naive_local() - at).num_seconds() >= FULL_ROUND_EVERY_SECS
+}
+
+fn started_at() -> Instant {
+    static AT: OnceLock<Instant> = OnceLock::new();
+    *AT.get_or_init(Instant::now)
+}
+
+// ── 昼夜表写入后直推 ──
+
+fn local_change() -> &'static tokio::sync::Notify {
+    static N: OnceLock<tokio::sync::Notify> = OnceLock::new();
+    N.get_or_init(tokio::sync::Notify::new)
+}
+
+fn push_failures() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
+    static M: OnceLock<std::sync::Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    M.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// 本机的昼夜表数据刚被改过（API 层的写请求成功后调）
+pub fn note_local_change() {
+    local_change().notify_one();
+}
+
+/// 常驻任务：有写入就把变化推给各台已链接设备
+pub fn spawn_change_pusher(db: Arc<Database>) {
+    started_at();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            local_change().notified().await;
+            tokio::time::sleep(PUSH_DEBOUNCE).await;
+            push_local_changes(&db).await;
+        }
+    });
+}
+
+async fn push_local_changes(db: &Arc<Database>) {
+    let links = match db.list_linked_devices().await {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("[SyncEngine] 直推前读取已链接设备失败: {}", e);
+            return;
+        }
+    };
+    for link in links {
+        if lock_map(push_failures()).get(&link.device_id).is_some_and(|at| at.elapsed() < PUSH_RETRY_AFTER) {
+            continue;
+        }
+        // 整轮正在跑：它导出本机数据的时刻可能早于这次写入，等它跑完再推
+        if lock_set(syncing_set()).contains(&link.device_id) {
+            tauri::async_runtime::spawn(async {
+                tokio::time::sleep(PUSH_BUSY_RETRY).await;
+                note_local_change();
+            });
+            continue;
+        }
+        match push_changes_to(db, &link).await {
+            Ok(Some(rows)) => {
+                lock_map(push_failures()).remove(&link.device_id);
+                log::info!("[SyncEngine] 直推 {}：{} 行", link.alias, rows);
+            }
+            // 还没整份同步过，没有游标：留给下一轮
+            Ok(None) => {}
+            Err(e) => {
+                lock_map(push_failures()).insert(link.device_id.clone(), Instant::now());
+                log::info!("[SyncEngine] 直推 {} 失败（{} 秒后再试）: {}", link.alias, PUSH_RETRY_AFTER.as_secs(), e);
+            }
+        }
+    }
+}
+
+/// 把 push_cursor 之后的变化推给一台对端；返回对端采用的行数。地址用上次验证过的 last_base
+async fn push_changes_to(db: &Arc<Database>, link: &LinkedDevice) -> Result<Option<usize>, String> {
+    let cursor = db.sync_cursor(&link.device_id).await?;
+    let Some(since) = cursor.push.as_deref().and_then(|c| cursor_back(c, PUSH_OVERLAP_SECS)) else {
+        return Ok(None);
+    };
+    let snapshot = db.export_sync(Some(since)).await.map_err(|e| format!("本地 export 失败: {}", e))?;
+    let exported_at = snapshot.exported_at.clone();
+    let url = format!("{}/api/sync/import", normalize_base(&link.last_base));
+    let resp: ApiEnvelope<SyncImportResult> = authed_client(&link.auth_token)?
+        .post(&url)
+        .timeout(PUSH_TIMEOUT)
+        .json(&snapshot)
+        .send()
+        .await
+        .map_err(|e| format!("推送失败: {}", e))?
+        .json()
+        .await
+        .map_err(|e| format!("解析对端回应失败: {}", e))?;
+    if !resp.success {
+        return Err(format!("对端 import 错误: {}", resp.error.unwrap_or_default()));
+    }
+    db.save_sync_cursor(&link.device_id, None, Some(&exported_at), None).await?;
+    let applied = resp.data.map(|r| r.activity_categories + r.activity_tags + r.activity_blocks + r.plan_nodes + r.planned_blocks).unwrap_or(0);
+    Ok(Some(applied))
+}
 
 /// 对端主动推过来：它发起的一轮已经双向做完，记一次成功，避免紧接着又反向跑一轮（手机端 onInboundImport 同理）
 pub fn note_inbound_sync(device_id: &str) {
@@ -167,9 +365,10 @@ pub async fn notify_unpair(peer_base: &str, token: &str) {
 pub async fn bidirectional_sync(
     db: Arc<Database>,
     link: &LinkedDevice,
+    mode: RoundMode,
 ) -> Result<SyncRoundResult, String> {
     let base = normalize_base(&link.last_base);
-    bidirectional_sync_at(db, link, &base).await
+    bidirectional_sync_at(db, link, &base, mode).await
 }
 
 /// 同上，但连另一个地址：发现到已链接设备的新地址时用，同步成功才写库
@@ -177,6 +376,7 @@ async fn bidirectional_sync_at(
     db: Arc<Database>,
     link: &LinkedDevice,
     base: &str,
+    mode: RoundMode,
 ) -> Result<SyncRoundResult, String> {
     let self_id = db.sync_device_id().await?;
     let peer_alias = verify_peer(base, &self_id, &link.device_id, &link.auth_token).await?;
@@ -186,9 +386,25 @@ async fn bidirectional_sync_at(
     }
     let client = authed_client(&link.auth_token)?;
 
+    // 这一轮传多少：两个游标都在、也没轮到整份对，就只传游标之后变过的
+    let cursor = db.sync_cursor(&link.device_id).await?;
+    let want_full = mode == RoundMode::AllowFull && full_round_due(&cursor);
+    let since = if want_full {
+        None
+    } else {
+        cursor.pull.as_deref().and_then(|c| cursor_back(c, ROUND_OVERLAP_SECS))
+            .zip(cursor.push.as_deref().and_then(|c| cursor_back(c, ROUND_OVERLAP_SECS)))
+    };
+    let full = since.is_none();
+    let (pull_since, push_since) = since.unzip();
+
     // 1) 拉对端快照
     let pull_url = format!("{}/api/sync/export", base);
-    let pull_resp: ApiEnvelope<SyncExport> = client.get(&pull_url).send().await
+    let mut pull_req = client.get(&pull_url);
+    if let Some(since) = &pull_since {
+        pull_req = pull_req.query(&[("since", since)]);
+    }
+    let pull_resp: ApiEnvelope<SyncExport> = pull_req.send().await
         .map_err(|e| format!("拉取对端 export 失败: {}", e))?
         .json().await
         .map_err(|e| format!("解析对端 export 失败: {}", e))?;
@@ -197,14 +413,16 @@ async fn bidirectional_sync_at(
     }
     let remote_snapshot = pull_resp.data.ok_or("对端 export 数据为空")?;
     let peer_device_id = remote_snapshot.device_id.clone();
+    let remote_exported_at = remote_snapshot.exported_at.clone();
 
     // 2) 本地导入
     let mut pulled = db.import_sync(remote_snapshot).await
         .map_err(|e| format!("本地 import 失败: {}", e))?;
 
     // 3) 本地 export
-    let local_snapshot = db.export_sync(None).await
+    let local_snapshot = db.export_sync(push_since).await
         .map_err(|e| format!("本地 export 失败: {}", e))?;
+    let local_exported_at = local_snapshot.exported_at.clone();
 
     // 4) 推到对端 import
     let push_url = format!("{}/api/sync/import", base);
@@ -216,6 +434,13 @@ async fn bidirectional_sync_at(
         return Err(format!("对端 import 错误: {}", push_resp.error.unwrap_or_default()));
     }
     let mut pushed = push_resp.data.ok_or("对端 import 数据为空")?;
+
+    // 两个方向都成功了才挪游标。对端的 exported_at 读不懂（不是约定的本地时间格式）就不记，下一轮整份拉
+    let pull_cursor = cursor_back(&remote_exported_at, 0);
+    let full_at = full.then(now_cursor);
+    if let Err(e) = db.save_sync_cursor(&link.device_id, pull_cursor.as_deref(), Some(&local_exported_at), full_at.as_deref()).await {
+        log::warn!("[SyncEngine] 记同步游标失败（下一轮会多传一些，不影响数据）: {}", e);
+    }
 
     // 5) 聊天记录走独立通道：失败不影响上面已经同步好的数据
     if let Err(e) = sync_chat(&db, &client, base, &peer_device_id, &mut pulled, &mut pushed).await {
@@ -390,7 +615,7 @@ pub async fn run_startup_sync(db: Arc<Database>, app: Arc<AppHandle>) {
 
         tokio::spawn(async move {
             emit_started(&app_for_sync, &device_id);
-            let result = bidirectional_sync(db_for_sync.clone(), &link).await;
+            let result = bidirectional_sync(db_for_sync.clone(), &link, RoundMode::Fast).await;
             match &result {
                 Ok(round) => {
                     if let Err(e) = db_for_sync.touch_link_synced(&device_id, &base).await {
@@ -442,7 +667,7 @@ fn lock_map<'a>(m: &'a std::sync::Mutex<HashMap<String, Instant>>) -> std::sync:
 ///
 /// 防护：
 /// 1. 同 device_id 已在同步中 → 直接返回（防多播洪水）
-/// 2. 上次成功 < 10 秒 → 跳过（避免同一对端反复 ping 触发风暴）
+/// 2. 上次成功不到 DISCOVER_COOLDOWN → 跳过（避免同一对端反复 ping 触发风暴）
 /// 3. 对端在广播里要求放慢（手机在后台发 sync_after_s=300）→ 按它的间隔，一轮要双向传整份数据
 pub async fn maybe_sync_on_discover(
     db: Arc<Database>,
@@ -482,7 +707,9 @@ pub async fn maybe_sync_on_discover(
     let device_id_owned = device_id.to_string();
     tokio::spawn(async move {
         emit_started(&app, &device_id_owned);
-        let result = bidirectional_sync_at(db.clone(), &link, &normalize_base(&base_owned)).await;
+        // 整份的一轮只在后台做，且不在刚启动时
+        let mode = if started_at().elapsed() >= FULL_ROUND_MIN_UPTIME { RoundMode::AllowFull } else { RoundMode::Fast };
+        let result = bidirectional_sync_at(db.clone(), &link, &normalize_base(&base_owned), mode).await;
         match &result {
             Ok(round) => {
                 let _ = db.touch_link_synced(&device_id_owned, &base_owned).await;

@@ -855,7 +855,7 @@ async fn sync_link_add(
             tokio::spawn(async move {
                 let device_id = &for_sync.device_id;
                 let _ = app_for_sync.emit("sync:started", serde_json::json!({ "device_id": device_id }));
-                let result = sync_engine::bidirectional_sync(db_for_sync.clone(), &for_sync).await;
+                let result = sync_engine::bidirectional_sync(db_for_sync.clone(), &for_sync, sync_engine::RoundMode::Fast).await;
                 if result.is_ok() {
                     let _ = db_for_sync.touch_link_synced(device_id, &for_sync.last_base).await;
                 }
@@ -903,7 +903,7 @@ async fn sync_link_run(
         return Json(ApiResponse::error("设备未链接"));
     };
     let _ = state.app_handle.emit("sync:started", serde_json::json!({ "device_id": &device_id }));
-    let result = sync_engine::bidirectional_sync(state.db.clone(), &link).await;
+    let result = sync_engine::bidirectional_sync(state.db.clone(), &link, sync_engine::RoundMode::Fast).await;
     let _ = state.app_handle.emit("sync:finished", serde_json::json!({
         "device_id": &device_id,
         "ok": result.is_ok(),
@@ -2015,6 +2015,7 @@ pub fn create_router(
         .merge(crate::islands::routes())
         .merge(crate::network::routes())
         .merge(crate::anthropic::routes())
+        .layer(middleware::from_fn(notify_daynight_change))
         // axum 默认只收 2MB，全量同步一超过就 413，整轮失败
         .layer(DefaultBodyLimit::max(SYNC_BODY_LIMIT))
         .layer(middleware::from_fn_with_state(state.clone(), access_guard))
@@ -2028,6 +2029,19 @@ pub fn create_router(
                 .allow_headers(Any),
         )
         .with_state(state)
+}
+
+/// 昼夜表和同步设置的写请求成功后，让同步引擎把变化推给已链接设备（对端推进来的走 /api/sync/import，不经过这里，不会来回弹）
+async fn notify_daynight_change(request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    let watched = request.method() != axum::http::Method::GET
+        && request.method() != axum::http::Method::OPTIONS
+        && (path.starts_with("/api/activities/") || path.starts_with("/api/plans/") || path == "/api/sync/settings");
+    let response = next.run(request).await;
+    if watched && response.status().is_success() {
+        sync_engine::note_local_change();
+    }
+    response
 }
 
 /// 规则见 sync_auth::check_access
