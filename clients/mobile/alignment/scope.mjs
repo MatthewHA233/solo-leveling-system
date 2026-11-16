@@ -7,6 +7,7 @@ const K = 'clients/mobile/android/app/src/main/java/com/solevup/mobile/'
 const CHAT_DB = /chat_|ChatSession|ChatMessage|SessionSearchHit|MessageSnippet|build_excerpt/
 const LIB_RS = `${R}lib.rs`
 const LOCAL_API = `${D}lib/local-api.ts`
+const PLAN_DB = /plan_node|PlanNode|planned_block|PlannedBlock/
 const MODEL_DB = /model_|Model[A-Z]|api_key|ApiKey|provider|PROVIDER|pricing|Pricing|free_quota|FreeQuota|feature_binding|FeatureBinding|call_log|CallLog|compute_cost|billable/
 
 export const SCOPE = [
@@ -158,6 +159,23 @@ export const SCOPE = [
     title: '设置面板（人设、语音、模型、Fairy 相关项）',
     files: [
       { file: `${D}components/SettingsPanel.tsx`, target: `${M}components/fairy/FairySettingsSheet.tsx` },
+    ],
+  },
+  {
+    id: 'B11-daynight',
+    title: '昼夜表计划层、浮岛与约束、Fairy 的昼夜表工具',
+    files: [
+      { file: `${D}lib/agent/agent-tools-daynight.ts`, target: `${M}lib/agent/tools/daynight-tools.ts` },
+      { file: `${D}lib/islands/island-model.ts`, target: `${M}lib/islands/island-model.ts` },
+      { file: `${D}lib/islands/use-islands.ts`, target: `${M}lib/islands/use-islands.ts` },
+      { file: `${D}lib/islands/island-api.ts`, target: `${M}lib/islands/island-api.ts` },
+      { file: `${D}components/daynight/PlanSidePanel.tsx`, target: `${M}components/daynight/PlanSheet.tsx` },
+      { file: `${D}components/daynight/IslandPanel.tsx`, target: `${M}components/daynight/IslandPanel.tsx` },
+      { file: `${D}components/daynight/IslandEditor.tsx`, target: `${M}components/daynight/IslandEditor.tsx` },
+      { file: `${D}components/TodoListPanel.tsx`, target: `${M}components/daynight/PlanTodoPanel.tsx` },
+      { file: `${R}islands.rs`, target: `${K}solevupdb/PlanStore.kt` },
+      { file: `${R}db.rs`, only: PLAN_DB, target: `${K}solevupdb/PlanStore.kt` },
+      { file: LOCAL_API, only: /PlanNode|PlannedBlock|planNode|plannedBlock/, target: `${M}lib/api.ts` },
     ],
   },
 ]
