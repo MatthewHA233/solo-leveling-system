@@ -1294,7 +1294,7 @@ export default function DayNightScreen() {
     if (pickerMode !== 'search') return
     const t = setTimeout(() => searchInputRef.current?.focus(), 40)
     return () => clearTimeout(t)
-  }, [pickerMode])
+  }, [pickerMode, recordLayer])
 
   useEffect(() => {
     if (!detail) {
@@ -2021,6 +2021,141 @@ export default function DayNightScreen() {
     void applyBlocksDelta(current, popped)
   }
 
+  // ── 展开面板的计划页：进行中的任务按清单分组，点一条当画笔 ──
+  const [taskQuery, setTaskQuery] = useState('')
+  const pickerTaskGroups = useMemo(() => {
+    const q = taskQuery.trim().toLowerCase()
+    const active = allPlanNodes.filter((n) => n.status === 'active')
+    const byId = new Map(active.map((n) => [n.id, n]))
+    const children = new Map<number | null, PlanNode[]>()
+    for (const n of active) {
+      const parent = n.parentId != null && byId.has(n.parentId) ? n.parentId : null
+      children.set(parent, [...(children.get(parent) ?? []), n])
+    }
+    // 树序：父任务在前，子任务缩进跟在后面
+    const ordered: { node: PlanNode; depth: number; parentTitle: string | null }[] = []
+    const walk = (parent: number | null, depth: number, parentTitle: string | null) => {
+      const list = [...(children.get(parent) ?? [])].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id)
+      for (const n of list) {
+        ordered.push({ node: n, depth, parentTitle })
+        walk(n.id, depth + 1, n.title)
+      }
+    }
+    walk(null, 0, null)
+    const groups = new Map<number, { tag: ActivityTag | undefined; items: typeof ordered; latest: string }>()
+    for (const item of ordered) {
+      const tag = tagById.get(item.node.projectTagId)
+      if (q && !item.node.title.toLowerCase().includes(q) && !(tag?.fullPath.toLowerCase().includes(q) ?? false)) continue
+      const g = groups.get(item.node.projectTagId) ?? { tag, items: [], latest: '' }
+      g.items.push(item)
+      if (item.node.updatedAt > g.latest) g.latest = item.node.updatedAt
+      groups.set(item.node.projectTagId, g)
+    }
+    // 当前清单排第一，其余按最近改动
+    return [...groups.entries()]
+      .sort(([a, ga], [b, gb]) =>
+        (a === selectedProjectTagId ? -1 : 0) - (b === selectedProjectTagId ? -1 : 0) || gb.latest.localeCompare(ga.latest))
+      .map(([projectTagId, g]) => ({ projectTagId, ...g }))
+  }, [allPlanNodes, tagById, taskQuery, selectedProjectTagId])
+
+  const pickTask = (node: PlanNode) => {
+    setSelectedPlanNodeId(node.id)
+    setSelectedProjectTagId(node.projectTagId)
+    setPickerMode(null)
+    setTaskQuery('')
+    Keyboard.dismiss()
+  }
+
+  const openPlanManager = () => {
+    Keyboard.dismiss()
+    setPickerMode(null)
+    setPlanSheet('todo')
+  }
+
+  const renderTaskPicker = () => (
+    <>
+      <Pressable style={styles.searchBoxInCloud} onPress={() => searchInputRef.current?.focus()}>
+        <View style={styles.taskSearchIcon}>
+          <SearchGlyph color={theme.inkSoft} />
+        </View>
+        <TextInput
+          ref={searchInputRef}
+          value={taskQuery}
+          onChangeText={setTaskQuery}
+          placeholder="搜索任务 / 清单..."
+          placeholderTextColor={theme.inkSoft}
+          autoFocus={pickerMode === 'search'}
+          style={styles.searchInput}
+        />
+        {taskQuery.length > 0 && (
+          <Pressable hitSlop={10} onPress={() => setTaskQuery('')} style={styles.searchClose}>
+            <Text style={styles.searchCloseText}>×</Text>
+          </Pressable>
+        )}
+      </Pressable>
+      <View style={styles.taskHintRow}>
+        <Text style={styles.pickerHint}>点一条任务当画笔，涂到时间上</Text>
+        <Pressable hitSlop={8} onPress={openPlanManager}>
+          <Text style={styles.taskManageLink}>管理任务与浮岛</Text>
+        </Pressable>
+      </View>
+      <ScrollView
+        style={styles.treeScrollWrap}
+        contentContainerStyle={styles.treeScroll}
+        keyboardShouldPersistTaps="always"
+        nestedScrollEnabled
+        showsVerticalScrollIndicator
+      >
+        {pickerTaskGroups.length === 0 ? (
+          taskQuery.trim() ? (
+            <Text style={styles.pickerNoMatch}>没找到匹配的任务</Text>
+          ) : (
+            <View style={styles.taskEmpty}>
+              <Text style={styles.pickerNoMatch}>还没有进行中的任务</Text>
+              <Pressable onPress={openPlanManager} style={styles.taskEmptyBtn}>
+                <Text style={styles.taskEmptyBtnText}>去计划安排新建</Text>
+              </Pressable>
+            </View>
+          )
+        ) : (
+          pickerTaskGroups.map((g) => {
+            const cat = g.tag ? categoryById.get(g.tag.categoryId) : undefined
+            const color = cat?.color ?? PLAN_COLOR
+            return (
+              <View key={g.projectTagId} style={styles.taskGroup}>
+                <View style={styles.taskGroupHead}>
+                  <View style={[styles.taskGroupDot, { backgroundColor: color }]} />
+                  <Text style={styles.taskGroupName} numberOfLines={1}>{g.tag?.fullPath ?? '清单'}</Text>
+                  <Text style={styles.taskGroupCount}>{g.items.length}</Text>
+                </View>
+                {g.items.map(({ node, depth, parentTitle }) => {
+                  const on = node.id === selectedPlanNodeId
+                  return (
+                    <Pressable
+                      key={node.id}
+                      onPress={() => pickTask(node)}
+                      style={[
+                        styles.taskRow,
+                        { marginLeft: depth * 14 },
+                        on && { backgroundColor: alpha(color, 0.14), borderColor: alpha(color, 0.7) },
+                      ]}
+                    >
+                      <View style={[styles.planBrushDot, { borderColor: color }]} />
+                      <Text style={styles.taskTitle} numberOfLines={1}>{node.title}</Text>
+                      {taskQuery.trim() && parentTitle ? (
+                        <Text style={styles.taskParent} numberOfLines={1}>{parentTitle}</Text>
+                      ) : null}
+                    </Pressable>
+                  )
+                })}
+              </View>
+            )
+          })
+        )}
+      </ScrollView>
+    </>
+  )
+
   // 折叠行（1 小时 1 格）放不下框：计划块和浮岛画成格子底部的两条细条，只表示「这一小时里有安排」
   const renderCompressedPlanMarks = (h: number) => {
     const from = h * 60
@@ -2143,74 +2278,53 @@ export default function DayNightScreen() {
             </View>
           ) : (
             <View style={styles.editingChips}>
-              {/* 涂哪一层：实际记录 / 计划（desktop DayNightToolbar 的两段切换） */}
-              <View style={styles.layerToggle}>
-                {(['actual', 'plan'] as const).map((layer) => (
-                  <Pressable
-                    key={layer}
-                    onPress={() => {
-                      setRecordLayer(layer)
-                      setPickerMode(null)
-                    }}
-                    style={[styles.layerKey, recordLayer === layer && styles.layerKeyActive]}
-                  >
-                    <Text style={[styles.layerKeyText, recordLayer === layer && styles.layerKeyTextActive]}>
-                      {layer === 'actual' ? '实际' : '计划'}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-              {recordLayer === 'actual' ? (
-                <>
-                  {/* 搜索按钮：单独入口，点开后自动 focus 输入框 */}
-                  <Pressable
-                    onPress={() =>
-                      setPickerMode((m) => (m === 'search' ? null : 'search'))
-                    }
+              {/* 搜索按钮：单独入口，点开后自动 focus 输入框（记录、计划两页通用） */}
+              <Pressable
+                onPress={() =>
+                  setPickerMode((m) => (m === 'search' ? null : 'search'))
+                }
+                style={[
+                  styles.iconBtn,
+                  pickerMode === 'search' && styles.iconBtnActive,
+                ]}
+              >
+                <SearchGlyph
+                  color={pickerMode === 'search' ? theme.accent : theme.ink}
+                  size={14}
+                />
+              </Pressable>
+              {/* 当前画笔：记录层是标签，计划层是任务（前面带虚线小框）。
+                  点开展开面板，记录 / 计划在面板顶上切（编辑栏寸土寸金，不放两段切换） */}
+              <Pressable
+                onPress={() =>
+                  setPickerMode((m) => (m === 'browse' ? null : 'browse'))
+                }
+                style={[
+                  styles.currentTagBtn,
+                  pickerMode === 'browse' && styles.currentTagBtnActive,
+                ]}
+              >
+                {recordLayer === 'plan' ? (
+                  <View
                     style={[
-                      styles.iconBtn,
-                      pickerMode === 'search' && styles.iconBtnActive,
+                      styles.planBrushDot,
+                      { borderColor: selectedPlanNode ? planColorOf(selectedPlanNode.id) : theme.inkSoft },
                     ]}
-                  >
-                    <SearchGlyph
-                      color={pickerMode === 'search' ? theme.accent : theme.ink}
-                      size={14}
-                    />
-                  </Pressable>
-                  {/* 当前标签按钮：点开浏览模式（不 focus 输入框，直接看标签云） */}
-                  <Pressable
-                    onPress={() =>
-                      setPickerMode((m) => (m === 'browse' ? null : 'browse'))
-                    }
-                    style={[
-                      styles.currentTagBtn,
-                      pickerMode === 'browse' && styles.currentTagBtnActive,
-                    ]}
-                  >
-                    <Text style={styles.currentTagText} numberOfLines={1}>
-                      {selectedTagId != null
-                        ? tagById.get(selectedTagId)?.leafName ?? '选标签'
-                        : '选标签'}
-                    </Text>
-                    <CaretGlyph
-                      color={theme.inkSoft}
-                      size={9}
-                      direction={pickerMode === 'browse' ? 'up' : 'down'}
-                    />
-                  </Pressable>
-                </>
-              ) : (
-                /* 计划画笔：当前任务；点开计划安排换一个 */
-                <Pressable onPress={() => setPlanSheet('todo')} style={styles.currentTagBtn}>
-                  {selectedPlanNode ? (
-                    <View style={[styles.planBrushDot, { borderColor: planColorOf(selectedPlanNode.id) }]} />
-                  ) : null}
-                  <Text style={styles.currentTagText} numberOfLines={1}>
-                    {selectedPlanNode?.title ?? '选任务'}
-                  </Text>
-                  <CaretGlyph color={theme.inkSoft} size={9} direction="down" />
-                </Pressable>
-              )}
+                  />
+                ) : null}
+                <Text style={styles.currentTagText} numberOfLines={1}>
+                  {recordLayer === 'plan'
+                    ? selectedPlanNode?.title ?? '选任务'
+                    : selectedTagId != null
+                      ? tagById.get(selectedTagId)?.leafName ?? '选标签'
+                      : '选标签'}
+                </Text>
+                <CaretGlyph
+                  color={theme.inkSoft}
+                  size={9}
+                  direction={pickerMode === 'browse' ? 'up' : 'down'}
+                />
+              </Pressable>
               <Pressable
                 onPress={handleUndo}
                 disabled={activeUndo.length === 0}
@@ -3357,6 +3471,25 @@ export default function DayNightScreen() {
             pointerEvents="box-none"
           >
           <View style={styles.pickerCloud}>
+            {/* 涂哪一层：记录（实际）/ 计划（desktop DayNightToolbar 的两段切换，手机端放在展开面板里） */}
+            <View style={styles.pickerTabs}>
+              {(['actual', 'plan'] as const).map((layer) => {
+                const on = recordLayer === layer
+                return (
+                  <Pressable
+                    key={layer}
+                    onPress={() => setRecordLayer(layer)}
+                    style={[styles.pickerTab, on && styles.pickerTabOn]}
+                  >
+                    <Text style={[styles.pickerTabText, on && styles.pickerTabTextOn]}>
+                      {layer === 'actual' ? '记录' : '计划'}
+                    </Text>
+                  </Pressable>
+                )
+              })}
+            </View>
+            {recordLayer === 'plan' ? renderTaskPicker() : (
+            <>
             {/* 搜索框 + 左侧 "+" 按钮 = 新建模式入口（对齐 desktop）。
                 addMode=true 时同一输入框语义变成"新标签完整路径"，下方 tag 列表
                 点击 = 回填路径，节省手打父节点。
@@ -3555,6 +3688,8 @@ export default function DayNightScreen() {
                 ))
               )}
             </ScrollView>
+            </>
+            )}
           </View>
           </View>
         </>
@@ -4010,28 +4145,112 @@ const styles = StyleSheet.create({
     color: theme.ink,
     letterSpacing: 0.6,
   },
-  // 实际 / 计划 两段切换
-  layerToggle: {
+  // 展开面板顶上的「记录 / 计划」页签
+  pickerTabs: {
     flexDirection: 'row',
     padding: 2,
-    borderRadius: 14,
-    backgroundColor: alpha(theme.ink, 0.08),
-  },
-  layerKey: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
     borderRadius: 12,
+    backgroundColor: theme.sunk,
+    marginBottom: 10,
   },
-  layerKeyActive: {
+  pickerTab: {
+    flex: 1,
+    height: 30,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerTabOn: {
     backgroundColor: theme.surface,
   },
-  layerKeyText: {
-    fontSize: 12.5,
+  pickerTabText: {
+    fontSize: 13,
     fontWeight: '600',
     color: theme.inkSoft,
   },
-  layerKeyTextActive: {
+  pickerTabTextOn: {
     color: theme.ink,
+  },
+  // 计划页：任务列表
+  taskSearchIcon: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  taskHintRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+  },
+  taskManageLink: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: theme.accent,
+    letterSpacing: 0.3,
+  },
+  taskGroup: {
+    marginBottom: 10,
+  },
+  taskGroupHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  taskGroupDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  taskGroupName: {
+    flexShrink: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: theme.inkSoft,
+  },
+  taskGroupCount: {
+    fontSize: 11,
+    color: theme.inkFaint,
+  },
+  taskRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    backgroundColor: theme.bg,
+  },
+  taskTitle: {
+    flexShrink: 1,
+    fontSize: 13.5,
+    fontWeight: '600',
+    color: theme.ink,
+  },
+  taskParent: {
+    marginLeft: 'auto',
+    flexShrink: 1,
+    fontSize: 11,
+    color: theme.inkFaint,
+  },
+  taskEmpty: {
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  taskEmptyBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 14,
+    backgroundColor: theme.accentSoft,
+  },
+  taskEmptyBtnText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: theme.accent,
   },
   planBrushDot: {
     width: 10,

@@ -4,8 +4,8 @@
 //   计划安排里点一条任务 = 选它当画笔，并关掉弹窗回昼夜表去涂
 // ══════════════════════════════════════════════
 
-import { useEffect, useState } from 'react'
-import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native'
+import { useEffect, useRef, useState } from 'react'
+import { Animated, Dimensions, Easing, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native'
 import type { ActivityPalette, PlanNode } from '../../types'
 import type { Island, IslandPlacement } from '../../lib/islands/island-model'
 import { theme } from '../../theme'
@@ -67,17 +67,36 @@ export default function PlanSheet({
     if (visible && initialPage) setPage(initialPage)
   }, [visible, initialPage])
 
+  // 蒙版用 Modal 的 fade 原地淡入；面板单独从底部滑上来
+  const slide = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    if (!visible) return
+    slide.setValue(0)
+    Animated.timing(slide, {
+      toValue: 1,
+      duration: 260,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start()
+  }, [visible, slide])
+  const sheetOffset = Dimensions.get('window').height * 0.3
+
   const pick = (id: number) => {
     onPickNode(id)
     onClose()
   }
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.backdrop}>
           <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-          <View style={styles.sheet}>
+          <Animated.View
+            style={[
+              styles.sheet,
+              { transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [sheetOffset, 0] }) }] },
+            ]}
+          >
             <View style={styles.handle} />
             <View style={styles.tabs}>
               {PAGES.map((p) => {
@@ -114,7 +133,7 @@ export default function PlanSheet({
                 />
               )}
             </View>
-          </View>
+          </Animated.View>
         </View>
       </KeyboardAvoidingView>
     </Modal>
