@@ -137,6 +137,12 @@ type HitCell =
   | { kind: 'full'; hour: number; col: number; minute: number }
   | { kind: 'compressed'; hour: number }
 
+// SolevupDbChanged 的 changed 里这几项有变化才重读昼夜表（名字见 SyncServerModule.onDbChanged）
+const DAYNIGHT_SYNC_KEYS = [
+  'activityCategories', 'activityTags', 'activityBlocks',
+  'planNodes', 'plannedBlocks', 'planIslands', 'planIslandChecks',
+] as const
+
 // 空 palette 时一键初始化的默认分类 + 标签（与 desktop ActivityTagPalette
 // DEFAULT_PALETTE 一致，让 desktop / mobile 用户初次体验对齐）
 // 不预置"编程"分类 — 不是所有人都适合
@@ -1261,9 +1267,15 @@ export default function DayNightScreen() {
         if (again && alive) { again = false; void refreshVisibleData() }
       }
     }
-    const dbSub = DeviceEventEmitter.addListener('SolevupDbChanged', () => {
-      void refreshVisibleData()
-    })
+    const dbSub = DeviceEventEmitter.addListener(
+      'SolevupDbChanged',
+      (e: { changed?: Record<string, number | undefined> } | null) => {
+        // 只有聊天、模型、设置变了（聊天现在每条消息都直推）就不重读昼夜表（同 desktop App.tsx sync:pushed）
+        const changed = e?.changed
+        if (changed && !DAYNIGHT_SYNC_KEYS.some((k) => (changed[k] ?? 0) > 0)) return
+        void refreshVisibleData()
+      },
+    )
     // Fairy 的昼夜表工具、计划面板写完发这个（desktop 同名 Tauri 事件）
     const dayNightSub = DeviceEventEmitter.addListener(DAYNIGHT_CHANGED_EVENT, () => {
       void refreshVisibleData()
