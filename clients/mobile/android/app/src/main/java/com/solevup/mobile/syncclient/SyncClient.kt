@@ -25,6 +25,8 @@ import java.util.concurrent.ConcurrentHashMap
  *   每台对端存一对游标，一轮只拉、只推游标之后变过的，各往回多带 ROUND_OVERLAP_S；
  *   没有游标时整份传一次，之后每 FULL_ROUND_EVERY_MS 在后台整份对一次。
  *   本机一有写入，pushChanges 把 push 游标之后的变化直接推给对端的 import。
+ *   聊天一有写入，pushChat 把聊天推游标之后的页直接推给对端的 /api/sync/chat；
+ *   对端直推来带图的消息，pullChatImagesFrom 马上回头拉图片文件。
  *
  * 不依赖 OkHttp，纯 java.net.HttpURLConnection 加 UTF-8 编解码。对端都在局域网，不走系统代理（对齐 desktop no_proxy）。
  * 任意 step 失败抛 SyncException，调用方负责打日志或记录到 linked_devices。
@@ -206,6 +208,14 @@ object SyncClient {
     return SyncJson.jsonToImportResult(envelope.optJSONObject("data") ?: JSONObject())
   }
 
+  /** 本机的聊天刚有写入：把聊天推游标之后的页推给对端，不拉。地址用上次校验过的 lastBase */
+  fun pushChat(db: SolevupDb, peerBase: String, token: String, deviceId: String): SolevupDb.ImportResult =
+    pushChatPages(db, SyncProtocol.normalizeBase(peerBase), deviceId, token, PUSH_TIMEOUT_MS)
+
+  /** 对端刚把聊天消息直推过来：消息里引用的图片文件马上去它那里拉。返回拉到几张 */
+  fun pullChatImagesFrom(db: SolevupDb, peerBase: String, token: String, deviceId: String): Int =
+    pullChatImages(db, SyncProtocol.normalizeBase(peerBase), deviceId, token)
+
   /** 消息引用了、本机没有文件的图片，从这台对端拉（规则见 src/lib/agent/chat-images.ts） */
   private fun pullChatImages(db: SolevupDb, base: String, peerDeviceId: String, token: String): Int {
     val dir = db.chatImageDir
@@ -298,29 +308,45 @@ object SyncClient {
         if (!page.more) break
       }
 
-      since = cursor.pushSeq
-      for (i in 0 until CHAT_MAX_PAGES) {
-        val page = db.exportChatPage(since, peerDeviceId, CHAT_PAGE_BYTES)
-        if (page.sessions.isNotEmpty() || page.messages.isNotEmpty()) {
-          val envelope = httpPostJson("$base/api/sync/chat", SyncJson.chatPageToJson(page), token)
-            ?: throw SyncException("推送聊天记录失败: 空响应")
-          if (!envelope.optBoolean("success")) {
-            throw SyncException(envelope.optString("error", "unknown"))
-          }
-          val r = SyncJson.jsonToImportResult(envelope.optJSONObject("data") ?: JSONObject())
-          pushed = pushed.copy(
-            chatSessions = pushed.chatSessions + r.chatSessions,
-            chatMessages = pushed.chatMessages + r.chatMessages,
-          )
-        }
-        db.saveChatPushSeq(peerDeviceId, page.seq)
-        since = page.seq
-        if (!page.more) break
-      }
+      pushed = pushChatPages(db, base, peerDeviceId, token, null)
     } catch (e: Throwable) {
       Log.w(TAG, "chat sync skipped: ${e.message}")
     }
     return pulled to pushed
+  }
+
+  /**
+   * 把聊天推游标之后的页一页页 POST 给对端，每页成功就挪游标。整轮和写入后直推共用；
+   * 两边偶尔同时推到同一页也没关系，对端按 id 合并。失败抛异常（游标停在最后成功的那页）。
+   */
+  private fun pushChatPages(
+    db: SolevupDb,
+    base: String,
+    peerDeviceId: String,
+    token: String,
+    timeoutMs: Int?,
+  ): SolevupDb.ImportResult {
+    var pushed = SolevupDb.ImportResult()
+    var since = db.chatSyncCursor(peerDeviceId).pushSeq
+    for (i in 0 until CHAT_MAX_PAGES) {
+      val page = db.exportChatPage(since, peerDeviceId, CHAT_PAGE_BYTES)
+      if (page.sessions.isNotEmpty() || page.messages.isNotEmpty()) {
+        val envelope = httpPostJson("$base/api/sync/chat", SyncJson.chatPageToJson(page), token, timeoutMs)
+          ?: throw SyncException("推送聊天记录失败: 空响应")
+        if (!envelope.optBoolean("success")) {
+          throw SyncException(envelope.optString("error", "unknown"))
+        }
+        val r = SyncJson.jsonToImportResult(envelope.optJSONObject("data") ?: JSONObject())
+        pushed = pushed.copy(
+          chatSessions = pushed.chatSessions + r.chatSessions,
+          chatMessages = pushed.chatMessages + r.chatMessages,
+        )
+      }
+      db.saveChatPushSeq(peerDeviceId, page.seq)
+      since = page.seq
+      if (!page.more) break
+    }
+    return pushed
   }
 
   /** GET <url>/api/sync/hello → 拿对端 device_id + alias。这个接口公开，不带令牌。 */

@@ -17,6 +17,8 @@ export interface ToolCallRecord {
 }
 
 export interface SessionMessage {
+  /** 和库里 chat_messages.id 是同一个值：同一条消息再写一次按它合并（先落库、录音晚点补） */
+  readonly id?: string
   readonly role: 'user' | 'assistant' | 'tool'
   readonly content: string | null
   readonly toolCalls: readonly ToolCallRecord[] | null
@@ -249,6 +251,7 @@ function fromApiMessage(m: ApiChatMessage): SessionMessage {
     try { usage = JSON.parse(m.usage_json) as ModelCallLog } catch { usage = null }
   }
   return {
+    id: m.id,
     role: m.role as SessionMessage['role'],
     content: m.content,
     toolCalls: m.tool_calls ? (JSON.parse(m.tool_calls) as ToolCallRecord[]) : null,
@@ -311,6 +314,7 @@ export async function persistMessages(
 ): Promise<void> {
   const body = {
     messages: messages.map((m) => ({
+      id: m.id ?? null,
       role: m.role,
       content: m.content,
       tool_calls: m.toolCalls ? JSON.stringify(m.toolCalls) : null,

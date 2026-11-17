@@ -549,6 +549,9 @@ pub struct ChatMessage {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateChatMessageRequest {
+    /// 界面自己定的 id；带了就能重写同一行（见 append_chat_messages）
+    #[serde(default)]
+    pub id: Option<String>,
     pub role: String,
     pub content: Option<String>,
     pub tool_calls: Option<String>,
@@ -3330,9 +3333,16 @@ impl Database {
         }
 
         for msg in req.messages {
-            let id = Uuid::new_v4().to_string();
+            let id = msg.id.clone().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| Uuid::new_v4().to_string());
+            // 同一个 id 再写一次只补本机才有的东西：回复一出完就落库（马上能推给对端），朗读的录音落盘后再补路径和时长。
+            // 补的这几项对端用不上（录音文件只在本机），不登记同步日志
             conn.execute(
-                "INSERT INTO chat_messages (id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms, usage_json, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO chat_messages (id, session_id, role, content, tool_calls, tool_call_id, name, timestamp, audio_path, duration_ms, usage_json, reasoning) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   audio_path = COALESCE(excluded.audio_path, audio_path),
+                   duration_ms = COALESCE(excluded.duration_ms, duration_ms),
+                   usage_json = COALESCE(excluded.usage_json, usage_json)
+                 WHERE session_id = excluded.session_id",
                 params![&id, session_id, &msg.role, &msg.content, &msg.tool_calls, &msg.tool_call_id, &msg.name, &msg.timestamp, &msg.audio_path, &msg.duration_ms, &msg.usage_json, &msg.reasoning],
             ).map_err(|e| e.to_string())?;
         }

@@ -763,6 +763,10 @@ async fn sync_chat_import(
                     "result": &result,
                 }));
             }
+            // 对端直推过来的消息可能带图：不等下一轮，马上去拉文件
+            if result.chat_messages > 0 {
+                sync_engine::pull_chat_images_from(state.db.clone(), state.app_handle.clone(), from_device_id);
+            }
             Json(ApiResponse::ok(result))
         }
         Err(e) => Json(ApiResponse::error(&e)),
@@ -2031,19 +2035,26 @@ pub fn create_router(
         .with_state(state)
 }
 
-/// 昼夜表和同步设置的写请求成功后，让同步引擎把变化推给已链接设备（对端推进来的走 /api/sync/import，不经过这里，不会来回弹）
+/// 昼夜表、同步设置、聊天的写请求成功后，让同步引擎把变化推给已链接设备
+/// （对端推进来的走 /api/sync/import 和 /api/sync/chat，不经过这里，不会来回弹）
 async fn notify_daynight_change(request: Request, next: Next) -> Response {
     let path = request.uri().path();
-    let watched = request.method() != axum::http::Method::GET
-        && request.method() != axum::http::Method::OPTIONS
+    let write = request.method() != axum::http::Method::GET && request.method() != axum::http::Method::OPTIONS;
+    let data = write
         && (path.starts_with("/api/activities/")
             || path.starts_with("/api/plans/")
             || path.starts_with("/api/islands")
             || path == "/api/island-checks"
             || path == "/api/sync/settings");
+    let chat = write && (path == "/api/sessions" || path.starts_with("/api/sessions/"));
     let response = next.run(request).await;
-    if watched && response.status().is_success() {
-        sync_engine::note_local_change();
+    if response.status().is_success() {
+        if data {
+            sync_engine::note_local_change();
+        }
+        if chat {
+            sync_engine::note_chat_change();
+        }
     }
     response
 }

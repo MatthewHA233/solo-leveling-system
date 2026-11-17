@@ -960,7 +960,9 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
         ))
       }
       // false = 会话已是墓碑，写入被拒，JS 层新建会话接着写
-      promise.resolve(db.appendChatMessages(sessionId, list))
+      val written = db.appendChatMessages(sessionId, list)
+      if (written) SyncRuntime.notifyChatChange()
+      promise.resolve(written)
     } catch (e: Throwable) { promise.reject("MESSAGES_APPEND_FAILED", e.message, e) }
   }
 
@@ -990,13 +992,13 @@ class SolevupDbModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun patchChatSession(sessionId: String, title: String?, summary: String?, promise: Promise) {
-    try { db.patchChatSession(sessionId, title, summary); promise.resolve(true) }
+    try { db.patchChatSession(sessionId, title, summary); SyncRuntime.notifyChatChange(); promise.resolve(true) }
     catch (e: Throwable) { promise.reject("SESSION_PATCH_FAILED", e.message, e) }
   }
 
   @ReactMethod
   fun deleteChatSession(sessionId: String, promise: Promise) {
-    try { db.deleteChatSession(sessionId); promise.resolve(true) }
+    try { db.deleteChatSession(sessionId); SyncRuntime.notifyChatChange(); promise.resolve(true) }
     catch (e: Throwable) { promise.reject("SESSION_DELETE_FAILED", e.message, e) }
   }
 

@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * 所有同步触发的唯一入口（启动 / 发现 / 网络恢复 / 回前台 / WorkManager / 手动 / 本机写入），
  * 语义对应 desktop sync_engine.rs：设备去重 + 冷却，避免多个触发源并发跑。
- * 一轮只传游标之后变过的；本机一有写入就把变化直接推给对端（notifyLocalChange）。
+ * 一轮只传游标之后变过的；本机一有写入就把变化直接推给对端（notifyLocalChange / notifyChatChange）。
  */
 class SyncCoordinator(
   private val db: SolevupDb,
@@ -55,6 +55,9 @@ class SyncCoordinator(
     Thread(r, "solevup-sync-push").apply { isDaemon = true }
   }
   private val pushPending = AtomicBoolean(false)
+  // 这一次要推哪些：昼夜表等全量表 / 聊天
+  private val dataDirty = AtomicBoolean(false)
+  private val chatDirty = AtomicBoolean(false)
   private val pushFailedAt = ConcurrentHashMap<String, Long>()
 
   fun isSyncing(deviceId: String): Boolean = syncing.contains(deviceId)
@@ -108,12 +111,26 @@ class SyncCoordinator(
 
   /** 本机的同步数据刚被改过：攒一小会儿（一次拖刷会连着写好几下），把变化推给各台已链接设备。 */
   fun notifyLocalChange() {
+    dataDirty.set(true)
+    schedulePush(PUSH_DEBOUNCE_MS)
+  }
+
+  /** 本机的聊天记录刚被改过（发了消息、回复出完、改标题、删会话）：消息是一条一条写的，几乎不攒。 */
+  fun notifyChatChange() {
+    chatDirty.set(true)
+    schedulePush(CHAT_PUSH_DEBOUNCE_MS)
+  }
+
+  private fun schedulePush(delayMs: Long) {
     if (!pushPending.compareAndSet(false, true)) return
-    pusher.schedule({ flushLocalChanges() }, PUSH_DEBOUNCE_MS, TimeUnit.MILLISECONDS)
+    pusher.schedule({ flushLocalChanges() }, delayMs, TimeUnit.MILLISECONDS)
   }
 
   private fun flushLocalChanges() {
     pushPending.set(false)
+    val data = dataDirty.getAndSet(false)
+    val chat = chatDirty.getAndSet(false)
+    if (!data && !chat) return
     val links = try {
       db.listLinkedDevices()
     } catch (t: Throwable) {
@@ -125,13 +142,22 @@ class SyncCoordinator(
       if (failedAt != null && System.currentTimeMillis() - failedAt < PUSH_RETRY_AFTER_MS) continue
       // 整轮正在跑：它导出本机数据的时刻可能早于这次写入，等它跑完再推
       if (syncing.contains(link.deviceId)) {
-        pusher.schedule({ notifyLocalChange() }, PUSH_BUSY_RETRY_MS, TimeUnit.MILLISECONDS)
+        pusher.schedule({
+          if (data) notifyLocalChange()
+          if (chat) notifyChatChange()
+        }, PUSH_BUSY_RETRY_MS, TimeUnit.MILLISECONDS)
         continue
       }
       try {
-        val r = SyncClient.pushChanges(db, link.lastBase, link.authToken, link.deviceId)
+        if (data) {
+          val r = SyncClient.pushChanges(db, link.lastBase, link.authToken, link.deviceId)
+          if (r != null) Log.i(TAG, "push ✓ ${link.alias}: ${SyncLog.describe(r)}")
+        }
+        if (chat) {
+          val r = SyncClient.pushChat(db, link.lastBase, link.authToken, link.deviceId)
+          if (r.chatSessions + r.chatMessages > 0) Log.i(TAG, "push chat ✓ ${link.alias}: ${SyncLog.describe(r)}")
+        }
         pushFailedAt.remove(link.deviceId)
-        if (r != null) Log.i(TAG, "push ✓ ${link.alias}: ${SyncLog.describe(r)}")
       } catch (t: Throwable) {
         // 对端不在线：这段时间的变化留给下一次一起带
         pushFailedAt[link.deviceId] = System.currentTimeMillis()
@@ -228,6 +254,17 @@ class SyncCoordinator(
     val base = remoteIp?.let { "http://$it:${SyncProtocol.DEFAULT_PORT}" } ?: link.lastBase
     db.touchLinkSynced(deviceId, base)
     listener.onSyncStatus(deviceId, false, true, null)
+    // 直推来的消息可能带图：不等下一轮，马上去拉文件，拉到了通知界面把占位换成图
+    if (result.chatMessages > 0) {
+      pusher.execute {
+        try {
+          val n = SyncClient.pullChatImagesFrom(db, base, link.authToken, deviceId)
+          if (n > 0) listener.onDbChanged("chat-images", SolevupDb.ImportResult(chatImages = n))
+        } catch (t: Throwable) {
+          Log.i(TAG, "pull chat images ✗ ${link.alias}: ${t.message}")
+        }
+      }
+    }
   }
 
   companion object {
@@ -240,6 +277,8 @@ class SyncCoordinator(
     private val FULL_ROUND_SOURCES = setOf("discover", "auto", "worker")
     private const val FULL_ROUND_MIN_UPTIME_MS = 10 * 60_000L
     private const val PUSH_DEBOUNCE_MS = 300L
+    // 只为把同一瞬间的几行（工具记录 + 回复）并成一次（desktop CHAT_PUSH_DEBOUNCE）
+    private const val CHAT_PUSH_DEBOUNCE_MS = 80L
     // 直推失败（对端不在线）后隔这么久再试
     private const val PUSH_RETRY_AFTER_MS = 30_000L
     private const val PUSH_BUSY_RETRY_MS = 2_000L

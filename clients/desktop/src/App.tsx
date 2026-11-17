@@ -34,7 +34,7 @@ import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
 import { runQueryLoop } from './lib/llm/query-loop'
 import { contextBudget, estimateContextTokens, roughTokens, withSystemReminder, type CompactionResult, type ContextBudget } from './lib/llm/context-window'
 import { createCompactor, type CompactionContext } from './lib/agent/chat-compaction'
-import { compactNotice, compactSummaryRow, isCompactSummaryRow, restoreLLMHistory, TOOL_TRACE_ROW, toolCallsOfTrace, toolTraceRow } from './lib/agent/chat-history'
+import { compactNotice, compactSummaryRow, isCompactSummaryRow, restoreLLMHistory, rowsToLLMMessages, TOOL_TRACE_ROW, toolCallsOfTrace, toolTraceRow } from './lib/agent/chat-history'
 import { finishToolCall, startToolCall, toolCallLine, type ToolCallView } from './lib/agent/tool-call-view'
 import { withBrowserArgs } from './lib/webview-args'
 import { buildAsrContext, buildAsrVocabulary } from './lib/voice/asr-hints'
@@ -275,6 +275,7 @@ function makeSessionMessage(
   durationMs?: number,
 ): SessionMessage {
   return {
+    id: crypto.randomUUID(),
     role,
     content,
     toolCalls: null,
@@ -591,6 +592,8 @@ export default function App() {
 
   // ── Session 持久化 ──
   const sessionIdRef = useRef<string | null>(null)
+  // 别的设备同步过来聊天时调（实现见 syncChatFromDb）
+  const chatSyncRef = useRef<() => void>(() => {})
   const sessionTitleRef = useRef<string>('新会话')       // 现存标题，用于决定是否触发 AI 重命名
   const [sessionTitle, setSessionTitle] = useState('新会话') // 同一份标题给通讯栏显示
   /** 标题只从这里改：ref（逻辑判断用）和 state（界面显示用）一起走 */
@@ -1127,6 +1130,9 @@ export default function App() {
             alias,
             text: `← ${alias} 推过来 ${detail}`,
           })
+          if ((e.payload?.result?.chat_sessions ?? 0) + (e.payload?.result?.chat_messages ?? 0) > 0) chatSyncRef.current()
+          // 聊天走独立通道，结果里没有昼夜表那几项：只合聊天，不重读昼夜表（重读会清掉撤销栈）
+          if (e.payload?.result && e.payload.result.activity_blocks === undefined) return
           if (e.payload?.result?.settings > 0) {
             applySyncedSettings().catch((err) => console.warn('[Sync] 读取同步设置失败', err))
           }
@@ -1218,6 +1224,7 @@ export default function App() {
               applySyncedSettings().catch((err) => console.warn('[Sync] 读取同步设置失败', err))
             }
             if ((pulled?.chat_images ?? 0) > 0) window.dispatchEvent(new Event(CHAT_IMAGES_UPDATED))
+            if ((pulled?.chat_sessions ?? 0) + (pulled?.chat_messages ?? 0) > 0) chatSyncRef.current()
             if ((pulled?.plan_islands ?? 0) + (pulled?.plan_island_checks ?? 0) > 0) reloadIslands()
             // AUDIT-035：pulledCount 也必须包含模型 4 表，否则纯模型同步时
             // pulledCount=0，下面的重渲染分支永远不会触发，前端永远拿不到新模型设置
@@ -1274,6 +1281,10 @@ export default function App() {
           } else {
             pushSyncLog({ kind: 'error', alias, text: `✗ ${alias} 同步失败: ${e.payload?.error ?? '未知错误'}` })
           }
+        }),
+        // 对端直推来的消息带图，文件刚拉到：让占位的图重新加载
+        listen('sync:chat-images', () => {
+          window.dispatchEvent(new Event(CHAT_IMAGES_UPDATED))
         }),
       ])
       if (cancelled) {
@@ -2596,6 +2607,14 @@ export default function App() {
       }])
     }
 
+    // 主人这句一发出就落库，不等回复（落库后立刻推给已链接的设备）；语音那句在转写定稿时已经存过
+    const userText = text.trim()
+    if (!fromVoice && turnSessionId && (userText || images.length > 0)) {
+      const userRow: SessionMessage = { ...makeSessionMessage('user', withImageMarker(userText, images.map((i) => i.id))), timestamp: sentAt }
+      if (sessionIdRef.current === turnSessionId) persistedBufferRef.current = [...persistedBufferRef.current, userRow]
+      persistMessages(turnSessionId, [userRow]).catch((e) => console.warn('[Chat] 用户消息写入失败', e))
+    }
+
     // 本轮回复的轮次号：被打断的轮次收尾时不再动 Fairy 状态和「处理中」标志，免得盖掉新一轮
     const turnId = ++replyTurnRef.current
     let interrupted = false
@@ -2950,15 +2969,11 @@ export default function App() {
         })()
       }
 
-      // ── 持久化本轮：user + 工具记录（切会话、重启后还在）+ 最终 assistant；时间和气泡、发给模型的那条一致 ──
+      // ── 持久化本轮：工具记录（切会话、重启后还在）+ 最终 assistant；时间和气泡、发给模型的那条一致（主人那句发出时已经存了）──
       const newPairs: SessionMessage[] = []
-      const userText = text.trim()
-      if (!fromVoice && (userText || images.length > 0)) {
-        newPairs.push({ ...makeSessionMessage('user', withImageMarker(userText, images.map((i) => i.id))), timestamp: sentAt })
-      }
       const turnStart = newHistory.indexOf(apiUserMsg)
       const traceRow = turnStart >= 0 ? toolTraceRow(newHistory.slice(turnStart + 1), sentAt) : null
-      if (traceRow) newPairs.push(traceRow)
+      if (traceRow) newPairs.push({ ...traceRow, id: crypto.randomUUID() })
       if (replyText.trim()) {
         newPairs.push({
           ...makeSessionMessage('assistant', replyText.trim()),
@@ -2973,6 +2988,12 @@ export default function App() {
             break
           }
         }
+      }
+
+      // 回复一出完就落库，不等朗读（朗读可能还要几十秒）；录音落盘后用同一个 id 补上路径和时长
+      if (turnSessionId && newPairs.length > 0) {
+        if (sessionIdRef.current === turnSessionId) persistedBufferRef.current = [...persistedBufferRef.current, ...newPairs]
+        persistMessages(turnSessionId, newPairs).catch((e) => console.warn('[Chat] 回复写入失败', e))
       }
 
       // ── TTS：LLM 完成后 flush，等待音频；同步收集 PCM chunks 拼 WAV 落盘 ──
@@ -3046,27 +3067,16 @@ export default function App() {
         emitFairy('idle')
       }
 
-      // ── 持久化本轮对话（在 TTS 之后，最终 assistant 顺手带上 audioPath/durationMs）──
-      if (turnSessionId) {
-        const sid = turnSessionId
-        if (aiAudioPath) {
-          for (let i = newPairs.length - 1; i >= 0; i--) {
-            if (newPairs[i].role === 'assistant') {
-              newPairs[i] = {
-                ...newPairs[i],
-                audioPath: aiAudioPath,
-                durationMs: aiAudioDurationMs ?? null,
-              }
-              break
-            }
+      // ── 朗读的录音落盘了：给刚才存的那行 assistant 补上 audioPath/durationMs（同一个 id，库里按 id 合并）──
+      if (turnSessionId && aiAudioPath) {
+        const spoken = [...newPairs].reverse().find((m) => m.role === 'assistant')
+        if (spoken) {
+          const withAudio: SessionMessage = { ...spoken, audioPath: aiAudioPath, durationMs: aiAudioDurationMs ?? null }
+          if (sessionIdRef.current === turnSessionId) {
+            persistedBufferRef.current = persistedBufferRef.current.map((m) => (m.id === spoken.id ? withAudio : m))
           }
+          persistMessages(turnSessionId, [withAudio]).catch((e) => console.warn('[Chat] 回复录音写入失败', e))
         }
-        const deduplicated = newPairs
-        if (deduplicated.length > 0) {
-          if (sessionIdRef.current === sid) persistedBufferRef.current = [...persistedBufferRef.current, ...deduplicated]
-          persistMessages(sid, deduplicated).catch(() => {})
-        }
-
       }
     } catch (err) {
       if (!interrupted) {
@@ -3172,6 +3182,67 @@ export default function App() {
       setChatMessages([])
     }
   }, [revokeTrackedBlobAudioUrls])
+
+  // ── 别的设备同步过来的聊天：合进当前会话和会话列表，不用重开（规则同手机端 chat-sessions.ts syncCurrentFromDb）──
+  const isProcessingRef = useRef(false)
+  const pendingChatSyncRef = useRef(false)
+  const syncChatFromDb = useCallback(async () => {
+    getRecentChatSessions(50).then((list) => {
+      setSessions(list)
+      // 另一台设备起的标题
+      const current = list.find((s) => s.id === sessionIdRef.current)
+      if (current?.title && current.title !== sessionTitleRef.current) applySessionTitle(current.title)
+    }).catch(() => {})
+    const sid = sessionIdRef.current
+    if (!sid) return
+    // 正在回复：等这一轮收尾再合，免得打乱正在生成的那几条
+    if (isProcessingRef.current) {
+      pendingChatSyncRef.current = true
+      return
+    }
+    const rows = await fetchSessionMessages(sid)
+    if (sid !== sessionIdRef.current) return
+    if (isProcessingRef.current) {
+      pendingChatSyncRef.current = true
+      return
+    }
+    // 本机写的行旧版本没带 id，所以再按「角色 + 时间」认一次
+    const keyOf = (m: SessionMessage) => `${m.role}|${m.timestamp}`
+    const timeOf = (ts: string) => {
+      const ms = new Date(ts).getTime()
+      return Number.isFinite(ms) ? ms : 0
+    }
+    const buffer = persistedBufferRef.current
+    const knownIds = new Set(buffer.flatMap((m) => (m.id ? [m.id] : [])))
+    const knownKeys = new Set(buffer.map(keyOf))
+    // 比缓冲里最早那行还早的不算「新」
+    const earliest = buffer[0] ? timeOf(buffer[0].timestamp) : 0
+    const unseen = rows.filter((r) =>
+      !(r.id && knownIds.has(r.id)) && !knownKeys.has(keyOf(r)) && timeOf(r.timestamp) >= earliest)
+    const rowIds = new Set(rows.flatMap((r) => (r.id ? [r.id] : [])))
+    const rowKeys = new Set(rows.map(keyOf))
+    const unwritten = buffer.filter((m) => !(m.id && rowIds.has(m.id)) && !rowKeys.has(keyOf(m)))
+    persistedBufferRef.current = [...rows, ...unwritten]
+    // 另一台设备写的压缩摘要不接到这里：这边的历史没按它压，下次打开会话再显示
+    const fresh = unseen.filter((r) => !isCompactSummaryRow(r))
+    if (fresh.length === 0) return
+    conversationRef.current = [...conversationRef.current, ...rowsToLLMMessages(fresh)]
+    setChatMessages((prev) => [...prev, ...sessionMessagesToChatMessages(fresh, audioDirRef.current)])
+  }, [applySessionTitle])
+
+  useEffect(() => {
+    chatSyncRef.current = () => {
+      syncChatFromDb().catch((err) => console.warn('[Chat] 合并同步内容失败', err))
+    }
+  }, [syncChatFromDb])
+
+  useEffect(() => {
+    isProcessingRef.current = isProcessing
+    if (!isProcessing && pendingChatSyncRef.current) {
+      pendingChatSyncRef.current = false
+      chatSyncRef.current()
+    }
+  }, [isProcessing])
 
   const mainPanelStyle = (mode: MainViewMode): React.CSSProperties => {
     const panelOrder: Record<MainViewMode, number> = {

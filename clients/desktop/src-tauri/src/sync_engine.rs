@@ -12,12 +12,15 @@
 //   · 没有游标时整份传一次；之后每 FULL_ROUND_EVERY 在后台再整份对一次，兜住增量漏掉的
 //   · 昼夜表一有写入（note_local_change）：攒 PUSH_DEBOUNCE 后把 push_cursor 之后的变化直接推给对端的 import，
 //     不拉、不发界面事件
+//   · 聊天一有写入（note_chat_change）：攒 CHAT_PUSH_DEBOUNCE 后把聊天推游标（chat_sync_cursor.push_seq）之后的页
+//     直接 POST 给对端的 /api/sync/chat；对端收到带图的消息马上回头拉图片文件（pull_chat_images_from）
 // ══════════════════════════════════════════════
 
 use crate::db::{ChatSyncImportResult, ChatSyncPage, Database, LinkedDevice, SyncExport, SyncImportResult};
 use crate::sync_auth;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -64,6 +67,8 @@ const FULL_ROUND_EVERY_SECS: i64 = 24 * 3600;
 const FULL_ROUND_MIN_UPTIME: Duration = Duration::from_secs(600);
 /// 昼夜表写入后攒这么久再推（一次拖刷会连着写好几下）
 const PUSH_DEBOUNCE: Duration = Duration::from_millis(300);
+/// 聊天写入后攒这么久再推：消息是一条一条写的，只为把同一瞬间的几行（工具记录 + 回复）并成一次
+const CHAT_PUSH_DEBOUNCE: Duration = Duration::from_millis(80);
 const PUSH_TIMEOUT: Duration = Duration::from_secs(5);
 /// 直推失败（对端不在线）后隔这么久再试，期间的变化留给下一次一起带
 const PUSH_RETRY_AFTER: Duration = Duration::from_secs(30);
@@ -163,8 +168,18 @@ fn push_failures() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
     M.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
+static DATA_DIRTY: AtomicBool = AtomicBool::new(false);
+static CHAT_DIRTY: AtomicBool = AtomicBool::new(false);
+
 /// 本机的昼夜表数据刚被改过（API 层的写请求成功后调）
 pub fn note_local_change() {
+    DATA_DIRTY.store(true, Ordering::SeqCst);
+    local_change().notify_one();
+}
+
+/// 本机的聊天记录刚被改过（发了消息、回复出完、改标题、删会话）
+pub fn note_chat_change() {
+    CHAT_DIRTY.store(true, Ordering::SeqCst);
     local_change().notify_one();
 }
 
@@ -174,13 +189,16 @@ pub fn spawn_change_pusher(db: Arc<Database>) {
     tauri::async_runtime::spawn(async move {
         loop {
             local_change().notified().await;
-            tokio::time::sleep(PUSH_DEBOUNCE).await;
-            push_local_changes(&db).await;
+            let wait = if DATA_DIRTY.load(Ordering::SeqCst) { PUSH_DEBOUNCE } else { CHAT_PUSH_DEBOUNCE };
+            tokio::time::sleep(wait).await;
+            let data = DATA_DIRTY.swap(false, Ordering::SeqCst);
+            let chat = CHAT_DIRTY.swap(false, Ordering::SeqCst);
+            push_local_changes(&db, data, chat).await;
         }
     });
 }
 
-async fn push_local_changes(db: &Arc<Database>) {
+async fn push_local_changes(db: &Arc<Database>, data: bool, chat: bool) {
     let links = match db.list_linked_devices().await {
         Ok(l) => l,
         Err(e) => {
@@ -194,25 +212,70 @@ async fn push_local_changes(db: &Arc<Database>) {
         }
         // 整轮正在跑：它导出本机数据的时刻可能早于这次写入，等它跑完再推
         if lock_set(syncing_set()).contains(&link.device_id) {
-            tauri::async_runtime::spawn(async {
+            tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(PUSH_BUSY_RETRY).await;
-                note_local_change();
+                if data {
+                    note_local_change();
+                }
+                if chat {
+                    note_chat_change();
+                }
             });
             continue;
         }
-        match push_changes_to(db, &link).await {
-            Ok(Some(rows)) => {
-                lock_map(push_failures()).remove(&link.device_id);
-                log::info!("[SyncEngine] 直推 {}：{} 行", link.alias, rows);
+        let mut failed: Option<String> = None;
+        if data {
+            match push_changes_to(db, &link).await {
+                Ok(Some(rows)) => log::info!("[SyncEngine] 直推 {}：{} 行", link.alias, rows),
+                // 还没整份同步过，没有游标：留给下一轮
+                Ok(None) => {}
+                Err(e) => failed = Some(e),
             }
-            // 还没整份同步过，没有游标：留给下一轮
-            Ok(None) => {}
-            Err(e) => {
+        }
+        if chat && failed.is_none() {
+            match push_chat_to(db, &link).await {
+                Ok((sessions, messages)) => {
+                    if sessions + messages > 0 {
+                        log::info!("[SyncEngine] 直推 {}：聊天会话 {} / 消息 {}", link.alias, sessions, messages);
+                    }
+                }
+                Err(e) => failed = Some(e),
+            }
+        }
+        match failed {
+            None => {
+                lock_map(push_failures()).remove(&link.device_id);
+            }
+            // 没推成的留给下一次写入或下一轮一起带（游标没动）
+            Some(e) => {
                 lock_map(push_failures()).insert(link.device_id.clone(), Instant::now());
                 log::info!("[SyncEngine] 直推 {} 失败（{} 秒后再试）: {}", link.alias, PUSH_RETRY_AFTER.as_secs(), e);
             }
         }
     }
+}
+
+/// 把聊天推游标之后的页推给一台对端；返回对端采用的（会话数, 消息数）。地址用上次验证过的 last_base
+async fn push_chat_to(db: &Arc<Database>, link: &LinkedDevice) -> Result<(usize, usize), String> {
+    let client = authed_client(&link.auth_token)?;
+    let url = format!("{}/api/sync/chat", normalize_base(&link.last_base));
+    push_chat_pages(db, &client, &url, &link.device_id, Some(PUSH_TIMEOUT)).await
+}
+
+/// 对端刚把聊天消息直推过来：消息里引用的图片文件马上去它那里拉，拉到了通知界面重画
+pub fn pull_chat_images_from(db: Arc<Database>, app: Arc<AppHandle>, device_id: String) {
+    tauri::async_runtime::spawn(async move {
+        let link = match db.list_linked_devices().await {
+            Ok(links) => links.into_iter().find(|l| l.device_id == device_id),
+            Err(_) => None,
+        };
+        let Some(link) = link else { return };
+        let Ok(client) = authed_client(&link.auth_token) else { return };
+        let pulled = pull_chat_images(&db, &client, &normalize_base(&link.last_base), &link.device_id).await;
+        if pulled > 0 {
+            let _ = app.emit("sync:chat-images", serde_json::json!({ "device_id": device_id, "count": pulled }));
+        }
+    });
 }
 
 /// 把 push_cursor 之后的变化推给一台对端；返回对端采用的行数。地址用上次验证过的 last_base
@@ -534,7 +597,7 @@ async fn sync_chat(
     pushed: &mut SyncImportResult,
 ) -> Result<(), String> {
     let self_id = db.sync_device_id().await?;
-    let (pull_seq, push_seq) = db.chat_sync_cursor(peer_device_id).await?;
+    let (pull_seq, _) = db.chat_sync_cursor(peer_device_id).await?;
 
     let url = format!("{}/api/sync/chat", base);
     let mut since = pull_seq;
@@ -562,20 +625,41 @@ async fn sync_chat(
         }
     }
 
+    let (sessions, messages) = push_chat_pages(db, client, &url, peer_device_id, None).await?;
+    pushed.chat_sessions += sessions;
+    pushed.chat_messages += messages;
+    Ok(())
+}
+
+/// 把聊天推游标之后的页一页页 POST 给对端，每页成功就挪游标。整轮和写入后直推共用；
+/// 两边偶尔同时推到同一页也没关系，对端按 id 合并
+async fn push_chat_pages(
+    db: &Database,
+    client: &reqwest::Client,
+    url: &str,
+    peer_device_id: &str,
+    timeout: Option<Duration>,
+) -> Result<(usize, usize), String> {
+    let (_, push_seq) = db.chat_sync_cursor(peer_device_id).await?;
     let mut since = push_seq;
+    let (mut sessions, mut messages) = (0usize, 0usize);
     for _ in 0..CHAT_MAX_PAGES {
         let page = db.chat_sync_page(since, Some(peer_device_id), CHAT_PAGE_BYTES).await?;
         let (seq, more) = (page.seq, page.more);
         if !page.sessions.is_empty() || !page.messages.is_empty() {
-            let resp: ApiEnvelope<ChatSyncImportResult> = client.post(&url).json(&page).send().await
+            let mut req = client.post(url).json(&page);
+            if let Some(t) = timeout {
+                req = req.timeout(t);
+            }
+            let resp: ApiEnvelope<ChatSyncImportResult> = req.send().await
                 .map_err(|e| e.to_string())?
                 .json().await.map_err(|e| e.to_string())?;
             if !resp.success {
                 return Err(resp.error.unwrap_or_default());
             }
             let result = resp.data.ok_or("聊天记录推送结果为空")?;
-            pushed.chat_sessions += result.chat_sessions;
-            pushed.chat_messages += result.chat_messages;
+            sessions += result.chat_sessions;
+            messages += result.chat_messages;
         }
         db.save_chat_push_seq(peer_device_id, seq).await?;
         since = seq;
@@ -583,7 +667,7 @@ async fn sync_chat(
             break;
         }
     }
-    Ok(())
+    Ok((sessions, messages))
 }
 
 /// 启动时遍历 linked_devices 做一轮，失败只记日志不打扰用户。
