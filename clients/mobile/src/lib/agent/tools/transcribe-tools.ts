@@ -3,8 +3,8 @@
 // 数据来源 ② 桌面端：视频和转录都在电脑上。文件头之外逐字一致，改工具要两端一起改
 // ══════════════════════════════════════════════
 
-import { requestVideoTranscribe, searchVideoTranscripts } from '../../bili-transcribe-api'
-import type { TranscribeKind, TranscriptHit } from '../../bili-transcribe-api'
+import { getVideoJobStatus, requestVideoTranscribe, searchVideoTranscripts } from '../../bili-transcribe-api'
+import type { TranscribeKind, TranscriptHit, VideoJobStatus } from '../../bili-transcribe-api'
 import type { ToolDefinition } from '../../llm/types'
 import { enqueueTaskNotice } from '../message-queue'
 
@@ -21,9 +21,11 @@ const READ_LINES = 80
 const LIST_LIMIT = 12
 const MAX_FRAME_INTERVAL_SEC = 60
 
-/** 转录在电脑后台跑：隔一会儿看一眼转好没有，转好了给 Fairy 发通知 */
+/** 转录在电脑后台跑：隔一会儿看一眼转好没有，转好或失败了给 Fairy 发通知 */
 const WATCH_INTERVAL_MS = 15_000
 const WATCH_TIMEOUT_MS = 40 * 60_000
+/** 进度这么久没动过，就不当它还在跑（电脑的应用可能重开过） */
+const STALE_AFTER_SEC = 20 * 60
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
@@ -124,6 +126,82 @@ const findVideoTranscript: TranscribeTool = {
   },
 }
 
+// ── 进度（电脑的任务面板报的）──
+
+const DOWNLOAD_STAGE: Record<string, string> = {
+  queued: '排队等下载', fetching_meta: '在解析视频', downloading_video: '在下载视频', downloading_audio: '在下载音频',
+  merging: '在合并音视频', done: '下载好了', error: '下载失败', paused: '下载被暂停了', cancelled: '下载被取消了',
+}
+const TRANSCRIBE_STAGE: Record<string, string> = {
+  queued: '排队等转录', extracting: '在准备素材', uploading: '在上传', transcribing: '在识别', done: '转录好了', error: '转录失败',
+}
+
+function isFailed(s: VideoJobStatus): boolean {
+  return s.stage === 'error' || s.stage === 'cancelled'
+}
+
+/** 还在往前走：没结束、没暂停，而且最近有动静 */
+function isRunning(s: VideoJobStatus): boolean {
+  if (isFailed(s) || s.stage === 'paused') return false
+  if (s.phase === 'transcribe' && s.stage === 'done') return false
+  return s.age_sec < STALE_AFTER_SEC
+}
+
+function stageText(s: VideoJobStatus): string {
+  const label = (s.phase === 'download' ? DOWNLOAD_STAGE : TRANSCRIBE_STAGE)[s.stage] ?? s.stage
+  const percent = s.phase === 'download' && s.stage.startsWith('downloading') && s.percent != null
+    ? ` ${Math.round(s.percent)}%`
+    : ''
+  const reason = isFailed(s) && s.message ? `（${s.message}）` : ''
+  return `${label}${percent}${reason}`
+}
+
+function statusLine(s: VideoJobStatus): string {
+  return `- 《${s.title || s.bvid}》 ${s.bvid}：${stageText(s)}`
+}
+
+async function statusOf(bvids: readonly string[]): Promise<Map<string, VideoJobStatus>> {
+  try {
+    return new Map((await getVideoJobStatus(bvids)).map((s) => [s.bvid, s]))
+  } catch {
+    // 老版本的电脑没有这个接口，或者暂时连不上：当作不知道
+    return new Map()
+  }
+}
+
+// ── TranscribeProgress ──
+
+const transcribeProgress: TranscribeTool = {
+  desktop: { read: '转录进度' },
+  definition: {
+    type: 'function',
+    function: {
+      name: 'TranscribeProgress',
+      description:
+        '看电脑上视频下载 / 转录到哪一步了（排队、下载到百分之几、在识别、转好了、失败和失败原因）。' +
+        '主人问「好了吗」「怎么还没好」时用它，照实说到哪一步了；不要为了等结果反复调用，转好或失败时系统会发通知给你。' +
+        'bvids 不填 = 最近的全部任务。',
+      parameters: {
+        type: 'object',
+        properties: {
+          bvids: { type: 'array', items: { type: 'string' }, description: '要看的视频 BV 号；不填看全部' },
+        },
+        required: [],
+      },
+    },
+  },
+  async execute(args) {
+    const bvids = [...new Set(toList(args.bvids))]
+    const rows = await getVideoJobStatus(bvids)
+    if (rows.length === 0) {
+      return bvids.length > 0
+        ? '电脑上没有这些视频的任务记录。可能是电脑的应用重开过（进度只记在内存里），用 FindVideoTranscript 看它是不是已经转好了；没转好就用 TranscribeVideos 重新交一次。'
+        : '电脑上现在没有下载或转录的任务。'
+    }
+    return rows.map(statusLine).join('\n')
+  },
+}
+
 // ── TranscribeVideos ──
 
 /** 正在等的转录（BV 号）：同一个视频不重复盯 */
@@ -143,6 +221,12 @@ function watchTranscribe(bvid: string, title: string, kind: TranscribeKind, befo
       // 重新转录时原来就有一份，要等到时间变了才算这次的
       if (hit && hit.transcribed_at !== before) {
         finish(`《${title}》转录好了（${kindLabel(kind)}，共 ${hit.total} 句，${bvid}）。用 FindVideoTranscript 读它。`)
+        return
+      }
+      // 失败了马上说，不等到超时
+      const status = (await statusOf([bvid])).get(bvid)
+      if (status && isFailed(status)) {
+        finish(`《${title}》（${bvid}）没转成：${stageText(status)}。告诉主人，问要不要再试一次。`)
         return
       }
     } catch { /* 电脑暂时连不上，下次再看 */ }
@@ -194,14 +278,30 @@ const transcribeVideos: TranscribeTool = {
       if (hit) before.set(bvid, hit.transcribed_at)
     }
 
-    const res = await requestVideoTranscribe(bvids, kind, interval)
+    // 已经在下载或转录的不重复交（重复交会从头再下一遍），接着等原来那次
+    const current = await statusOf(bvids)
+    const running = bvids.flatMap((b) => {
+      const s = current.get(b)
+      return s && isRunning(s) ? [s] : []
+    })
+    const fresh = bvids.filter((b) => !running.some((s) => s.bvid === b))
+    for (const s of running) watchTranscribe(s.bvid, s.title || s.bvid, kind, before.get(s.bvid) ?? '')
+
+    const res = fresh.length > 0
+      ? await requestVideoTranscribe(fresh, kind, interval)
+      : { accepted: [], unknown: [], kind }
     for (const v of res.accepted) watchTranscribe(v.bvid, v.title, kind, before.get(v.bvid) ?? '')
 
     const lines: string[] = []
+    if (running.length > 0) {
+      lines.push('这些已经在做了，没有重复交，照实告诉主人到哪一步了：')
+      lines.push(...running.map(statusLine))
+      lines.push('转好或失败时系统会发通知给你。')
+    }
     if (res.accepted.length > 0) {
       lines.push(`已经交给电脑在后台下载并转录（${kindLabel(kind)}），共 ${res.accepted.length} 个：`)
       lines.push(...res.accepted.map((v) => `- 《${v.title}》 ${v.bvid}`))
-      lines.push('不用等也不用查：转好时系统会发通知给你。现在告诉主人已经开始了，然后照常聊。')
+      lines.push('不用等也不用查：转好或失败时系统会发通知给你。现在告诉主人已经开始了，然后照常聊；主人问进度时用 TranscribeProgress 看。')
     }
     if (res.unknown.length > 0) {
       lines.push(`这些 BV 号不在观看记录里，没有处理：${res.unknown.join('、')}。用 GetBiliHistory 核对一下。`)
@@ -210,4 +310,4 @@ const transcribeVideos: TranscribeTool = {
   },
 }
 
-export const TRANSCRIBE_TOOLS: readonly TranscribeTool[] = [findVideoTranscript, transcribeVideos]
+export const TRANSCRIBE_TOOLS: readonly TranscribeTool[] = [findVideoTranscript, transcribeVideos, transcribeProgress]

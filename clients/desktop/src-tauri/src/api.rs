@@ -1481,6 +1481,13 @@ async fn request_bili_transcribe(
     };
     let unknown: Vec<String> = bvids.into_iter().filter(|b| !accepted.iter().any(|a| &a.bvid == b)).collect();
     if !accepted.is_empty() {
+        // 先记成「排队」：盖掉上一次留下的失败状态，任务面板接手后会报真实进度
+        for v in &accepted {
+            put_bili_job_status(BiliJobStatus {
+                bvid: v.bvid.clone(), title: v.title.clone(), phase: "download".to_string(), stage: "queued".to_string(),
+                percent: None, message: None, updated_ms: 0, age_sec: 0,
+            });
+        }
         let _ = state.app_handle.emit("bili:transcribe-request", serde_json::json!({
             "videos": &accepted,
             "kind": &kind,
@@ -1488,6 +1495,92 @@ async fn request_bili_transcribe(
         }));
     }
     Json(ApiResponse::ok(TranscribeRequestResult { accepted, unknown, kind }))
+}
+
+/// 一个视频的下载 / 转录进度。任务面板（BiliJobsWidget）每次变化报上来，只放内存，应用重启就清空。
+/// Fairy 靠它回答「好了吗」，失败时马上知道，不用等到超时
+#[derive(Clone, Serialize, Deserialize)]
+struct BiliJobStatus {
+    bvid: String,
+    #[serde(default)]
+    title: String,
+    /// download | transcribe
+    phase: String,
+    stage: String,
+    #[serde(default)]
+    percent: Option<f64>,
+    #[serde(default)]
+    message: Option<String>,
+    /// 上次变化的时刻（毫秒时间戳），只在服务端用
+    #[serde(default, skip_serializing)]
+    updated_ms: i64,
+    /// 距上次变化过了几秒（读的时候算；两台设备的钟可能不一样，不直接给时刻）
+    #[serde(default, skip_deserializing)]
+    age_sec: i64,
+}
+
+const BILI_JOB_STATUS_MAX: usize = 300;
+
+fn bili_job_statuses() -> &'static std::sync::Mutex<std::collections::HashMap<String, BiliJobStatus>> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, BiliJobStatus>>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn put_bili_job_status(mut status: BiliJobStatus) {
+    let Ok(mut map) = bili_job_statuses().lock() else { return };
+    status.updated_ms = chrono::Utc::now().timestamp_millis();
+    if status.title.is_empty() {
+        if let Some(old) = map.get(&status.bvid) { status.title = old.title.clone(); }
+    }
+    if map.len() >= BILI_JOB_STATUS_MAX && !map.contains_key(&status.bvid) {
+        // 满了：丢掉最久没动的一条
+        if let Some(oldest) = map.values().min_by_key(|s| s.updated_ms).map(|s| s.bvid.clone()) {
+            map.remove(&oldest);
+        }
+    }
+    map.insert(status.bvid.clone(), status);
+}
+
+/// POST /api/bilibili/job-status — 任务面板报一条进度
+async fn report_bili_job_status(Json(body): Json<BiliJobStatus>) -> Json<ApiResponse<bool>> {
+    if body.bvid.trim().is_empty() || body.stage.trim().is_empty() {
+        return Json(ApiResponse::error("缺 bvid 或 stage"));
+    }
+    if body.phase != "download" && body.phase != "transcribe" {
+        return Json(ApiResponse::error("phase 只能是 download 或 transcribe"));
+    }
+    put_bili_job_status(body);
+    Json(ApiResponse::ok(true))
+}
+
+#[derive(Deserialize)]
+struct BiliJobStatusQuery {
+    /// BV 号，逗号分开；不给 = 全部
+    bvids: Option<String>,
+}
+
+/// GET /api/bilibili/job-status?bvids=a,b — 这些视频现在下载 / 转录到哪一步（最近动过的排前面）
+async fn get_bili_job_status(Query(query): Query<BiliJobStatusQuery>) -> Json<ApiResponse<Vec<BiliJobStatus>>> {
+    let wanted: Vec<String> = query
+        .bvids
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut rows: Vec<BiliJobStatus> = match bili_job_statuses().lock() {
+        Ok(map) => map
+            .values()
+            .filter(|s| wanted.is_empty() || wanted.contains(&s.bvid))
+            .cloned()
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    rows.sort_by_key(|s| std::cmp::Reverse(s.updated_ms));
+    for s in rows.iter_mut() { s.age_sec = ((now - s.updated_ms) / 1000).max(0); }
+    Json(ApiResponse::ok(rows))
 }
 
 /// GET /api/bilibili/history?page=0&page_size=50&unlinked_only=false
@@ -2089,6 +2182,7 @@ pub fn create_router(
         .route("/api/bilibili/transcripts", get(get_bili_transcripts))
         .route("/api/bilibili/transcripts/search", get(search_bili_transcripts))
         .route("/api/bilibili/transcribe-request", post(request_bili_transcribe))
+        .route("/api/bilibili/job-status", get(get_bili_job_status).post(report_bili_job_status))
         .route("/api/bilibili/history/link", axum::routing::put(link_bili_to_event))
         .route("/api/bilibili/cover", get(proxy_bili_cover))
         .route("/api/bilibili/spans/day", get(get_bili_spans_day))

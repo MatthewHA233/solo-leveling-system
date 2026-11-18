@@ -42,6 +42,19 @@ export interface TranscribeRequestResult {
   readonly kind: string
 }
 
+/** 一个视频的下载 / 转录进度（电脑的任务面板报的，应用重启就清空） */
+export interface VideoJobStatus {
+  readonly bvid: string
+  readonly title: string
+  readonly phase: 'download' | 'transcribe'
+  /** 下载：queued fetching_meta downloading_video downloading_audio merging done error paused cancelled；转录：queued extracting uploading transcribing done error */
+  readonly stage: string
+  readonly percent: number | null
+  readonly message: string | null
+  /** 距上次变化过了几秒 */
+  readonly age_sec: number
+}
+
 function searchPath(q: TranscriptSearch): string {
   const parts: string[] = []
   if (q.video) parts.push(`video=${encodeURIComponent(q.video)}`)
@@ -65,5 +78,13 @@ export async function requestVideoTranscribe(
     'POST', '/api/bilibili/transcribe-request', { bvids, kind, interval_sec: intervalSec ?? null },
   )
   if (!json.success || !json.data) throw new DesktopApiError(json.error || '发起转录失败')
+  return json.data
+}
+
+/** 这些视频下载 / 转录到哪一步了；不给 BV 号 = 全部 */
+export async function getVideoJobStatus(bvids: readonly string[] = []): Promise<VideoJobStatus[]> {
+  const query = bvids.length > 0 ? `?bvids=${encodeURIComponent(bvids.join(','))}` : ''
+  const json = await desktopRequest<VideoJobStatus[]>('GET', `/api/bilibili/job-status${query}`)
+  if (!json.success || !json.data) throw new DesktopApiError(json.error || '查不到任务进度')
   return json.data
 }

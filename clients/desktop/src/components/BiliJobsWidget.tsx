@@ -16,6 +16,7 @@ import { Loader2, X, RotateCcw, ListChecks, Check, AlertTriangle, Pause, Play } 
 import { theme, tiKey, tiSurface, tiTitle } from '../theme'
 import { getDashScopeApiKey, loadConfig } from '../lib/agent/agent-config'
 import { runVisualTranscribe } from '../lib/bilibili/visual-transcribe'
+import { reportVideoJobStatus } from '../lib/bili-transcribe-api'
 import Tooltip from './Tooltip'
 
 type DlStage = 'queued' | 'fetching_meta' | 'downloading_video' | 'downloading_audio' | 'merging' | 'done' | 'error' | 'paused' | 'cancelled'
@@ -39,6 +40,8 @@ interface Job {
   trStage?: TrStage
   /** 这条怎么转：听声音（默认）还是按间隔截图读字 */
   trPlan?: TrPlan
+  /** 失败原因（报给 Fairy，它好跟主人说清楚） */
+  error?: string
   updatedAt: number
 }
 
@@ -81,12 +84,13 @@ export default function BiliJobsWidget() {
   const startTranscribe = async (bvid: string, filePath: string, plan: TrPlan, title?: string) => {
     if (plan.kind === 'audio') {
       const apiKey = getDashScopeApiKey(loadConfig())
-      if (!apiKey) { upsert(bvid, { trStage: 'error', trPlan: plan }); return }
-      upsert(bvid, { trStage: 'queued', trPlan: plan, filePath })
-      await invoke('enqueue_transcribe', { bvid, filePath, apiKey }).catch(() => {})
+      if (!apiKey) { upsert(bvid, { trStage: 'error', trPlan: plan, error: '没有配置百炼的 API Key' }); return }
+      upsert(bvid, { trStage: 'queued', trPlan: plan, filePath, error: undefined })
+      await invoke('enqueue_transcribe', { bvid, filePath, apiKey })
+        .catch((e) => upsert(bvid, { trStage: 'error', error: `没能排进转录队列：${String(e)}` }))
       return
     }
-    upsert(bvid, { trStage: 'extracting', trPlan: plan, filePath })
+    upsert(bvid, { trStage: 'extracting', trPlan: plan, filePath, error: undefined })
     try {
       await runVisualTranscribe({
         bvid, title, filePath, intervalSec: plan.intervalSec,
@@ -97,33 +101,40 @@ export default function BiliJobsWidget() {
       window.dispatchEvent(new CustomEvent('solevup:context-updated'))
     } catch (e) {
       console.warn('[BiliJobs] 图文转录失败', bvid, e)
-      upsert(bvid, { trStage: 'error' })
+      upsert(bvid, { trStage: 'error', error: e instanceof Error ? e.message : String(e) })
     }
   }
 
   useEffect(() => {
     const unlisteners: Array<() => void> = []
-    listen<{ bvid: string; stage: DlStage; percent: number; output_path?: string | null }>(
+    listen<{ bvid: string; stage: DlStage; percent: number; message?: string | null; output_path?: string | null }>(
       'bili-download-progress',
       (e) => {
         const p = e.payload
         if (!p?.bvid) return
-        upsert(p.bvid, { dlStage: p.stage, dlPercent: p.percent, filePath: p.output_path ?? undefined })
+        upsert(p.bvid, {
+          dlStage: p.stage, dlPercent: p.percent, filePath: p.output_path ?? undefined,
+          ...(p.stage === 'error' ? { error: p.message || '下载出错' } : {}),
+        })
         // 下载完成 → 接力转录（仅批量标记过的）
         const plan = pendingTrRef.current.get(p.bvid)
         if (p.stage === 'done' && plan) {
           pendingTrRef.current.delete(p.bvid)
           if (p.output_path) void startTranscribe(p.bvid, p.output_path, plan)
+          else upsert(p.bvid, { trStage: 'error', trPlan: plan, error: '下载完了但没拿到文件位置' })
         }
       },
     ).then((u) => unlisteners.push(u)).catch(() => {})
 
-    listen<{ bvid: string; file_path: string; stage: TrStage }>(
+    listen<{ bvid: string; file_path: string; stage: TrStage; message?: string | null }>(
       'bili-transcribe-progress',
       (e) => {
         const p = e.payload
         if (!p?.bvid) return
-        upsert(p.bvid, { trStage: p.stage, filePath: p.file_path || undefined })
+        upsert(p.bvid, {
+          trStage: p.stage, filePath: p.file_path || undefined,
+          ...(p.stage === 'error' ? { error: p.message || '转录出错' } : {}),
+        })
         // 转录完成 → 刷新历史列表绿标 + 语境
         if (p.stage === 'done') {
           window.dispatchEvent(new CustomEvent('solevup:bili-assets-changed', { detail: { bvid: p.bvid, reason: 'transcribed' } }))
@@ -155,9 +166,10 @@ export default function BiliJobsWidget() {
       const cfg = loadConfig()
       const startDownload = (bvid: string) => invoke('enqueue_bili_download', {
         bvid, saveDir: cfg.biliDownloadPath || 'E:\\BiliDownloads', quality: cfg.biliDownloadQuality || 'auto',
-      }).catch(() => {})
+      }).catch((e) => upsert(bvid, { dlStage: 'error', error: `没能排进下载队列：${String(e)}` }))
       for (const v of videos) {
-        upsert(v.bvid, { title: v.title, cover: v.cover })
+        // 新的一次：清掉上一次留下的转录状态和失败原因
+        upsert(v.bvid, { title: v.title, cover: v.cover, trStage: undefined, error: undefined })
         try {
           const assets = await invoke<{ download_status: string; download_path: string | null }[]>(
             'get_bili_assets_by_bvid', { bvid: v.bvid },
@@ -188,7 +200,9 @@ export default function BiliJobsWidget() {
               await startDownload(v.bvid)
             }
           }
-        } catch { /* 跳过该条 */ }
+        } catch (e) {
+          upsert(v.bvid, { dlStage: 'error', error: `没能开始：${String(e)}` })
+        }
       }
     }
     const onBatch = (e: Event) => { void runBatch((e as CustomEvent<BatchRequest>).detail) }
@@ -228,6 +242,26 @@ export default function BiliJobsWidget() {
     [jobs],
   )
   const activeCount = useMemo(() => list.filter(jobActive).length, [list])
+
+  // 进度一变就报给后端（GET /api/bilibili/job-status）：Fairy 两端靠它回答「好了吗」、失败时马上知道。
+  // 下载的百分比每过一成报一次
+  const reportedRef = useRef<Map<string, string>>(new Map())
+  useEffect(() => {
+    for (const j of jobs.values()) {
+      const phase = j.trStage ? 'transcribe' as const : 'download' as const
+      const stage = j.trStage ?? j.dlStage
+      if (!stage) continue
+      const percent = phase === 'download' ? Math.floor((j.dlPercent ?? 0) / 10) * 10 : null
+      const signature = `${phase}|${stage}|${percent}|${j.error ?? ''}`
+      if (reportedRef.current.get(j.bvid) === signature) continue
+      reportedRef.current.set(j.bvid, signature)
+      reportVideoJobStatus({
+        bvid: j.bvid, title: j.title ?? '', phase, stage,
+        percent: phase === 'download' ? j.dlPercent ?? null : null,
+        message: stage === 'error' ? j.error ?? null : null,
+      }).catch((e) => console.warn('[BiliJobs] 进度上报失败', j.bvid, e))
+    }
+  }, [jobs])
   const hasAny = list.length > 0
 
   // 顶栏已无按钮：把活跃任务数广播给外部入口（B站历史弹窗）的角标
@@ -241,7 +275,7 @@ export default function BiliJobsWidget() {
   }
   const retryDownload = async (j: Job) => {
     const cfg = loadConfig()
-    upsert(j.bvid, { dlStage: 'queued' })
+    upsert(j.bvid, { dlStage: 'queued', error: undefined })
     await invoke('enqueue_bili_download', {
       bvid: j.bvid, saveDir: cfg.biliDownloadPath || 'E:\\BiliDownloads', quality: cfg.biliDownloadQuality || 'auto',
     }).catch(() => {})

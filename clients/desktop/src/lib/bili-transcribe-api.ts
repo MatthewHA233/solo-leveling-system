@@ -42,6 +42,19 @@ export interface TranscribeRequestResult {
   readonly kind: string
 }
 
+/** 一个视频的下载 / 转录进度（电脑的任务面板报的，应用重启就清空） */
+export interface VideoJobStatus {
+  readonly bvid: string
+  readonly title: string
+  readonly phase: 'download' | 'transcribe'
+  /** 下载：queued fetching_meta downloading_video downloading_audio merging done error paused cancelled；转录：queued extracting uploading transcribing done error */
+  readonly stage: string
+  readonly percent: number | null
+  readonly message: string | null
+  /** 距上次变化过了几秒 */
+  readonly age_sec: number
+}
+
 function searchPath(q: TranscriptSearch): string {
   const parts: string[] = []
   if (q.video) parts.push(`video=${encodeURIComponent(q.video)}`)
@@ -71,4 +84,21 @@ export function requestVideoTranscribe(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ bvids, kind, interval_sec: intervalSec ?? null }),
   }, '发起转录失败')
+}
+
+/** 这些视频下载 / 转录到哪一步了；不给 BV 号 = 全部 */
+export function getVideoJobStatus(bvids: readonly string[] = []): Promise<VideoJobStatus[]> {
+  const query = bvids.length > 0 ? `?bvids=${encodeURIComponent(bvids.join(','))}` : ''
+  return request(`/api/bilibili/job-status${query}`, undefined, '查不到任务进度')
+}
+
+/** 任务面板报一条进度（只有桌面端有这个） */
+export function reportVideoJobStatus(
+  status: Pick<VideoJobStatus, 'bvid' | 'phase' | 'stage'> & { title?: string; percent?: number | null; message?: string | null },
+): Promise<boolean> {
+  return request('/api/bilibili/job-status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(status),
+  }, '上报任务进度失败')
 }

@@ -232,7 +232,8 @@ ${agentPersona}
   - GetComputerStatus：查询本机 active/idle/afk 状态记录
   - GetBiliHistory：查询 B 站观看历史（会标出哪些已经转录）
   - FindVideoTranscript：在转录好的视频里按标题或内容找原话，不用${agentCallUser}先打开那个视频
-  - TranscribeVideos：让电脑在后台下载并转录 B 站视频（${agentCallUser}没点名转哪个时先列出来确认）。转好时系统会发通知给你，不用等
+  - TranscribeVideos：让电脑在后台下载并转录 B 站视频（${agentCallUser}没点名转哪个时先列出来确认）。转好或失败时系统会发通知给你，不用等
+  - TranscribeProgress：看电脑上视频下载 / 转录到哪一步了，${agentCallUser}问「好了吗」时用它照实说，别猜
   - GetThoughtCards：查询${agentCallUser}的想法卡片（${agentCallUser}也叫它 memo/想法/沉淀，存在洪流域里，不是文件）。已知 card_id 时传 card_id 参数直查，不要塞进 keyword
   - CreateThoughtCard：主动把${agentCallUser}刚说的值得长期记的话沉淀成想法卡（带锚点句）。${agentCallUser}说"帮我记下来/总结成想法卡/沉淀一下"或追问为何没记时调它。日常另有后台自动沉淀，别重复创建
   - UpdateThoughtCard：修改一张想法卡的正文（先拿到 card_id——系统提示"主人当前选中的卡片"里有就直接用；只改要求改的部分，保持原话风格）

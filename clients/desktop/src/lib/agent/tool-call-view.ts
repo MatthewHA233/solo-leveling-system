@@ -39,6 +39,7 @@ const TOOL_LABELS: Record<string, string> = {
   GetVideoTranscript: '读视频转录',
   FindVideoTranscript: '找视频转录',
   TranscribeVideos: '下载并转录视频',
+  TranscribeProgress: '看转录进度',
   GetAnchors: '查锚点句',
   UpdateAnchor: '修改锚点句',
   Read: '读文件',
