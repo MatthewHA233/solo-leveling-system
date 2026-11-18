@@ -7,7 +7,7 @@ import { useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import type { ActivityPalette } from '../../types'
 import { createIsland, deleteIsland, setIslandCheck, updateIsland } from '../../lib/islands/island-api'
-import { WHOLE_ITEM_ID, describePlacementTime, describeRule, islandColor, toDateKey } from '../../lib/islands/island-model'
+import { WHOLE_ITEM_ID, describeLock, describePlacementTime, describeRule, islandColor, toDateKey } from '../../lib/islands/island-model'
 import type { Island, IslandKind, IslandPlacement, IslandRule, PlacementStatus } from '../../lib/islands/island-model'
 import { alpha, fonts, theme } from '../../theme'
 import ConfirmDialog from '../ConfirmDialog'
@@ -214,6 +214,8 @@ function PlacementCard({ placement: p, palette, busy, onToggle, onEdit, onDelete
       </View>
 
       <Text style={styles.ruleText}>{describeRule(rule, palette)}</Text>
+      {/* 锁名单在桌面端编辑，这里只显示（desktop IslandPanel 同一行） */}
+      {rule.lock && <Text style={styles.ruleText}>{describeLock(rule.lock)}</Text>}
       {note && <Text style={styles.noteText}>{note}</Text>}
 
       <View style={styles.itemList}>

@@ -56,6 +56,8 @@ export interface FairyMessage {
   readonly summary?: string
   /** 一次工具调用：单独一行，点开看参数和结果（规则见 lib/agent/tool-call-view.ts） */
   readonly tool?: ToolCallView
+  /** 主人在 Fairy 回复途中发的话，还排着队没被读到（lib/agent/message-queue.ts） */
+  readonly queued?: boolean
 }
 
 export interface FairyGazeTarget {
