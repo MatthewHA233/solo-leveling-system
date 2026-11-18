@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// Fairy 的昼夜表工具：快捷记录、浮岛与约束、计划任务
+// Fairy 的昼夜表工具：快捷记录、浮岛与日程、计划任务
 //   写完都会通知主窗口重新取数（聊天可能跑在 Fairy 自己的窗口里）
 //   手机端 src/lib/agent/tools/daynight-tools.ts 导入之外逐字一致，改工具要两端一起改
 // ══════════════════════════════════════════════
@@ -13,9 +13,10 @@ import {
 } from '../islands/island-api'
 import {
   BLOCK_MINUTES, DAY_MINUTES, ESTIMATE_LOOKBACK_DAYS, WHOLE_ITEM_ID, addDays, computePlacements, describePlacementTime,
-  describeRule, minuteToHHmm, normalizeRule, parseHHmm, toDateKey,
+  describeLock, describeRule, minuteToHHmm, normalizeRule, parseHHmm, toDateKey,
 } from '../islands/island-model'
-import type { Island, IslandItem, IslandPlacement, IslandRule } from '../islands/island-model'
+import type { Island, IslandItem, IslandLock, IslandPlacement, IslandRule } from '../islands/island-model'
+import { LOCK_PLATFORM } from '../islands/lock-platform'
 
 export interface DayNightTool {
   readonly definition: ToolDefinition
@@ -172,9 +173,10 @@ async function loadPlacements(date: Date, palette: ActivityPalette, islands?: re
 
 function placementLines(p: IslandPlacement, palette: ActivityPalette): string {
   const { rule } = p.island
-  const head = `- ${rule.name}（${rule.kind === 'fixed' ? '约束' : '浮岛'}，id ${p.island.id}）：${describePlacementTime(p)}，${STATUS_TEXT[p.status]}`
+  const head = `- ${rule.name}（${rule.kind === 'fixed' ? '日程' : '浮岛'}，id ${p.island.id}）：${describePlacementTime(p)}，${STATUS_TEXT[p.status]}`
   const notes = [
     `规则：${describeRule(rule, palette)}`,
+    describeLock(rule.lock),
     p.basis === 'estimated' ? `位置是按近 ${p.sampleDays} 天估的` : '',
     p.late ? '锚拖晚了，卡在最晚开始时刻' : '',
   ].filter(Boolean)
@@ -187,7 +189,7 @@ function findIsland(islands: readonly Island[], ref: string): Island {
   if (exact) return exact
   const partial = islands.filter((i) => i.rule.name.includes(ref))
   if (partial.length === 1) return partial[0]
-  throw new Error(`找不到叫「${ref}」的浮岛或约束。现有：${islands.map((i) => i.rule.name).join(' / ') || '（一条都没有）'}`)
+  throw new Error(`找不到叫「${ref}」的浮岛或日程。现有：${islands.map((i) => i.rule.name).join(' / ') || '（一条都没有）'}`)
 }
 
 // ── RecordActivity ──
@@ -284,8 +286,8 @@ const getIslands: DayNightTool = {
     function: {
       name: 'GetIslands',
       description:
-        '看昼夜表上的浮岛与约束：某一天各条排在几点、里面的事勾没勾、规则是什么。' +
-        '浮岛 = 不钉死钟点、跟在某件事后面的规划区块（比如「睡醒后」「吃完饭两小时后」）；约束 = 钉在钟点上的（比如到点早睡）。' +
+        '看昼夜表上的浮岛与日程：某一天各条排在几点、里面的事勾没勾、规则是什么。' +
+        '浮岛 = 不钉死钟点、跟在某件事后面的规划区块（比如「睡醒后」「吃完饭两小时后」）；日程 = 钉在钟点上的（比如到点早睡）。' +
         '改规则、勾事项之前先用它拿到 id 和现状。',
       parameters: {
         type: 'object',
@@ -296,10 +298,10 @@ const getIslands: DayNightTool = {
   async execute(args) {
     const date = parseDate(args.date)
     const [palette, islands] = await Promise.all([fetchActivityPalette(), fetchIslands()])
-    if (islands.length === 0) return '还没有任何浮岛或约束'
+    if (islands.length === 0) return '还没有任何浮岛或日程'
     const placements = await loadPlacements(date, palette, islands)
     const disabled = islands.filter((i) => !i.rule.enabled)
-    const lines = [`${toDateKey(date)} 的浮岛与约束：`, ...placements.map((p) => placementLines(p, palette))]
+    const lines = [`${toDateKey(date)} 的浮岛与日程：`, ...placements.map((p) => placementLines(p, palette))]
     if (disabled.length > 0) lines.push(`已停用：${disabled.map((i) => `${i.rule.name}（id ${i.id}）`).join(' / ')}`)
     return lines.join('\n')
   },
@@ -308,6 +310,34 @@ const getIslands: DayNightTool = {
 // ── SaveIsland ──
 
 /** 改清单时标题没变的沿用原 id，这样当天已经勾掉的不会丢 */
+/** SaveIsland 的锁参数并进原来的锁名单：没传的保持原样；应用只动这台设备的那几项 */
+function mergeLock(args: Record<string, unknown>, previous: IslandLock | null): unknown {
+  const list = (value: unknown): string[] | null => (Array.isArray(value) ? value.map(text).filter(Boolean) : null)
+  const apps = list(args.lock_apps)
+  const sites = list(args.lock_sites)
+  const grays = list(args.lock_gray)
+  const prompt = typeof args.lock_judge_prompt === 'string' ? args.lock_judge_prompt : null
+  const untilDone = typeof args.lock_until_done === 'boolean' ? args.lock_until_done : null
+  if (!apps && !sites && !grays && prompt == null && untilDone == null) return previous
+
+  const graySet = grays ? new Set(grays.map((g) => g.toLowerCase())) : null
+  const wasGray = new Set(
+    [...(previous?.apps ?? []), ...(previous?.sites ?? [])].filter((e) => e.gray).map((e) => e.rule.toLowerCase()),
+  )
+  const isGray = (rule: string) => (graySet ?? wasGray).has(rule.toLowerCase())
+  const mine = previous?.apps.filter((e) => e.platform === LOCK_PLATFORM) ?? []
+  const others = previous?.apps.filter((e) => e.platform !== LOCK_PLATFORM) ?? []
+  return {
+    apps: [
+      ...others,
+      ...(apps ?? mine.map((e) => e.rule)).map((rule) => ({ rule, gray: isGray(rule), platform: LOCK_PLATFORM })),
+    ],
+    sites: (sites ?? previous?.sites.map((e) => e.rule) ?? []).map((rule) => ({ rule, gray: isGray(rule) })),
+    intent: prompt ?? previous?.intent ?? '',
+    untilDone: untilDone ?? previous?.untilDone ?? false,
+  }
+}
+
 function mergeItems(titles: readonly string[], previous: readonly IslandItem[]): Array<{ id?: string; title: string }> {
   const pool = [...previous]
   return titles.map((title) => {
@@ -324,20 +354,23 @@ const saveIsland: DayNightTool = {
     function: {
       name: 'SaveIsland',
       description:
-        '新建或修改一条浮岛 / 约束。不传 id = 新建；传 id（或已有的名字）= 修改，只改传了的字段。' +
+        '新建或修改一条浮岛 / 日程。不传 id = 新建；传 id（或已有的名字）= 修改，只改传了的字段。' +
         'kind=after 是浮岛：跟在 anchor_tag 那个标签的记录结束之后 offset_minutes 分钟开始，持续 duration_minutes。' +
         '同一个标签一天出现好几次时，用 window_start / window_end 限定只认「结束时刻落在这个时段里」的那一次——' +
         '比如睡眠标签写 04:00–15:00（排除半夜刚睡下的那段），午饭写 11:00–17:00。当天那件事还没记时，位置按近 7 天的平均估。' +
         'latest_start 是最晚开始时刻，那件事拖得再晚也不再往后排。' +
-        'kind=fixed 是约束：每天 start_time 开始。' +
+        'kind=fixed 是日程：每天 start_time 开始。' +
         'items 是里面要做的几件事（全勾完算做完）。' +
+        '这一条进行期间可以锁住一些应用和网站（lock_apps / lock_sites）：到了时间自动锁，做完或到点解开。' +
+        '拿不准该不该一刀切的写进 lock_gray，这些不直接拦，交给判断模型按 lock_judge_prompt 判这段内容算不算跑偏。' +
+        'lock_judge_prompt 是你替主人写给判断模型的一段话：这段时间是为了什么、哪些内容算正事、哪些算跑偏，写具体。' +
         '主人只说了大概时，时长和时段按常理给个合理的值，建完把规则念给主人听，让主人改。',
       parameters: {
         type: 'object',
         properties: {
           id: { type: 'string', description: '要修改的那条的 id 或名字；新建不传' },
           name: { type: 'string', description: '名字，例如「起床后」「健身」「早睡」' },
-          kind: { type: 'string', enum: ['after', 'fixed'], description: 'after 浮岛 / fixed 约束' },
+          kind: { type: 'string', enum: ['after', 'fixed'], description: 'after 浮岛 / fixed 日程' },
           anchor_tag: { type: 'string', description: 'after：跟在哪个标签后面，写主人的说法，例如「夜晚睡眠」「吃饭」' },
           window_start: { type: 'string', description: 'after：时段开始 HH:mm，默认 00:00' },
           window_end: { type: 'string', description: 'after：时段结束 HH:mm，默认 24:00' },
@@ -347,6 +380,11 @@ const saveIsland: DayNightTool = {
           duration_minutes: { type: 'number', description: '占多少分钟' },
           items: { type: 'array', items: { type: 'string' }, description: '里面要做的事，按顺序。传了就整份替换' },
           enabled: { type: 'boolean', description: 'false = 停用（不出现在昼夜表上）' },
+          lock_apps: { type: 'array', items: { type: 'string' }, description: '这台设备上要锁的应用（电脑写 exe 名，手机写包名）。传了就整份替换这台设备的；传空数组 = 这台设备不锁应用' },
+          lock_sites: { type: 'array', items: { type: 'string' }, description: '要锁的网站域名，例如 bilibili.com。传了就整份替换；传空数组 = 不锁网站' },
+          lock_gray: { type: 'array', items: { type: 'string' }, description: 'lock_apps / lock_sites 里哪几项是灰色地带（不直接拦，交给判断模型）。传了就整份替换' },
+          lock_judge_prompt: { type: 'string', description: '给判断模型看的判断标准，一段话；传空字符串 = 清掉（只按名字判）' },
+          lock_until_done: { type: 'boolean', description: 'true = 里面的事全勾完才解开；false = 到这一条的结束时刻自动解开' },
         },
       },
     },
@@ -375,6 +413,7 @@ const saveIsland: DayNightTool = {
       items: titles ? mergeItems(titles, base.items ?? []) : base.items,
       color: base.color ?? null,
       enabled: typeof args.enabled === 'boolean' ? args.enabled : base.enabled,
+      lock: mergeLock(args, base.lock ?? null),
     })
 
     const saved = existing ? await updateIsland(existing.id, rule) : await createIsland(rule)
@@ -382,7 +421,7 @@ const saveIsland: DayNightTool = {
 
     const today = parseDate(undefined)
     const placement = (await loadPlacements(today, palette)).find((p) => p.island.id === saved.id)
-    const lines = [`${existing ? '已修改' : '已新建'}${saved.rule.kind === 'fixed' ? '约束' : '浮岛'}「${saved.rule.name}」（id ${saved.id}）`]
+    const lines = [`${existing ? '已修改' : '已新建'}${saved.rule.kind === 'fixed' ? '日程' : '浮岛'}「${saved.rule.name}」（id ${saved.id}）`]
     if (placement) lines.push(`今天的情况：\n${placementLines(placement, palette)}`)
     else lines.push(`规则：${describeRule(saved.rule, palette)}（已停用，不出现在昼夜表上）`)
     return lines.join('\n')
@@ -396,7 +435,7 @@ const deleteIslandTool: DayNightTool = {
     type: 'function',
     function: {
       name: 'DeleteIsland',
-      description: '删掉一条浮岛 / 约束，以后的昼夜表上不再出现。只是暂时不用就用 SaveIsland 传 enabled=false。删之前要主人明确说过要删。',
+      description: '删掉一条浮岛 / 日程，以后的昼夜表上不再出现。只是暂时不用就用 SaveIsland 传 enabled=false。删之前要主人明确说过要删。',
       parameters: {
         type: 'object',
         properties: { id: { type: 'string', description: '那条的 id 或名字' } },
@@ -422,7 +461,7 @@ const checkIslandItem: DayNightTool = {
     function: {
       name: 'CheckIslandItem',
       description:
-        '勾掉（或取消勾）某条浮岛 / 约束里的一件事。主人说「水烧上了」「刷完酸了」这类话，而那正好是某条浮岛里的事时用。' +
+        '勾掉（或取消勾）某条浮岛 / 日程里的一件事。主人说「水烧上了」「刷完酸了」这类话，而那正好是某条浮岛里的事时用。' +
         '不传 item = 整条算做完（清单里的事全勾上）。',
       parameters: {
         type: 'object',
@@ -472,7 +511,7 @@ const createPlanTask: DayNightTool = {
       name: 'CreatePlanTask',
       description:
         '往「计划安排」里加一条待办任务，挂在某个项目标签下面（和协议志清单是同一份数据）。' +
-        '主人说「帮我记个待办」「把 XX 加到计划里」时用。它只是清单里的一条，不占昼夜表的时间；要排到时间上，是浮岛或约束的事（SaveIsland）。',
+        '主人说「帮我记个待办」「把 XX 加到计划里」时用。它只是清单里的一条，不占昼夜表的时间；要排到时间上，是浮岛或日程的事（SaveIsland）。',
       parameters: {
         type: 'object',
         properties: {

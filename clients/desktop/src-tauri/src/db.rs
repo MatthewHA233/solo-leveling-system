@@ -5775,6 +5775,148 @@ pub struct AnchorEmbeddingRow {
 }
 
 /// 把 ASR 的 JSONL 转录（每行 {"start","end","text"}）抽成纯文本；非 JSON 行原样保留。
+// ── 转录搜索：Fairy 按标题或内容直接找转录，不依赖语境卡 ──
+
+#[derive(Debug, Serialize, Clone)]
+pub struct TranscriptLine {
+    pub start: Option<f64>,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct BiliTranscriptHit {
+    pub bvid: String,
+    pub title: String,
+    pub author_name: String,
+    pub path: Option<String>,
+    /// combined | audio | visual：这次读的是哪一份
+    pub kind: String,
+    pub transcribed_at: String,
+    /// 整份转录有几句
+    pub total: usize,
+    /// 符合条件的有几句（lines 可能只是其中前几句）
+    pub matched: usize,
+    pub lines: Vec<TranscriptLine>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct BiliVideoRef {
+    pub bvid: String,
+    pub title: String,
+    pub cover: String,
+}
+
+fn transcript_lines(raw: &str) -> Vec<TranscriptLine> {
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(t) = v.get("text").and_then(|x| x.as_str()) {
+                if !t.is_empty() {
+                    out.push(TranscriptLine { start: v.get("start").and_then(|x| x.as_f64()), text: t.to_string() });
+                }
+                continue;
+            }
+        }
+        out.push(TranscriptLine { start: None, text: line.to_string() });
+    }
+    out
+}
+
+impl Database {
+    /// 在转录好的视频里找。video = 标题 / UP 主 / BV 号里的词（空格分开，都要对上）；
+    /// keywords = 内容词（对上任意一个的句子）；after_sec > 0 时只要这个时间点之后的句子。
+    /// 每个视频最多带 per_video 句，最多 limit 个视频，新转录的在前。
+    pub async fn search_bili_transcripts(
+        &self, video: &str, keywords: &[String], after_sec: f64, per_video: usize, limit: usize,
+    ) -> Result<Vec<BiliTranscriptHit>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT a.bvid, h.title, h.author_name, a.download_path, \
+                    a.combined_transcript, a.audio_transcript, a.visual_transcript, \
+                    a.combined_transcribed_at, a.audio_transcribed_at, a.visual_transcribed_at, \
+                    MAX(COALESCE(a.combined_transcribed_at, ''), COALESCE(a.audio_transcribed_at, ''), COALESCE(a.visual_transcribed_at, ''), COALESCE(a.updated_at, '')) AS at \
+             FROM bili_video_assets a \
+             JOIN bili_history h ON h.bvid = a.bvid \
+             WHERE trim(COALESCE(a.combined_transcript, '')) <> '' \
+                OR trim(COALESCE(a.audio_transcript, '')) <> '' \
+                OR trim(COALESCE(a.visual_transcript, '')) <> '' \
+             ORDER BY at DESC"
+        ).map_err(|e| e.to_string())?;
+        type Texts = [(&'static str, Option<String>, Option<String>); 3];
+        type Row = (String, String, String, Option<String>, Texts);
+        let rows = stmt
+            .query_map([], |r| -> rusqlite::Result<Row> {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, [
+                    ("combined", r.get(4)?, r.get(7)?),
+                    ("audio", r.get(5)?, r.get(8)?),
+                    ("visual", r.get(6)?, r.get(9)?),
+                ]))
+            })
+            .map_err(|e| e.to_string())?;
+
+        let terms: Vec<String> = video.to_lowercase().split_whitespace().map(|s| s.to_string()).collect();
+        let keys: Vec<String> = keywords.iter().map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect();
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for row in rows.flatten() {
+            let (bvid, title, author_name, path, texts) = row;
+            if !seen.insert(bvid.clone()) { continue; }
+            let hay = format!("{} {} {}", title, author_name, bvid).to_lowercase();
+            if !terms.iter().all(|t| hay.contains(t)) { continue; }
+            // 一个视频可能听过声音、也读过画面：读最近转的那一份
+            let mut best: Option<(&'static str, String, String)> = None;
+            for (kind, text, at) in texts {
+                let Some(text) = text.filter(|t| !t.trim().is_empty()) else { continue };
+                let at = at.unwrap_or_default();
+                if best.as_ref().map(|b| at > b.2).unwrap_or(true) { best = Some((kind, text, at)); }
+            }
+            let Some((kind, raw, at)) = best else { continue };
+            let all = transcript_lines(&raw);
+            let total = all.len();
+            let picked: Vec<TranscriptLine> = all
+                .into_iter()
+                .filter(|l| after_sec <= 0.0 || l.start.map(|s| s > after_sec).unwrap_or(false))
+                .filter(|l| {
+                    if keys.is_empty() { return true; }
+                    let text = l.text.to_lowercase();
+                    keys.iter().any(|k| text.contains(k))
+                })
+                .collect();
+            if !keys.is_empty() && picked.is_empty() { continue; }
+            let matched = picked.len();
+            out.push(BiliTranscriptHit {
+                bvid, title, author_name, path,
+                kind: kind.to_string(),
+                transcribed_at: at,
+                total, matched,
+                lines: picked.into_iter().take(per_video).collect(),
+            });
+            if out.len() >= limit { break; }
+        }
+        Ok(out)
+    }
+
+    /// 这些 BV 号里哪些在观看记录里（带标题和封面）；不在的不返回
+    pub async fn get_bili_video_refs(&self, bvids: &[String]) -> Result<Vec<BiliVideoRef>, String> {
+        let conn = self.conn.lock().await;
+        let mut out = Vec::new();
+        for bvid in bvids {
+            let row = conn
+                .query_row(
+                    "SELECT bvid, title, cover FROM bili_history WHERE bvid = ?",
+                    params![bvid],
+                    |r| Ok(BiliVideoRef { bvid: r.get(0)?, title: r.get(1)?, cover: r.get(2)? }),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some(r) = row { out.push(r); }
+        }
+        Ok(out)
+    }
+}
+
 fn transcript_plain_text(raw: &str) -> String {
     let mut out = String::new();
     for line in raw.lines() {

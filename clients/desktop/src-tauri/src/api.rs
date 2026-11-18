@@ -1402,6 +1402,94 @@ async fn get_bili_transcripts(
     }
 }
 
+#[derive(Deserialize)]
+struct TranscriptSearchQuery {
+    video: Option<String>,
+    /// 内容词，换行分开
+    keywords: Option<String>,
+    after_sec: Option<f64>,
+    per_video: Option<usize>,
+    limit: Option<usize>,
+}
+
+/// GET /api/bilibili/transcripts/search — 在转录好的视频里按标题或内容找（Fairy 两端共用）
+async fn search_bili_transcripts(
+    State(state): State<ApiState>,
+    Query(query): Query<TranscriptSearchQuery>,
+) -> Json<ApiResponse<Vec<crate::db::BiliTranscriptHit>>> {
+    let keywords: Vec<String> = query
+        .keywords
+        .as_deref()
+        .unwrap_or("")
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let per_video = query.per_video.unwrap_or(20).min(200);
+    let limit = query.limit.unwrap_or(10).clamp(1, 50);
+    match state
+        .db
+        .search_bili_transcripts(query.video.as_deref().unwrap_or(""), &keywords, query.after_sec.unwrap_or(0.0), per_video, limit)
+        .await
+    {
+        Ok(rows) => Json(ApiResponse::ok(rows)),
+        Err(e) => Json(ApiResponse::error(&e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct TranscribeRequestPayload {
+    bvids: Vec<String>,
+    /// audio（默认）| visual（按间隔截图读字）
+    kind: Option<String>,
+    interval_sec: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct TranscribeRequestResult {
+    accepted: Vec<crate::db::BiliVideoRef>,
+    /// 不在观看记录里的 BV 号
+    unknown: Vec<String>,
+    kind: String,
+}
+
+const TRANSCRIBE_REQUEST_MAX: usize = 20;
+
+/// POST /api/bilibili/transcribe-request — Fairy（本机或手机）让电脑下载并转录。
+/// 这里只核对 BV 号、把请求交给界面里的任务面板（BiliJobsWidget），下载和转录由它排队。
+async fn request_bili_transcribe(
+    State(state): State<ApiState>,
+    Json(body): Json<TranscribeRequestPayload>,
+) -> Json<ApiResponse<TranscribeRequestResult>> {
+    let kind = body.kind.unwrap_or_else(|| "audio".to_string());
+    if kind != "audio" && kind != "visual" {
+        return Json(ApiResponse::error("kind 只能是 audio 或 visual"));
+    }
+    let mut bvids: Vec<String> = Vec::new();
+    for b in body.bvids.iter().map(|b| b.trim().to_string()).filter(|b| !b.is_empty()) {
+        if !bvids.contains(&b) { bvids.push(b); }
+    }
+    if bvids.is_empty() {
+        return Json(ApiResponse::error("没有给 BV 号"));
+    }
+    if bvids.len() > TRANSCRIBE_REQUEST_MAX {
+        return Json(ApiResponse::error(&format!("一次最多 {} 个视频", TRANSCRIBE_REQUEST_MAX)));
+    }
+    let accepted = match state.db.get_bili_video_refs(&bvids).await {
+        Ok(rows) => rows,
+        Err(e) => return Json(ApiResponse::error(&e)),
+    };
+    let unknown: Vec<String> = bvids.into_iter().filter(|b| !accepted.iter().any(|a| &a.bvid == b)).collect();
+    if !accepted.is_empty() {
+        let _ = state.app_handle.emit("bili:transcribe-request", serde_json::json!({
+            "videos": &accepted,
+            "kind": &kind,
+            "interval_sec": body.interval_sec,
+        }));
+    }
+    Json(ApiResponse::ok(TranscribeRequestResult { accepted, unknown, kind }))
+}
+
 /// GET /api/bilibili/history?page=0&page_size=50&unlinked_only=false
 async fn get_bili_history(
     State(state): State<ApiState>,
@@ -1999,6 +2087,8 @@ pub fn create_router(
         .route("/api/bilibili/history/search", get(search_bili_history))
         .route("/api/bilibili/day-counts", get(get_bili_day_counts))
         .route("/api/bilibili/transcripts", get(get_bili_transcripts))
+        .route("/api/bilibili/transcripts/search", get(search_bili_transcripts))
+        .route("/api/bilibili/transcribe-request", post(request_bili_transcribe))
         .route("/api/bilibili/history/link", axum::routing::put(link_bili_to_event))
         .route("/api/bilibili/cover", get(proxy_bili_cover))
         .route("/api/bilibili/spans/day", get(get_bili_spans_day))

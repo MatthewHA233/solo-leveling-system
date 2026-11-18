@@ -1,11 +1,13 @@
 // ══════════════════════════════════════════════
 // 库里的聊天行 ↔ 发给模型的历史。desktop 与 mobile 两份逐字一致，改要两端一起改
 //
-// chat_messages 里除了主人和 Fairy 的话，还有两种 role='tool' 的行（旧版本读到 tool 行一律跳过，不受影响）：
+// chat_messages 里除了主人和 Fairy 的话，还有三种 role='tool' 的行（旧版本读到 tool 行一律跳过，不受影响）：
 //   · compact_summary：压缩摘要。行的时间 = 保留段第一条的时间 − 1 毫秒，比它早的行都已经在摘要里
 //   · tool_trace：一轮里的工具调用和结果（JSON），时间 = 主人那句 + 1 毫秒。切会话、重启后工具记录还在，
 //     界面上的工具调用行也从它还原（toolCallsOfTrace）
-// 两种行都跟着聊天增量同步到另一台设备。
+//   · task_notice：后台任务结束时系统发给 Fairy 的通知（一句话），时间 = 通知被 Fairy 读到的时刻。
+//     界面上画成一行提示，不算主人说的话
+// 三种行都跟着聊天增量同步到另一台设备。
 // ══════════════════════════════════════════════
 
 import { compactSummaryMessage, type CompactionResult } from '../llm/context-window'
@@ -20,10 +22,12 @@ import {
 } from '../llm/types'
 import type { SessionMessage } from './agent-memory'
 import { describeImagesForModel, parseImageMarker } from './chat-images'
+import { taskNoticeForModel } from './message-queue'
 import type { ToolCallView } from './tool-call-view'
 
 export const COMPACT_SUMMARY_ROW = 'compact_summary'
 export const TOOL_TRACE_ROW = 'tool_trace'
+export const TASK_NOTICE_ROW = 'task_notice'
 
 /** 存进库的工具结果只留前面这些：库和同步都不背大块数据，要全文让模型重新查 */
 const TRACE_RESULT_MAX_CHARS = 4_000
@@ -57,6 +61,20 @@ function rowBase(content: string, name: string, timestamp: string): SessionMessa
 function shiftMs(timestamp: string, deltaMs: number): string {
   const ms = new Date(timestamp).getTime()
   return new Date((Number.isFinite(ms) ? ms : Date.now()) + deltaMs).toISOString()
+}
+
+/** 后台任务通知的那一行 */
+export function taskNoticeRow(text: string, timestamp: string): SessionMessage {
+  return rowBase(text, TASK_NOTICE_ROW, timestamp)
+}
+
+export function isTaskNoticeRow(m: SessionMessage): boolean {
+  return m.role === 'tool' && m.name === TASK_NOTICE_ROW && !!(m.content ?? '').trim()
+}
+
+/** 聊天里那行通知的文字 */
+export function taskNoticeLabel(text: string): string {
+  return `后台通知 · ${text}`
 }
 
 /** 压缩摘要的那一行（只存模型写的摘要；机械摘要不存，下次还能用原话重新压） */
@@ -141,6 +159,7 @@ export function rowsToLLMMessages(
   for (const m of rows) {
     if (m.role === 'tool') {
       if (m.name === TOOL_TRACE_ROW) out.push(...traceToMessages(m))
+      else if (isTaskNoticeRow(m)) out.push(createUserMessage(taskNoticeForModel((m.content ?? '').trim()), { timestamp: m.timestamp }))
       continue
     }
     const content = (m.content ?? '').trim()

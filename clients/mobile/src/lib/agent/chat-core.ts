@@ -96,6 +96,10 @@ export class ChatCore {
   /** 最后读走对话历史的轮次：比它旧的轮次收尾时不能再写历史 */
   conversationOwner = 0
   replyControl: ReplyControl | null = null
+  /** 哪一轮正在让模型回复（0 = 没有）。这期间主人再发的话不打断，排进消息队列（message-queue.ts） */
+  busyTurn = 0
+  /** 一轮收尾了：消息队列里还有就接着起下一轮（chat-send 的 createQueueFlow 接上） */
+  onTurnIdle: (() => void) | null = null
   /** 语音发送时取走待发的图片（输入框注册） */
   takeVoiceImages: () => readonly PickedImage[] = () => []
   /** 上一轮回复收尾完成（新一轮先等它，否则历史会缺上一轮） */

@@ -29,9 +29,11 @@ import { getDashScopeApiKey } from './agent-config'
 import type { SessionMessage } from './agent-memory'
 import type { CompactionContext } from './chat-compaction'
 import { runThoughtDistill } from './chat-distill'
-import { toolTraceRow } from './chat-history'
+import { taskNoticeLabel, taskNoticeRow, toolTraceRow } from './chat-history'
+import { drainQueue, enqueuePrompt, subscribeQueue, takeNextBatch, taskNoticeForModel, type QueuedMessage } from './message-queue'
 import { startToolCall } from './tool-call-view'
 import { withImageMarker } from './chat-images'
+import type { ChatMessage } from '../../types'
 import type { ChatCore } from './chat-core'
 import type { PromptFlow } from './chat-prompt'
 import { makeSessionMessage, type SessionFlow } from './chat-sessions'
@@ -49,11 +51,74 @@ function lastReplyText(history: readonly Message[]): string {
 }
 
 // userTimestamp：语音那句落库的时间，发给模型的那条用同一个时间（压缩按时间在库里找分界）
-export type HandleSend = (text: string, fromVoice?: boolean, images?: readonly PickedImage[], userTimestamp?: string) => Promise<void>
+/** Fairy 读到排队的那句了：去掉「排队中」，挪到对话末尾（它在历史里就是这个位置） */
+function settleQueuedBubble(messages: readonly ChatMessage[], timestamp: string): ChatMessage[] {
+  const hit = messages.find((m) => m.queued && m.role === 'user' && m.timestamp === timestamp)
+  if (!hit) return [...messages]
+  return [...messages.filter((m) => m !== hit), { ...hit, queued: false }]
+}
+
+/** 这一轮是谁发起的（默认 = 主人刚打的字或说的话） */
+export interface TurnSource {
+  /** 主人的话排过队：气泡和落库在入队时已经做了 */
+  readonly preShown?: boolean
+  /** 这一轮由后台通知发起 */
+  readonly notices?: readonly QueuedMessage[]
+}
+
+export type HandleSend = (
+  text: string, fromVoice?: boolean, images?: readonly PickedImage[], userTimestamp?: string, turn?: TurnSource,
+) => Promise<void>
+
+export interface QueueFlow {
+  /** 主人打字发送：模型正在回复就排队，否则直接起一轮 */
+  readonly submitTyped: (text: string, images?: readonly PickedImage[]) => Promise<void>
+}
+
+/**
+ * 消息队列接到发送流程上（规则见 message-queue.ts，和 desktop App.tsx 的 submitTyped / pumpQueue 一致）。
+ * 回复已经出完、只是还在朗读时不排队：handleSend 会停掉朗读起新的一轮。
+ */
+export function createQueueFlow(core: ChatCore, sessions: SessionFlow, handleSend: HandleSend): QueueFlow {
+  const submitTyped: QueueFlow['submitTyped'] = (text, images = []) => {
+    if (!text.trim() && images.length === 0) return Promise.resolve()
+    if (core.busyTurn === 0) return handleSend(text, false, images)
+    const sentAt = new Date().toISOString()
+    const userRow = { ...makeSessionMessage('user', withImageMarker(text.trim(), images.map((i) => i.id))), timestamp: sentAt }
+    sessions.titleFlow.onUserMessage(text || '发了图片')
+    core.setMessages((prev) => [...prev, {
+      id: userRow.id!, role: 'user', content: text, timestamp: sentAt, queued: true,
+      ...(images.length > 0 ? { images: images.map(({ id, uri }) => ({ id, uri })) } : {}),
+    }])
+    sessions.persistRows(core.sessionId, [userRow]).catch((e) => console.warn('[Chat] 用户消息写入失败', e))
+    enqueuePrompt(text.trim(), sentAt, images)
+    return Promise.resolve()
+  }
+
+  // 空闲时取队列起新的一轮：主人排着的话先说，后台通知排在后面
+  const pump = () => {
+    if (core.busyTurn !== 0 || core.isProcessing) return
+    const batch = takeNextBatch()
+    if (batch.length === 0) return
+    if (batch[0].mode === 'task-notification') {
+      void handleSend(taskNoticeForModel(batch.map((q) => q.text).join('\n')), false, [], undefined, { notices: batch })
+    } else {
+      core.setMessages((prev) => batch.reduce((list, q) => settleQueuedBubble(list, q.timestamp), [...prev]))
+      const images = batch.flatMap((q) => (q.images ?? []) as PickedImage[])
+      void handleSend(batch.map((q) => q.text).join('\n\n'), false, images, batch[0].timestamp, { preShown: true })
+    }
+  }
+  core.onTurnIdle = pump
+  subscribeQueue(pump)
+
+  return { submitTyped }
+}
 
 export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: PromptFlow): HandleSend {
-  return async function handleSend(text, fromVoice = false, images = [], userTimestamp) {
+  return async function handleSend(text, fromVoice = false, images = [], userTimestamp, turn = {}) {
     if (!text.trim() && images.length === 0) return
+    // 主人刚打的字：要显示气泡、落库、计进标题。排过队的话已经做过了；通知不是主人说的
+    const typed = !fromVoice && !turn.preShown && !turn.notices
     // 主人这句的时间：气泡、落库的那行、发给模型的那条用同一个
     const sentAt = userTimestamp ?? new Date().toISOString()
 
@@ -65,12 +130,20 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
     core.turnSettled = new Promise((resolve) => { settle = resolve })
 
     // 语音那句在转写定稿时已经数过（onTranscript），这里只数打字
-    if (!fromVoice) sessions.titleFlow.onUserMessage(text || '发了图片')
+    if (typed) sessions.titleFlow.onUserMessage(text || '发了图片')
 
     const turnSid = core.sessionId
 
+    // 后台通知：显示成一行提示并落库
+    const showNotice = (q: QueuedMessage) => {
+      core.addSystemNote(taskNoticeLabel(q.text))
+      const row = { ...taskNoticeRow(q.text, new Date().toISOString()), id: randomUUID() }
+      sessions.persistRows(turnSid, [row]).catch((e) => console.warn('[Chat] 后台通知写入失败', e))
+    }
+    for (const q of turn.notices ?? []) showNotice(q)
+
     // 文字输入：添加用户气泡并落库（语音输入的气泡和落库在 chat-voice 的 onUserAudio / onTranscript）
-    if (!fromVoice) {
+    if (typed) {
       const userRow = { ...makeSessionMessage('user', withImageMarker(text.trim(), images.map((i) => i.id))), timestamp: sentAt }
       core.setMessages((prev) => [...prev, {
         id: userRow.id!, role: 'user', content: text, timestamp: userRow.timestamp,
@@ -83,6 +156,8 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
     const turnId = ++core.replyTurn
     let interrupted = false
     const ownsUi = () => core.replyTurn === turnId && !interrupted
+    core.busyTurn = turnId
+    const releaseBusy = () => { if (core.busyTurn === turnId) core.busyTurn = 0 }
     core.setProcessing(true)
     core.emitFairy('thinking')
 
@@ -93,6 +168,7 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
       interrupt: () => {
         if (interrupted) return
         interrupted = true
+        releaseBusy()
         abort.abort()
         tts?.interrupt()
         core.setProcessing(false)
@@ -243,7 +319,22 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
           }
         },
         executeTool: (call) => executeAgentTool(call.name, call.arguments),
+        // 每批工具跑完取一次队列：主人中途说的话（已经显示、存好）和后台通知接进这一轮
+        drainQueued: () => {
+          if (interrupted || sessions.follow(turnSid) !== core.sessionId) return []
+          return drainQueue().map((q) => {
+            if (q.mode === 'task-notification') {
+              showNotice(q)
+              return createUserMessage(taskNoticeForModel(q.text), { timestamp: q.timestamp })
+            }
+            core.setMessages((prev) => settleQueuedBubble(prev, q.timestamp))
+            const queuedImages = (q.images ?? []) as readonly PickedImage[]
+            return createUserMessage(q.text, { images: queuedImages.map((i) => i.block), timestamp: q.timestamp })
+          })
+        },
       })
+      // 模型这一轮说完了：之后主人再发的话不再排队（朗读可能还要很久）
+      releaseBusy()
 
       // 工具调用与结果留在历史里（下一轮还能引用刚查到的数据）；超门槛时先清旧工具结果，还超就在后台写摘要
       // 切走了，或新一轮等不及已经读走了历史：这段历史不属于现在的对话，不能盖上去
@@ -272,7 +363,7 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
       const replyText = lastReplyText(newHistory.slice(sentHistory.length))
 
       // ── 想法沉淀（后台，不阻塞回复）──
-      if (text.trim()) void runThoughtDistill(core, text.trim())
+      if (text.trim() && !turn.notices) void runThoughtDistill(core, text.trim())
 
       // ── 回复落库（只存最终 assistant）；音频到手后按同一个 id 补 audioPath ──
       if (replyText.trim()) {
@@ -329,9 +420,11 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
     } finally {
       core.patchMessage(agentMsgId, (m) => (m.streaming ? { ...m, streaming: false } : m))
       if (core.replyTurn === turnId) core.replyControl = null
+      releaseBusy()
       if (ownsUi()) core.setProcessing(false)
       settle()
       sessions.flushDbSync()
+      core.onTurnIdle?.()
     }
   }
 }

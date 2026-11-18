@@ -1,4 +1,4 @@
-// 浮岛 / 约束的编辑表单（新建和修改共用，对应 desktop components/daynight/IslandEditor.tsx）。
+// 浮岛 / 日程的编辑表单（新建和修改共用，对应 desktop components/daynight/IslandEditor.tsx）。
 // 只收集输入，校验交给 normalizeRule；时刻是手打的 HH:mm，写错的在这里先拦下（desktop 用时间控件，写不错）
 
 import { useMemo, useState } from 'react'
@@ -68,6 +68,8 @@ export default function IslandEditor({ palette, initial, initialKind, busy, onSa
         items,
         color: initial?.color ?? null,
         enabled,
+        // 锁名单现在只在桌面端编辑；这里原样带回去，免得在手机上改一下就丢了
+        lock: initial?.lock ?? null,
       })
       setError(null)
       onSave(rule)
@@ -82,7 +84,7 @@ export default function IslandEditor({ palette, initial, initialKind, busy, onSa
     <View>
       <View style={styles.kindRow}>
         <Key label="浮岛 · 跟在某件事后面" active={kind === 'after'} onPress={() => setKind('after')} style={styles.flex} />
-        <Key label="约束 · 钉在钟点" active={kind === 'fixed'} onPress={() => setKind('fixed')} style={styles.flex} />
+        <Key label="日程 · 钉在钟点" active={kind === 'fixed'} onPress={() => setKind('fixed')} style={styles.flex} />
       </View>
 
       <Field label="名字">

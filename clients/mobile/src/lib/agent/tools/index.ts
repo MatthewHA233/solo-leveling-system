@@ -19,6 +19,7 @@ import {
   repairBrokenThoughtCard,
   updateThoughtCard,
 } from './thought-tools'
+import { TRANSCRIBE_TOOLS } from './transcribe-tools'
 import { desktopOfflineText, type Tool } from './types'
 
 export type { Tool } from './types'
@@ -52,6 +53,7 @@ const ALL_TOOLS: readonly Tool[] = [
   writeFile,
   editFile,
   ...DAYNIGHT_TOOLS,
+  ...TRANSCRIBE_TOOLS,
 ]
 
 /** 发给 AI 的工具定义列表（OpenAI function calling 格式） */

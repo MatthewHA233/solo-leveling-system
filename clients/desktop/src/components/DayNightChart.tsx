@@ -17,7 +17,7 @@ interface Props {
   plannedBlocks: PlannedBlock[]
   /** 当前项目下的计划节点树 */
   planNodes: PlanNode[]
-  /** 浮岛与约束在这一天的落点（规则算出来的，不是涂上去的） */
+  /** 浮岛与日程在这一天的落点（规则算出来的，不是涂上去的） */
   islandPlacements?: readonly IslandPlacement[]
   /** 标签库（颜色 / 路径查找） */
   activityPalette: ActivityPalette
@@ -538,9 +538,9 @@ const ISLAND_MISSED_COLOR = '#8E8982'
 const ISLAND_HATCH_STEP = 7
 
 /**
- * 浮岛与约束：规则算出来的规划区块，叠在记录之上。
+ * 浮岛与日程：规则算出来的规划区块，叠在记录之上。
  *   浮岛 = 圆角框；位置是估的画虚线，锚已经出现画实线
- *   约束 = 直角框 + 斜纹（钉在钟点上，不会动）
+ *   日程 = 直角框 + 斜纹（钉在钟点上，不会动）
  *   做完的变淡带对勾，过了没做的变灰；标签靠右上角（涂上去的计划块标签在左上角，互不挡）
  */
 function drawIslands(

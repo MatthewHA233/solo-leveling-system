@@ -35,7 +35,8 @@ import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
 import { runQueryLoop } from './lib/llm/query-loop'
 import { contextBudget, estimateContextTokens, roughTokens, withSystemReminder, type CompactionResult, type ContextBudget } from './lib/llm/context-window'
 import { createCompactor, type CompactionContext } from './lib/agent/chat-compaction'
-import { compactNotice, compactSummaryRow, isCompactSummaryRow, restoreLLMHistory, rowsToLLMMessages, TOOL_TRACE_ROW, toolCallsOfTrace, toolTraceRow } from './lib/agent/chat-history'
+import { compactNotice, compactSummaryRow, isCompactSummaryRow, isTaskNoticeRow, restoreLLMHistory, rowsToLLMMessages, taskNoticeLabel, taskNoticeRow, TOOL_TRACE_ROW, toolCallsOfTrace, toolTraceRow } from './lib/agent/chat-history'
+import { drainQueue, dropQueuedPrompts, enqueuePrompt, subscribeQueue, takeNextBatch, taskNoticeForModel, type QueuedMessage } from './lib/agent/message-queue'
 import { finishToolCall, startToolCall, toolCallLine, type ToolCallView } from './lib/agent/tool-call-view'
 import { withBrowserArgs } from './lib/webview-args'
 import { buildAsrContext, buildAsrVocabulary } from './lib/voice/asr-hints'
@@ -122,6 +123,7 @@ import TodoListPanel from './components/TodoListPanel'
 import PlanSidePanel from './components/daynight/PlanSidePanel'
 import IslandPanel from './components/daynight/IslandPanel'
 import { useIslands } from './lib/islands/use-islands'
+import { useIslandLock } from './lib/islands/use-island-lock'
 import { DAYNIGHT_CHANGED_EVENT } from './lib/islands/island-api'
 import ActivityToast from './components/ActivityToast'
 import type { FairyState } from './components/FairyHUD'
@@ -148,7 +150,16 @@ export interface OmniDebugInfo {
   items: OmniDebugItem[]
 }
 
+/** Fairy 读到排队的那句了：去掉「排队中」，挪到对话末尾（它在历史里就是这个位置） */
+function settleQueuedBubble(messages: readonly ChatMessage[], timestamp: string): ChatMessage[] {
+  const hit = messages.find((m) => m.queued && m.role === 'user' && m.timestamp === timestamp)
+  if (!hit) return [...messages]
+  return [...messages.filter((m) => m !== hit), { ...hit, queued: false }]
+}
+
 export interface ChatMessage {
+  /** 主人在 Fairy 回复途中发的话，还排着队没被读到（lib/agent/message-queue.ts） */
+  queued?: boolean
   readonly id: string
   readonly role: 'user' | 'agent' | 'system'
   readonly content: string
@@ -185,7 +196,7 @@ type FairyChatSubmitPayload = { text?: string; mode?: ChatMode }
 type ModelFeatureBindingPayload = { feature?: string; modelId?: string }
 type TauriEventHandler<T> = (event: { payload: T }) => void
 // userTimestamp：语音那句落库的时间，发给模型的那条用同一个时间（压缩按时间在库里找分界）
-type HandleSend = (text: string, fromVoice?: boolean, modeOverride?: ChatMode, images?: readonly PendingImage[], userTimestamp?: string) => Promise<void>
+type HandleSend = (text: string, fromVoice?: boolean, modeOverride?: ChatMode, images?: readonly PendingImage[], userTimestamp?: string, turn?: TurnSource) => Promise<void>
 
 function listenTauriEventStrict<T>(event: string, handler: TauriEventHandler<T>): () => void {
   let disposed = false
@@ -223,6 +234,10 @@ function sessionMessagesToChatMessages(msgs: readonly SessionMessage[], audioDir
     // 压缩摘要显示成一条提示，点开能看；工具记录还原成一次调用一行
     if (isCompactSummaryRow(m) && m.content?.trim()) {
       out.push({ id: crypto.randomUUID(), role: 'system', content: compactNotice(), summary: m.content, timestamp: m.timestamp })
+      continue
+    }
+    if (isTaskNoticeRow(m)) {
+      out.push({ id: crypto.randomUUID(), role: 'system', content: taskNoticeLabel((m.content ?? '').trim()), timestamp: m.timestamp })
       continue
     }
     if (m.role === 'tool') {
@@ -267,6 +282,14 @@ function insertCompactNotice(messages: readonly ChatMessage[], result: Compactio
 /** 会话里主人说过几句（起标题的计数从这里接上） */
 function countUserMessages(messages: readonly SessionMessage[]): number {
   return messages.filter((m) => m.role === 'user' && (m.content ?? '').trim()).length
+}
+
+/** 这一轮是谁发起的（默认 = 主人刚打的字或说的话） */
+interface TurnSource {
+  /** 主人的话排过队：气泡和落库在入队时已经做了 */
+  readonly preShown?: boolean
+  /** 这一轮由后台通知发起 */
+  readonly notices?: readonly QueuedMessage[]
 }
 
 function makeSessionMessage(
@@ -566,6 +589,8 @@ export default function App() {
   const conversationRef = useRef<Message[]>([])
   // 回复轮次与打断控制：主人按右 Alt 开口时，停掉正在进行的生成与朗读
   const replyTurnRef = useRef(0)
+  // 哪一轮正在让模型回复（0 = 没有）。这期间主人再发的话不打断，排进消息队列，在工具批次之间接进这一轮
+  const busyTurnRef = useRef(0)
   const replyControlRef = useRef<{ interrupt: () => void } | null>(null)
   const handleSendRef = useRef<HandleSend | null>(null)
   const takeVoiceImagesRef = useRef<() => readonly PendingImage[]>(() => [])
@@ -1041,8 +1066,10 @@ export default function App() {
     fetchActivityPalette().then(setActivityPalette).catch(() => {})
   }, [])
 
-  // 浮岛与约束：规则 + 当天记录 + 近几天记录 → 当天落点
+  // 浮岛与日程：规则 + 当天记录 + 近几天记录 → 当天落点
   const { islands, placements: islandPlacements, error: islandsError, reload: reloadIslands } = useIslands(selectedDate, activityBlocks, activityPalette)
+  // 带锁的那几条：到了时间自动锁上名单里的应用和网站（规则、勾选、记录一变就重新对一次）
+  useIslandLock(activityPalette, islandPlacements)
 
   // 昼夜表的数据被别处改了（Fairy 的工具可能跑在另一个窗口）：重新取一遍。
   // 撤销栈是按旧数据拍的快照，按它撤回会盖掉新写进来的，所以一并清掉（同 AUDIT-001）
@@ -2592,17 +2619,29 @@ export default function App() {
   // ── Send Message ──
   // 打字和语音（级联）都走这里：同一个主循环、同一个 Fairy（一个大脑）。
   // 实时（实验）语音模式的回复另走 Omni WS，不经过这里。
-  const handleSend = useCallback(async (text: string, fromVoice = false, _modeOverride?: ChatMode, images: readonly PendingImage[] = [], userTimestamp?: string) => {
+  const handleSend = useCallback(async (text: string, fromVoice = false, _modeOverride?: ChatMode, images: readonly PendingImage[] = [], userTimestamp?: string, turn: TurnSource = {}) => {
     if (!text.trim() && images.length === 0) return
+    // 主人刚打的字：要显示气泡、落库、计进标题。排过队的话已经做过了；通知不是主人说的
+    const typed = !fromVoice && !turn.preShown && !turn.notices
     // 主人这句的时间：气泡、发给模型的那条、落库的那行用同一个（压缩按时间在库里找分界）
     const sentAt = userTimestamp ?? new Date().toISOString()
     // 这一轮属于发起时的会话：切走之后，迟到的回复写回原会话，不能进新会话，也不能盖掉新会话的历史
     const turnSessionId = sessionIdRef.current
     // 语音那句在转写定稿时已经数过（onTranscript），这里只数打字
-    if (!fromVoice) titleFlowRef.current?.onUserMessage(text || '发了图片')
+    if (typed) titleFlowRef.current?.onUserMessage(text || '发了图片')
+
+    // 后台通知：显示成一行提示并落库
+    const showNotice = (q: QueuedMessage) => {
+      const row: SessionMessage = { ...taskNoticeRow(q.text, new Date().toISOString()), id: crypto.randomUUID() }
+      setChatMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'system' as const, content: taskNoticeLabel(q.text), timestamp: row.timestamp }])
+      if (!turnSessionId) return
+      if (sessionIdRef.current === turnSessionId) persistedBufferRef.current = [...persistedBufferRef.current, row]
+      persistMessages(turnSessionId, [row]).catch((e) => console.warn('[Chat] 后台通知写入失败', e))
+    }
+    for (const q of turn.notices ?? []) showNotice(q)
 
     // 文字输入：添加用户气泡（语音输入的气泡在 onUserAudio 已添加，不重复）
-    if (!fromVoice) {
+    if (typed) {
       setChatMessages((prev) => [...prev, {
         id: crypto.randomUUID(), role: 'user' as const,
         content: text, timestamp: sentAt,
@@ -2612,7 +2651,7 @@ export default function App() {
 
     // 主人这句一发出就落库，不等回复（落库后立刻推给已链接的设备）；语音那句在转写定稿时已经存过
     const userText = text.trim()
-    if (!fromVoice && turnSessionId && (userText || images.length > 0)) {
+    if (typed && turnSessionId && (userText || images.length > 0)) {
       const userRow: SessionMessage = { ...makeSessionMessage('user', withImageMarker(userText, images.map((i) => i.id))), timestamp: sentAt }
       if (sessionIdRef.current === turnSessionId) persistedBufferRef.current = [...persistedBufferRef.current, userRow]
       persistMessages(turnSessionId, [userRow]).catch((e) => console.warn('[Chat] 用户消息写入失败', e))
@@ -2622,6 +2661,8 @@ export default function App() {
     const turnId = ++replyTurnRef.current
     let interrupted = false
     const ownsUi = () => replyTurnRef.current === turnId && !interrupted
+    busyTurnRef.current = turnId
+    const releaseBusy = () => { if (busyTurnRef.current === turnId) busyTurnRef.current = 0 }
     setIsProcessing(true)
     emitFairy('thinking')
 
@@ -2706,6 +2747,7 @@ export default function App() {
       interrupt: () => {
         if (interrupted) return
         interrupted = true
+        releaseBusy()
         abort.abort()
         const t = tts
         if (t) {
@@ -2845,7 +2887,22 @@ export default function App() {
           }
         },
         executeTool: (call) => executeAgentTool(call.name, call.arguments),
+        // 每批工具跑完取一次队列：主人中途说的话（已经显示、存好）和后台通知接进这一轮
+        drainQueued: () => {
+          if (interrupted || sessionIdRef.current !== turnSessionId) return []
+          return drainQueue().map((q) => {
+            if (q.mode === 'task-notification') {
+              showNotice(q)
+              return createUserMessage(taskNoticeForModel(q.text), { timestamp: q.timestamp })
+            }
+            setChatMessages((prev) => settleQueuedBubble(prev, q.timestamp))
+            const queuedImages = (q.images ?? []) as readonly PendingImage[]
+            return createUserMessage(q.text, { images: queuedImages.map((i) => i.block), timestamp: q.timestamp })
+          })
+        },
       })
+      // 模型这一轮说完了：之后主人再发的话不再排队（朗读可能还要很久）
+      releaseBusy()
       // 工具调用与结果留在历史里（下一轮还能引用刚查到的数据）；超门槛时先清旧工具结果，还超就在后台写摘要
       if (sessionIdRef.current === turnSessionId) {
         conversationRef.current = compactor.settle(newHistory.map((m) => (m === apiUserMsg ? userMsg : m)), compactCtx)
@@ -2879,7 +2936,7 @@ export default function App() {
       // ── 想法沉淀（后台，不阻塞回复）──
       //   绑定了语境卡（展开转录的那张）→ 锚定到语境卡 + 生成绑定语境的想法卡
       //   没绑定（日常聊天）→ 生成独立想法卡
-      if (text.trim()) {
+      if (text.trim() && !turn.notices) {
         const speech = text.trim()
         const active = activeContextRef.current
         const focused = focusedCardRef.current
@@ -3092,6 +3149,7 @@ export default function App() {
       }
     }
 
+    releaseBusy()
     if (replyTurnRef.current === turnId) replyControlRef.current = null
     if (ownsUi()) setIsProcessing(false)
   }, [chatMessages, config, replaceBlobAudioUrlWithFile, trackBlobAudioUrl])
@@ -3100,18 +3158,60 @@ export default function App() {
     handleSendRef.current = handleSend
   }, [handleSend])
 
+  // ── 消息队列（lib/agent/message-queue.ts）──
+  // 主人打字发送：模型正在回复就不打断，先显示、存好，排进队列等工具批次之间接进去；否则直接起一轮。
+  // 回复已经出完、只是还在朗读时，停掉朗读起新的一轮
+  const submitTyped = useCallback((text: string, images: readonly PendingImage[] = [], mode?: ChatMode) => {
+    if (!text.trim() && images.length === 0) return
+    if (busyTurnRef.current === 0) {
+      if (replyControlRef.current) {
+        replyControlRef.current.interrupt()
+        replyControlRef.current = null
+      }
+      void handleSendRef.current?.(text, false, mode, images)
+      return
+    }
+    const sentAt = new Date().toISOString()
+    const sid = sessionIdRef.current
+    titleFlowRef.current?.onUserMessage(text || '发了图片')
+    setChatMessages((prev) => [...prev, {
+      id: crypto.randomUUID(), role: 'user' as const,
+      content: text, timestamp: sentAt, queued: true,
+      ...(images.length > 0 ? { images: images.map(({ id, url }) => ({ id, url })) } : {}),
+    }])
+    if (sid) {
+      const userRow: SessionMessage = { ...makeSessionMessage('user', withImageMarker(text.trim(), images.map((i) => i.id))), timestamp: sentAt }
+      persistedBufferRef.current = [...persistedBufferRef.current, userRow]
+      persistMessages(sid, [userRow]).catch((e) => console.warn('[Chat] 用户消息写入失败', e))
+    }
+    enqueuePrompt(text.trim(), sentAt, images)
+  }, [])
+
+  // 空闲时取队列起新的一轮：主人排着的话先说，后台通知排在后面
+  const pumpQueue = useCallback(() => {
+    if (busyTurnRef.current !== 0 || isProcessingRef.current) return
+    const send = handleSendRef.current
+    if (!send) return
+    const batch = takeNextBatch()
+    if (batch.length === 0) return
+    if (batch[0].mode === 'task-notification') {
+      void send(taskNoticeForModel(batch.map((q) => q.text).join('\n')), false, undefined, [], undefined, { notices: batch })
+    } else {
+      setChatMessages((prev) => batch.reduce((list, q) => settleQueuedBubble(list, q.timestamp), [...prev]))
+      const images = batch.flatMap((q) => (q.images ?? []) as PendingImage[])
+      void send(batch.map((q) => q.text).join('\n\n'), false, undefined, images, batch[0].timestamp, { preShown: true })
+    }
+  }, [])
+  useEffect(() => subscribeQueue(pumpQueue), [pumpQueue])
+
   useEffect(() => {
     return listenTauriEventStrict<FairyChatSubmitPayload>('fairy-chat-submit', (e) => {
       const text = e.payload?.text?.trim()
       if (!text) return
       const mode = e.payload?.mode
-      handleSendRef.current?.(
-        text,
-        false,
-        mode === 'regular' || mode === 'omni' ? mode : undefined,
-      ).catch(() => {})
+      submitTyped(text, [], mode === 'regular' || mode === 'omni' ? mode : undefined)
     })
-  }, [])
+  }, [submitTyped])
 
   // ── 切换 / 新建会话 ──
   const switchSession = useCallback(async (sessionId: string, jumpToTimestamp?: string, knownTitle?: string) => {
@@ -3140,6 +3240,7 @@ export default function App() {
         replyControlRef.current = null
         emitFairy('idle')
       }
+      dropQueuedPrompts()
       sessionIdRef.current = sessionId
       persistedBufferRef.current = [...msgs]
       // 搜索能跳到 sessions（最近 50 条）之外的旧会话，查不到时用选择器带来的标题，否则下一轮会把原标题覆盖掉
@@ -3163,6 +3264,7 @@ export default function App() {
       replyControlRef.current = null
       emitFairy('idle')
     }
+    dropQueuedPrompts()
     compactor.reset()
     try {
       const s = await createChatSession()
@@ -3245,7 +3347,9 @@ export default function App() {
       pendingChatSyncRef.current = false
       chatSyncRef.current()
     }
-  }, [isProcessing])
+    // 这一轮（连朗读）收尾了：队列里还有就接着起下一轮
+    if (!isProcessing) pumpQueue()
+  }, [isProcessing, pumpQueue])
 
   const mainPanelStyle = (mode: MainViewMode): React.CSSProperties => {
     const panelOrder: Record<MainViewMode, number> = {
@@ -3280,8 +3384,8 @@ export default function App() {
 
   // 聊天栏的回调（稳定引用，StageChatPanel 才跳得过去）
   const sendFromPanel = useCallback((text: string, images: readonly PendingImage[]) => {
-    void handleSend(text, false, undefined, images)
-  }, [handleSend])
+    submitTyped(text, images)
+  }, [submitTyped])
   const toggleAiMode = useCallback(() => {
     handleConfigUpdate({ aiMode: config.aiMode === 'omni' ? 'regular' : 'omni' })
   }, [handleConfigUpdate, config.aiMode])

@@ -1080,8 +1080,8 @@ function Bubble({ message, agentName, userCallsign, onDebug, onOmniDebug }: {
   // 主人文字（含边说边出的中间结果）：右侧下沉槽
   if (isUser) {
     return (
-      <div data-msg-ts={message.timestamp} style={{ animation: 'fadeSlideIn 0.2s ease' }}>
-        <MsgMeta label={userCallsign} ts={message.timestamp} align="right" />
+      <div data-msg-ts={message.timestamp} style={{ animation: 'fadeSlideIn 0.2s ease', opacity: message.queued ? 0.55 : 1 }}>
+        <MsgMeta label={message.queued ? `${userCallsign} · 排队中` : userCallsign} ts={message.timestamp} align="right" />
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <div className="ti-well" style={{
             maxWidth: '88%',

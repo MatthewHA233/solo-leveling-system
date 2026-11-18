@@ -36,8 +36,11 @@ export interface LockProtocolPatch {
 
 export interface LockSession {
   readonly id: string
+  /** 手动开的协议 = 协议 id；浮岛 / 日程带的锁 = "island:<浮岛 id>" */
   readonly protocolId: string
   readonly protocolName: string
+  /** allow = 白名单（名单之外都拦）/ block = 锁名单（只拦名单里的；apps / sites 这时是要锁的） */
+  readonly mode: 'allow' | 'block'
   readonly apps: readonly AllowEntry[]
   readonly sites: readonly AllowEntry[]
   readonly strength: LockStrength
@@ -89,7 +92,7 @@ interface RawSession {
   id: string
   protocol_id: string
   protocol_name: string
-  rules: { apps: AllowEntry[]; sites: AllowEntry[]; strength: LockStrength }
+  rules: { apps: AllowEntry[]; sites: AllowEntry[]; strength: LockStrength; mode?: 'allow' | 'block' }
   started_at: string
   planned_end_at: string | null
   ended_at: string | null
@@ -137,6 +140,7 @@ function mapSession(r: RawSession): LockSession {
     id: r.id,
     protocolId: r.protocol_id,
     protocolName: r.protocol_name,
+    mode: r.rules.mode === 'block' ? 'block' : 'allow',
     apps: r.rules.apps,
     sites: r.rules.sites,
     strength: r.rules.strength,
@@ -192,6 +196,41 @@ export async function requestStop(): Promise<LockSession> {
 
 export async function cancelStop(): Promise<LockSession> {
   return mapSession(await call<RawSession>('/api/protocol-session/stop/cancel', { method: 'POST' }))
+}
+
+/** 浮岛 / 日程此刻想要的锁 */
+export interface IslandLockWant {
+  readonly islandId: string
+  readonly name: string
+  /** 浮岛的 updatedAt：规则改过就换一局 */
+  readonly rev: string
+  readonly intent: string
+  readonly apps: readonly AllowEntry[]
+  readonly sites: readonly AllowEntry[]
+  /** 到这个时刻自动解开（本地时间 YYYY-MM-DD HH:MM:SS）；null = 做完才解开 */
+  readonly endAt: string | null
+}
+
+export interface IslandLockSyncResult {
+  readonly state: 'started' | 'running' | 'ended' | 'idle' | 'skipped'
+  readonly reason: string | null
+}
+
+/** 把浮岛的锁对齐到「此刻想要的」（null = 现在没有哪条该锁）。可以反复调，后端自己判断要不要动 */
+export async function syncIslandLock(want: IslandLockWant | null): Promise<IslandLockSyncResult> {
+  const body = {
+    want: want && {
+      island_id: want.islandId,
+      name: want.name,
+      rev: want.rev,
+      intent: want.intent,
+      apps: want.apps,
+      sites: want.sites,
+      end_at: want.endAt,
+    },
+  }
+  const r = await call<{ state: IslandLockSyncResult['state']; reason: string | null }>('/api/island-lock/sync', jsonInit('POST', body))
+  return { state: r.state, reason: r.reason }
 }
 
 export async function fetchSessionsForDate(date: Date): Promise<LockSession[]> {

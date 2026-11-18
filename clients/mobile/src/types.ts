@@ -103,6 +103,8 @@ export interface ChatMessage {
   timestamp: string
   images?: ChatImageAttachment[]
   audio?: ChatAudioAttachment
+  /** 主人在 Fairy 回复途中发的话，还排着队没被读到（lib/agent/message-queue.ts） */
+  queued?: boolean
   /** 手机端多的标记：这条还在生成。这轮结束后正文仍为空时不再显示「正在思考」 */
   streaming?: boolean
   /** 思考模型的推演过程（reasoningDelta 流式累积；不进对话历史，仅 UI 展示+持久化） */

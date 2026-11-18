@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// 昼夜表 · 浮岛与约束的本地 API 客户端（后端 src-tauri/src/islands.rs）
+// 昼夜表 · 浮岛与日程的本地 API 客户端（后端 src-tauri/src/islands.rs）
 // ══════════════════════════════════════════════
 
 import { emit } from '@tauri-apps/api/event'

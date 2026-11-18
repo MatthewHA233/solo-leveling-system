@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// 计划弹窗 · 浮岛与约束：这一天各条的落点、里面的事勾没勾，新建 / 修改 / 删除规则
+// 计划弹窗 · 浮岛与日程：这一天各条的落点、里面的事勾没勾，新建 / 修改 / 删除规则
 //   对应 desktop components/daynight/IslandPanel.tsx（结构和文案一致，样子按手机端浅色主题画）
 // ══════════════════════════════════════════════
 
@@ -89,7 +89,7 @@ export default function IslandPanel({ selectedDate, palette, islands, placements
   return (
     <View style={styles.root}>
       <View style={styles.header}>
-        <Text style={styles.title}>浮岛与约束</Text>
+        <Text style={styles.title}>主线浮岛日程</Text>
         <Text style={styles.date}>{toDateKey(selectedDate)}</Text>
       </View>
 
@@ -110,14 +110,14 @@ export default function IslandPanel({ selectedDate, palette, islands, placements
         <>
           <View style={styles.newRow}>
             <Key label="＋ 浮岛" onPress={() => setEditing({ mode: 'new', kind: 'after' })} style={styles.flex} />
-            <Key label="＋ 约束" onPress={() => setEditing({ mode: 'new', kind: 'fixed' })} style={styles.flex} />
+            <Key label="＋ 日程" onPress={() => setEditing({ mode: 'new', kind: 'fixed' })} style={styles.flex} />
           </View>
           {(error ?? loadError) && <Text style={[planStyles.error, styles.errorGap]}>{error ?? loadError}</Text>}
 
           <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
             {placements.length === 0 && disabled.length === 0 && (
               <Text style={planStyles.empty}>
-                还没有规则。浮岛跟在某件事后面，比如「睡醒后」「吃完饭两小时后」；约束钉在钟点上，比如「23:30 早睡」。
+                还没有规则。浮岛跟在某件事后面，比如「睡醒后」「吃完饭两小时后」；日程钉在钟点上，比如「23:30 早睡」。
               </Text>
             )}
             {placements.map((p) => (
@@ -202,7 +202,7 @@ function PlacementCard({ placement: p, palette, busy, onToggle, onEdit, onDelete
 
       <View style={styles.timeRow}>
         <Text style={styles.time}>{describePlacementTime(p)}</Text>
-        <Text style={styles.kindText}>{rule.kind === 'fixed' ? '约束' : '浮岛'}</Text>
+        <Text style={styles.kindText}>{rule.kind === 'fixed' ? '日程' : '浮岛'}</Text>
         <View style={styles.cardTools}>
           <Pressable disabled={busy} onPress={onEdit} hitSlop={6} accessibilityLabel="修改规则">
             <Text style={styles.linkText}>修改</Text>

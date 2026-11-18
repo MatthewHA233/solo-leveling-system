@@ -98,6 +98,8 @@ export function tallyFocus(day: Date, spans: readonly PerceptionSpan[], sessions
   let graySeconds = 0
   const windows = spans.filter((s) => s.track === 'apps')
   for (const session of sessions) {
+    // 浮岛带的锁是锁名单，名单里的是要拦的，不是专注用的：不算有效时长
+    if (session.mode === 'block') continue
     const from = secondOfDay(parseLocalTime(session.startedAt), dayStart)
     const to = secondOfDay(session.endedAt ? parseLocalTime(session.endedAt) : now, dayStart)
     if (to <= from) continue

@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// 昼夜表 · 浮岛与约束的数据访问（本机库，原生实现在 android/.../solevupdb/PlanStore.kt）
+// 昼夜表 · 浮岛与日程的数据访问（本机库，原生实现在 android/.../solevupdb/PlanStore.kt）
 //   导出的函数和 desktop lib/islands/island-api.ts 同名同签名；desktop 走本地 HTTP，这里直接读写本机库，
 //   两边的数据靠局域网同步合并（规则见 PlanStore.kt 文件头）
 // ══════════════════════════════════════════════

@@ -63,6 +63,11 @@ export interface QueryParams {
   maxIterations?: number    // 默认 8（对应 agent-loop.ts 的 maxIterations）
   onEvent?: (event: QueryEvent) => void
   executeTool?: (call: ToolCall) => Promise<string>
+  /**
+   * 每批工具跑完、下一次请求模型之前调一次：把排队的消息（主人中途说的话、后台任务通知）接进这一轮。
+   * 只在工具结果之后接，不会拆开 tool_use 和它的结果（Claude Code query.ts 的 mid-turn drain）
+   */
+  drainQueued?: () => Message[]
 }
 
 // ── queryLoop 内部 State ──
@@ -182,6 +187,7 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
     maxIterations = 8,
     onEvent,
     executeTool,
+    drainQueued,
   } = params
 
   // Loop-local（不在 State 上，和 taskBudget 的设计理念相同：
@@ -332,9 +338,11 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
 
     if (apiOptions.signal?.aborted) return [...newMessages, ...toolResultMessages]
 
+    const queued = drainQueued?.() ?? []
+
     // ── 更新 State → 下一轮（对应 Claude Code L1715-1727 的 state = next; continue） ──
     state = {
-      messages: [...newMessages, ...toolResultMessages],
+      messages: [...newMessages, ...toolResultMessages, ...queued],
       transition: { reason: 'next_turn' },
       turnCount: turnCount + 1,
     }

@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// 昼夜表右侧栏 · 浮岛与约束：这一天各条的落点、里面的事勾没勾，新建 / 修改 / 删除规则
+// 昼夜表右侧栏 · 浮岛与日程：这一天各条的落点、里面的事勾没勾，新建 / 修改 / 删除规则
 // ══════════════════════════════════════════════
 
 import { useState } from 'react'
@@ -7,7 +7,7 @@ import type { CSSProperties } from 'react'
 import { Check, Circle, Pencil, Plus, Trash2 } from 'lucide-react'
 import type { ActivityPalette } from '../../types'
 import { createIsland, deleteIsland, setIslandCheck, updateIsland } from '../../lib/islands/island-api'
-import { WHOLE_ITEM_ID, describePlacementTime, describeRule, islandColor, toDateKey } from '../../lib/islands/island-model'
+import { WHOLE_ITEM_ID, describeLock, describePlacementTime, describeRule, islandColor, toDateKey } from '../../lib/islands/island-model'
 import type { Island, IslandKind, IslandPlacement, IslandRule, PlacementStatus } from '../../lib/islands/island-model'
 import { useConfirm } from '../../hooks/useConfirm'
 import { tone } from '../../lib/color/harmonize'
@@ -91,7 +91,7 @@ export default function IslandPanel({ selectedDate, palette, islands, placements
       <header style={styles.header}>
         <div style={styles.titleRow}>
           <span className="ti-diamond" aria-hidden />
-          <h2 style={styles.title}>浮岛与约束</h2>
+          <h2 style={styles.title}>主线浮岛日程</h2>
         </div>
         <div className="ti-well" style={styles.dateBadge}>
           <span className="ti-led" style={{ fontSize: 11 }}>{toDateKey(selectedDate)}</span>
@@ -120,7 +120,7 @@ export default function IslandPanel({ selectedDate, palette, islands, placements
             </button>
             <button type="button" className="ti-key" onClick={() => setEditing({ mode: 'new', kind: 'fixed' })} style={styles.newKey}>
               <Plus size={12} strokeWidth={2.6} />
-              约束
+              日程
             </button>
           </div>
           {(error ?? loadError) && <div style={styles.error}>{error ?? loadError}</div>}
@@ -128,7 +128,7 @@ export default function IslandPanel({ selectedDate, palette, islands, placements
           <div style={styles.scroll}>
             {placements.length === 0 && disabled.length === 0 && (
               <div style={styles.empty}>
-                还没有规则。浮岛跟在某件事后面，比如「睡醒后」「吃完饭两小时后」；约束钉在钟点上，比如「23:30 早睡」。
+                还没有规则。浮岛跟在某件事后面，比如「睡醒后」「吃完饭两小时后」；日程钉在钟点上，比如「23:30 早睡」。
               </div>
             )}
             {placements.map((p) => (
@@ -186,7 +186,7 @@ function PlacementCard({ placement: p, palette, busy, onToggle, onEdit, onDelete
       </div>
       <div style={styles.timeRow}>
         <span className="ti-led" style={styles.time}>{describePlacementTime(p)}</span>
-        <span style={styles.kindText}>{rule.kind === 'fixed' ? '约束' : '浮岛'}</span>
+        <span style={styles.kindText}>{rule.kind === 'fixed' ? '日程' : '浮岛'}</span>
         <span style={styles.cardTools}>
           <Tooltip content="修改规则">
             <button type="button" className="ti-key" disabled={busy} onClick={onEdit} style={styles.toolKey} aria-label="修改规则"><Pencil size={11} /></button>
@@ -197,6 +197,7 @@ function PlacementCard({ placement: p, palette, busy, onToggle, onEdit, onDelete
         </span>
       </div>
       <div style={styles.ruleText}>{describeRule(rule, palette)}</div>
+      {rule.lock && <div style={styles.ruleText}>{describeLock(rule.lock)}</div>}
       {note && <div style={styles.noteText}>{note}</div>}
       <div style={styles.itemList}>
         {rows.map((item) => {

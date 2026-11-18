@@ -5,6 +5,8 @@
 //          ended_at 为空 = 正在进行，软件重启后接着锁（protocol_watch.rs）
 //   拦截记录 = protocol_intercepts，复盘用，界面上不实时显示
 //   强度：soft 申请结束后冷却 1 分钟 / firm 冷却 10 分钟 / hard 定好的时间到之前不能结束（必须定时）
+//   浮岛 / 日程带的锁（昼夜表）也是一局：protocol_id = "island:<浮岛 id>"，规则是锁名单模式（mode = block，
+//          只拦名单里的），由前端在浮岛进入时段时申请（island_lock_sync），做完 / 到点 / 不该锁了就结束
 //   执行复用专注锁（focus_lock.rs）：网站走 Chrome 扩展（全拦 + 白名单放行），应用走前台窗口监控
 // ══════════════════════════════════════════════
 
@@ -110,6 +112,15 @@ pub struct StartSessionRequest {
     pub minutes: Option<i64>,
 }
 
+/// allow = 白名单（名单之外都拦）/ block = 锁名单（只拦名单里的）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LockMode {
+    #[default]
+    Allow,
+    Block,
+}
+
 /// 开局时冻结下来的规则
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRules {
@@ -119,7 +130,47 @@ pub struct SessionRules {
     /// 协议用意（灰色地带的判断标准）；空 = 用协议名
     #[serde(default)]
     pub intent: String,
+    #[serde(default)]
+    pub mode: LockMode,
+    /// 浮岛带的锁：申请时那条规则的版本（浮岛的 updated_at）。规则改过 = 换一局
+    #[serde(default)]
+    pub source_rev: String,
 }
+
+/// 浮岛 / 日程此刻想要的锁（前端按当天落点算出来的）
+#[derive(Debug, Deserialize)]
+pub struct IslandLockWant {
+    pub island_id: String,
+    pub name: String,
+    /// 浮岛的 updated_at
+    pub rev: String,
+    #[serde(default)]
+    pub intent: String,
+    #[serde(default)]
+    pub apps: Vec<AllowEntry>,
+    #[serde(default)]
+    pub sites: Vec<AllowEntry>,
+    /// 到这个时刻自动解开（本地时间 YYYY-MM-DD HH:MM:SS）；不给 = 做完才解开
+    pub end_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IslandLockSyncRequest {
+    /// 此刻该锁的那条；None = 现在没有哪条该锁
+    pub want: Option<IslandLockWant>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IslandLockSyncResult {
+    /// started 新开了一局 / running 已经在锁 / ended 把不该锁的那局结束了 / idle 没事可做 / skipped 没开成（见 reason）
+    pub state: &'static str,
+    pub reason: Option<String>,
+    pub session: Option<ProtocolSession>,
+    /// 这次调用有没有改动局的状态（调用方据此通知执行层和界面）
+    pub changed: bool,
+}
+
+const ISLAND_PREFIX: &str = "island:";
 
 /// 灰色地带的一次 AI 判断（复盘用）
 #[derive(Debug, Serialize)]
@@ -474,11 +525,14 @@ impl Database {
         current_session(&conn)
     }
 
-    /// 开局：同一时间只能有一局；白名单和强度在这一刻冻结
+    /// 开局：同一时间只能有一局；白名单和强度在这一刻冻结。浮岛带的锁给手动开的协议让路
     pub async fn protocol_session_start(&self, protocol_id: &str, req: StartSessionRequest) -> Result<ProtocolSession, String> {
         let conn = self.conn.lock().await;
         if let Some(active) = current_session(&conn)? {
-            return Err(format!("「{}」这一局还没结束", active.protocol_name));
+            if !active.protocol_id.starts_with(ISLAND_PREFIX) {
+                return Err(format!("「{}」这一局还没结束", active.protocol_name));
+            }
+            end_session(&conn, &active.id, "replaced", &fmt_time(now()))?;
         }
         let protocol = get_protocol(&conn, protocol_id)?.ok_or_else(|| "协议不存在".to_string())?;
         let minutes = match req.minutes {
@@ -494,7 +548,14 @@ impl Database {
         let started = now();
         let planned_end = minutes.map(|m| fmt_time(started + Duration::minutes(m)));
         let intent = if protocol.intent.trim().is_empty() { protocol.name.clone() } else { protocol.intent.clone() };
-        let rules = SessionRules { apps: protocol.apps, sites: protocol.sites, strength: protocol.strength, intent };
+        let rules = SessionRules {
+            apps: protocol.apps,
+            sites: protocol.sites,
+            strength: protocol.strength,
+            intent,
+            mode: LockMode::Allow,
+            source_rev: String::new(),
+        };
         let rules_json = serde_json::to_string(&rules).map_err(|e| e.to_string())?;
         let id = Uuid::new_v4().to_string();
         conn.execute(
@@ -504,6 +565,102 @@ impl Database {
         )
         .map_err(|e| e.to_string())?;
         get_session(&conn, &id)?.ok_or_else(|| "新开的一局没读到".to_string())
+    }
+
+    /// 浮岛 / 日程的锁对齐到「此刻想要的」：
+    ///   · 正在锁的是别的浮岛、或同一条但规则改过、或现在不该锁了 → 结束那一局
+    ///   · 想锁的这条还没在锁 → 开一局（锁名单模式，软锁）
+    ///   · 手动开的协议正在进行 → 不动它，浮岛的锁这次不开
+    ///   · 这条今天被主人手动结束过（同一版规则）→ 不再开，改了规则才重新算
+    pub async fn island_lock_sync(&self, req: IslandLockSyncRequest) -> Result<IslandLockSyncResult, String> {
+        let conn = self.conn.lock().await;
+        let t = now();
+        let active = current_session(&conn)?;
+        let mut changed = false;
+
+        if let Some(session) = &active {
+            if !session.protocol_id.starts_with(ISLAND_PREFIX) {
+                return Ok(IslandLockSyncResult {
+                    state: "skipped",
+                    reason: Some(format!("「{}」这一局正在进行", session.protocol_name)),
+                    session: None,
+                    changed: false,
+                });
+            }
+            let same = req.want.as_ref().is_some_and(|w| {
+                session.protocol_id == format!("{ISLAND_PREFIX}{}", w.island_id) && session.rules.source_rev == w.rev
+            });
+            if same {
+                return Ok(IslandLockSyncResult { state: "running", reason: None, session: active, changed: false });
+            }
+            end_session(&conn, &session.id, "done", &fmt_time(t))?;
+            changed = true;
+        }
+
+        let Some(want) = req.want else {
+            return Ok(IslandLockSyncResult { state: if changed { "ended" } else { "idle" }, reason: None, session: None, changed });
+        };
+
+        let name = clean_name(&want.name)?;
+        let apps = clean_entries(want.apps)?;
+        let sites = clean_entries(want.sites)?;
+        if apps.is_empty() && sites.is_empty() {
+            return Ok(IslandLockSyncResult { state: "skipped", reason: Some("锁名单是空的".into()), session: None, changed });
+        }
+        let planned_end = match want.end_at.as_deref() {
+            None => None,
+            Some(s) => {
+                let end = parse_time(s).ok_or_else(|| "结束时刻格式应为 YYYY-MM-DD HH:MM:SS".to_string())?;
+                if end <= t {
+                    return Ok(IslandLockSyncResult { state: "skipped", reason: Some("已经过了结束时刻".into()), session: None, changed });
+                }
+                Some(fmt_time(end))
+            }
+        };
+
+        let protocol_id = format!("{ISLAND_PREFIX}{}", want.island_id);
+        let today = t.format("%Y-%m-%d").to_string();
+        let stopped_today: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT rules FROM protocol_sessions
+                     WHERE protocol_id = ?1 AND end_reason = 'stopped' AND substr(started_at, 1, 10) = ?2",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt.query_map(params![protocol_id, today], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        let quit_this_version = stopped_today.iter().any(|json| {
+            serde_json::from_str::<SessionRules>(json).is_ok_and(|r| r.source_rev == want.rev)
+        });
+        if quit_this_version {
+            return Ok(IslandLockSyncResult {
+                state: "skipped",
+                reason: Some("今天已经手动结束过这条的锁".into()),
+                session: None,
+                changed,
+            });
+        }
+
+        let intent: String = want.intent.trim().chars().take(INTENT_MAX_CHARS).collect();
+        let rules = SessionRules {
+            apps,
+            sites,
+            strength: Strength::Soft,
+            intent: if intent.is_empty() { name.clone() } else { intent },
+            mode: LockMode::Block,
+            source_rev: want.rev,
+        };
+        let rules_json = serde_json::to_string(&rules).map_err(|e| e.to_string())?;
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO protocol_sessions (id, protocol_id, protocol_name, rules, started_at, planned_end_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, protocol_id, name, rules_json, fmt_time(t), planned_end],
+        )
+        .map_err(|e| e.to_string())?;
+        let session = get_session(&conn, &id)?.ok_or_else(|| "新开的一局没读到".to_string())?;
+        Ok(IslandLockSyncResult { state: "started", reason: None, session: Some(session), changed: true })
     }
 
     /// 结束这一局：软 / 中锁第一次调用 = 申请（开始冷却），冷却到了再调用 = 真结束；硬锁到点前拒绝

@@ -810,7 +810,7 @@ const PLAN_INSET = 1
 const ISLAND_INSET = 3
 const R_PLAN = 9
 const R_ISLAND = 7
-/** 约束的斜纹间距（desktop ISLAND_HATCH_STEP） */
+/** 日程的斜纹间距（desktop ISLAND_HATCH_STEP） */
 const ISLAND_HATCH_STEP = 7
 /** 浮岛过了没做 */
 const ISLAND_MISSED_COLOR = '#8E8982'
@@ -2283,7 +2283,7 @@ export default function DayNightScreen() {
                 <SlidersGlyph color="#FFF" size={15} />
                 <Text style={styles.editFullText}>编辑昼夜表</Text>
               </Pressable>
-              {/* 浮岛与约束、计划安排（desktop 右侧栏的「计划」） */}
+              {/* 浮岛与日程、计划安排（desktop 右侧栏的「计划」） */}
               <Pressable onPress={() => setPlanSheet('islands')} style={styles.planOpenBtn}>
                 <Text style={styles.planOpenText}>计划</Text>
               </Pressable>
@@ -2563,7 +2563,7 @@ export default function DayNightScreen() {
                 if (last && last.nodeId === id && last.r === col - 1) last.r = col
                 else planRowRuns.push({ l: col, r: col, nodeId: id })
               }
-              // 浮岛与约束落在这一行的部分（desktop drawIslands）
+              // 浮岛与日程落在这一行的部分（desktop drawIslands）
               const islandSegs = islandPlacements.flatMap((p) => {
                 if (p.start == null || p.end == null || p.end <= p.start) return []
                 const s = Math.max(p.start, rowStart)
@@ -2696,7 +2696,7 @@ export default function DayNightScreen() {
                           style={[
                             styles.islandBox,
                             {
-                              // 浮岛圆角、约束直角；位置是估的画虚线
+                              // 浮岛圆角、日程直角；位置是估的画虚线
                               borderRadius: fixed ? 2 : R_ISLAND,
                               borderColor: alpha(color, 0.95 * strength),
                               borderStyle: estimated ? 'dashed' : 'solid',
@@ -2706,7 +2706,7 @@ export default function DayNightScreen() {
                           ]}
                         >
                           {fixed ? (
-                            // 约束：钉在钟点上，加斜纹（desktop 同样）
+                            // 日程：钉在钟点上，加斜纹（desktop 同样）
                             <Svg style={StyleSheet.absoluteFill}>
                               <Defs>
                                 <Pattern
@@ -2780,7 +2780,7 @@ export default function DayNightScreen() {
       )}
 
 
-      {/* 浮岛与约束 / 计划安排（desktop 昼夜表右侧栏的「计划」） */}
+      {/* 浮岛与日程 / 计划安排（desktop 昼夜表右侧栏的「计划」） */}
       <PlanSheet
         visible={planSheet != null}
         initialPage={planSheet ?? 'islands'}
@@ -4062,7 +4062,7 @@ const styles = StyleSheet.create({
     color: 'rgba(0,0,0,0.5)',
     fontWeight: '500',
   },
-  // —— 计划层：计划块虚线框、浮岛 / 约束框、折叠行细条 ——
+  // —— 计划层：计划块虚线框、浮岛 / 日程框、折叠行细条 ——
   planRunWrap: {
     position: 'absolute',
     top: 0,

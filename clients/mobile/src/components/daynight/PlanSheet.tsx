@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════
-// 昼夜表的「计划」底部弹窗：浮岛与约束 / 计划安排 两页（对应 desktop 右侧栏 components/daynight/PlanSidePanel.tsx）
+// 昼夜表的「计划」底部弹窗：浮岛与日程 / 计划安排 两页（对应 desktop 右侧栏 components/daynight/PlanSidePanel.tsx）
 //   desktop 的切换键在底部（顶上右角是外层面板的关闭键）；手机端放顶部，和其他底部弹窗一样上面是把手
 //   计划安排里点一条任务 = 选它当画笔，并关掉弹窗回昼夜表去涂
 // ══════════════════════════════════════════════
@@ -37,7 +37,7 @@ export interface PlanSheetProps {
 type Page = 'islands' | 'todo'
 
 const PAGES: ReadonlyArray<{ readonly id: Page; readonly label: string }> = [
-  { id: 'islands', label: '浮岛与约束' },
+  { id: 'islands', label: '主线浮岛日程' },
   { id: 'todo', label: '计划安排' },
 ]
 

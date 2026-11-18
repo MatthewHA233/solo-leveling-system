@@ -57,6 +57,7 @@ export const getBiliHistory: Tool = {
         '查询主人 B 站观看历史（视频标题、URL、观看时间）。' +
         '支持按日期、精确时间范围（含跨天）、关键词过滤。' +
         '适用于："今晚看了什么视频""这周看过什么游戏视频""昨晚的B站记录"等查询。' +
+        '每条后面会标出电脑上有没有下载、转录过（没有标记 = 都没有）。' +
         ' keyword 可传字符串数组一次过滤多个候选词（取并集），优先用数组而不是多次调用本工具。' +
         '返回"无匹配的 B 站观看记录"即代表该时段内确实没有相关视频，请直接如实告知主人，不要换词重试。',
       parameters: {
@@ -86,7 +87,8 @@ export const getBiliHistory: Tool = {
 
     if (spans.length === 0) return '无匹配的 B 站观看记录'
     return spans
-      .map(s => `${s.start_at.slice(0, 16)}  《${s.title}》  https://www.bilibili.com/video/${s.bvid}`)
+      .map(s => `${s.start_at.slice(0, 16)}  《${s.title}》  https://www.bilibili.com/video/${s.bvid}` +
+        (s.transcribed ? '  [已转录]' : s.downloaded ? '  [已下载，未转录]' : ''))
       .join('\n')
   },
 }

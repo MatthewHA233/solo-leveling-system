@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::db::Database;
 use crate::focus_lock::{self, ProtocolRules};
-use crate::protocol::{parse_time, to_unix_ms, ProtocolSession};
+use crate::protocol::{parse_time, to_unix_ms, LockMode, ProtocolSession};
 
 /// 前端据此刷新协议页（开局 / 结束 / 申请结束 / 到点）
 pub const SESSION_CHANGED_EVENT: &str = "protocol:session-changed";
@@ -25,11 +25,17 @@ const IDLE_TICK: Duration = Duration::from_secs(1);
 const INTERCEPT_COOLDOWN: Duration = Duration::from_secs(10);
 
 fn rules_for_lock(session: &ProtocolSession) -> ProtocolRules {
+    let block = session.rules.mode == LockMode::Block;
+    // 锁名单里的灰色项不拦（留给 AI 判断，见 protocol_gray.rs）；白名单里的灰色项本来就放行
+    let rules = |list: &[crate::protocol::AllowEntry]| -> Vec<String> {
+        list.iter().filter(|e| !(block && e.gray)).map(|e| e.rule.clone()).collect()
+    };
     ProtocolRules {
         session_id: session.id.clone(),
         protocol_name: session.protocol_name.clone(),
-        apps: session.rules.apps.iter().map(|e| e.rule.clone()).collect(),
-        sites: session.rules.sites.iter().map(|e| e.rule.clone()).collect(),
+        block,
+        apps: rules(&session.rules.apps),
+        sites: rules(&session.rules.sites),
         planned_end_ms: session
             .planned_end_at
             .as_deref()
@@ -127,11 +133,12 @@ pub fn spawn_protocol_watcher(db: Arc<Database>, app: Arc<AppHandle>) {
                     if let Err(e) = db.protocol_intercept_record(&rules.session_id, "app", &hit.app, &hit.title).await {
                         log::warn!("[Protocol] 记拦截失败: {e}");
                     }
-                    notify(
-                        app.as_ref(),
-                        "协议 · 已拦下",
-                        &format!("「{}」不在「{}」的白名单里", hit.app, rules.protocol_name),
-                    );
+                    let body = if rules.block {
+                        format!("「{}」在「{}」期间锁着", hit.app, rules.protocol_name)
+                    } else {
+                        format!("「{}」不在「{}」的白名单里", hit.app, rules.protocol_name)
+                    };
+                    notify(app.as_ref(), "协议 · 已拦下", &body);
                 }
             }
             tokio::time::sleep(ENFORCE_TICK).await;

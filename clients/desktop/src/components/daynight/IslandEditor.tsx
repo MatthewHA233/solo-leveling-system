@@ -1,11 +1,12 @@
-// 浮岛 / 约束的编辑表单（新建和修改共用）。只收集输入，校验交给 normalizeRule
+// 浮岛 / 日程的编辑表单（新建和修改共用）。只收集输入，校验交给 normalizeRule
 
 import { useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Plus, X } from 'lucide-react'
 import type { ActivityPalette } from '../../types'
 import { DAY_MINUTES, minuteToHHmm, newItemId, normalizeRule, parseHHmm } from '../../lib/islands/island-model'
-import type { IslandItem, IslandKind, IslandRule } from '../../lib/islands/island-model'
+import type { IslandItem, IslandKind, IslandLock, IslandRule } from '../../lib/islands/island-model'
+import IslandLockEditor from './IslandLockEditor'
 import { theme, ti, tiInput, tiSurface } from '../../theme'
 
 interface Props {
@@ -35,6 +36,7 @@ export default function IslandEditor({ palette, initial, initialKind, busy, onSa
   const [durationMin, setDurationMin] = useState(String(initial?.durationMin ?? DEFAULT_DURATION))
   const [items, setItems] = useState<readonly IslandItem[]>(initial?.items ?? [])
   const [enabled, setEnabled] = useState(initial?.enabled ?? true)
+  const [lock, setLock] = useState<IslandLock | null>(initial?.lock ?? null)
   const [error, setError] = useState<string | null>(null)
 
   const anchorTag = palette.tags.find((t) => t.id === anchorTagId) ?? null
@@ -59,6 +61,7 @@ export default function IslandEditor({ palette, initial, initialKind, busy, onSa
         items,
         color: initial?.color ?? null,
         enabled,
+        lock,
       })
       setError(null)
       onSave(rule)
@@ -76,7 +79,7 @@ export default function IslandEditor({ palette, initial, initialKind, busy, onSa
           浮岛 · 跟在某件事后面
         </button>
         <button type="button" className="ti-key" data-active={kind === 'fixed' ? '1' : undefined} onClick={() => setKind('fixed')} style={styles.kindKey}>
-          约束 · 钉在钟点
+          日程 · 钉在钟点
         </button>
       </div>
 
@@ -149,6 +152,12 @@ export default function IslandEditor({ palette, initial, initialKind, busy, onSa
           </button>
         </div>
       </Field>
+
+      <div style={styles.field}>
+        <span style={styles.label}>这段时间锁住</span>
+        <span style={styles.hint}>可不填。到了这一条的时间自动锁上名单里的应用和网站，做完或到点解开</span>
+        <IslandLockEditor lock={lock} onChange={setLock} />
+      </div>
 
       {initial && (
         <button type="button" className="ti-key" data-active={enabled ? '1' : undefined} onClick={() => setEnabled((v) => !v)} style={styles.enableKey}>

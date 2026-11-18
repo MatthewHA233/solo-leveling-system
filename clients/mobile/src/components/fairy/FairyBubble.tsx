@@ -81,8 +81,8 @@ export function UserBubble({ message, userCallsign, onLongPress }: Pick<FairyBub
   const audio = message.audio
   const transcript = audio ? (audio.transcript || message.content) : ''
   return (
-    <View>
-      <MsgMeta label={userCallsign} ts={message.timestamp} align="right" />
+    <View style={message.queued ? styles.queued : undefined}>
+      <MsgMeta label={message.queued ? `${userCallsign} · 排队中` : userCallsign} ts={message.timestamp} align="right" />
       <View style={styles.userRow}>
         <Pressable
           style={styles.userBubble}
@@ -176,6 +176,7 @@ const styles = StyleSheet.create({
   summaryContent: { paddingHorizontal: 12, paddingVertical: 8 },
   summaryText: { fontSize: 12, lineHeight: 20, color: theme.inkSoft },
   userRow: { flexDirection: 'row', justifyContent: 'flex-end' },
+  queued: { opacity: 0.55 },
   userBubble: {
     maxWidth: '88%', backgroundColor: alpha(theme.accent, 0.1), borderRadius: 14,
     paddingHorizontal: 12, paddingTop: 8, paddingBottom: 9,

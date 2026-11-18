@@ -72,14 +72,18 @@ pub struct FocusRulesSnapshot {
     pub exceptions: Vec<String>,
 }
 
-/// 协议志正在进行的一局：白名单模式（不在名单里的应用 / 网站一律拦）。规则在开局时冻结，见 protocol.rs
+/// 协议志正在进行的一局。规则在开局时冻结，见 protocol.rs
+///   白名单模式（block = false，手动开的协议）：不在名单里的应用 / 网站一律拦
+///   锁名单模式（block = true，昼夜表的浮岛 / 日程带的锁）：只拦名单里的，别的照常用
 #[derive(Clone, Debug)]
 pub struct ProtocolRules {
     pub session_id: String,
     pub protocol_name: String,
-    /// 放行的应用规则（含灰色项），写法同屏蔽组的应用规则：exe 名 / 路径 / title:关键词
+    pub block: bool,
+    /// 白名单模式 = 放行的应用规则（含灰色项）；锁名单模式 = 要拦的应用规则（不含灰色项，灰色的放行留给 AI 判断）。
+    /// 写法同屏蔽组的应用规则：exe 名 / 路径 / title:关键词
     pub apps: Vec<String>,
-    /// 放行的网站（含灰色项）
+    /// 白名单模式 = 放行的网站（含灰色项）；锁名单模式 = 要拦的网站（不含灰色项）
     pub sites: Vec<String>,
     /// 定时局的结束时刻（Unix ms），None = 不限时
     pub planned_end_ms: Option<i64>,
@@ -123,9 +127,15 @@ pub fn shared() -> &'static Arc<std::sync::Mutex<SharedFocusState>> {
 const ALL_SITES: &str = "*";
 
 /// 由屏蔽组 + 协议重新算出给扩展的快照并 bump revision。
-/// 协议进行中：全部网站都拦，只放行协议白名单——屏蔽组的例外不能在这时候开口子，所以不并进来
+/// 白名单协议进行中：全部网站都拦，只放行协议白名单——屏蔽组的例外不能在这时候开口子，所以不并进来。
+/// 锁名单进行中：在屏蔽组之外再多拦名单里的网站
 fn rebuild_snapshot(shared: &mut SharedFocusState) {
     let (mut websites, mut exceptions) = match &shared.protocol {
+        Some(p) if p.block => {
+            let mut sites = shared.group_websites.clone();
+            sites.extend(p.sites.iter().cloned());
+            (sites, shared.group_exceptions.clone())
+        }
         Some(p) => (vec![ALL_SITES.to_string()], p.sites.clone()),
         None => (shared.group_websites.clone(), shared.group_exceptions.clone()),
     };
@@ -572,16 +582,17 @@ pub struct ProtocolBlockHit {
     pub title: String,
 }
 
-/// 协议进行中：前台窗口不在白名单里就最小化。返回被拦的窗口（没拦返回 None）
+/// 协议进行中：前台窗口该拦就最小化（白名单 = 不在名单里；锁名单 = 在名单里）。返回被拦的窗口（没拦返回 None）
 #[cfg(windows)]
 pub fn enforce_protocol_foreground(rules: &ProtocolRules) -> Option<ProtocolBlockHit> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_MINIMIZE};
 
     let (hwnd, info) = current_foreground_window()?;
-    if info.pid == std::process::id()
-        || PROTOCOL_SHELL_APPS.contains(&info.app.as_str())
-        || focus_window_matches_rules(&info, &rules.apps)
-    {
+    if info.pid == std::process::id() || PROTOCOL_SHELL_APPS.contains(&info.app.as_str()) {
+        return None;
+    }
+    // 白名单：不在名单里的拦；锁名单：在名单里的拦
+    if focus_window_matches_rules(&info, &rules.apps) != rules.block {
         return None;
     }
 
@@ -589,7 +600,8 @@ pub fn enforce_protocol_foreground(rules: &ProtocolRules) -> Option<ProtocolBloc
         ShowWindow(hwnd, SW_MINIMIZE);
     }
     log::info!(
-        "[Protocol] 不在白名单，已最小化 app={} title={}",
+        "[Protocol] {}，已最小化 app={} title={}",
+        if rules.block { "在锁名单里" } else { "不在白名单" },
         info.app,
         info.title
     );

@@ -12,6 +12,7 @@
 //   GET    /api/protocol-sessions/{id}/intercepts   这一局的拦截记录
 //   GET    /api/protocol-sessions/{id}/judgments    这一局灰色地带的 AI 判断记录
 //   GET    /api/protocol-app-usage?days=7           最近常用应用（白名单候选）
+//   POST   /api/island-lock/sync                    浮岛 / 日程的锁对齐到此刻想要的 { want: {...} | null }
 //   GET    /api/protocol-genesis                    最近一次开局（两份清单 / 回应 / 金字塔 / 年表；没开过 = null）
 //   PUT    /api/protocol-genesis                    存开局 { id?, doc }（给了 id 覆盖，没给新开一份）
 //   GET    /api/jev/config                          灰色地带判断的连接（Key 只给后四位）+ 两个功能位绑的模型
@@ -30,8 +31,8 @@ use serde::Deserialize;
 use crate::api::{ApiResponse, ApiState};
 use crate::jev::{self, ChoiceOutcome, JevConfigView, UpdateJevConfigRequest};
 use crate::protocol::{
-    AppUsage, CreateProtocolRequest, Protocol, ProtocolIntercept, ProtocolJudgment, ProtocolSession, StartSessionRequest,
-    UpdateProtocolRequest,
+    AppUsage, CreateProtocolRequest, IslandLockSyncRequest, IslandLockSyncResult, Protocol, ProtocolIntercept, ProtocolJudgment,
+    ProtocolSession, StartSessionRequest, UpdateProtocolRequest,
 };
 use crate::protocol_genesis::Genesis;
 use crate::protocol_watch::{apply_session, notify_changed};
@@ -50,6 +51,7 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/protocol-sessions/{id}/intercepts", get(intercepts))
         .route("/api/protocol-sessions/{id}/judgments", get(judgments))
         .route("/api/protocol-app-usage", get(app_usage))
+        .route("/api/island-lock/sync", post(island_lock_sync))
         .route("/api/protocol-genesis", get(genesis_latest).put(genesis_save))
         .route("/api/jev/config", get(jev_config).put(jev_config_update))
         .route("/api/jev/test", post(jev_test))
@@ -147,6 +149,20 @@ struct UsageQuery {
 
 async fn app_usage(State(state): State<ApiState>, Query(q): Query<UsageQuery>) -> Json<ApiResponse<Vec<AppUsage>>> {
     reply(state.db.protocol_app_usage(q.days.unwrap_or(DEFAULT_USAGE_DAYS)).await)
+}
+
+async fn island_lock_sync(
+    State(state): State<ApiState>,
+    Json(req): Json<IslandLockSyncRequest>,
+) -> Json<ApiResponse<IslandLockSyncResult>> {
+    let result = state.db.island_lock_sync(req).await;
+    if let Ok(outcome) = &result {
+        if outcome.changed {
+            apply_session(outcome.session.as_ref());
+            notify_changed(&state.app_handle);
+        }
+    }
+    reply(result)
 }
 
 async fn genesis_latest(State(state): State<ApiState>) -> Json<ApiResponse<Option<Genesis>>> {

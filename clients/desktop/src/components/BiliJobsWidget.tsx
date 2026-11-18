@@ -15,6 +15,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { Loader2, X, RotateCcw, ListChecks, Check, AlertTriangle, Pause, Play } from 'lucide-react'
 import { theme, tiKey, tiSurface, tiTitle } from '../theme'
 import { getDashScopeApiKey, loadConfig } from '../lib/agent/agent-config'
+import { runVisualTranscribe } from '../lib/bilibili/visual-transcribe'
 import Tooltip from './Tooltip'
 
 type DlStage = 'queued' | 'fetching_meta' | 'downloading_video' | 'downloading_audio' | 'merging' | 'done' | 'error' | 'paused' | 'cancelled'
@@ -36,8 +37,18 @@ interface Job {
   dlStage?: DlStage
   dlPercent?: number
   trStage?: TrStage
+  /** 这条怎么转：听声音（默认）还是按间隔截图读字 */
+  trPlan?: TrPlan
   updatedAt: number
 }
+
+/** 转录方案。visual = 每隔 intervalSec 秒截一张图读字（不给间隔用设置里的默认值） */
+interface TrPlan {
+  kind: 'audio' | 'visual'
+  intervalSec?: number | null
+}
+
+const AUDIO_PLAN: TrPlan = { kind: 'audio' }
 
 const isActive = (s?: string) => !!s && s !== 'done' && s !== 'error'
 function jobActive(j: Job): boolean {
@@ -63,8 +74,32 @@ export default function BiliJobsWidget() {
     })
   }
 
-  // 下载完成后需自动接力转录的 bvid 集合（批量"下载+转录"用）
-  const pendingTrRef = useRef<Set<string>>(new Set())
+  // 下载完成后需自动接力转录的 bvid → 转录方案（批量"下载+转录"用）
+  const pendingTrRef = useRef<Map<string, TrPlan>>(new Map())
+
+  // 开始转录一条：听声音走后端队列；图文在这里跑完整条流水线（截图 → 读字 → 拼全文）
+  const startTranscribe = async (bvid: string, filePath: string, plan: TrPlan, title?: string) => {
+    if (plan.kind === 'audio') {
+      const apiKey = getDashScopeApiKey(loadConfig())
+      if (!apiKey) { upsert(bvid, { trStage: 'error', trPlan: plan }); return }
+      upsert(bvid, { trStage: 'queued', trPlan: plan, filePath })
+      await invoke('enqueue_transcribe', { bvid, filePath, apiKey }).catch(() => {})
+      return
+    }
+    upsert(bvid, { trStage: 'extracting', trPlan: plan, filePath })
+    try {
+      await runVisualTranscribe({
+        bvid, title, filePath, intervalSec: plan.intervalSec,
+        onStage: (stage) => upsert(bvid, { trStage: stage === 'extracting' ? 'extracting' : 'transcribing' }),
+      })
+      upsert(bvid, { trStage: 'done' })
+      window.dispatchEvent(new CustomEvent('solevup:bili-assets-changed', { detail: { bvid, reason: 'transcribed' } }))
+      window.dispatchEvent(new CustomEvent('solevup:context-updated'))
+    } catch (e) {
+      console.warn('[BiliJobs] 图文转录失败', bvid, e)
+      upsert(bvid, { trStage: 'error' })
+    }
+  }
 
   useEffect(() => {
     const unlisteners: Array<() => void> = []
@@ -75,13 +110,10 @@ export default function BiliJobsWidget() {
         if (!p?.bvid) return
         upsert(p.bvid, { dlStage: p.stage, dlPercent: p.percent, filePath: p.output_path ?? undefined })
         // 下载完成 → 接力转录（仅批量标记过的）
-        if (p.stage === 'done' && pendingTrRef.current.has(p.bvid)) {
+        const plan = pendingTrRef.current.get(p.bvid)
+        if (p.stage === 'done' && plan) {
           pendingTrRef.current.delete(p.bvid)
-          const apiKey = getDashScopeApiKey(loadConfig())
-          if (apiKey && p.output_path) {
-            upsert(p.bvid, { trStage: 'queued' })
-            invoke('enqueue_transcribe', { bvid: p.bvid, filePath: p.output_path, apiKey }).catch(() => {})
-          }
+          if (p.output_path) void startTranscribe(p.bvid, p.output_path, plan)
         }
       },
     ).then((u) => unlisteners.push(u)).catch(() => {})
@@ -107,17 +139,20 @@ export default function BiliJobsWidget() {
     window.addEventListener('solevup:bili-job', onMeta)
 
     // 批量「下载+转录」：已下载的直接转录；未下载的先下载、完成后接力转录
-    const onBatch = async (e: Event) => {
-      const d = (e as CustomEvent<{
-        videos: { bvid: string; title?: string; cover?: string }[]
-        mode?: 'download' | 'transcribe' | 'download_transcribe'
-      }>).detail
+    interface BatchRequest {
+      videos: { bvid: string; title?: string; cover?: string }[]
+      mode?: 'download' | 'transcribe' | 'download_transcribe'
+      plan?: TrPlan
+      /** Fairy 发起的不弹面板：主人可能正在别处，转好了 Fairy 会说 */
+      quiet?: boolean
+    }
+    const runBatch = async (d: BatchRequest | undefined) => {
       const videos = d?.videos ?? []
       const mode = d?.mode ?? 'download_transcribe'
+      const plan = d?.plan ?? AUDIO_PLAN
       if (!videos.length) return
-      setOpen(true)
+      if (!d?.quiet) setOpen(true)
       const cfg = loadConfig()
-      const apiKey = getDashScopeApiKey(cfg)
       const startDownload = (bvid: string) => invoke('enqueue_bili_download', {
         bvid, saveDir: cfg.biliDownloadPath || 'E:\\BiliDownloads', quality: cfg.biliDownloadQuality || 'auto',
       }).catch(() => {})
@@ -130,9 +165,9 @@ export default function BiliJobsWidget() {
           const done = (assets || []).find((a) => a.download_status === 'done' && a.download_path)
           if (mode === 'transcribe') {
             // 只转录：仅对已下载的视频生效
-            if (done?.download_path && apiKey) {
-              upsert(v.bvid, { dlStage: 'done', trStage: 'queued', filePath: done.download_path })
-              await invoke('enqueue_transcribe', { bvid: v.bvid, filePath: done.download_path, apiKey }).catch(() => {})
+            if (done?.download_path) {
+              upsert(v.bvid, { dlStage: 'done' })
+              void startTranscribe(v.bvid, done.download_path, plan, v.title)
             }
           } else if (mode === 'download') {
             // 只下载：已下载则直接标记完成，否则下载
@@ -145,12 +180,10 @@ export default function BiliJobsWidget() {
           } else {
             // 下载并转录：已下载直接转录；未下载先下载、完成后接力转录
             if (done?.download_path) {
-              if (apiKey) {
-                upsert(v.bvid, { dlStage: 'done', trStage: 'queued', filePath: done.download_path })
-                await invoke('enqueue_transcribe', { bvid: v.bvid, filePath: done.download_path, apiKey }).catch(() => {})
-              }
+              upsert(v.bvid, { dlStage: 'done' })
+              void startTranscribe(v.bvid, done.download_path, plan, v.title)
             } else {
-              pendingTrRef.current.add(v.bvid)
+              pendingTrRef.current.set(v.bvid, plan)
               upsert(v.bvid, { dlStage: 'queued' })
               await startDownload(v.bvid)
             }
@@ -158,7 +191,22 @@ export default function BiliJobsWidget() {
         } catch { /* 跳过该条 */ }
       }
     }
+    const onBatch = (e: Event) => { void runBatch((e as CustomEvent<BatchRequest>).detail) }
     window.addEventListener('solevup:bili-batch-enqueue', onBatch as EventListener)
+
+    // Fairy（本机或手机）经 POST /api/bilibili/transcribe-request 发起的：下载并转录，按它给的方案
+    listen<{ videos: { bvid: string; title?: string; cover?: string }[]; kind?: string; interval_sec?: number | null }>(
+      'bili:transcribe-request',
+      (e) => {
+        const p = e.payload
+        void runBatch({
+          videos: p?.videos ?? [],
+          mode: 'download_transcribe',
+          plan: p?.kind === 'visual' ? { kind: 'visual', intervalSec: p.interval_sec } : AUDIO_PLAN,
+          quiet: true,
+        })
+      },
+    ).then((u) => unlisteners.push(u)).catch(() => {})
 
     // 外部入口（B站历史弹窗工具栏）打开/关闭进度面板；带按钮 rect → 面板锚定其下方
     const onToggle = (e: Event) => {
@@ -188,10 +236,8 @@ export default function BiliJobsWidget() {
   }, [activeCount])
 
   const retryTranscribe = async (j: Job) => {
-    const apiKey = getDashScopeApiKey(loadConfig())
-    if (!apiKey || !j.filePath) return
-    upsert(j.bvid, { trStage: 'queued' })
-    await invoke('enqueue_transcribe', { bvid: j.bvid, filePath: j.filePath, apiKey }).catch(() => {})
+    if (!j.filePath) return
+    await startTranscribe(j.bvid, j.filePath, j.trPlan ?? AUDIO_PLAN, j.title)
   }
   const retryDownload = async (j: Job) => {
     const cfg = loadConfig()

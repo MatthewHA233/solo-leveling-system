@@ -1,4 +1,4 @@
-// 昼夜表右侧栏在「计划」时的外壳：浮岛与约束 / 计划安排 两页，用底下一排键切换
+// 昼夜表右侧栏在「计划」时的外壳：浮岛与日程 / 计划安排 两页，用底下一排键切换
 // （顶上右角是外层面板的关闭键，所以切换键放底部）
 
 import { useState } from 'react'
@@ -12,7 +12,7 @@ interface Props {
 type Page = 'islands' | 'todo'
 
 const PAGES: ReadonlyArray<{ readonly id: Page; readonly label: string }> = [
-  { id: 'islands', label: '浮岛与约束' },
+  { id: 'islands', label: '主线浮岛日程' },
   { id: 'todo', label: '计划安排' },
 ]
 

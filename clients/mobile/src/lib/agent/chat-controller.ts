@@ -22,7 +22,7 @@ import type { ChatSessionInfo } from './agent-memory'
 import { ChatCore } from './chat-core'
 import { createOmniFlow } from './chat-omni'
 import { createPromptFlow } from './chat-prompt'
-import { createSendFlow } from './chat-send'
+import { createQueueFlow, createSendFlow } from './chat-send'
 import { createSessionFlow } from './chat-sessions'
 import { createVoiceFlow } from './chat-voice'
 
@@ -35,6 +35,7 @@ class ChatControllerImpl {
   private readonly promptFlow = createPromptFlow(this.core)
   private readonly omniFlow = createOmniFlow(this.core, this.sessionFlow, this.promptFlow)
   private readonly handleSend = createSendFlow(this.core, this.sessionFlow, this.promptFlow)
+  private readonly queueFlow = createQueueFlow(this.core, this.sessionFlow, this.handleSend)
   private readonly voiceFlow = createVoiceFlow(
     this.core, this.sessionFlow, this.promptFlow, this.omniFlow, this.handleSend,
   )
@@ -113,7 +114,7 @@ class ChatControllerImpl {
 
   // ── 发送（发送中再发送、按住说话、切会话都会打断正在进行的回复）──
 
-  sendText = (text: string, images?: readonly PickedImage[]): Promise<void> => this.handleSend(text, false, images)
+  sendText = (text: string, images?: readonly PickedImage[]): Promise<void> => this.queueFlow.submitTyped(text, images)
 
   setVoiceImageSource = (source: () => readonly PickedImage[]): void => {
     this.core.takeVoiceImages = source

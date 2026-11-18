@@ -32,7 +32,8 @@ import {
 } from './agent-memory'
 import { parseImageMarker } from './chat-images'
 import { createCompactor } from './chat-compaction'
-import { compactNotice, compactSummaryRow, isCompactSummaryRow, restoreLLMHistory, rowsToLLMMessages, TOOL_TRACE_ROW, toolCallsOfTrace } from './chat-history'
+import { compactNotice, compactSummaryRow, isCompactSummaryRow, isTaskNoticeRow, restoreLLMHistory, rowsToLLMMessages, taskNoticeLabel, TOOL_TRACE_ROW, toolCallsOfTrace } from './chat-history'
+import { dropQueuedPrompts } from './message-queue'
 import { toolCallMessage, type ChatCore } from './chat-core'
 
 const REROUTED_NOTE = '这个会话已在另一台设备上删除，刚才的消息存到了新会话。'
@@ -46,6 +47,11 @@ export function sessionMessagesToChatMessages(msgs: readonly SessionMessage[]): 
     // 压缩摘要显示成一条提示，点开能看；工具记录还原成一次调用一行
     if (isCompactSummaryRow(m) && m.content?.trim()) {
       out.push({ id: m.id ?? randomUUID(), role: 'system', content: compactNotice(), summary: m.content, timestamp: m.timestamp })
+      continue
+    }
+    // 后台任务的通知画成一行提示，不算主人说的话
+    if (isTaskNoticeRow(m)) {
+      out.push({ id: m.id ?? randomUUID(), role: 'system', content: taskNoticeLabel((m.content ?? '').trim()), timestamp: m.timestamp })
       continue
     }
     if (m.role === 'tool') {
@@ -236,6 +242,8 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
   const stopCurrentTurn = () => {
     core.replyControl?.interrupt()
     core.replyControl = null
+    // 主人排着的话已经存进原会话，不带到别的会话；后台通知留着
+    dropQueuedPrompts()
     onSessionChange()
     core.partialText = ''
     if (core.fairyState !== 'idle') core.emitFairy('idle')

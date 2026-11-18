@@ -1,8 +1,9 @@
 // ══════════════════════════════════════════════
-// 昼夜表 · 浮岛与约束：规则的结构 + 当天落点的算法（纯函数，不碰网络和界面）
+// 昼夜表 · 浮岛与日程：规则的结构 + 当天落点的算法（纯函数，不碰网络和界面）
 //   浮岛（after）= 挂在某个标签后面：取当天「结束时刻落在时段内的最后一段」作锚，隔 offset 分钟开始
 //                  锚还没出现时，用近几天同一条规则的锚时刻平均值估一个位置
-//   约束（fixed）= 钉在钟点上
+//   日程（fixed）= 钉在钟点上
+//   lock = 这一条进行期间要锁住的应用 / 网站（哪台设备执行哪几项看 platform；执行在各端原生层）
 //   后端只存 JSON（src-tauri/src/islands.rs），结构以这里为准
 // ══════════════════════════════════════════════
 
@@ -26,6 +27,31 @@ const DEFAULT_DURATION_MIN = 30
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/
 
 export type IslandKind = 'after' | 'fixed'
+
+/** 应用规则是哪台设备上的：Windows 写 exe 名，Mac 写应用名 / bundle id，安卓写包名 */
+export type LockPlatform = 'windows' | 'mac' | 'android'
+export const LOCK_PLATFORMS: readonly LockPlatform[] = ['windows', 'mac', 'android']
+
+export interface IslandLockEntry {
+  readonly rule: string
+  /** 灰色地带：不直接拦，这段内容算不算跑偏交给判断模型 */
+  readonly gray: boolean
+}
+
+export interface IslandLockApp extends IslandLockEntry {
+  readonly platform: LockPlatform
+}
+
+/** 这一条进行期间锁住的东西（锁名单：只拦名单里的，别的照常用） */
+export interface IslandLock {
+  readonly apps: readonly IslandLockApp[]
+  /** 网站各端通用（浏览器里只拦这些站，不拦浏览器本身） */
+  readonly sites: readonly IslandLockEntry[]
+  /** 判断标准：给判断模型看的一段话，灰色项算不算跑偏按它判（主人手写或 Fairy 写）；空 = 用名字 */
+  readonly intent: string
+  /** true = 里面的事全勾完才解开；false = 到这一条的结束时刻自动解开 */
+  readonly untilDone: boolean
+}
 
 export interface IslandItem {
   readonly id: string
@@ -51,6 +77,8 @@ export interface IslandRule {
   /** null = 跟锚标签所在分类的颜色 */
   readonly color: string | null
   readonly enabled: boolean
+  /** null = 不锁 */
+  readonly lock: IslandLock | null
 }
 
 export interface Island {
@@ -114,6 +142,47 @@ function normalizeItems(raw: unknown): IslandItem[] {
   return out
 }
 
+const LOCK_RULE_MAX_CHARS = 300
+const LOCK_MAX_ENTRIES = 100
+const LOCK_INTENT_MAX_CHARS = 500
+
+function normalizeLockEntries<T extends IslandLockEntry>(raw: unknown, build: (rule: string, gray: boolean, o: Record<string, unknown>) => T, keyOf: (entry: T) => string): T[] {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const item of raw) {
+    const o = (typeof item === 'object' && item !== null ? item : { rule: item }) as Record<string, unknown>
+    const rule = typeof o.rule === 'string' ? o.rule.trim().slice(0, LOCK_RULE_MAX_CHARS) : ''
+    if (!rule) continue
+    const entry = build(rule, o.gray === true, o)
+    const key = keyOf(entry)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(entry)
+    if (out.length >= LOCK_MAX_ENTRIES) break
+  }
+  return out
+}
+
+/** 锁名单收成合法的；应用和网站都空 = 不锁（null） */
+export function normalizeLock(raw: unknown): IslandLock | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  const apps = normalizeLockEntries<IslandLockApp>(
+    o.apps,
+    (rule, gray, e) => ({ rule, gray, platform: LOCK_PLATFORMS.find((p) => p === e.platform) ?? 'windows' }),
+    (e) => `${e.platform}|${e.rule.toLowerCase()}`,
+  )
+  const sites = normalizeLockEntries<IslandLockEntry>(o.sites, (rule, gray) => ({ rule, gray }), (e) => e.rule.toLowerCase())
+  if (apps.length === 0 && sites.length === 0) return null
+  return {
+    apps,
+    sites,
+    intent: typeof o.intent === 'string' ? o.intent.trim().slice(0, LOCK_INTENT_MAX_CHARS) : '',
+    untilDone: o.untilDone === true,
+  }
+}
+
 /** 外来的文档（库里读的 / AI 给的 / 表单填的）收成一条合法规则；名字为空会抛错 */
 export function normalizeRule(raw: unknown): IslandRule {
   const o = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
@@ -139,6 +208,7 @@ export function normalizeRule(raw: unknown): IslandRule {
     items: normalizeItems(o.items),
     color: typeof o.color === 'string' && HEX_COLOR.test(o.color) ? o.color : null,
     enabled: o.enabled !== false,
+    lock: normalizeLock(o.lock),
   }
 }
 
@@ -325,6 +395,16 @@ function formatGap(minutes: number): string {
   const h = Math.floor(minutes / 60)
   const m = minutes % 60
   return m === 0 ? `${h} 小时` : `${h} 小时 ${m} 分钟`
+}
+
+/** 一句话说清锁了什么（面板和 AI 都用）；不锁返回空串 */
+export function describeLock(lock: IslandLock | null): string {
+  if (!lock) return ''
+  const parts: string[] = []
+  if (lock.apps.length > 0) parts.push(`${lock.apps.length} 个应用`)
+  if (lock.sites.length > 0) parts.push(`${lock.sites.length} 个网站`)
+  const gray = lock.apps.filter((e) => e.gray).length + lock.sites.filter((e) => e.gray).length
+  return `锁 ${parts.join(' + ')}${gray > 0 ? `（其中 ${gray} 项交给 AI 判断）` : ''}，${lock.untilDone ? '做完才解开' : '到点解开'}`
 }
 
 /** 落点的时间怎么写：估的前面带「约」 */
