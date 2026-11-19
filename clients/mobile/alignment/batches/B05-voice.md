@@ -166,6 +166,6 @@
 | B05.160 | `clients/desktop/src-tauri/src/lib.rs:1387-1400` | `fn omni_tool_result` | `f47240b5` | 已对齐 | `clients/mobile/android/app/src/main/java/com/solevup/mobile/omni/OmniModule.kt:toolResult` | 相同 | | |
 | B05.161 | `clients/desktop/src-tauri/src/lib.rs:1811-1823` | `fn run › let state = Arc::new(AppState { 等 6 项` | `cdba0841` | 已适配 | `clients/mobile/android/app/src/main/java/com/solevup/mobile/voice/VoiceModule.kt:fish` | AppState 初始化换成 VoiceModule、OmniModule 的字段初始化，没有 omni_seq；同段的 BiliState、BailianState、BiliDownloadState、TranscribeQueueState、FocusLockState 不是语音状态，不在本批范围 | | |
 | B05.162 | `clients/desktop/src/lib/voice/omni-turn.ts:1-10` | `注释 → const OMNI_REPLY_TIMEOUT_MS 等 3 项` | `4d0101e6` | 已对齐 | `clients/mobile/src/lib/voice/omni-turn.ts` | 两端只差文件头一行注释；回复 30 秒、等播完的上限都是排队时长 + OMNI_PLAYBACK_GRACE_MS | | |
-| B05.163 | `clients/desktop/src/lib/voice/omni-turn.ts:12-21` | `interface OmniWatchdog` | `a4e7d65a` | 已对齐 | `clients/mobile/src/lib/voice/omni-turn.ts` | | | |
-| B05.164 | `clients/desktop/src/lib/voice/omni-turn.ts:23-51` | `function createOmniWatchdog` | `7ee4235a` | 已对齐 | `clients/mobile/src/lib/voice/omni-turn.ts` | | | |
+| B05.163 | `clients/desktop/src/lib/voice/omni-turn.ts:12-21` | `interface OmniWatchdog` | `a4e7d65a` | 已对齐 | `clients/mobile/src/lib/voice/omni-turn.ts` | | |  |
+| B05.164 | `clients/desktop/src/lib/voice/omni-turn.ts:23-51` | `function createOmniWatchdog` | `7ee4235a` | 已对齐 | `clients/mobile/src/lib/voice/omni-turn.ts` | | |  |
 | B05.165 | `clients/desktop/src/lib/voice/pcm16.ts:1-18` | `function createPcm16Aligner` | `f264c797` | 已适配 | `clients/mobile/android/app/src/main/java/com/solevup/mobile/voice/PcmPlayer.kt:alignToSamples` | 手机的流式 PCM 在原生播放，同样留下奇数字节并到下一块 | | |

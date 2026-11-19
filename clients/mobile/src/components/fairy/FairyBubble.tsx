@@ -2,7 +2,8 @@
 // 单条消息（对应 desktop ChatPanel Bubble）：
 //   · 系统消息：一行等宽小字
 //   · 工具调用：单独一行，点开看参数和结果（ToolCallRow）
-//   · 压缩提示：同样一行小字，点一下展开摘要（desktop CompactNotice）
+//   · 压缩提示：和工具调用同样的一行，点开看摘要（ToolCallRow.tsx CompactRow）
+//   · 上下文整理当时留的一行：清理工具结果点开看清了哪些，整理上下文点它跳到分界那条（ToolCallRow.tsx ContextRow）
 //   · 主人语音：语音条 + 转写
 //   · 主人文字（含边说边出的中间结果）：右侧气泡
 //   · Fairy：文字直接落在面板上（markdown）
@@ -13,10 +14,11 @@
 //   · fadeSlideIn 入场动画没搬：历史会话一次加载几百条时会全部闪一遍
 // ══════════════════════════════════════════════
 
-import { memo, useState } from 'react'
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { memo } from 'react'
+import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { alpha, fonts, theme } from '../../theme'
 import type { ApiRequestSnapshot } from '../../lib/llm/api'
+import { compactNotice } from '../../lib/agent/chat-history'
 import ModelUsageBadge from '../models/ModelUsageBadge'
 import AudioBubble from './AudioBubble'
 import FairyMarkdown from './FairyMarkdown'
@@ -24,7 +26,7 @@ import { IconBug, IconRadio } from './icons'
 import { BubbleImages } from './ImageAttachments'
 import { MetaIconBtn, MsgMeta } from './MessageMeta'
 import ReasoningBlock from './ReasoningBlock'
-import ToolCallRow from './ToolCallRow'
+import ToolCallRow, { CompactRow, ContextRow } from './ToolCallRow'
 import { TEXT_LINE_HEIGHT, TEXT_SIZE, isSystemError } from './fairy-format'
 import type { FairyMessage, OmniDebugInfo } from './types'
 
@@ -37,36 +39,26 @@ export interface FairyBubbleProps {
   readonly onDebug?: (snapshots: readonly ApiRequestSnapshot[]) => void
   readonly onOmniDebug?: (info: OmniDebugInfo) => void
   readonly onLongPress?: (message: FairyMessage) => void
+  /** 上下文整理那一行点了：跳到分界处那条压缩提示 */
+  readonly onJump?: (timestamp: string) => void
 }
 
 // ── 系统 / 工具消息 ──
 
-function CompactNotice({ message, onLongPress }: Pick<FairyBubbleProps, 'message' | 'onLongPress'>) {
-  const [expanded, setExpanded] = useState(false)
-  return (
-    <View>
-      <Pressable
-        hitSlop={6}
-        accessibilityRole="button"
-        accessibilityState={{ expanded }}
-        delayLongPress={LONG_PRESS_MS}
-        onPress={() => setExpanded(!expanded)}
-        onLongPress={onLongPress ? () => onLongPress(message) : undefined}
-      >
-        <Text style={styles.system}>{message.content}  {expanded ? '收起 ▾' : '看摘要 ▸'}</Text>
-      </Pressable>
-      {expanded && (
-        <ScrollView style={styles.summaryWell} contentContainerStyle={styles.summaryContent} nestedScrollEnabled>
-          <Text style={styles.summaryText}>{message.summary}</Text>
-        </ScrollView>
-      )}
-    </View>
-  )
-}
-
-export function SystemLine({ message, onLongPress }: Pick<FairyBubbleProps, 'message' | 'onLongPress'>) {
+export function SystemLine({ message, onLongPress, onJump }: Pick<FairyBubbleProps, 'message' | 'onLongPress' | 'onJump'>) {
   if (message.tool) return <ToolCallRow call={message.tool} onLongPress={onLongPress ? () => onLongPress(message) : undefined} />
-  if (message.summary) return <CompactNotice message={message} onLongPress={onLongPress} />
+  if (message.context) {
+    return <ContextRow event={message.context} onJump={onJump} onLongPress={onLongPress ? () => onLongPress(message) : undefined} />
+  }
+  if (message.summary) {
+    return (
+      <CompactRow
+        summary={message.summary}
+        fallback={message.content === compactNotice('fallback')}
+        onLongPress={onLongPress ? () => onLongPress(message) : undefined}
+      />
+    )
+  }
   const isErr = isSystemError(message.content)
   return (
     <Pressable delayLongPress={LONG_PRESS_MS} onLongPress={onLongPress ? () => onLongPress(message) : undefined}>
@@ -157,8 +149,8 @@ export function AgentBubble({ message, agentName, onDebug, onOmniDebug, onLongPr
   )
 }
 
-function FairyBubble({ message, agentName, userCallsign, onDebug, onOmniDebug, onLongPress }: FairyBubbleProps) {
-  if (message.role === 'system') return <SystemLine message={message} onLongPress={onLongPress} />
+function FairyBubble({ message, agentName, userCallsign, onDebug, onOmniDebug, onLongPress, onJump }: FairyBubbleProps) {
+  if (message.role === 'system') return <SystemLine message={message} onLongPress={onLongPress} onJump={onJump} />
   if (message.role === 'user') return <UserBubble message={message} userCallsign={userCallsign} onLongPress={onLongPress} />
   return <AgentBubble message={message} agentName={agentName} onDebug={onDebug} onOmniDebug={onOmniDebug} onLongPress={onLongPress} />
 }
@@ -172,9 +164,6 @@ const styles = StyleSheet.create({
     color: theme.inkSoft, opacity: 0.85,
   },
   systemError: { color: theme.danger, opacity: 1 },
-  summaryWell: { marginTop: 6, maxHeight: 280, backgroundColor: theme.sunk, borderRadius: 8 },
-  summaryContent: { paddingHorizontal: 12, paddingVertical: 8 },
-  summaryText: { fontSize: 12, lineHeight: 20, color: theme.inkSoft },
   userRow: { flexDirection: 'row', justifyContent: 'flex-end' },
   queued: { opacity: 0.55 },
   userBubble: {

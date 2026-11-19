@@ -7,6 +7,9 @@
 //   切会话 reset()：后台还没写完的作废（写完的摘要照样存进它原来的会话）
 //
 // 后台写摘要期间主人可能又聊了几轮：摘要只替换当时的那段开头，之后追加的原样接在后面（applyCompaction 按 uuid 对齐）。
+//
+// 清掉旧工具结果、压完摘要都告诉界面，聊天底部当时的位置加一行（onToolResultsCleared / onCompacted）。
+// 这两行只在界面上、不存库：清理和机械摘要只改这台设备内存里的历史，重开会话后历史从库里重建，就不作数了。
 // ══════════════════════════════════════════════
 
 import type { QueryOptions } from '../llm/api'
@@ -22,6 +25,7 @@ import {
   planCompaction,
   roughMessagesTokens,
   withoutSystemMessages,
+  type ClearedToolResult,
   type CompactionResult,
   type ContextBudget,
 } from '../llm/context-window'
@@ -47,8 +51,19 @@ export interface CompactorHost {
   readonly getSessionId: () => string | null
   /** 模型写的摘要存进它所属的会话 */
   readonly persistSummary: (sessionId: string, result: CompactionResult) => void
-  /** 压完了（界面加一条提示）。sessionId 是摘要所属的会话，可能已经不是当前会话 */
-  readonly onCompacted: (result: CompactionResult, sessionId: string | null) => void
+  /**
+   * 压完了（界面在分界处加一条提示，底部加一行）。sessionId 是摘要所属的会话，可能已经不是当前会话；
+   * afterTokens：压完之后整段历史的体量
+   */
+  readonly onCompacted: (result: CompactionResult, sessionId: string | null, afterTokens: number) => void
+  /** 清掉了较早的工具结果（界面底部加一行）。只发生在当前会话 */
+  readonly onToolResultsCleared: (cleared: ToolResultsCleared) => void
+}
+
+export interface ToolResultsCleared {
+  readonly items: readonly ClearedToolResult[]
+  readonly beforeTokens: number
+  readonly afterTokens: number
 }
 
 export interface Compactor {
@@ -69,6 +84,19 @@ export function createCompactor(host: CompactorHost): Compactor {
 
   const overTrigger = (history: readonly Message[], ctx: CompactionContext) =>
     estimateContextTokens(history, ctx.overheadTokens) > ctx.budget.trigger
+
+  /** 清旧工具结果，清掉了就告诉界面 */
+  const clearToolResults = (history: readonly Message[], ctx: CompactionContext) => {
+    const cleared = clearOldToolResults(history)
+    if (cleared.cleared > 0) {
+      host.onToolResultsCleared({
+        items: cleared.items,
+        beforeTokens: estimateContextTokens(history, ctx.overheadTokens),
+        afterTokens: estimateContextTokens(cleared.messages, ctx.overheadTokens),
+      })
+    }
+    return cleared
+  }
 
   /** force：已经超过硬上限，模型写不成也要用机械摘要压掉 */
   const compact = (history: readonly Message[], ctx: CompactionContext, force: boolean): Promise<CompactionResult | null> => {
@@ -101,7 +129,7 @@ export function createCompactor(host: CompactorHost): Compactor {
       latest = result
       const applied = applyCompaction(host.getConversation(), result)
       if (applied) host.setConversation(applied)
-      host.onCompacted(result, sessionId)
+      host.onCompacted(result, sessionId, estimateContextTokens(host.getConversation(), ctx.overheadTokens))
       return result
     }
     const promise = run().finally(() => {
@@ -119,7 +147,7 @@ export function createCompactor(host: CompactorHost): Compactor {
       next = dropOldImages(next).messages
       // 后台摘要在写：先别动开头，否则它写完对不上
       if (!ctx || pending || !overTrigger(next, ctx)) return next
-      return clearOldToolResults(next).messages
+      return clearToolResults(next, ctx).messages
     },
 
     kick(ctx) {
@@ -134,7 +162,7 @@ export function createCompactor(host: CompactorHost): Compactor {
       if (size() <= ctx.budget.hardLimit) return
       if (pending) await pending
       if (size() <= ctx.budget.hardLimit) return
-      const cleared = clearOldToolResults(host.getConversation())
+      const cleared = clearToolResults(host.getConversation(), ctx)
       if (cleared.cleared > 0) host.setConversation(cleared.messages)
       if (size() <= ctx.budget.hardLimit) return
       await compact(host.getConversation(), ctx, true)

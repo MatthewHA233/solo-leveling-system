@@ -37,7 +37,7 @@ import { contextBudget, estimateContextTokens, roughTokens, withSystemReminder, 
 import { createCompactor, type CompactionContext } from './lib/agent/chat-compaction'
 import { compactNotice, compactSummaryRow, isCompactSummaryRow, isTaskNoticeRow, restoreLLMHistory, rowsToLLMMessages, taskNoticeLabel, taskNoticeRow, TOOL_TRACE_ROW, toolCallsOfTrace, toolTraceRow } from './lib/agent/chat-history'
 import { drainQueue, dropQueuedPrompts, enqueuePrompt, subscribeQueue, takeNextBatch, taskNoticeForModel, type QueuedMessage } from './lib/agent/message-queue'
-import { finishToolCall, startToolCall, toolCallLine, type ToolCallView } from './lib/agent/tool-call-view'
+import { contextEventLine, finishToolCall, startToolCall, toolCallLine, type ContextEventView, type ToolCallView } from './lib/agent/tool-call-view'
 import { withBrowserArgs } from './lib/webview-args'
 import { buildAsrContext, buildAsrVocabulary } from './lib/voice/asr-hints'
 import { createUserMessage, getMessageText, isAssistantMessage, userContentWithImages } from './lib/llm/types'
@@ -174,6 +174,7 @@ export interface ChatMessage {
   readonly images?: readonly { id: string; url: string }[]  // 主人发的图片（规则见 lib/agent/chat-images.ts）
   readonly summary?: string              // 压缩提示（system）点开看到的摘要（规则见 lib/agent/chat-history.ts）
   readonly tool?: ToolCallView           // 一次工具调用（system）：单独一行，点开看参数和结果（规则见 lib/agent/tool-call-view.ts）
+  readonly context?: ContextEventView    // 上下文整理当时留的一行（system，只在界面上，不入库；规则见 lib/agent/tool-call-view.ts）
 }
 
 /** 工具调用在聊天里的那条消息；id 按调用 id 定，结果出来时按它找回这一条 */
@@ -277,6 +278,11 @@ function insertCompactNotice(messages: readonly ChatMessage[], result: Compactio
   }
   const index = messages.findIndex((m) => m.timestamp > result.summaryTimestamp)
   return index < 0 ? [...messages, notice] : [...messages.slice(0, index), notice, ...messages.slice(index)]
+}
+
+/** 上下文整理当时在底部留的一行：只在界面上，不入库 */
+function contextEventMessage(view: ContextEventView): ChatMessage {
+  return { id: crypto.randomUUID(), role: 'system', content: contextEventLine(view), timestamp: new Date().toISOString(), context: view }
 }
 
 /** 会话里主人说过几句（起标题的计数从这里接上） */
@@ -658,9 +664,18 @@ export default function App() {
         if (sessionIdRef.current === sid) persistedBufferRef.current = [...persistedBufferRef.current, row]
         persistMessages(sid, [row]).catch((e) => console.warn('[Compact] 摘要写入失败', e))
       },
-      onCompacted: (result, sid) => {
+      // 分界处加一条提示（点开看摘要），底部再加一行说刚整理了（点它跳到分界那条）
+      onCompacted: (result, sid, afterTokens) => {
         if (sid !== sessionIdRef.current) return
-        setChatMessages((prev) => insertCompactNotice(prev, result))
+        setChatMessages((prev) => [...insertCompactNotice(prev, result), contextEventMessage({
+          kind: result.kind === 'model' ? 'compacted' : 'fallback',
+          beforeTokens: result.beforeTokens,
+          afterTokens,
+          boundary: result.summaryTimestamp,
+        })])
+      },
+      onToolResultsCleared: (cleared) => {
+        setChatMessages((prev) => [...prev, contextEventMessage({ kind: 'cleared', ...cleared })])
       },
     })
   }

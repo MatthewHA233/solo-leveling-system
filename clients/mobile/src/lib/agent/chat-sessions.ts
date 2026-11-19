@@ -33,6 +33,7 @@ import {
 import { parseImageMarker } from './chat-images'
 import { createCompactor } from './chat-compaction'
 import { compactNotice, compactSummaryRow, isCompactSummaryRow, isTaskNoticeRow, restoreLLMHistory, rowsToLLMMessages, taskNoticeLabel, TOOL_TRACE_ROW, toolCallsOfTrace } from './chat-history'
+import { contextEventLine, type ContextEventView } from './tool-call-view'
 import { dropQueuedPrompts } from './message-queue'
 import { toolCallMessage, type ChatCore } from './chat-core'
 
@@ -92,6 +93,11 @@ function insertCompactNotice(messages: readonly ChatMessage[], result: Compactio
   }
   const index = messages.findIndex((m) => m.timestamp > result.summaryTimestamp)
   return index < 0 ? [...messages, notice] : [...messages.slice(0, index), notice, ...messages.slice(index)]
+}
+
+/** 上下文整理当时在底部留的一行：只在界面上，不入库（对齐 desktop contextEventMessage） */
+function contextEventMessage(view: ContextEventView): ChatMessage {
+  return { id: randomUUID(), role: 'system', content: contextEventLine(view), timestamp: new Date().toISOString(), context: view }
 }
 
 /** 会话里主人说过几句（起标题的计数从这里接上） */
@@ -212,9 +218,9 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
   const persistRows = async (sid: string | null, rows: readonly SessionMessage[]) => {
     const target = follow(sid)
     if (!target || rows.length === 0) return
-    const isCurrent = target === core.sessionId
-    if (isCurrent) core.persistedBuffer = upsertRows(core.persistedBuffer, rows)
-    const result = await persistMessages(target, isCurrent ? core.persistedBuffer : rows)
+    if (target === core.sessionId) core.persistedBuffer = upsertRows(core.persistedBuffer, rows)
+    // 只写这几行（和桌面端一样）。以前每次把整个会话重写一遍，长会话一轮要来回搬好几 MB，界面跟着卡
+    const result = await persistMessages(target, rows)
     if (result.sessionId !== target && target === core.sessionId) {
       await handleReroute(target, result.sessionId, rows)
     }
@@ -232,9 +238,18 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
       persistRows(sid, [{ ...compactSummaryRow(result), id: randomUUID() }])
         .catch((e) => console.warn('[Compact] 摘要写入失败', e))
     },
-    onCompacted: (result, sid) => {
+    // 分界处加一条提示（点开看摘要），底部再加一行说刚整理了（点它跳到分界那条）
+    onCompacted: (result, sid, afterTokens) => {
       if (follow(sid) !== core.sessionId) return
-      core.setMessages((prev) => insertCompactNotice(prev, result))
+      core.setMessages((prev) => [...insertCompactNotice(prev, result), contextEventMessage({
+        kind: result.kind === 'model' ? 'compacted' : 'fallback',
+        beforeTokens: result.beforeTokens,
+        afterTokens,
+        boundary: result.summaryTimestamp,
+      })])
+    },
+    onToolResultsCleared: (cleared) => {
+      core.setMessages((prev) => [...prev, contextEventMessage({ kind: 'cleared', ...cleared })])
     },
   })
 

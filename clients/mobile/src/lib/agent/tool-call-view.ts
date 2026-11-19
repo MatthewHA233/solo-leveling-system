@@ -1,5 +1,6 @@
 // ══════════════════════════════════════════════
 // 界面上的工具调用：聊天里每次调用单独一行，点开看参数和结果，可以复制。
+// 上下文整理留在聊天里的行也画成同样的一行（文件末尾）。
 // 这里只管数据和文字，desktop 与 mobile 两份逐字一致，改要两端一起改。
 // 样子各画各的：桌面端 components/ToolCallRow.tsx，手机端 components/fairy/ToolCallRow.tsx
 // ══════════════════════════════════════════════
@@ -132,4 +133,82 @@ export function toolCallCopyText(call: ToolCallView): string {
   if (call.durationMs !== undefined) lines.push(`耗时：${formatToolDuration(call.durationMs)}`)
   lines.push('结果：', call.result ?? '（还在运行）')
   return lines.join('\n')
+}
+
+// ── 上下文整理留在聊天里的行 ──
+// 两种，都和工具调用同样的一行：
+//   · 分界处的压缩提示（消息带 summary）：「整理上下文」+ 一句说明 + 摘要字数，点开看摘要。
+//     模型写的摘要存库，重开会话还在原处（chat-history.ts）
+//   · 当时在底部加的一行（消息带 context）：清掉了较早的工具结果（点开看清了哪些）、压完了（点它跳到分界那条）。
+//     只在界面上、不存库：清理和机械摘要只改这台设备内存里的历史，重开会话后历史从库里重建，就不作数了
+
+export const COMPACT_ROW_LABEL = '整理上下文'
+
+/** 分界处那条压缩提示的说明；fallback = 模型没写成摘要，用的机械摘要 */
+export function compactRowSummary(fallback: boolean): string {
+  return fallback ? '摘要没写成，先压成了简略记录' : '这条以上的对话已整理成摘要'
+}
+
+/** 分界处的压缩提示点开后，摘要下面那句说明 */
+export const COMPACT_ROW_NOTE = '之后每轮发给模型的是这份摘要加最近几轮原话；这条以上的原话还在，只是不再发给模型'
+
+export interface ContextEventView {
+  /** cleared：清掉了较早的工具结果；compacted：较早的对话写成了摘要；fallback：摘要没写成，压成了简略记录 */
+  readonly kind: 'cleared' | 'compacted' | 'fallback'
+  /** 整段历史的体量（token），整理前后 */
+  readonly beforeTokens: number
+  readonly afterTokens: number
+  /** cleared：清掉的那几条结果（工具的函数名、原文字数） */
+  readonly items?: readonly { readonly name: string; readonly chars: number }[]
+  /** compacted / fallback：分界处那条压缩提示的时间，点这行跳过去 */
+  readonly boundary?: string
+}
+
+/** 大数写成「3.2 万」，几千的取整到百 */
+export function approxCount(n: number): string {
+  if (n >= 10_000) return `${(n / 10_000).toFixed(1).replace(/\.0$/, '')} 万`
+  if (n >= 1_000) return String(Math.round(n / 100) * 100)
+  return String(Math.max(0, Math.round(n)))
+}
+
+export function contextEventLabel(e: ContextEventView): string {
+  return e.kind === 'cleared' ? '清理工具结果' : COMPACT_ROW_LABEL
+}
+
+/** 那一行中间的说明 */
+export function contextEventSummary(e: ContextEventView): string {
+  if (e.kind === 'cleared') {
+    const items = e.items ?? []
+    return `${items.length} 次，约 ${approxCount(items.reduce((n, item) => n + item.chars, 0))} 字`
+  }
+  return e.kind === 'compacted' ? '较早的对话写成了摘要' : '摘要没写成，先压成简略记录'
+}
+
+/** 右边那一小段：上下文从多少降到多少（token） */
+export function contextEventSize(e: ContextEventView): string {
+  return `${approxCount(e.beforeTokens)} → ${approxCount(e.afterTokens)}`
+}
+
+/** 清掉的结果按工具合并，字数多的在前 */
+export function clearedToolGroups(e: ContextEventView): { label: string; count: number; chars: number }[] {
+  const groups = new Map<string, { label: string; count: number; chars: number }>()
+  for (const item of e.items ?? []) {
+    const label = item.name ? toolLabel(item.name) : '工具'
+    const group = groups.get(label) ?? { label, count: 0, chars: 0 }
+    group.count += 1
+    group.chars += item.chars
+    groups.set(label, group)
+  }
+  return [...groups.values()].sort((a, b) => b.chars - a.chars)
+}
+
+/** 清理那一行点开后的说明 */
+export function contextEventNote(e: ContextEventView): string {
+  if (e.kind !== 'cleared') return '点这行跳到分界那条，点开能看摘要'
+  return `上下文约 ${contextEventSize(e)} token。较早几轮的长工具结果换成了一句说明，调用本身还在，模型知道查过什么，要用时会重新查；最近几轮的没动。只改了这台设备上的上下文，重开会话后不作数`
+}
+
+/** 不画成一行的地方用的文字（消息的 content，长按复制的就是它） */
+export function contextEventLine(e: ContextEventView): string {
+  return `${contextEventLabel(e)} · ${contextEventSummary(e)} · 上下文约 ${contextEventSize(e)} token`
 }

@@ -15,6 +15,7 @@
 //   1. 较早轮次的工具结果换成一句说明（不调模型；查询类工具可以重新调用）
 //   2. 还超：较早的轮次交给模型写成摘要，最近约 2 万 token 原样保留（chat-compaction.ts 在后台做）
 //   3. 摘要写不成：退回机械摘要（每轮一行）
+// 每一步都在聊天底部留一行（chat-compaction.ts 通知界面，文字规则在 lib/agent/tool-call-view.ts）
 // ══════════════════════════════════════════════
 
 import { createUserMessage, getMessageText, isAssistantMessage, isHumanTurn } from './types'
@@ -192,23 +193,33 @@ function splitTurns(messages: readonly Message[]): Message[][] {
   return turns
 }
 
+/** 清掉的一条工具结果：哪个工具（函数名）、原文多少字。聊天里那行「清理工具结果」点开列的就是这些 */
+export interface ClearedToolResult {
+  readonly name: string
+  readonly chars: number
+}
+
 /** 第一步（不调模型）：较早轮次的长工具结果换成一句说明。工具调用本身还在，模型知道查过什么 */
-export function clearOldToolResults(messages: readonly Message[]): { messages: Message[]; cleared: number } {
+export function clearOldToolResults(messages: readonly Message[]): { messages: Message[]; cleared: number; items: ClearedToolResult[] } {
   const turns = splitTurns(messages)
   const protectFrom = turns.length - KEEP_TOOL_TURNS
-  let cleared = 0
+  const items: ClearedToolResult[] = []
   const out = turns.flatMap((turn, i) => {
     if (i >= protectFrom) return turn
+    const names = new Map<string, string>()
+    for (const m of turn) {
+      if (isAssistantMessage(m)) for (const b of m.message.content) if (b.type === 'tool_use') names.set(b.id, b.name)
+    }
     return turn.map((m) => {
       if (m.type !== 'user' || m.toolUseResult === undefined) return m
       const result = m.toolUseResult
       if (result.length < CLEAR_MIN_CHARS || result.startsWith(CLEARED_PREFIX)) return m
-      cleared += 1
+      items.push({ name: names.get(m.sourceToolCallId ?? '') ?? '', chars: result.length })
       const note = clearedNote(result.length)
       return { ...m, message: { ...m.message, content: note }, toolUseResult: note }
     })
   })
-  return { messages: cleared > 0 ? dropUsage(out) : out, cleared }
+  return { messages: items.length > 0 ? dropUsage(out) : out, cleared: items.length, items }
 }
 
 // ── 图片 ──

@@ -28,7 +28,8 @@ import Tooltip from './Tooltip'
 import HudSelect from './HudSelect'
 import ModelUsageBadge from './ModelUsageBadge'
 import IconButton from './ui/IconButton'
-import ToolCallRow from './ToolCallRow'
+import ToolCallRow, { CompactRow, ContextRow } from './ToolCallRow'
+import { compactNotice } from '../lib/agent/chat-history'
 import LedSegments from './ui/LedSegments'
 import FairyMarkdown from './FairyMarkdown'
 
@@ -460,7 +461,8 @@ export default function ChatPanel({ messages, isProcessing, onSend, takeVoiceIma
             />
           ))}
 
-          {isProcessing && messages[messages.length - 1]?.role !== 'agent' && (
+          {/* 看最后一条真正的消息：后台摘要写完时回复可能已经在出字，那行整理上下文排在它后面 */}
+          {isProcessing && [...messages].reverse().find((m) => !m.context)?.role !== 'agent' && (
             <TypingLeds />
           )}
         </div>
@@ -875,46 +877,6 @@ function MetaIconBtn({ tip, onClick, children }: {
 // ── 思考过程（思考模型的推理流）──
 // 流式期间自动展开、贴底滚动；正文开始后自动折叠成一行，可手动展开回看
 
-/** 上下文压缩的提示：和系统提示同样不抢眼，点一下展开 Fairy 记住的摘要 */
-function CompactNotice({ text, summary }: { text: string; summary: string }) {
-  const [expanded, setExpanded] = useState(false)
-  return (
-    <div style={{ margin: '2px 0' }}>
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        style={{
-          display: 'inline-flex', alignItems: 'baseline', gap: 6, textAlign: 'left',
-          background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-          fontFamily: theme.fontMono, fontSize: 11, lineHeight: 1.6, color: theme.paperMuted, opacity: 0.85,
-        }}
-      >
-        <span>{text}</span>
-        <span>{expanded ? '收起 ▾' : '看摘要 ▸'}</span>
-      </button>
-      {expanded && (
-        <div
-          className="ti-well"
-          style={{
-            marginTop: 6,
-            maxHeight: 280,
-            overflowY: 'auto',
-            padding: '8px 12px',
-            borderRadius: 5,
-            fontSize: 12,
-            lineHeight: 1.7,
-            color: theme.paperMuted,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {summary}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function ReasoningBlock({ text, answered }: { text: string; answered: boolean }) {
   const [userToggle, setUserToggle] = useState<boolean | null>(null)
   const expanded = userToggle ?? !answered
@@ -1024,8 +986,13 @@ function Bubble({ message, agentName, userCallsign, onDebug, onOmniDebug }: {
   onDebug?: () => void
   onOmniDebug?: () => void
 }) {
-  // 压缩提示：一行小字，点开看摘要
-  if (message.role === 'system' && message.summary) return <CompactNotice text={message.content} summary={message.summary} />
+  // 压缩提示：和工具调用同样的一行，点开看摘要
+  if (message.role === 'system' && message.summary) {
+    return <CompactRow summary={message.summary} fallback={message.content === compactNotice('fallback')} timestamp={message.timestamp} />
+  }
+
+  // 上下文整理当时留的一行：清理工具结果点开看清了哪些，整理上下文点它跳到分界那条
+  if (message.role === 'system' && message.context) return <ContextRow event={message.context} />
 
   // 工具调用：单独一行，点开看参数和结果
   if (message.role === 'system' && message.tool) return <ToolCallRow call={message.tool} />

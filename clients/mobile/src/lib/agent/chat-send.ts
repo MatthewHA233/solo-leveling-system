@@ -10,6 +10,8 @@
 //   · 新一轮先打断上一轮并等它收尾（最多 1.5 秒），否则对话历史会缺上一轮
 //   · 没有 Key 时给明确提示（只有 Claude Key 的不拦），桌面端是等接口报 401
 //   · TTS 管线在 voice/tts-pipeline.ts（桌面端写在 handleSend 里）
+//   · 一轮里调了工具：工具前说的话一个气泡，工具后的回复另起一个排在工具行下面。
+//     桌面端续写在同一个气泡里；手机面板矮又贴着底部，续写的字在工具行上方看不到，像是说了两句就断了
 // ══════════════════════════════════════════════
 
 import { isAnthropicModel } from '../llm/anthropic-stream'
@@ -176,6 +178,9 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
     }
 
     const agentMsgId = randomUUID()
+    /** 工具前那段话换下来的 id：最后一段没有字时，快照挂到它上面 */
+    let earlierSegmentId: string | null = null
+    const lastSegmentId = () => (core.messages.some((m) => m.id === agentMsgId) ? agentMsgId : earlierSegmentId ?? agentMsgId)
     let agentTimestamp = ''
     const imageBlocks = images.map((i) => i.block)
     const userMsg = createUserMessage(text, { images: imageBlocks, timestamp: sentAt })
@@ -304,6 +309,13 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
             )
             tts?.push(event.delta)
           } else if (event.type === 'toolCallStarted') {
+            // 工具前说的话自成一条，之后的回复另起一条排在工具行下面（agentMsgId 留给最后那段，落库、补录音都认它）
+            if (core.messages.some((m) => m.id === agentMsgId)) {
+              const doneId = randomUUID()
+              earlierSegmentId = doneId
+              agentTimestamp = '' // 后一段按它开口的时间算，跳转按时间找气泡时不会和前一段撞上
+              core.setMessages((prev) => prev.map((m) => (m.id === agentMsgId ? { ...m, id: doneId, streaming: false } : m)))
+            }
             // 工具调用开始：立即把积压的文字刷给 TTS（否则工具执行期间静音）
             tts?.push('', true)
             if (ownsUi()) core.emitFairy('thinking')
@@ -351,12 +363,12 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
         sessions.persistRows(turnSid, [{ ...traceRow, id: randomUUID() }]).catch((e) => console.warn('[Chat] 工具记录写入失败', e))
       }
       if (interrupted) {
-        core.patchMessage(agentMsgId, (m) => (m.content ? { ...m, content: `${m.content}……（被打断）` } : m))
+        core.patchMessage(lastSegmentId(), (m) => (m.content ? { ...m, content: `${m.content}……（被打断）` } : m))
       }
 
       // 把本轮快照 patch 到对应 agent 气泡
       if (capturedSnapshots.length > 0) {
-        core.patchMessage(agentMsgId, (m) => ({ ...m, debugSnapshots: [...capturedSnapshots] }))
+        core.patchMessage(lastSegmentId(), (m) => ({ ...m, debugSnapshots: [...capturedSnapshots] }))
       }
 
       // 只看本轮新增的部分：接口报错时本轮没有 assistant，扫整段历史会取到上一轮的回复，再存一遍

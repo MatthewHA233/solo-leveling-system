@@ -6,7 +6,7 @@
 // debugSnapshots / omniDebugInfo / usage / audio.path 都是可选，有值时气泡才显示对应功能。
 // ══════════════════════════════════════════════
 
-import type { ToolCallView } from '../../lib/agent/tool-call-view'
+import type { ContextEventView, ToolCallView } from '../../lib/agent/tool-call-view'
 import type { ApiRequestSnapshot } from '../../lib/llm/api'
 import type { ModelCallLog } from '../../lib/models/model-audit'
 import type { ChatImageAttachment } from '../../types'
@@ -56,6 +56,8 @@ export interface FairyMessage {
   readonly summary?: string
   /** 一次工具调用：单独一行，点开看参数和结果（规则见 lib/agent/tool-call-view.ts） */
   readonly tool?: ToolCallView
+  /** 上下文整理当时留的一行：清掉旧工具结果、压完摘要（只在界面上，不入库） */
+  readonly context?: ContextEventView
   /** 主人在 Fairy 回复途中发的话，还排着队没被读到（lib/agent/message-queue.ts） */
   readonly queued?: boolean
 }

@@ -1,18 +1,24 @@
 // ══════════════════════════════════════════════
 // AgentPanel — Fairy 悬浮对话气泡（对应 desktop FairyWindow 的面板 + App.tsx 的 ChatPanel / SessionPicker 接线）
 // 内容是 fairy/FairyChatPanel；这里管定位、键盘避让、上下拖动调高和几个弹层的开关。
-// 桌面端是独立透明窗口，手机端是全局层：底部位置和气泡尖不动，消息区向上长高，
-// 点外部蒙版收起。
+// 桌面端是独立透明窗口，手机端是全局层：底部位置和气泡尖不动，面板向上长高，
+// 点外部蒙版或往下拉收起。
+//
+// 高度两档（底部弹层的常见做法）：「全屏」顶到状态栏下面，「半屏」约三分之二。
+// 拖把手或头部跟手走，松手按位置和速度弹到最近的一档，往下拉过头就收起；选中的档位记在本机。
+// 键盘起来只是临时压矮，收起后回到原来那档（以前压矮了就回不去，下次打开还是那个矮样子）。
+// 打开、收起都有过渡：蒙版淡入淡出，面板从下面浮上来。
 // ══════════════════════════════════════════════
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Animated, PanResponder, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
+import { Animated, Easing, PanResponder, Pressable, StyleSheet, View, useWindowDimensions } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { theme } from '../theme'
 import type { ChatSessionInfo } from '../lib/agent/agent-memory'
 import { MAX_CHAT_IMAGES, pickChatImages, type PickedImage } from '../lib/chatimage'
 import type { ChatImageAttachment } from '../types'
 import { useChatController } from '../lib/agent/use-chat-controller'
+import { solevupGetPref, solevupSetPref } from '../lib/solevupdb'
 import { useStableKeyboardInset } from '../lib/use-keyboard-inset'
 import FairyChatPanel from './fairy/FairyChatPanel'
 import FairySettingsSheet from './fairy/FairySettingsSheet'
@@ -26,12 +32,27 @@ interface Props {
   readonly onClose: () => void
 }
 
-const BODY_MIN = 120
-const BODY_INIT = 180
-/** 消息区以外的结构（把手、头部、会话条、输入坞、内边距）大约占的高度 */
-const PANEL_CHROME = 250
+type Detent = 'half' | 'full'
+const DETENT_PREF = 'fairy_panel_detent'
+/** 面板底到屏幕底：TabBar + 气泡尖 */
+const DOCK_BOTTOM = 104
+/** 拉满时顶部离状态栏 */
+const TOP_GAP = 10
+/** 面板最矮：头部、会话条、输入坞之外至少还能看见一两条消息 */
+const PANEL_MIN = 320
+const HALF_RATIO = 0.66
+/** 往下拉过这么多，或者半屏以下快速往下甩，就收起 */
+const DISMISS_PULL = 90
+const DISMISS_VELOCITY = 1.0
+/** 松手后按速度往前多算这么多毫秒再找最近的档 */
+const PROJECT_MS = 160
+const SPRING = { damping: 26, stiffness: 280, mass: 0.9 }
 /** 按住不到这么久松手算误触 */
 const VOICE_MIN_HOLD_MS = 500
+
+// 进程内记住，开关面板不用再读库
+let rememberedDetent: Detent = 'full'
+let detentLoaded = false
 
 export default function AgentPanel({ visible, onClose }: Props) {
   const insets = useSafeAreaInsets()
@@ -43,38 +64,126 @@ export default function AgentPanel({ visible, onClose }: Props) {
   const [modelCenterOpen, setModelCenterOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
-  // ── 顶部拖拽调高（bottom sheet 式）：bodyH 直接驱动消息区高度 ──
-  const bodyH = useRef(new Animated.Value(BODY_INIT)).current
-  const bodyHNow = useRef(BODY_INIT)
-  const dragStartH = useRef(BODY_INIT)
-  const bodyMaxRef = useRef(400)
+  // ── 档位 ──
+  const [detent, setDetent] = useState<Detent>(rememberedDetent)
+  useEffect(() => {
+    if (detentLoaded) return
+    detentLoaded = true
+    solevupGetPref(DETENT_PREF, rememberedDetent).then((v) => {
+      if (v === 'half' || v === 'full') {
+        rememberedDetent = v
+        setDetent(v)
+      }
+    }).catch(() => {})
+  }, [])
+
+  const bottom = keyboardInset > 0 ? keyboardInset + 8 : DOCK_BOTTOM
+  const topLimit = insets.top + TOP_GAP
+  // 没键盘时面板最高能到多高；键盘起来时现在最高能到多高
+  const roomFree = Math.max(PANEL_MIN, H - topLimit - DOCK_BOTTOM)
+  const roomNow = Math.max(240, H - topLimit - bottom)
+  const panelFor = (d: Detent) => (d === 'full' ? roomFree : Math.max(PANEL_MIN, Math.round(roomFree * HALF_RATIO)))
+  const target = Math.min(panelFor(detent), roomNow)
+
+  const panelH = useRef(new Animated.Value(target)).current
+  const panelNow = useRef(target)
+  const pull = useRef(new Animated.Value(0)).current   // 往下拉出的位移（收起前跟手）
+  const appear = useRef(new Animated.Value(0)).current // 0 = 收起，1 = 打开
+  const dragging = useRef(false)
+  const dragStart = useRef(target)
+
+  useEffect(() => {
+    const id = panelH.addListener(({ value }) => { panelNow.current = value })
+    return () => panelH.removeListener(id)
+  }, [panelH])
+
+  // 拖动的回调在首帧创建，要读的值都走 ref
+  const live = useRef({ roomNow, panelFor, onClose })
+  live.current = { roomNow, panelFor, onClose }
+
+  const springTo = useCallback((height: number) => {
+    Animated.parallel([
+      Animated.spring(panelH, { toValue: height, useNativeDriver: false, ...SPRING }),
+      Animated.spring(pull, { toValue: 0, useNativeDriver: false, ...SPRING }),
+    ]).start()
+  }, [panelH, pull])
+
+  const chooseDetent = useCallback((d: Detent) => {
+    if (d !== rememberedDetent) solevupSetPref(DETENT_PREF, d).catch(() => {})
+    rememberedDetent = d
+    setDetent(d)
+  }, [])
+
   const dragPan = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dy) > 4,
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dy) > 5 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => {
-        dragStartH.current = bodyHNow.current
+        dragging.current = true
+        panelH.stopAnimation()
+        pull.stopAnimation()
+        dragStart.current = panelNow.current
       },
       onPanResponderMove: (_e, g) => {
-        // 向上拖 dy<0 → 变高
-        const next = Math.min(bodyMaxRef.current, Math.max(BODY_MIN, dragStartH.current - g.dy))
-        bodyHNow.current = next
-        bodyH.setValue(next)
+        const { roomNow: max } = live.current
+        const raw = dragStart.current - g.dy // 往上拖 dy<0 → 变高
+        if (raw > max) {
+          // 顶到头了：阻尼着多给一点，松手弹回
+          panelH.setValue(max + Math.min(28, (raw - max) * 0.2))
+          pull.setValue(0)
+        } else if (raw < PANEL_MIN) {
+          // 比最矮还矮：整个面板跟着手往下走，准备收起
+          panelH.setValue(PANEL_MIN)
+          pull.setValue(PANEL_MIN - raw)
+        } else {
+          panelH.setValue(raw)
+          pull.setValue(0)
+        }
+      },
+      onPanResponderRelease: (_e, g) => {
+        dragging.current = false
+        const { roomNow: max, panelFor: heightOf, onClose: close } = live.current
+        const raw = dragStart.current - g.dy
+        const half = Math.min(heightOf('half'), max)
+        const full = Math.min(heightOf('full'), max)
+        if (PANEL_MIN - raw > DISMISS_PULL || (g.vy > DISMISS_VELOCITY && raw < half)) {
+          close()
+          return
+        }
+        const projected = raw - g.vy * PROJECT_MS
+        const d: Detent = full - half < 24 || projected > (half + full) / 2 ? 'full' : 'half'
+        chooseDetent(d)
+        springTo(d === 'full' ? full : half)
+      },
+      onPanResponderTerminate: () => {
+        dragging.current = false
+        springTo(Math.min(live.current.panelFor(rememberedDetent), live.current.roomNow))
       },
     }),
   ).current
 
-  const bottom = keyboardInset > 0 ? keyboardInset + 8 : 104
-  // 拖拽上限：顶部留出安全区 + 一口呼吸，消息区以外的结构不动
-  const bodyMax = Math.max(BODY_MIN, H - insets.top - 44 - bottom - PANEL_CHROME)
-  bodyMaxRef.current = bodyMax
-
-  // 键盘弹起后放不下：先把消息区压矮，别顶出屏幕
+  // ── 打开 / 收起的过渡；收起动画放完才卸载 ──
+  const [rendered, setRendered] = useState(visible)
   useEffect(() => {
-    if (bodyHNow.current > bodyMax) {
-      bodyHNow.current = bodyMax
-      bodyH.setValue(bodyMax)
+    if (visible) {
+      setRendered(true)
+      panelH.stopAnimation()
+      panelH.setValue(target)
+      pull.setValue(0)
+      Animated.spring(appear, { toValue: 1, useNativeDriver: true, damping: 22, stiffness: 240, mass: 0.8 }).start()
+    } else {
+      Animated.timing(appear, { toValue: 0, duration: 170, easing: Easing.in(Easing.quad), useNativeDriver: true })
+        .start(({ finished }) => { if (finished) setRendered(false) })
     }
-  }, [bodyMax, bodyH])
+    // 只跟着开关走；打开那一刻的 target 直接用
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible])
+
+  // 档位、键盘、屏幕高度变了：弹到新高度（拖动中不动）
+  useEffect(() => {
+    if (!visible || dragging.current) return
+    springTo(target)
+  }, [target, visible, springTo])
 
   // 关闭面板时停掉气泡回放（回复朗读不停：Fairy 是全局的，收起面板不等于让她闭嘴）
   useEffect(() => {
@@ -174,20 +283,31 @@ export default function AgentPanel({ visible, onClose }: Props) {
     setPendingImages((prev) => prev.filter((p) => p.id !== image.id))
   }, [])
 
+  const sheetMotion = {
+    opacity: appear,
+    transform: [
+      { translateY: appear.interpolate({ inputRange: [0, 1], outputRange: [36, 0] }) },
+      { scale: appear.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }) },
+    ],
+  }
+
   return (
     <>
-      {visible && (
-        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+      {rendered && (
+        <View style={StyleSheet.absoluteFill} pointerEvents={visible ? 'box-none' : 'none'}>
           {/* 灰色蒙版：点击面板外部即收起 */}
-          <Pressable style={styles.mask} onPress={onClose} />
+          <Animated.View style={[styles.mask, { opacity: appear }]}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+          </Animated.View>
 
-          <View style={[styles.wrap, { bottom }]} pointerEvents="box-none">
-            <View style={styles.dock}>
+          <Animated.View style={[styles.wrap, { bottom }, sheetMotion]} pointerEvents="box-none">
+            <Animated.View style={[styles.dock, { height: panelH, transform: [{ translateY: pull }] }]}>
               <View style={styles.tail} />
               <View style={styles.dragHandle} {...dragPan.panHandlers}>
                 <View style={styles.grabber} />
               </View>
               <FairyChatPanel
+                style={styles.chatFill}
                 messages={ctrl.messages}
                 isProcessing={ctrl.isProcessing}
                 onSend={onSend}
@@ -211,7 +331,6 @@ export default function AgentPanel({ visible, onClose }: Props) {
                 jumpTo={ctrl.jumpTo}
                 onOpenModelCenter={() => setModelCenterOpen(true)}
                 onOpenSettings={() => setSettingsOpen(true)}
-                listContainerStyle={{ height: bodyH }}
                 headerPanHandlers={dragPan.panHandlers}
                 gutter={0}
                 placeholder="继续问…"
@@ -220,8 +339,8 @@ export default function AgentPanel({ visible, onClose }: Props) {
                 recording={recording}
                 recordMs={recordMs}
               />
-            </View>
-          </View>
+            </Animated.View>
+          </Animated.View>
 
           <SessionPicker
             visible={sessionsOpen}
@@ -259,12 +378,14 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     paddingHorizontal: 12,
+    // 打开时从气泡尖那里放大出来
+    transformOrigin: 'center bottom',
   },
   dock: {
     backgroundColor: theme.surface,
     borderRadius: 16,
     paddingHorizontal: 14,
-    paddingTop: 10,
+    paddingTop: 0,
     paddingBottom: 0,
     shadowColor: '#000',
     shadowOpacity: 0.14,
@@ -287,16 +408,19 @@ const styles = StyleSheet.create({
     borderColor: theme.line,
     transform: [{ rotate: '45deg' }],
   },
+  // 把手区域放宽，好抓
   dragHandle: {
     marginHorizontal: -14,
     paddingHorizontal: 14,
-    paddingBottom: 2,
+    paddingTop: 8,
+    paddingBottom: 6,
   },
   grabber: {
     alignSelf: 'center',
-    width: 36,
-    height: 4,
-    borderRadius: 2,
+    width: 40,
+    height: 5,
+    borderRadius: 2.5,
     backgroundColor: theme.line,
   },
+  chatFill: { flex: 1 },
 })

@@ -3,8 +3,11 @@
 //
 // 和桌面端的差异：
 //   · 贴底：桌面端每来一个字都拉到底，往上翻的时候也会被拽回来；手机端用手指往上拖之后就不再拽，
-//     拖回底部附近才恢复贴底。主人自己发新消息、切会话时一定回到底部
-//   · 跳转：桌面端 querySelector + scrollIntoView；手机端记每行的 y，滚到居中后叠一层高亮（节奏相同：1.6s，30% 处最亮）
+//     拖回底部附近才恢复贴底；手指按着、惯性还在滑的时候一律不拽。主人自己发新消息、切会话时一定回到底部
+//   · 列表里不套竖向滚动的小框（思考过程、工具参数结果、压缩摘要都直接铺开）：
+//     面板矮的时候小框占满可视区，手指滑的是小框，整个列表就滚不动了
+//   · 跳转：桌面端 querySelector + scrollIntoView；手机端记每行的 y，滚到居中后叠一层高亮（节奏相同：1.6s，30% 处最亮）。
+//     搜索命中（jumpTo）和底部那行「整理上下文」（点它跳到分界那条）走同一套
 //   · 手机一次先渲染最近 PAGE 条，往前点「查看更早」：手写 markdown 全量挂载几百条会卡
 //   · 复制：长按消息弹菜单（桌面端直接选中文字）
 //
@@ -36,6 +39,17 @@ const BOTTOM_SLOP = 48          // 离底部这么近就算在底部
 const JUMP_GIVE_UP_MS = 2500    // 目标消息一直没出现（会话还没加载完 / 已被删）就放弃
 const FLASH_MS = 1600
 const FLASH_PEAK = 0.3          // 30% 处最亮，对应桌面端 msgJumpFlash
+const ROW_GAP = 16              // 消息之间
+const TOOL_GAP = 6              // 工具调用行（压缩提示、上下文整理同）和前后消息之间；连着的几行之间不留
+
+const isLine = (m: FairyMessage) => !!m.tool || !!m.summary || !!m.context
+
+function rowGap(msg: FairyMessage, prev: FairyMessage | undefined): number {
+  if (!prev) return 0
+  if (isLine(msg) && isLine(prev)) return 0
+  if (isLine(msg) || isLine(prev)) return TOOL_GAP
+  return ROW_GAP
+}
 
 function timeValue(ts: number | string): number {
   return typeof ts === 'number' ? ts : new Date(ts).getTime()
@@ -91,6 +105,8 @@ export default function FairyMessageList({
   const last = messages[messages.length - 1]
   const lastId = last?.id
   const lastRole = last?.role
+  // 「正在思考」看最后一条真正的消息：后台摘要写完时回复可能已经在出字，那行整理上下文排在它后面
+  const lastSpeaker = [...messages].reverse().find((m) => !m.context)?.role
 
   const toBottom = useCallback(() => {
     scrollRef.current?.scrollToEnd({ animated: false })
@@ -98,6 +114,11 @@ export default function FairyMessageList({
 
   const isNearBottom = useCallback((y: number) => (
     y + viewH.current >= contentH.current - BOTTOM_SLOP
+  ), [])
+
+  // 手指按着或还在惯性滑：一律不拽。回复每出一段字内容就长高，拽一下就把正在往上翻的手指甩回底部
+  const shouldFollow = useCallback(() => (
+    stuck.current && !fingerDown.current && !momentum.current && pendingJump.current === null
   ), [])
 
   // ── 跳转 ──
@@ -134,23 +155,30 @@ export default function FairyMessageList({
     })
   }, [flash])
 
-  const jumpNonce = jumpTo?.nonce
-  const jumpTs = jumpTo?.timestamp
-  useEffect(() => {
-    if (jumpNonce === undefined || jumpTs === undefined) return
-    const target = timeValue(jumpTs)
+  const giveUpTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const startJump = useCallback((ts: number | string) => {
+    const target = timeValue(ts)
     if (Number.isNaN(target)) return
     pendingJump.current = target
     stuck.current = false
     tryJump()
-    const timer = setTimeout(() => {
+    if (giveUpTimer.current) clearTimeout(giveUpTimer.current)
+    giveUpTimer.current = setTimeout(() => {
+      giveUpTimer.current = null
       if (pendingJump.current === target) {
         pendingJump.current = null
         stuck.current = isNearBottom(scrollY.current)
       }
     }, JUMP_GIVE_UP_MS)
-    return () => clearTimeout(timer)
-  }, [jumpNonce, jumpTs, tryJump, isNearBottom])
+  }, [tryJump, isNearBottom])
+  useEffect(() => () => { if (giveUpTimer.current) clearTimeout(giveUpTimer.current) }, [])
+
+  const jumpNonce = jumpTo?.nonce
+  const jumpTs = jumpTo?.timestamp
+  useEffect(() => {
+    if (jumpNonce === undefined || jumpTs === undefined) return
+    startJump(jumpTs)
+  }, [jumpNonce, jumpTs, startJump])
 
   // 跳转时会话可能还在加载：消息到了再试
   useEffect(() => { tryJump() }, [messages, tryJump])
@@ -189,13 +217,13 @@ export default function FairyMessageList({
       }
       return
     }
-    if (stuck.current && pendingJump.current === null) toBottom()
-  }, [toBottom])
+    if (shouldFollow()) toBottom()
+  }, [toBottom, shouldFollow])
 
   const onLayout = useCallback((e: LayoutChangeEvent) => {
     viewH.current = e.nativeEvent.layout.height
-    if (stuck.current && pendingJump.current === null) toBottom()
-  }, [toBottom])
+    if (shouldFollow()) toBottom()
+  }, [toBottom, shouldFollow])
 
   const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y
@@ -229,7 +257,11 @@ export default function FairyMessageList({
         keyboardShouldPersistTaps="handled"
         scrollEventThrottle={32}
         onScroll={onScroll}
-        onScrollBeginDrag={() => { fingerDown.current = true }}
+        onScrollBeginDrag={() => {
+          // 一上手就松开贴底，松手时再按位置判断（还在底部附近就接着贴）
+          fingerDown.current = true
+          stuck.current = false
+        }}
         onScrollEndDrag={(e) => {
           fingerDown.current = false
           if (!momentum.current) stuck.current = isNearBottom(e.nativeEvent.contentOffset.y)
@@ -255,8 +287,12 @@ export default function FairyMessageList({
           </Pressable>
         )}
 
-        {shown.map((msg) => (
-          <View key={msg.id} onLayout={(e) => onRowLayout(msg.id, e)}>
+        {shown.map((msg, i) => (
+          <View
+            key={msg.id}
+            style={{ marginTop: i === 0 ? (hidden > 0 ? ROW_GAP : 0) : rowGap(msg, shown[i - 1]) }}
+            onLayout={(e) => onRowLayout(msg.id, e)}
+          >
             <FairyBubble
               message={msg}
               agentName={agentName}
@@ -264,6 +300,7 @@ export default function FairyMessageList({
               onDebug={onDebug}
               onOmniDebug={onOmniDebug}
               onLongPress={setActionMessage}
+              onJump={startJump}
             />
             {flashId === msg.id && (
               <Animated.View pointerEvents="none" style={[styles.flash, { opacity: flash }]} />
@@ -271,7 +308,9 @@ export default function FairyMessageList({
           </View>
         ))}
 
-        {isProcessing && lastRole !== 'agent' && <TypingDots />}
+        {isProcessing && lastSpeaker !== 'agent' && (
+          <View style={messages.length > 0 && styles.typing}><TypingDots /></View>
+        )}
       </ScrollView>
 
       <MessageActionSheet
@@ -286,7 +325,8 @@ export default function FairyMessageList({
 
 const styles = StyleSheet.create({
   list: { flex: 1 },
-  content: { paddingTop: 16, paddingBottom: 12, gap: 16 },
+  content: { paddingTop: 16, paddingBottom: 12 },
+  typing: { marginTop: ROW_GAP },
   contentEmpty: { flexGrow: 1 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 24 },
   emptyTitle: { fontSize: 14, color: theme.inkSoft, textAlign: 'center' },
