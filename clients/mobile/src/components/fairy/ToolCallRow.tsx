@@ -210,6 +210,8 @@ export function ContextRow({ event, onJump, onLongPress }: {
 }) {
   const [expanded, setExpanded] = useState(false)
   const cleared = event.kind === 'cleared'
+  // 正在写摘要：亮色，不能点开也没有可跳的地方
+  const compacting = event.kind === 'compacting'
   const boundary = event.boundary
   const Icon = cleared ? (expanded ? IconChevronDown : IconChevronRight) : IconChevronUp
   return (
@@ -227,11 +229,11 @@ export function ContextRow({ event, onJump, onLongPress }: {
         }}
         onLongPress={onLongPress}
       >
-        <View style={[styles.dot, { backgroundColor: event.kind === 'fallback' ? theme.danger : theme.inkFaint }]} />
+        <View style={[styles.dot, { backgroundColor: compacting ? theme.accent : event.kind === 'fallback' ? theme.danger : theme.inkFaint }]} />
         <Text style={styles.name} numberOfLines={1}>{contextEventLabel(event)}</Text>
         <Text style={styles.summary} numberOfLines={1}>{contextEventSummary(event)}</Text>
-        <Text style={styles.status}>{contextEventSize(event)}</Text>
-        <Icon size={12} color={theme.inkFaint} />
+        <Text style={[styles.status, compacting && styles.statusRunning]}>{contextEventSize(event)}</Text>
+        {!compacting && <Icon size={12} color={theme.inkFaint} />}
       </Pressable>
       {cleared && expanded && (
         <View style={styles.panel}>

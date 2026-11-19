@@ -139,7 +139,8 @@ export function toolCallCopyText(call: ToolCallView): string {
 // 两种，都和工具调用同样的一行：
 //   · 分界处的压缩提示（消息带 summary）：「整理上下文」+ 一句说明 + 摘要字数，点开看摘要。
 //     模型写的摘要存库，重开会话还在原处（chat-history.ts）
-//   · 当时在底部加的一行（消息带 context）：清掉了较早的工具结果（点开看清了哪些）、压完了（点它跳到分界那条）。
+//   · 当时在底部加的一行（消息带 context）：清掉了较早的工具结果（点开看清了哪些）、压完了（点它跳到分界那条）、
+//     正在写摘要（compacting：写完或没写成就撤掉，换成结果那行）。
 //     只在界面上、不存库：清理和机械摘要只改这台设备内存里的历史，重开会话后历史从库里重建，就不作数了
 
 export const COMPACT_ROW_LABEL = '整理上下文'
@@ -153,8 +154,11 @@ export function compactRowSummary(fallback: boolean): string {
 export const COMPACT_ROW_NOTE = '之后每轮发给模型的是这份摘要加最近几轮原话；这条以上的原话还在，只是不再发给模型'
 
 export interface ContextEventView {
-  /** cleared：清掉了较早的工具结果；compacted：较早的对话写成了摘要；fallback：摘要没写成，压成了简略记录 */
-  readonly kind: 'cleared' | 'compacted' | 'fallback'
+  /**
+   * cleared：清掉了较早的工具结果；compacted：较早的对话写成了摘要；fallback：摘要没写成，压成了简略记录；
+   * compacting：模型正在写摘要（afterTokens 还没有，填和 beforeTokens 一样的）
+   */
+  readonly kind: 'cleared' | 'compacted' | 'fallback' | 'compacting'
   /** 整段历史的体量（token），整理前后 */
   readonly beforeTokens: number
   readonly afterTokens: number
@@ -181,11 +185,13 @@ export function contextEventSummary(e: ContextEventView): string {
     const items = e.items ?? []
     return `${items.length} 次，约 ${approxCount(items.reduce((n, item) => n + item.chars, 0))} 字`
   }
+  if (e.kind === 'compacting') return '正在把较早的对话写成摘要…'
   return e.kind === 'compacted' ? '较早的对话写成了摘要' : '摘要没写成，先压成简略记录'
 }
 
 /** 右边那一小段：上下文从多少降到多少（token） */
 export function contextEventSize(e: ContextEventView): string {
+  if (e.kind === 'compacting') return approxCount(e.beforeTokens)
   return `${approxCount(e.beforeTokens)} → ${approxCount(e.afterTokens)}`
 }
 
@@ -204,6 +210,7 @@ export function clearedToolGroups(e: ContextEventView): { label: string; count: 
 
 /** 清理那一行点开后的说明 */
 export function contextEventNote(e: ContextEventView): string {
+  if (e.kind === 'compacting') return '在后台写，不用等，照常聊；写完后较早的对话换成摘要，最近几轮原话不动'
   if (e.kind !== 'cleared') return '点这行跳到分界那条，点开能看摘要'
   return `上下文约 ${contextEventSize(e)} token。较早几轮的长工具结果换成了一句说明，调用本身还在，模型知道查过什么，要用时会重新查；最近几轮的没动。只改了这台设备上的上下文，重开会话后不作数`
 }

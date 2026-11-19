@@ -677,6 +677,16 @@ export default function App() {
       onToolResultsCleared: (cleared) => {
         setChatMessages((prev) => [...prev, contextEventMessage({ kind: 'cleared', ...cleared })])
       },
+      // 模型写摘要期间底部挂一行「正在整理」，写完或没写成就撤掉（写成了 onCompacted 会接着加结果那行）
+      onCompactingStart: (sid, beforeTokens) => {
+        if (sid !== sessionIdRef.current) return
+        setChatMessages((prev) => [...prev, contextEventMessage({ kind: 'compacting', beforeTokens, afterTokens: beforeTokens })])
+      },
+      onCompactingEnd: () => {
+        setChatMessages((prev) => (prev.some((m) => m.context?.kind === 'compacting')
+          ? prev.filter((m) => m.context?.kind !== 'compacting')
+          : prev))
+      },
     })
   }
   const compactor = compactorRef.current

@@ -56,6 +56,12 @@ export interface CompactorHost {
    * afterTokens：压完之后整段历史的体量
    */
   readonly onCompacted: (result: CompactionResult, sessionId: string | null, afterTokens: number) => void
+  /**
+   * 模型开始写摘要 / 写完或没写成（界面底部显示一行「正在整理」，结束时撤掉）。
+   * 结束先于 onCompacted。sessionId 是发起时的会话
+   */
+  readonly onCompactingStart: (sessionId: string | null, beforeTokens: number) => void
+  readonly onCompactingEnd: (sessionId: string | null) => void
   /** 清掉了较早的工具结果（界面底部加一行）。只发生在当前会话 */
   readonly onToolResultsCleared: (cleared: ToolResultsCleared) => void
 }
@@ -108,6 +114,7 @@ export function createCompactor(host: CompactorHost): Compactor {
     const run = async (): Promise<CompactionResult | null> => {
       let result: CompactionResult | null = null
       if (failures < MAX_FAILURES) {
+        host.onCompactingStart(sessionId, beforeTokens)
         try {
           // 交给模型的最多到门槛那么大（老会话第一次压缩时开头可能很长）
           const input = fitSummaryInput(plan.head, ctx.budget.trigger)
@@ -117,6 +124,8 @@ export function createCompactor(host: CompactorHost): Compactor {
         } catch (e) {
           if (gen === generation) failures += 1
           console.warn('[Compact] 写摘要失败', e)
+        } finally {
+          host.onCompactingEnd(sessionId)
         }
       }
       if (!result && (force || failures >= MAX_FAILURES)) {

@@ -244,6 +244,25 @@ export function ContextRow({ event }: { event: ContextEventView }) {
   const cleared = event.kind === 'cleared'
   const fallback = event.kind === 'fallback'
   const boundary = event.boundary
+  // 正在写摘要：亮着的灯，不能点开也没有可跳的地方
+  if (event.kind === 'compacting') {
+    return (
+      <RowShell
+        color={ti.led}
+        glow
+        pulse
+        icon={<FoldVertical size={11} style={rowIcon} />}
+        label={contextEventLabel(event)}
+        summary={contextEventSummary(event)}
+        side={`${contextEventSize(event)} token`}
+        sideColor={ti.led}
+        trailing={<span style={{ width: 12, flexShrink: 0 }} />}
+        expanded={false}
+        title={contextEventNote(event)}
+        onClick={() => {}}
+      />
+    )
+  }
   return (
     <RowShell
       color={fallback ? theme.dangerRed : ti.textFaint}

@@ -251,6 +251,16 @@ export function createSessionFlow(core: ChatCore, onSessionChange: () => void): 
     onToolResultsCleared: (cleared) => {
       core.setMessages((prev) => [...prev, contextEventMessage({ kind: 'cleared', ...cleared })])
     },
+    // 模型写摘要期间底部挂一行「正在整理」，写完或没写成就撤掉（写成了 onCompacted 会接着加结果那行）
+    onCompactingStart: (sid, beforeTokens) => {
+      if (follow(sid) !== core.sessionId) return
+      core.setMessages((prev) => [...prev, contextEventMessage({ kind: 'compacting', beforeTokens, afterTokens: beforeTokens })])
+    },
+    onCompactingEnd: () => {
+      core.setMessages((prev) => (prev.some((m) => m.context?.kind === 'compacting')
+        ? prev.filter((m) => m.context?.kind !== 'compacting')
+        : prev))
+    },
   })
 
   /** 打断正在进行的回复和录音：切走之后它们不能再动界面和新会话的历史 */
