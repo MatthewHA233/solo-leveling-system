@@ -25,7 +25,7 @@ import { theme, hud, ti, tiSurface, tiTitle } from './theme'
 import { DEFAULT_CONFIG, getDashScopeApiKey, loadConfig, updateConfig } from './lib/agent/agent-config'
 import type { AgentConfig } from './lib/agent/agent-config'
 import { configUpdatesFromSettings, seedWrites, settingWrites } from './lib/agent/synced-settings'
-import { getFeatureModel, getFishApiKey, getModelDef, logModelUsage, modelSeesImages, pullAnthropicModels, realtimeUsageToDashScope, saveFishApiKey, type RealtimeUsage } from './lib/model-audit'
+import { getFeatureModel, getFishApiKey, getModelDef, logModelUsage, modelSeesImages, pullAnthropicModels, realtimeUsageToDashScope, saveFishApiKey, sumModelCalls, type RealtimeUsage } from './lib/model-audit'
 import { buildStaticPrompt, buildDynamicContext, buildConversationSummary } from './lib/ai/prompt-templates'
 import type { ActivityTagRecord, AppUsageRecord, BiliRecord, GoalRecord } from './lib/ai/prompt-templates'
 import { tagAliasRecords } from './lib/agent/agent-tools-daynight'
@@ -2855,9 +2855,11 @@ export default function App() {
           signal: abort.signal,
           onRequestSnapshot: (snap) => capturedSnapshots.push(snap),
           onUsageLogged: (call) => {
-            capturedUsage = call
+            // 一句话可能发好几次请求：气泡上显示这一轮的合计
+            const turnUsage = sumModelCalls(capturedUsage, call)
+            capturedUsage = turnUsage
             setChatMessages((prev) =>
-              prev.map((m) => m.id === agentMsgId ? { ...m, usage: call } : m)
+              prev.map((m) => m.id === agentMsgId ? { ...m, usage: turnUsage } : m)
             )
           },
         },

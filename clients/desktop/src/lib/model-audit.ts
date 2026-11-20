@@ -232,3 +232,57 @@ export async function pullAnthropicModels(): Promise<number> {
   for (const def of rows) await invoke('upsert_model', { def })
   return rows.length
 }
+
+// ── 一句话的合计 ──
+
+/** metadata 里要按请求相加的项（提示缓存的读写量和省下的钱） */
+const SUMMED_METADATA_KEYS = ['cacheReadTokens', 'cacheWrite5mTokens', 'cacheWrite1hTokens', 'cacheSavedCost'] as const
+
+function parseCallMetadata(metadata: string | null): Record<string, unknown> {
+  if (!metadata) return {}
+  try {
+    const parsed: unknown = JSON.parse(metadata)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function sumCallMetadata(a: string | null, b: string | null): string {
+  const left = parseCallMetadata(a)
+  const right = parseCallMetadata(b)
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  const merged: Record<string, unknown> = { ...left, ...right, requests: (num(left.requests) || 1) + 1 }
+  for (const key of SUMMED_METADATA_KEYS) {
+    if (key in left || key in right) merged[key] = num(left[key]) + num(right[key])
+  }
+  return JSON.stringify(merged)
+}
+
+/**
+ * 一句话调了工具会发好几次请求，每次各记一条账。把这一轮的几条加成一条给气泡用：
+ * 只看最后一条会漏掉前面的（比如第一次请求写缓存多付的钱），显示成省了其实是亏的。
+ * 两端各有一份（桌面端 lib/model-audit.ts、手机端 lib/models/model-audit.ts），逐字一致
+ */
+export function sumModelCalls(total: ModelCallLog | null, call: ModelCallLog): ModelCallLog {
+  if (!total) return call
+  const add = (a: number | null | undefined, b: number | null | undefined) =>
+    a == null && b == null ? null : (a ?? 0) + (b ?? 0)
+  return {
+    ...call,
+    started_at: total.started_at,
+    duration_ms: add(total.duration_ms, call.duration_ms),
+    prompt_text_tokens: total.prompt_text_tokens + call.prompt_text_tokens,
+    prompt_image_tokens: total.prompt_image_tokens + call.prompt_image_tokens,
+    prompt_video_tokens: total.prompt_video_tokens + call.prompt_video_tokens,
+    prompt_audio_tokens: total.prompt_audio_tokens + call.prompt_audio_tokens,
+    completion_text_tokens: total.completion_text_tokens + call.completion_text_tokens,
+    completion_audio_tokens: total.completion_audio_tokens + call.completion_audio_tokens,
+    cost_cny: add(total.cost_cny, call.cost_cny),
+    cost_usd: add(total.cost_usd, call.cost_usd),
+    free_quota_tokens: total.free_quota_tokens + call.free_quota_tokens,
+    free_quota_saved_cny: total.free_quota_saved_cny + call.free_quota_saved_cny,
+    success: total.success && call.success,
+    metadata: sumCallMetadata(total.metadata, call.metadata),
+  }
+}

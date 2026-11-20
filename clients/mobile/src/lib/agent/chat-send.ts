@@ -22,7 +22,7 @@ import { createUserMessage, getMessageText, isAssistantMessage, userContentWithI
 import { randomUUID } from '../llm/uuid'
 import type { PickedImage } from '../chatimage'
 import { explainProxyFailure } from '../network'
-import { getFeatureModel } from '../models/model-audit'
+import { getFeatureModel, sumModelCalls } from '../models/model-audit'
 import { getModelDef, modelSeesImages } from '../models/registry'
 import { solevupGetActiveModelApiKey } from '../solevupdb'
 import { createReplyTts, resolveFishApiKey, saveAudioFile, type ReplyTts } from '../voice'
@@ -280,11 +280,13 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
           signal: abort.signal,
           onRequestSnapshot: (snap) => capturedSnapshots.push(snap),
           onUsageLogged: (call) => {
-            capturedUsage = call
-            core.patchMessage(agentMsgId, (m) => ({ ...m, usage: call }))
+            // 一句话可能发好几次请求：气泡上显示这一轮的合计
+            const turnUsage = sumModelCalls(capturedUsage, call)
+            capturedUsage = turnUsage
+            core.patchMessage(agentMsgId, (m) => ({ ...m, usage: turnUsage }))
             // 用量可能比回复入库晚到：入库后再补上
             if (assistantRow) {
-              assistantRow = { ...assistantRow, usage: call }
+              assistantRow = { ...assistantRow, usage: turnUsage }
               sessions.persistRows(turnSid, [assistantRow]).catch(() => {})
             }
           },

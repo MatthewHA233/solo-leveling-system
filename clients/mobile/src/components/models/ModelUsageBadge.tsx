@@ -89,6 +89,7 @@ export default function ModelUsageBadge({ call, compact = false, minimal = false
           {cache.read > 0 && <Line label="其中读缓存" value={formatTokens(cache.read)} color={tone.green} />}
           {cache.written > 0 && <Line label="其中写缓存" value={formatTokens(cache.written)} color={theme.inkSoft} />}
           <Line label="输出" value={formatTokens(totalOutput(call))} color={theme.inkSoft} />
+          {typeof metadata.requests === 'number' && metadata.requests > 1 && <Line label="请求次数" value={String(metadata.requests)} color={theme.inkSoft} />}
           {asrDuration && <Line label="ASR 音频时长" value={asrDuration} color={theme.inkSoft} />}
           <Line label="时间" value={new Date(call.started_at).toLocaleTimeString('zh-CN')} color={theme.inkFaint} />
         </Pressable>
