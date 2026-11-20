@@ -27,6 +27,15 @@ export function withSystemReminder(text: string, reminder: string): string {
   return `<system-reminder>\n以下是这条消息发出时系统自动附上的实时背景，不是主人说的话：\n\n${reminder}\n</system-reminder>\n\n${text}`
 }
 
+/**
+ * 实时背景单独发成 system 消息时的正文（UserMessage.turnReminder）。Claude 的新模型用这种：
+ * 这条消息只在当轮有效，之后留在历史里不占 token，历史只追加不删改，缓存前缀不会断。
+ */
+export function turnReminderText(reminder: string): string | undefined {
+  if (!reminder.trim()) return undefined
+  return `以下是系统此刻自动附上的实时背景，只在这一轮有效，不是主人说的话：\n\n${reminder}`
+}
+
 // ── 粗估 ──
 
 /** 一张图大约的 token（千问 / Claude 的 1024² 图都在 1300~1600） */

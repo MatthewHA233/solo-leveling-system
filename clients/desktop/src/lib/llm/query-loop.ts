@@ -67,6 +67,11 @@ export interface QueryParams {
    * 只在工具结果之后接，不会拆开 tool_use 和它的结果（Claude Code query.ts 的 mid-turn drain）
    */
   drainQueued?: () => Message[]
+  /**
+   * 这一轮的实时背景（UserMessage.turnReminder 的正文）。背景消息在下一条 user 消息出现后就不再生效，
+   * 工具结果也算 user 消息，所以每批工具结果后面要再附一份，模型才一直看得到
+   */
+  turnReminder?: string
 }
 
 // ── queryLoop 内部 State ──
@@ -98,6 +103,9 @@ interface ModelReply {
   /** 接口返回的真实用量：压缩按它算历史体量（见 context-window.ts） */
   inputTokens: number
   outputTokens: number
+  /** 提示缓存读到、写入的部分；inputTokens 只是断点之后没进缓存的那一截 */
+  cacheReadTokens: number
+  cacheCreationTokens: number
 }
 
 /** 把一次流消费完。流里报错就抛出，由 withRetry 决定要不要重来；主人打断时流只是提前结束，不算错误 */
@@ -113,6 +121,8 @@ async function consumeModelStream(
   let stopReason: StopReason = 'end_turn'
   let inputTokens = 0
   let outputTokens = 0
+  let cacheReadTokens = 0
+  let cacheCreationTokens = 0
   let failure: string | null = null
 
   // Stream 消费（对应 Claude Code 中的 for await (const part of streamResponse)）
@@ -150,6 +160,8 @@ async function consumeModelStream(
         stopReason = (chunk.stopReason as StopReason) ?? 'end_turn'
         inputTokens = chunk.inputTokens ?? 0
         outputTokens = chunk.outputTokens ?? 0
+        cacheReadTokens = chunk.cacheReadTokens ?? 0
+        cacheCreationTokens = chunk.cacheCreationTokens ?? 0
         break
 
       case 'error':
@@ -159,7 +171,7 @@ async function consumeModelStream(
   }
 
   if (failure !== null) throw new Error(failure)
-  return { text, pendingCalls, stopReason, inputTokens, outputTokens }
+  return { text, pendingCalls, stopReason, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens }
 }
 
 // ── 主函数 ──
@@ -187,6 +199,7 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
     onEvent,
     executeTool,
     drainQueued,
+    turnReminder,
   } = params
 
   // Loop-local（不在 State 上，和 taskBudget 的设计理念相同：
@@ -225,7 +238,10 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
 
     // ── API 调用 ──
     const currentMsgId = turnCount === 0 ? assistantMsgId : crypto.randomUUID()
-    let reply: ModelReply = { text: '', pendingCalls: new Map(), stopReason: 'end_turn', inputTokens: 0, outputTokens: 0 }
+    let reply: ModelReply = {
+      text: '', pendingCalls: new Map(), stopReason: 'end_turn',
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+    }
     // 主人已经看到字就不能重来：屏幕和历史里都会重复一遍。工具调用参数还没执行，丢掉重来没有影响
     let showedOutput = false
 
@@ -251,7 +267,7 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
       }
     }
 
-    const { text: accText, pendingCalls, stopReason, inputTokens, outputTokens } = reply
+    const { text: accText, pendingCalls, stopReason, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens } = reply
 
     // ── 构建 AssistantMessage ──
     // 主人打断时流只是提前结束、不报错：已收到的工具调用（可能只有半截参数）不能再执行，也不进历史
@@ -280,7 +296,12 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
         role: 'assistant',
         content: contentBlocks.length > 0 ? contentBlocks : [{ type: 'text', text: '' }],
         stop_reason: stopReason as StopReason,
-        usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+        usage: {
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          ...(cacheReadTokens > 0 && { cache_read_input_tokens: cacheReadTokens }),
+          ...(cacheCreationTokens > 0 && { cache_creation_input_tokens: cacheCreationTokens }),
+        },
         model: apiOptions.model,
       },
     }
@@ -339,9 +360,16 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
 
     const queued = drainQueued?.() ?? []
 
+    // 实时背景附在这一批的最后一条上（工具结果和排队的话会合成一条 user 消息，背景消息接在它后面）
+    const appended: Message[] = [...toolResultMessages, ...queued]
+    const lastAppended = appended[appended.length - 1]
+    const batch = turnReminder && lastAppended?.type === 'user'
+      ? [...appended.slice(0, -1), { ...lastAppended, turnReminder }]
+      : appended
+
     // ── 更新 State → 下一轮（对应 Claude Code L1715-1727 的 state = next; continue） ──
     state = {
-      messages: [...newMessages, ...toolResultMessages, ...queued],
+      messages: [...newMessages, ...batch],
       transition: { reason: 'next_turn' },
       turnCount: turnCount + 1,
     }

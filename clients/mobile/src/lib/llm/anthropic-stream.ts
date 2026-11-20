@@ -45,16 +45,61 @@ export function isAnthropicModel(modelId: string): boolean {
   return modelId.startsWith('claude-')
 }
 
-type AnthropicBlock =
+// ── 实时背景发成只在当轮有效的 system 消息 ──
+// 背景每轮都变。拼在当轮那句话里、下一轮再删掉，等于改历史：从那句话往后的缓存全对不上。
+// 新模型可以在 messages 里放 role: 'system' 的消息，带 clear_at: 'next_user_message' 时只在当轮生效，
+// 之后原样留在历史里（不占 token、不算进缓存键），历史就只追加不删改。
+
+/** clear_at 还是测试版，要带这个请求头 */
+const CLEAR_AT_BETA = 'mid-conversation-system-clear-at-2026-08-21'
+/** 支持对话中 system 消息的模型（Sonnet 5 和更早的不支持） */
+const TURN_REMINDER_MODELS = /^claude-(fable-5|mythos-5|opus-5|opus-4-8|sonnet-5-5|haiku-5-5)/
+/** 接口拒收过一次（请求头失效、换了不支持的线路）就在这次运行里停用，退回拼在当轮那句话里的老办法 */
+let turnReminderRejected = false
+
+/** 这个模型的实时背景是否走 system 消息（UserMessage.turnReminder）。调用方按它决定背景放哪 */
+export function usesTurnReminder(modelId: string): boolean {
+  return !turnReminderRejected && TURN_REMINDER_MODELS.test(modelId)
+}
+
+/** 请求失败时看一眼原因：是这种消息被拒收就停用，下一句话起走老办法 */
+function noteAnthropicFailure(message: string): void {
+  if (message.includes('clear_at') || message.includes("role 'system'")) turnReminderRejected = true
+}
+
+/** 这次请求要带的测试版请求头：body 里有背景消息才带 */
+export function anthropicBetas(body: Record<string, unknown>): string[] {
+  const messages = Array.isArray(body.messages) ? (body.messages as { role?: string }[]) : []
+  return messages.some((m) => m.role === 'system') ? [CLEAR_AT_BETA] : []
+}
+
+/** 提示缓存断点：不写 ttl 是 5 分钟档（写入 1.25 倍），1h 是 1 小时档（写入 2 倍）；命中都按读取价 */
+type CacheControl = { type: 'ephemeral'; ttl?: '1h' }
+const CACHE_1H: CacheControl = { type: 'ephemeral', ttl: '1h' }
+const CACHE_5M: CacheControl = { type: 'ephemeral' }
+
+type AnthropicBlock = (
   | { type: 'text'; text: string }
   | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; tool_use_id: string; content: string }
+) & { cache_control?: CacheControl }
 
 interface AnthropicMessage {
   role: 'user' | 'assistant'
   content: AnthropicBlock[]
 }
+
+/** 只在当轮有效的背景消息：紧跟在一条 user 消息后面，后面只能接 assistant 或者什么都没有 */
+interface AnthropicTurnReminder {
+  role: 'system'
+  content: string
+  clear_at: 'next_user_message'
+}
+
+type AnthropicEntry = AnthropicMessage | AnthropicTurnReminder
+
+const isTurnReminder = (e: AnthropicEntry | undefined): e is AnthropicTurnReminder => e?.role === 'system'
 
 function textOf(content: string | ContentBlock[]): string {
   if (typeof content === 'string') return content
@@ -64,13 +109,19 @@ function textOf(content: string | ContentBlock[]): string {
     .join('')
 }
 
-/** 内部消息 → Anthropic messages：同角色相邻的合并；tool_result 挂在 user 消息里 */
-function toAnthropicMessages(messages: (UserMessage | AssistantMessage)[]): AnthropicMessage[] {
-  const out: AnthropicMessage[] = []
+/**
+ * 内部消息 → Anthropic messages：同角色相邻的合并；tool_result 挂在 user 消息里。
+ * 带实时背景的 user 消息（turnReminder）后面跟一条背景消息。asSystem = false（模型不支持）时
+ * 不发背景消息，只把最新那份拼在最后一条 user 消息末尾。
+ */
+function toAnthropicMessages(messages: (UserMessage | AssistantMessage)[], asSystem: boolean): AnthropicEntry[] {
+  const out: AnthropicEntry[] = []
   const push = (role: 'user' | 'assistant', blocks: AnthropicBlock[]) => {
     if (blocks.length === 0) return
+    // 背景消息后面紧接着又是 user（上一轮被打断，没有回复）：接口不收，把它拿掉，两段 user 合成一条
+    if (role === 'user' && isTurnReminder(out[out.length - 1])) out.pop()
     const last = out[out.length - 1]
-    if (last && last.role === role) last.content.push(...blocks)
+    if (last && !isTurnReminder(last) && last.role === role) last.content.push(...blocks)
     else out.push({ role, content: [...blocks] })
   }
   for (const m of messages) {
@@ -86,6 +137,9 @@ function toAnthropicMessages(messages: (UserMessage | AssistantMessage)[]): Anth
         }
         if (text.trim()) push('user', [{ type: 'text', text }])
       }
+      if (m.turnReminder && out[out.length - 1]?.role === 'user') {
+        out.push({ role: 'system', content: m.turnReminder, clear_at: 'next_user_message' })
+      }
     } else {
       const text = textOf(m.message.content)
       if (text.trim()) push('assistant', [{ type: 'text', text }])
@@ -100,18 +154,81 @@ function toAnthropicMessages(messages: (UserMessage | AssistantMessage)[]): Anth
   if (out.length > 0 && out[0].role === 'assistant') {
     out.unshift({ role: 'user', content: [{ type: 'text', text: '请继续。' }] })
   }
-  return out
+  if (asSystem) return out
+
+  // 模型不支持背景消息（中途换了模型，或接口拒收后停用）：只留最新那份，拼在最后一条 user 消息末尾
+  const current = out[out.length - 1]
+  const plain = out.filter((e): e is AnthropicMessage => !isTurnReminder(e))
+  const lastPlain = plain[plain.length - 1]
+  if (isTurnReminder(current) && lastPlain?.role === 'user') {
+    lastPlain.content.push({ type: 'text', text: `<system-reminder>\n${current.content}\n</system-reminder>` })
+  }
+  return plain
+}
+
+const hasToolResult = (m: AnthropicMessage) => m.content.some((b) => b.type === 'tool_result')
+
+function withBreakpoint(m: AnthropicMessage, cache: CacheControl): AnthropicMessage {
+  const last = m.content.length - 1
+  return { ...m, content: m.content.map((b, i) => (i === last ? { ...b, cache_control: cache } : b)) }
+}
+
+/**
+ * 在消息里标缓存断点（缓存是前缀匹配，只在断点处写入；system 末尾另有一个，见 buildAnthropicBody）：
+ *   1. 这一轮开头那句话之前的最后一块（1 小时）。那句话带着当轮的实时背景，下一轮就换回原话，
+ *      所以含它的前缀下一轮对不上；它之前的历史跨轮不变，下一轮从这里读、只补写上一轮新增的部分。
+ *   2. 末尾是工具结果时的最后一块（5 分钟）。同一轮的工具循环里前缀不变，下一次请求从这里读。
+ * 压缩、清理旧工具结果、丢旧图片会改动较早的消息，那一次从改动处往后重写，system 和工具定义的缓存不受影响。
+ *
+ * 实时背景走背景消息时（entries 里有 role: 'system'），历史只追加不删改，上面两处都用不着：
+ * 只在最后一条 user 消息的最后一块标一个（1 小时），下一次请求从这里读，每段内容只写一次。
+ * 背景消息本身不能标断点，也不算进缓存键。
+ */
+export function markCacheBreakpoints(entries: AnthropicEntry[]): AnthropicEntry[] {
+  if (entries.some(isTurnReminder)) {
+    let lastUser = -1
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i].role === 'user') {
+        lastUser = i
+        break
+      }
+    }
+    return entries.map((e, i) => (i === lastUser && !isTurnReminder(e) ? withBreakpoint(e, CACHE_1H) : e))
+  }
+  const messages = entries.filter((e): e is AnthropicMessage => !isTurnReminder(e))
+  let turnStart = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user' && !hasToolResult(messages[i])) {
+      turnStart = i
+      break
+    }
+  }
+  const last = messages.length - 1
+  return messages.map((m, i) => {
+    if (i === turnStart - 1) return withBreakpoint(m, CACHE_1H)
+    if (i === last && i > turnStart && hasToolResult(m)) return withBreakpoint(m, CACHE_5M)
+    return m
+  })
 }
 
 export function buildAnthropicBody(messages: Message[], options: QueryOptions): Record<string, unknown> {
   const normalized = normalizeMessagesForAPI(messages)
+  // 带工具的请求（Fairy 聊天、写压缩摘要）才开缓存：工具定义 + 系统提示词每次都一样，历史一轮轮往后接。
+  // 一次性的短请求（提炼、起标题）前缀用不到第二次，开了只是白付写入价
+  const cached = !!options.tools && options.tools.length > 0
+  const apiMessages = toAnthropicMessages(normalized, usesTurnReminder(options.model))
   const body: Record<string, unknown> = {
     model: options.model,
     max_tokens: options.maxTokens ?? 8000,
-    messages: toAnthropicMessages(normalized),
+    messages: cached ? markCacheBreakpoints(apiMessages) : apiMessages,
     stream: true,
   }
-  if (options.systemPrompt) body.system = options.systemPrompt
+  if (options.systemPrompt) {
+    // 渲染顺序是 tools → system → messages：system 末尾的断点把工具定义和系统提示词一起缓存
+    body.system = cached
+      ? [{ type: 'text', text: options.systemPrompt, cache_control: CACHE_1H }]
+      : options.systemPrompt
+  }
   if (options.tools && options.tools.length > 0) {
     body.tools = options.tools.map((t) => ({
       name: t.function.name,
@@ -124,12 +241,14 @@ export function buildAnthropicBody(messages: Message[], options: QueryOptions): 
 
 // ── 请求公共部分（对应 anthropic.rs 的 build_client / explain_send_error / truncate）──
 
-function openRequest(apiKey: string): XMLHttpRequest {
+function openRequest(apiKey: string, betas: string[] = []): XMLHttpRequest {
   const xhr = new XMLHttpRequest()
   xhr.open('POST', ENDPOINT)
   xhr.setRequestHeader('Content-Type', 'application/json')
   xhr.setRequestHeader('x-api-key', apiKey.trim())
   xhr.setRequestHeader('anthropic-version', API_VERSION)
+  // 测试版功能的请求头（按 body 里用到的功能给，见 anthropicBetas）
+  if (betas.length > 0) xhr.setRequestHeader('anthropic-beta', betas.join(','))
   // RN 的 XHR 需要显式 text 才能在 onprogress 读 responseText
   xhr.responseType = 'text'
   return xhr
@@ -315,8 +434,13 @@ export async function testAnthropicConnection(model?: string | null): Promise<An
 // ── 流式（对应 anthropic_stream.rs）──
 
 interface Usage {
+  /** 断点之后没进缓存的那一截；整次请求的输入 = input + cacheRead + cacheWrite5m + cacheWrite1h */
   input: number
   output: number
+  /** 提示缓存：读到的、按 5 分钟档写入的、按 1 小时档写入的 */
+  cacheRead: number
+  cacheWrite5m: number
+  cacheWrite1h: number
   /** 手机端专有：请求被取消，token 数只到取消那一刻 */
   aborted?: boolean
 }
@@ -327,7 +451,14 @@ type Block = { kind: 'text' } | { kind: 'tool'; index: number }
 interface SseEvent {
   type?: string
   index?: unknown
-  message?: { usage?: { input_tokens?: unknown } }
+  message?: {
+    usage?: {
+      input_tokens?: unknown
+      cache_read_input_tokens?: unknown
+      cache_creation_input_tokens?: unknown
+      cache_creation?: { ephemeral_1h_input_tokens?: unknown }
+    }
+  }
   content_block?: { type?: string; id?: string; name?: string }
   delta?: { type?: string; text?: unknown; partial_json?: unknown; stop_reason?: unknown }
   usage?: { output_tokens?: unknown }
@@ -362,14 +493,14 @@ function run(
   onXhr: (xhr: XMLHttpRequest) => void,
 ): Promise<Usage> {
   return new Promise((resolve, reject) => {
-    const xhr = openRequest(apiKey)
+    const xhr = openRequest(apiKey, anthropicBetas(body))
     onXhr(xhr)
 
     let buf = ''   // 事件以 \n\n 结束；RN 已按 UTF-8 解好，不会切断汉字
     let parsedIndex = 0
     const blocks = new Map<number, Block>()
     let toolCount = -1
-    const usage: Usage = { input: 0, output: 0 }
+    const usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 }
     let stopReason = 'stop'
     let settled = false
     let timedOut = false
@@ -401,13 +532,20 @@ function run(
     const emitDone = () => emit({
       type: 'done', stopReason,
       inputTokens: usage.input, outputTokens: usage.output,
+      cacheReadTokens: usage.cacheRead, cacheCreationTokens: usage.cacheWrite5m + usage.cacheWrite1h,
     })
 
     const handleEvent = (ev: SseEvent) => {
       switch (ev.type) {
-        case 'message_start':
-          usage.input = asInt(ev.message?.usage?.input_tokens, usage.input)
+        case 'message_start': {
+          const u = ev.message?.usage
+          usage.input = asInt(u?.input_tokens, usage.input)
+          usage.cacheRead = asInt(u?.cache_read_input_tokens, 0)
+          const written = asInt(u?.cache_creation_input_tokens, 0)
+          usage.cacheWrite1h = Math.min(written, asInt(u?.cache_creation?.ephemeral_1h_input_tokens, 0))
+          usage.cacheWrite5m = written - usage.cacheWrite1h
           break
+        }
         case 'content_block_start': {
           const index = asInt(ev.index, 0)
           const block = ev.content_block
@@ -510,6 +648,20 @@ function run(
   })
 }
 
+function totalInput(u: Usage): number {
+  return u.input + u.cacheRead + u.cacheWrite5m + u.cacheWrite1h
+}
+
+/** 调用日志的 metadata：键名和桌面端 anthropic_stream.rs 一致，SolevupDb.kt computeCost 按它算缓存的钱 */
+function usageMetadata(u: Usage): Record<string, unknown> | null {
+  const meta: Record<string, unknown> = {}
+  if (u.aborted) meta.aborted = true
+  if (u.cacheRead > 0) meta.cacheReadTokens = u.cacheRead
+  if (u.cacheWrite5m > 0) meta.cacheWrite5mTokens = u.cacheWrite5m
+  if (u.cacheWrite1h > 0) meta.cacheWrite1hTokens = u.cacheWrite1h
+  return Object.keys(meta).length > 0 ? meta : null
+}
+
 /** 对应 anthropic_stream.rs 的 start_stream：跑完这条流，用量记进 model_call_log，失败时推一个 error */
 async function startStream(
   key: ModelApiKeyInfo,
@@ -528,6 +680,7 @@ async function startStream(
     usage = await run(key.apiKey, body, emit, onXhr)
   } catch (e) {
     failure = errorText(e)
+    noteAnthropicFailure(failure)
   }
   const durationMs = Date.now() - t0
 
@@ -540,10 +693,11 @@ async function startStream(
       modelId: model,
       startedAt,
       durationMs,
-      usage: { prompt_tokens: usage?.input ?? 0, completion_tokens: usage?.output ?? 0 },
+      // 输入记整次请求的总量（含缓存读写），token 统计和价格分档才对；缓存的三项放 metadata，算钱时按各自的倍率
+      usage: { prompt_tokens: usage ? totalInput(usage) : 0, completion_tokens: usage?.output ?? 0 },
       success: failure === null,
       errorMessage: failure,
-      metadata: usage?.aborted ? { aborted: true } : null,
+      metadata: usage ? usageMetadata(usage) : null,
     })
     if (call) onUsageLogged?.(call)
   }

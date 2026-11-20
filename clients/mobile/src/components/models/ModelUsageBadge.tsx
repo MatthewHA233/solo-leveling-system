@@ -50,6 +50,16 @@ function formatSeconds(value: unknown): string | null {
   return min > 0 ? `${min}m ${rest}s` : `${rest}s`
 }
 
+/** 提示缓存的用量和省下的钱（记账时写进 metadata，见 SolevupDb.kt metadataWithCacheSaving）。没用缓存时都是 0 */
+function cacheInfo(metadata: Record<string, unknown>): { read: number; written: number; saved: number } {
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  return {
+    read: num(metadata.cacheReadTokens),
+    written: num(metadata.cacheWrite5mTokens) + num(metadata.cacheWrite1hTokens),
+    saved: num(metadata.cacheSavedCost),
+  }
+}
+
 export default function ModelUsageBadge({ call, compact = false, minimal = false }: Props) {
   const [open, setOpen] = useState(false)
   if (!call) return null
@@ -57,9 +67,11 @@ export default function ModelUsageBadge({ call, compact = false, minimal = false
   const isUsd = call.cost_usd != null
   const money = isUsd ? formatUsd : formatCny
   const cost = (isUsd ? call.cost_usd : call.cost_cny) ?? 0
-  const gross = cost + saved
-  const accent = saved > 0 ? tone.green : cost > 0 ? tone.danger : tone.green
   const metadata = parseMetadata(call.metadata)
+  const cache = cacheInfo(metadata)
+  // 理论成本：没有免费额度、不开缓存时要付的钱
+  const gross = cost + saved + cache.saved
+  const accent = saved > 0 ? tone.green : cost > 0 ? tone.danger : tone.green
   const asrDuration = formatSeconds(metadata.usageSeconds)
 
   const details = (
@@ -70,8 +82,12 @@ export default function ModelUsageBadge({ call, compact = false, minimal = false
           <Line label="实际成本" value={money(cost)} color={cost > 0 ? tone.danger : tone.green} />
           {saved > 0 && <Line label="免费额度节省" value={money(saved)} color={tone.green} />}
           {saved > 0 && <Line label="免费额度抵扣" value={formatTokens(call.free_quota_tokens)} color={tone.green} />}
+          {cache.saved > 0 && <Line label="缓存节省" value={money(cache.saved)} color={tone.green} />}
+          {cache.saved < 0 && <Line label="写缓存多付" value={money(-cache.saved)} color={theme.inkSoft} />}
           <Line label="理论成本" value={money(gross)} color={theme.inkSoft} />
           <Line label="输入" value={formatTokens(totalInput(call))} color={theme.inkSoft} />
+          {cache.read > 0 && <Line label="其中读缓存" value={formatTokens(cache.read)} color={tone.green} />}
+          {cache.written > 0 && <Line label="其中写缓存" value={formatTokens(cache.written)} color={theme.inkSoft} />}
           <Line label="输出" value={formatTokens(totalOutput(call))} color={theme.inkSoft} />
           {asrDuration && <Line label="ASR 音频时长" value={asrDuration} color={theme.inkSoft} />}
           <Line label="时间" value={new Date(call.started_at).toLocaleTimeString('zh-CN')} color={theme.inkFaint} />
@@ -84,7 +100,10 @@ export default function ModelUsageBadge({ call, compact = false, minimal = false
     return (
       <>
         <Pressable hitSlop={8} onPress={() => setOpen(true)} accessibilityRole="button" accessibilityLabel={`本次费用 ${money(cost)}`}>
-          <Text style={[styles.minimal, { color: accent }]}>{money(cost)}</Text>
+          <Text style={[styles.minimal, { color: accent }]}>
+            {money(cost)}
+            {cache.saved > 0 && <Text style={{ color: tone.green }}>{`  省 ${money(cache.saved)}`}</Text>}
+          </Text>
         </Pressable>
         {details}
       </>
@@ -106,7 +125,9 @@ export default function ModelUsageBadge({ call, compact = false, minimal = false
       >
         <Text style={[styles.badgeText, compact && styles.badgeTextCompact, { color: accent }]}>{money(cost)}</Text>
         {asrDuration && <Text style={[styles.badgeText, compact && styles.badgeTextCompact, styles.soft]}>ASR {asrDuration}</Text>}
-        {saved > 0 && <Text style={[styles.badgeText, compact && styles.badgeTextCompact, { color: tone.green }]}>省 {money(saved)}</Text>}
+        {saved + Math.max(0, cache.saved) > 0 && (
+          <Text style={[styles.badgeText, compact && styles.badgeTextCompact, { color: tone.green }]}>省 {money(saved + Math.max(0, cache.saved))}</Text>
+        )}
       </Pressable>
       {details}
     </>

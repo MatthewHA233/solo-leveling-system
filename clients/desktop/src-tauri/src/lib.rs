@@ -127,9 +127,10 @@ async fn anthropic_stream_start(
     stream_id: String,
     feature: String,
     body: serde_json::Value,
+    betas: Option<Vec<String>>,
 ) -> Result<(), String> {
     let db = state.db.read().await.clone().ok_or_else(|| "数据库还没就绪".to_string())?;
-    anthropic_stream::start_stream(app_handle, db, stream_id, feature, body).await
+    anthropic_stream::start_stream(app_handle, db, stream_id, feature, body, betas.unwrap_or_default()).await
 }
 
 /// 模型清单：走代理取 models.dev 的全量目录（JSON 文本），前端解析后写进模型库

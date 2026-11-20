@@ -79,6 +79,12 @@ export interface UserMessage {
   readonly isCompactSummary?: true
   readonly toolUseResult?: string          // 工具执行结果（tool_result 内容）
   readonly sourceToolCallId?: string       // 对应的 tool call ID（用于 OpenAI tool_call_id）
+  /**
+   * 这条消息发出时附带的实时背景（只在当轮有效）。只有 Claude 的新模型用：发成紧跟在这条消息后面的
+   * system 消息（clear_at），留在历史里不删，前缀才能一直不变（见 anthropic-stream.ts）。
+   * 别的模型不用这个字段，背景直接拼在当轮那句话前面（context-window.ts withSystemReminder）
+   */
+  readonly turnReminder?: string
   readonly origin?: MessageOrigin
 }
 

@@ -6782,6 +6782,67 @@ impl Database {
         model_id.starts_with("qwen3.8-omni")
     }
 
+    /// Anthropic 提示缓存写入价相对输入原价的倍率（官方价目：5 分钟档 1.25 倍，1 小时档 2 倍）
+    const CACHE_WRITE_5M_MULTIPLIER: f64 = 1.25;
+    const CACHE_WRITE_1H_MULTIPLIER: f64 = 2.0;
+
+    /// 读缓存相对输入原价的倍率：一般 0.1；Opus 5.5 / Sonnet 5.5 是 0.05；Fable、Mythos 5.1 和 5.2 是 0.025。
+    /// 手机端 SolevupDb.kt cacheReadMultiplier 是同一份，改要两端一起改
+    fn cache_read_multiplier(model_id: &str) -> f64 {
+        const DEEP: [&str; 4] = ["claude-fable-5-1", "claude-fable-5-2", "claude-mythos-5-1", "claude-mythos-5-2"];
+        const HALF: [&str; 2] = ["claude-opus-5-5", "claude-sonnet-5-5"];
+        if DEEP.iter().any(|p| model_id.starts_with(p)) {
+            0.025
+        } else if HALF.iter().any(|p| model_id.starts_with(p)) {
+            0.05
+        } else {
+            0.1
+        }
+    }
+
+    /// 调用日志 metadata 里的缓存用量（读到的、5 分钟档写入的、1 小时档写入的），没有就是 0。
+    /// 键名由 anthropic_stream.rs 和手机端 anthropic-stream.ts 写入
+    fn cache_usage(req: &LogModelCallRequest) -> (i64, i64, i64) {
+        let parsed = match req.metadata.as_deref().map(|m| serde_json::from_str::<serde_json::Value>(m)) {
+            Some(Ok(v)) => v,
+            _ => return (0, 0, 0),
+        };
+        let field = |name: &str| parsed.get(name).and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+        (field("cacheReadTokens"), field("cacheWrite5mTokens"), field("cacheWrite1hTokens"))
+    }
+
+    /// 用了提示缓存的调用：把「比不开缓存省了多少钱」写进 metadata 的 cacheSavedCost（币种同成本）。
+    /// 写入比读取多的那次（比如第一句话）是负数。徽章按它显示（两端的 ModelUsageBadge）
+    fn metadata_with_cache_saving(req: &LogModelCallRequest, tiers: &[ModelPricingTier]) -> Option<String> {
+        let (cache_read, cache_write_5m, cache_write_1h) = Self::cache_usage(req);
+        let cached = cache_read + cache_write_5m + cache_write_1h;
+        if cached <= 0 {
+            return req.metadata.clone();
+        }
+        let prompt_total = req.prompt_text_tokens + req.prompt_image_tokens
+            + req.prompt_video_tokens + req.prompt_audio_tokens;
+        let input_price = tiers.iter()
+            .find(|t| prompt_total >= t.tier_min_tokens && t.tier_max_tokens.map_or(true, |m| prompt_total < m))
+            .and_then(|t| t.price_input_text);
+        let Some(input_price) = input_price else {
+            return req.metadata.clone();
+        };
+        let paid = cache_read as f64 * Self::cache_read_multiplier(&req.model_id)
+            + cache_write_5m as f64 * Self::CACHE_WRITE_5M_MULTIPLIER
+            + cache_write_1h as f64 * Self::CACHE_WRITE_1H_MULTIPLIER;
+        let saved = (cached as f64 - paid) * input_price / 1_000_000.0;
+        let mut parsed = req.metadata.as_deref()
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        match parsed.as_object_mut() {
+            Some(obj) => {
+                obj.insert("cacheSavedCost".to_string(), serde_json::json!(saved));
+                Some(parsed.to_string())
+            }
+            None => req.metadata.clone(),
+        }
+    }
+
     /// 按当前价目折算成本（0 token 各模态返回 0）。
     /// 区间命中：用 prompt token 总和（含所有模态）匹配 tier_min/tier_max。
     /// 输出：completion_audio_tokens > 0 → 按 audio 价（3.8 Omni 起文本另计）；否则按 text 价。
@@ -6797,8 +6858,16 @@ impl Database {
             if tok <= 0 { 0.0 } else { (tok as f64) * p.unwrap_or(0.0) / 1_000_000.0 }
         };
 
+        // Anthropic 提示缓存：prompt_text_tokens 是整次请求的输入，其中读缓存、写缓存的部分按各自的倍率算
+        let (cache_read, cache_write_5m, cache_write_1h) = Self::cache_usage(req);
+        let uncached_text = (req.prompt_text_tokens - cache_read - cache_write_5m - cache_write_1h).max(0);
+        let cached_equivalent = cache_read as f64 * Self::cache_read_multiplier(&req.model_id)
+            + cache_write_5m as f64 * Self::CACHE_WRITE_5M_MULTIPLIER
+            + cache_write_1h as f64 * Self::CACHE_WRITE_1H_MULTIPLIER;
+
         let mut total = 0.0;
-        total += price(req.prompt_text_tokens,  tier.price_input_text);
+        total += price(uncached_text, tier.price_input_text);
+        total += cached_equivalent * tier.price_input_text.unwrap_or(0.0) / 1_000_000.0;
         total += price(req.prompt_image_tokens, tier.price_input_image.or(tier.price_input_text));
         total += price(req.prompt_video_tokens, tier.price_input_video.or(tier.price_input_text));
         total += price(req.prompt_audio_tokens, tier.price_input_audio);
@@ -6908,6 +6977,7 @@ impl Database {
             0
         };
         let id = Uuid::new_v4().to_string();
+        let metadata = Self::metadata_with_cache_saving(&req, &tiers);
 
         let conn = self.conn.lock().await;
         let free_quota_tokens = if billable_tokens > 0 {
@@ -6945,7 +7015,7 @@ impl Database {
                 &id, &req.api_key_id, &req.feature, &req.model_id, &req.started_at, &req.duration_ms,
                 &req.prompt_text_tokens, &req.prompt_image_tokens, &req.prompt_video_tokens, &req.prompt_audio_tokens,
                 &req.completion_text_tokens, &req.completion_audio_tokens,
-                &cost_cny, &free_quota_tokens, &free_quota_saved_cny, if req.success { 1 } else { 0 }, &req.error_message, &req.metadata, &cost_usd,
+                &cost_cny, &free_quota_tokens, &free_quota_saved_cny, if req.success { 1 } else { 0 }, &req.error_message, &metadata, &cost_usd,
             ],
         ).map_err(|e| e.to_string())?;
         if free_quota_tokens > 0 {

@@ -70,6 +70,8 @@ function mergeUserMessages(a: UserMessage, b: UserMessage): UserMessage {
     ...a,
     // 保留非 meta 消息的 uuid（meta 消息每次调用都是新 uuid，非 meta 才是稳定锚点）
     uuid: a.isMeta ? b.uuid : a.uuid,
+    // 实时背景跟着后一条走：前一条的背景后面紧接着又是 user，已经不能发了
+    turnReminder: b.turnReminder,
     message: {
       ...a.message,
       content: joinTextAtSeam(aContent, bContent),

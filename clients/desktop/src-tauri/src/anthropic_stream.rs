@@ -3,7 +3,10 @@
 //   前端组好 Anthropic 格式的 body（system / messages / tools），这里转发、解析 SSE，
 //   并把事件统一成前端 ApiStreamChunk 的形状，推到 anthropic-stream-{streamId}
 //   chunk：textDelta / toolCallDelta / done / error（与 lib/llm/api.ts 一致）
+//   done 之前先推一个 usageLogged（带调用日志的 id）：前端取回这条记录，气泡上才有费用
 //   用量记进 model_call_log（和非流式调用一样）
+//   提示缓存：断点由前端标在 body 里（anthropic-stream.ts），这里只读返回的缓存用量。
+//   日志里输入记整次请求的总量，缓存的三项放 metadata（db.rs compute_cost 按各自的倍率算钱）
 // ══════════════════════════════════════════════
 
 use std::collections::HashMap;
@@ -27,6 +30,7 @@ pub async fn start_stream(
     stream_id: String,
     feature: String,
     body: Value,
+    betas: Vec<String>,
 ) -> Result<(), String> {
     let key = db
         .get_active_model_api_key_for(PROVIDER_ANTHROPIC)
@@ -39,10 +43,12 @@ pub async fn start_stream(
     tauri::async_runtime::spawn(async move {
         let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let t0 = Instant::now();
-        let result = run(&app, &client, port, &key.api_key, &stream_id, &body).await;
+        let result = run(&app, &client, port, &key.api_key, &stream_id, &body, &betas).await;
         let duration_ms = t0.elapsed().as_millis() as i64;
-        let (input_tokens, output_tokens) = result.as_ref().map(|u| (u.input, u.output)).unwrap_or((0, 0));
-        if let Err(e) = db
+        let (input_tokens, output_tokens) = result.as_ref().map(|u| (u.total_input(), u.output)).unwrap_or((0, 0));
+        let metadata = result.as_ref().ok().and_then(|u| u.cache_metadata());
+        let event = event_name(&stream_id);
+        match db
             .log_model_call(LogModelCallRequest {
                 api_key_id: Some(key.id.clone()),
                 feature,
@@ -57,22 +63,56 @@ pub async fn start_stream(
                 completion_audio_tokens: 0,
                 success: result.is_ok(),
                 error_message: result.as_ref().err().cloned(),
-                metadata: None,
+                metadata,
             })
             .await
         {
-            log::warn!("[Anthropic] 记流式审计失败: {e}");
+            Ok(id) => emit(&app, &event, json!({ "type": "usageLogged", "id": id })),
+            Err(e) => log::warn!("[Anthropic] 记流式审计失败: {e}"),
         }
-        if let Err(message) = result {
-            let _ = app.emit(&event_name(&stream_id), json!({ "type": "error", "status": 0, "message": message }));
+        // 记完账再收尾：前端收到 done 时这条记录已经能查到
+        match result {
+            Ok(usage) => emit(&app, &event, json!({
+                "type": "done", "stopReason": usage.stop_reason,
+                "inputTokens": usage.input, "outputTokens": usage.output,
+                "cacheReadTokens": usage.cache_read,
+                "cacheCreationTokens": usage.cache_write_5m + usage.cache_write_1h,
+            })),
+            Err(message) => emit(&app, &event, json!({ "type": "error", "status": 0, "message": message })),
         }
     });
     Ok(())
 }
 
 struct Usage {
+    /// 断点之后没进缓存的那一截
     input: i64,
     output: i64,
+    /// 提示缓存：读到的、按 5 分钟档写入的、按 1 小时档写入的
+    cache_read: i64,
+    cache_write_5m: i64,
+    cache_write_1h: i64,
+    /// 已经换成前端的说法（stop / tool_calls / length）
+    stop_reason: String,
+}
+
+impl Usage {
+    /// 整次请求的输入
+    fn total_input(&self) -> i64 {
+        self.input + self.cache_read + self.cache_write_5m + self.cache_write_1h
+    }
+
+    /// 调用日志的 metadata：键名和手机端 anthropic-stream.ts 一致；没用到缓存就不写
+    fn cache_metadata(&self) -> Option<String> {
+        if self.cache_read <= 0 && self.cache_write_5m <= 0 && self.cache_write_1h <= 0 {
+            return None;
+        }
+        Some(json!({
+            "cacheReadTokens": self.cache_read,
+            "cacheWrite5mTokens": self.cache_write_5m,
+            "cacheWrite1hTokens": self.cache_write_1h,
+        }).to_string())
+    }
 }
 
 /// 块的种类：文字块 / 工具块（工具块带上它在 toolCallDelta 里的序号）
@@ -96,12 +136,18 @@ async fn run(
     api_key: &str,
     stream_id: &str,
     body: &Value,
+    betas: &[String],
 ) -> Result<Usage, String> {
     let event = event_name(stream_id);
-    let mut res = client
+    let mut request = client
         .post(ENDPOINT)
         .header("x-api-key", api_key.trim())
-        .header("anthropic-version", API_VERSION)
+        .header("anthropic-version", API_VERSION);
+    // 测试版功能的请求头（前端按 body 里用到的功能给，见 anthropic-stream.ts anthropicBetas）
+    if !betas.is_empty() {
+        request = request.header("anthropic-beta", betas.join(","));
+    }
+    let mut res = request
         .json(body)
         .send()
         .await
@@ -115,7 +161,7 @@ async fn run(
     let mut buf: Vec<u8> = Vec::new();   // 按字节攒，事件以 \n\n 结束（ASCII 边界，不会切断汉字）
     let mut blocks: HashMap<i64, Block> = HashMap::new();
     let mut tool_count: i64 = -1;
-    let mut usage = Usage { input: 0, output: 0 };
+    let mut usage = Usage { input: 0, output: 0, cache_read: 0, cache_write_5m: 0, cache_write_1h: 0, stop_reason: String::new() };
     let mut stop_reason = "stop".to_string();
 
     while let Some(chunk) = res.chunk().await.map_err(|e| format!("读 Anthropic 流失败：{e}"))? {
@@ -127,7 +173,12 @@ async fn run(
             let Ok(ev) = serde_json::from_str::<Value>(&data) else { continue };
             match ev["type"].as_str().unwrap_or_default() {
                 "message_start" => {
-                    usage.input = ev["message"]["usage"]["input_tokens"].as_i64().unwrap_or(usage.input);
+                    let u = &ev["message"]["usage"];
+                    usage.input = u["input_tokens"].as_i64().unwrap_or(usage.input);
+                    usage.cache_read = u["cache_read_input_tokens"].as_i64().unwrap_or(0);
+                    let written = u["cache_creation_input_tokens"].as_i64().unwrap_or(0);
+                    usage.cache_write_1h = u["cache_creation"]["ephemeral_1h_input_tokens"].as_i64().unwrap_or(0).min(written);
+                    usage.cache_write_5m = written - usage.cache_write_1h;
                 }
                 "content_block_start" => {
                     let index = ev["index"].as_i64().unwrap_or(0);
@@ -168,10 +219,7 @@ async fn run(
                     usage.output = ev["usage"]["output_tokens"].as_i64().unwrap_or(usage.output);
                 }
                 "message_stop" => {
-                    emit(app, &event, json!({
-                        "type": "done", "stopReason": stop_reason,
-                        "inputTokens": usage.input, "outputTokens": usage.output,
-                    }));
+                    usage.stop_reason = stop_reason;
                     return Ok(usage);
                 }
                 "error" => {
@@ -183,10 +231,7 @@ async fn run(
         }
     }
     // 流结束但没收到 message_stop：也按完成处理
-    emit(app, &event, json!({
-        "type": "done", "stopReason": stop_reason,
-        "inputTokens": usage.input, "outputTokens": usage.output,
-    }));
+    usage.stop_reason = stop_reason;
     Ok(usage)
 }
 

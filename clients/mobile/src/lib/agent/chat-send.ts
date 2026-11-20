@@ -14,9 +14,9 @@
 //     桌面端续写在同一个气泡里；手机面板矮又贴着底部，续写的字在工具行上方看不到，像是说了两句就断了
 // ══════════════════════════════════════════════
 
-import { isAnthropicModel } from '../llm/anthropic-stream'
+import { isAnthropicModel, usesTurnReminder } from '../llm/anthropic-stream'
 import type { ApiRequestSnapshot, ModelCallLog } from '../llm/api'
-import { contextBudget, roughTokens, withSystemReminder } from '../llm/context-window'
+import { contextBudget, roughTokens, turnReminderText, withSystemReminder } from '../llm/context-window'
 import { runQueryLoop } from '../llm/query-loop'
 import { createUserMessage, getMessageText, isAssistantMessage, userContentWithImages, type Message } from '../llm/types'
 import { randomUUID } from '../llm/uuid'
@@ -230,12 +230,16 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
         }
       }
 
-      // 本轮实时背景只附在发给模型的这条消息上；存进历史的是不带背景的原话，让前缀跨轮不变
+      // 本轮实时背景。Claude 的新模型：单独发成只在当轮有效的 system 消息（turnReminder），留在历史里不删，缓存前缀一直不变。
+      // 别的模型：拼在发给模型的这条消息前面，存进历史的是不带背景的原话
       const { staticPrompt, dynamicContext } = core.promptParts
-      const apiUserMsg = {
-        ...userMsg,
-        message: { ...userMsg.message, content: userContentWithImages(withSystemReminder(text, dynamicContext), imageBlocks) },
-      }
+      const turnReminder = usesTurnReminder(chatModel) ? turnReminderText(dynamicContext) : undefined
+      const apiUserMsg = turnReminder
+        ? { ...userMsg, turnReminder }
+        : {
+            ...userMsg,
+            message: { ...userMsg.message, content: userContentWithImages(withSystemReminder(text, dynamicContext), imageBlocks) },
+          }
 
       // 压缩用的参数：门槛按这个模型算；写摘要和这轮聊天同一个模型、系统提示词、工具定义（好吃缓存）
       const chatSystemPrompt = staticPrompt || systemPrompt
@@ -264,6 +268,7 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
       const newHistory = await runQueryLoop({
         messages: sentHistory,
         systemPrompt: chatSystemPrompt,
+        turnReminder,
         apiOptions: {
           apiKey: dashscopeApiKey,
           apiBase: config.openaiApiBase,
@@ -352,7 +357,8 @@ export function createSendFlow(core: ChatCore, sessions: SessionFlow, prompt: Pr
       // 切走了，或新一轮等不及已经读走了历史：这段历史不属于现在的对话，不能盖上去
       // （新一轮还在等上一轮收尾时要写，它读到的历史才有上一轮）
       if (core.conversationOwner === turnId && sessions.follow(turnSid) === core.sessionId) {
-        const settled = newHistory.map((m) => (m === apiUserMsg ? userMsg : m))
+        // 背景拼在话里的那种要换回原话；发成背景消息的原样留着（删了就是改历史）
+        const settled = newHistory.map((m) => (m === apiUserMsg && !turnReminder ? userMsg : m))
         core.setConversation(core.compactor ? core.compactor.settle(settled, compactCtx) : settled)
         core.compactor?.kick(compactCtx)
       }

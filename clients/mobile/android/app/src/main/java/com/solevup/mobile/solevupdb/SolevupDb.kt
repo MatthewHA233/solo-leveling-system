@@ -2171,6 +2171,7 @@ class SolevupDb(context: Context) :
       val costUsd = if (currency == "USD") cost else null
 
       val id = UUID.randomUUID().toString()
+      val metadata = metadataWithCacheSaving(req, tiers)
       db.execSQL(
         """INSERT INTO model_call_log
              (id, api_key_id, feature, model_id, started_at, duration_ms,
@@ -2181,7 +2182,7 @@ class SolevupDb(context: Context) :
         arrayOf(id, req.apiKeyId, req.feature, req.modelId, req.startedAt, req.durationMs,
                 req.promptTextTokens, req.promptImageTokens, req.promptVideoTokens, req.promptAudioTokens,
                 req.completionTextTokens, req.completionAudioTokens,
-                costCny, freeTokens, freeSaved, if (req.success) 1 else 0, req.errorMessage, req.metadata, costUsd),
+                costCny, freeTokens, freeSaved, if (req.success) 1 else 0, req.errorMessage, metadata, costUsd),
       )
       if (freeTokens > 0) {
         db.execSQL(
@@ -2198,7 +2199,7 @@ class SolevupDb(context: Context) :
         id, req.apiKeyId, req.feature, req.modelId, req.startedAt, req.durationMs,
         req.promptTextTokens, req.promptImageTokens, req.promptVideoTokens, req.promptAudioTokens,
         req.completionTextTokens, req.completionAudioTokens,
-        costCny, freeTokens, freeSaved, if (req.success) 1 else 0, req.errorMessage, req.metadata, costUsd,
+        costCny, freeTokens, freeSaved, if (req.success) 1 else 0, req.errorMessage, metadata, costUsd,
       )
     } finally {
       db.endTransaction()
@@ -2213,10 +2214,58 @@ class SolevupDb(context: Context) :
   // 3.5 Omni 输出语音时只按音频计费，3.8 Omni 起文本另计
   private fun billsTextWithAudio(modelId: String) = modelId.startsWith("qwen3.8-omni")
 
+  private class CacheUsage(val read: Long, val write5m: Long, val write1h: Long)
+
+  /** 调用日志 metadata 里的缓存用量，没有就是 0。键名由 anthropic-stream.ts 写入（对齐 desktop db.rs cache_usage）。 */
+  private fun cacheUsage(req: LogModelCallRequest): CacheUsage {
+    val parsed = try {
+      req.metadata?.let { org.json.JSONObject(it) }
+    } catch (_: org.json.JSONException) {
+      null
+    } ?: return CacheUsage(0, 0, 0)
+    fun field(name: String) = parsed.optLong(name, 0).coerceAtLeast(0)
+    return CacheUsage(field("cacheReadTokens"), field("cacheWrite5mTokens"), field("cacheWrite1hTokens"))
+  }
+
+  /**
+   * 读缓存相对输入原价的倍率：一般 0.1；Opus 5.5 / Sonnet 5.5 是 0.05；Fable、Mythos 5.1 和 5.2 是 0.025。
+   * 和 desktop db.rs cache_read_multiplier 是同一份，改要两端一起改
+   */
+  private fun cacheReadMultiplier(modelId: String): Double = when {
+    listOf("claude-fable-5-1", "claude-fable-5-2", "claude-mythos-5-1", "claude-mythos-5-2").any { modelId.startsWith(it) } -> 0.025
+    listOf("claude-opus-5-5", "claude-sonnet-5-5").any { modelId.startsWith(it) } -> 0.05
+    else -> 0.1
+  }
+
+  /**
+   * 用了提示缓存的调用：把「比不开缓存省了多少钱」写进 metadata 的 cacheSavedCost（币种同成本）。
+   * 写入比读取多的那次是负数。对齐 desktop db.rs metadata_with_cache_saving，徽章按它显示。
+   */
+  private fun metadataWithCacheSaving(req: LogModelCallRequest, tiers: List<SyncModelPricingRow>): String? {
+    val cache = cacheUsage(req)
+    val cached = cache.read + cache.write5m + cache.write1h
+    if (cached <= 0) return req.metadata
+    val inputPrice = findTier(req, tiers)?.priceInputText ?: return req.metadata
+    val paid = cache.read * cacheReadMultiplier(req.modelId) +
+      cache.write5m * CACHE_WRITE_5M_MULTIPLIER + cache.write1h * CACHE_WRITE_1H_MULTIPLIER
+    val saved = (cached - paid) * inputPrice / 1_000_000.0
+    return try {
+      org.json.JSONObject(req.metadata ?: "{}").put("cacheSavedCost", saved).toString()
+    } catch (_: org.json.JSONException) {
+      req.metadata
+    }
+  }
+
   private fun computeCost(req: LogModelCallRequest, tiers: List<SyncModelPricingRow>): Double? {
     val tier = findTier(req, tiers) ?: return null
     fun price(tok: Long, p: Double?) = if (tok <= 0) 0.0 else tok.toDouble() * (p ?: 0.0) / 1_000_000.0
-    var total = price(req.promptTextTokens, tier.priceInputText)
+    // Anthropic 提示缓存：promptTextTokens 是整次请求的输入，其中读缓存、写缓存的部分按各自的倍率算
+    val cache = cacheUsage(req)
+    val uncachedText = (req.promptTextTokens - cache.read - cache.write5m - cache.write1h).coerceAtLeast(0)
+    val cachedEquivalent = cache.read * cacheReadMultiplier(req.modelId) +
+      cache.write5m * CACHE_WRITE_5M_MULTIPLIER + cache.write1h * CACHE_WRITE_1H_MULTIPLIER
+    var total = price(uncachedText, tier.priceInputText)
+    total += cachedEquivalent * (tier.priceInputText ?: 0.0) / 1_000_000.0
     total += price(req.promptImageTokens, tier.priceInputImage ?: tier.priceInputText)
     total += price(req.promptVideoTokens, tier.priceInputVideo ?: tier.priceInputText)
     total += price(req.promptAudioTokens, tier.priceInputAudio)
@@ -3137,6 +3186,9 @@ class SolevupDb(context: Context) :
     private const val CATALOG_SOURCE_SEED = "seed"
     private const val CATALOG_SOURCE_SYNC = "sync"
     private const val QWEN3_ASR_FLASH_FILETRANS_PRICE_PER_SECOND_CNY = 0.00022
+    // Anthropic 提示缓存写入价相对输入原价的倍率（官方价目：5 分钟档 1.25 倍，1 小时档 2 倍），同 desktop db.rs
+    private const val CACHE_WRITE_5M_MULTIPLIER = 1.25
+    private const val CACHE_WRITE_1H_MULTIPLIER = 2.0
     private const val CALL_LOG_COLUMNS =
       "id, api_key_id, feature, model_id, started_at, duration_ms, " +
         "prompt_text_tokens, prompt_image_tokens, prompt_video_tokens, prompt_audio_tokens, " +

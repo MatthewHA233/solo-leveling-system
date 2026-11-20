@@ -20,7 +20,8 @@ export type ApiStreamChunk =
   | { type: 'textDelta'; delta: string }
   | { type: 'reasoningDelta'; delta: string }   // 思考模型（enable_thinking）的推理流
   | { type: 'toolCallDelta'; index: number; id: string | null; name: string | null; argsDelta: string | null }
-  | { type: 'done'; stopReason: string; inputTokens: number; outputTokens: number }
+  // cacheReadTokens / cacheCreationTokens：Anthropic 提示缓存读到、写入的部分（inputTokens 不含它们）
+  | { type: 'done'; stopReason: string; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheCreationTokens?: number }
   | { type: 'error'; status: number; message: string }
 
 // ── API 请求选项 ──

@@ -33,7 +33,8 @@ import { compactAppUsage, classifyIntent } from './lib/ai/context-intent'
 
 // LLM Engine（新）
 import { runQueryLoop } from './lib/llm/query-loop'
-import { contextBudget, estimateContextTokens, roughTokens, withSystemReminder, type CompactionResult, type ContextBudget } from './lib/llm/context-window'
+import { contextBudget, estimateContextTokens, roughTokens, turnReminderText, withSystemReminder, type CompactionResult, type ContextBudget } from './lib/llm/context-window'
+import { usesTurnReminder } from './lib/llm/anthropic-stream'
 import { createCompactor, type CompactionContext } from './lib/agent/chat-compaction'
 import { compactNotice, compactSummaryRow, isCompactSummaryRow, isTaskNoticeRow, restoreLLMHistory, rowsToLLMMessages, taskNoticeLabel, taskNoticeRow, TOOL_TRACE_ROW, toolCallsOfTrace, toolTraceRow } from './lib/agent/chat-history'
 import { drainQueue, dropQueuedPrompts, enqueuePrompt, subscribeQueue, takeNextBatch, taskNoticeForModel, type QueuedMessage } from './lib/agent/message-queue'
@@ -2806,12 +2807,16 @@ export default function App() {
     const hideImages = !(await modelSeesImages(chatModel))
     const dashscopeApiKey = getDashScopeApiKey(config) ?? ''
 
-    // 本轮实时背景只附在发给模型的这条消息上；存进历史的是不带背景的原话，让前缀跨轮不变
+    // 本轮实时背景。Claude 的新模型：单独发成只在当轮有效的 system 消息（turnReminder），留在历史里不删，缓存前缀一直不变。
+    // 别的模型：拼在发给模型的这条消息前面，存进历史的是不带背景的原话
     const { staticPrompt, dynamicContext } = promptPartsRef.current
-    const apiUserMsg = {
-      ...userMsg,
-      message: { ...userMsg.message, content: userContentWithImages(withSystemReminder(text, dynamicContext), imageBlocks) },
-    }
+    const turnReminder = usesTurnReminder(chatModel) ? turnReminderText(dynamicContext) : undefined
+    const apiUserMsg = turnReminder
+      ? { ...userMsg, turnReminder }
+      : {
+          ...userMsg,
+          message: { ...userMsg.message, content: userContentWithImages(withSystemReminder(text, dynamicContext), imageBlocks) },
+        }
 
     // 压缩用的参数：门槛按这个模型算；写摘要和这轮聊天同一个模型、系统提示词、工具定义（好吃缓存）
     const chatSystemPrompt = staticPrompt || systemPrompt
@@ -2838,6 +2843,7 @@ export default function App() {
       const newHistory = await runQueryLoop({
         messages: [...conversationRef.current, apiUserMsg],
         systemPrompt: staticPrompt || systemPrompt,
+        turnReminder,
         apiOptions: {
           apiKey: dashscopeApiKey,
           apiBase: config.openaiApiBase,
@@ -2930,7 +2936,8 @@ export default function App() {
       releaseBusy()
       // 工具调用与结果留在历史里（下一轮还能引用刚查到的数据）；超门槛时先清旧工具结果，还超就在后台写摘要
       if (sessionIdRef.current === turnSessionId) {
-        conversationRef.current = compactor.settle(newHistory.map((m) => (m === apiUserMsg ? userMsg : m)), compactCtx)
+        // 背景拼在话里的那种要换回原话；发成背景消息的原样留着（删了就是改历史）
+        conversationRef.current = compactor.settle(newHistory.map((m) => (m === apiUserMsg && !turnReminder ? userMsg : m)), compactCtx)
         compactor.kick(compactCtx)
       }
       if (interrupted) {
