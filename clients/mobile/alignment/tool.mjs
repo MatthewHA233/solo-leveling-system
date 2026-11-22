@@ -377,9 +377,17 @@ function sliceFile(entry) {
 const HEADER = '| ID | 源码段 | 符号 | 哈希 | 状态 | 手机端落点 | 说明 |'
 const RULE = '|---|---|---|---|---|---|---|'
 
+/**
+ * 批次文件在 Windows 上检出是 CRLF：按行读之前先去掉回车。
+ * 不去的话行尾的回车会顶掉 parseLine 里 slice 要去的那个竖线，每跑一次每行多出一个空列
+ */
+function readLines(path) {
+  return readFileSync(path, 'utf8').replace(/\r\n/g, '\n').split('\n')
+}
+
 function parseLine(line) {
   if (!line.startsWith('| ') || line === HEADER || line.startsWith('| ID ')) return []
-  const cells = line.slice(1, -1).split(' | ').map((c) => c.trim())
+  const cells = line.trimEnd().slice(1, -1).split(' | ').map((c) => c.trim())
   if (cells.length < 6) return []
   const [id, loc, label, hash, status, target, ...note] = cells
   const m = /^`?([^`:]+):(\d+)-(\d+)`?$/.exec(loc)
@@ -387,13 +395,14 @@ function parseLine(line) {
   return [{
     id, file: m[1], start: +m[2], end: +m[3],
     label: label.replace(/^`|`$/g, ''), hash: hash.replace(/`/g, ''), status,
-    target: (target ?? '').replace(/`/g, ''), note: note.join(' | '),
+    // 说明里不会有竖线（mark 时换成了 /）：行尾多出来的空列是上面那个回车问题留下的，读的时候去掉
+    target: (target ?? '').replace(/`/g, ''), note: note.join(' | ').replace(/(\s*\|)+\s*$/, '').trim(),
   }]
 }
 
 function parseBatch(path) {
   if (!existsSync(path)) return []
-  return readFileSync(path, 'utf8').split('\n').flatMap(parseLine)
+  return readLines(path).flatMap(parseLine)
 }
 
 function formatRow(r) {
@@ -547,7 +556,7 @@ function mark(spec, newStatus, target, note = '') {
   const current = new Map(expectedRows(batch).map((s) => [`${s.file}#${s.label}`, s]))
   const path = batchPath(batch)
   const hit = new Set()
-  const lines = readFileSync(path, 'utf8').split('\n').map((line) => {
+  const lines = readLines(path).map((line) => {
     if (!line.startsWith('| ')) return line
     const [row] = parseLine(line)
     if (!row || !ids.has(row.id)) return line
