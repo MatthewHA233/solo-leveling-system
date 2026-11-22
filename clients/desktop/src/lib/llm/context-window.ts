@@ -3,18 +3,19 @@
 // desktop 与 mobile 两份逐字一致，改要两端一起改。方案见 docs/AI系统/上下文压缩与长期记忆-调研交接.md 第九节
 //
 // 前缀稳定：系统提示词每轮不变，实时背景只附在当轮那条消息上，存进历史的是原话。
-//   平时只往后追加；超门槛才一次改一大块（清理旧工具结果 / 换成摘要），缓存只断这一次。
+//   提示缓存是前缀匹配：历史中间改一个字，从那里往后全部按写入价重写。所以缓存还热的时候历史只往后接，
+//   要改就一次改够（换成摘要），不为省一点去动它。照 Claude Code 的做法（services/compact/microCompact.ts）。
 //
 // 体量按 token 算：上一次回复的真实用量（输入 + 输出），加上之后新消息的粗估。
 //   历史被改过（清理、压缩、从库里恢复）就没有可信的真实用量，整段按粗估。
 //   报的用量不到粗估的一半也不信（多半没算缓存命中的部分），按粗估。
 //
-// 图片不等门槛：每轮结束只留最近 8 张原图，更早的换成一句说明。
-//
-// 超门槛时依次：
-//   1. 较早轮次的工具结果换成一句说明（不调模型；查询类工具可以重新调用）
-//   2. 还超：较早的轮次交给模型写成摘要，最近约 2 万 token 原样保留（chat-compaction.ts 在后台做）
-//   3. 摘要写不成：退回机械摘要（每轮一行）
+// 缓存热着（离上一条回复不到一小时）：
+//   - 超门槛：较早的轮次交给模型写成摘要，最近约 2 万 token 原样保留（chat-compaction.ts 在后台做）；
+//     摘要写不成退回机械摘要（每轮一行）。旧工具结果不单独清：清一次只腾出一点，却要重写整段。
+//   - 原图攒到 20 张才丢一批，丢到只剩最近 8 张。
+// 缓存已经凉了（离上一条回复超过一小时，这次反正整段重写）：发送前把要重写的变小——
+//   除最近 5 条以外的工具结果换成一句说明（查询类工具可以重新调用），原图只留最近 8 张；还超门槛就先压完再发。
 // 每一步都在聊天底部留一行（chat-compaction.ts 通知界面，文字规则在 lib/agent/tool-call-view.ts）
 // ══════════════════════════════════════════════
 
@@ -177,8 +178,25 @@ export function capToolResult(result: string): string {
   return `${head}\n\n……（中间约 ${omitted} 字太长，没有放进来；要看这部分就缩小查询范围再调一次）……\n\n${tail}`
 }
 
-/** 最近几轮的工具结果不动：正在聊的事可能还要用 */
-const KEEP_TOOL_TURNS = 3
+/** 缓存能留多久（请求里标的是 1 小时档）。离上一条回复超过这么久，这次请求整段都要重写 */
+const CACHE_TTL_MS = 60 * 60 * 1000
+
+/**
+ * 缓存是不是已经凉了：离上一条回复超过一小时。还没有回复（新会话）不算凉，没东西可清。
+ * 取一小时是为了不制造本来不会发生的未命中（Claude Code timeBasedMCConfig 的 gapThresholdMinutes）
+ */
+export function isCacheCold(messages: readonly Message[], now = Date.now()): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!isAssistantMessage(m)) continue
+    const at = new Date(m.timestamp).getTime()
+    return Number.isFinite(at) && now - at >= CACHE_TTL_MS
+  }
+  return false
+}
+
+/** 最近几条工具结果不动：正在聊的事可能还要用（Claude Code 的 keepRecent） */
+const KEEP_RECENT_TOOL_RESULTS = 5
 /** 本来就短的结果不清，清了也省不了多少 */
 const CLEAR_MIN_CHARS = 400
 const CLEARED_PREFIX = '[这条较早的工具结果已清理'
@@ -208,39 +226,57 @@ export interface ClearedToolResult {
   readonly chars: number
 }
 
-/** 第一步（不调模型）：较早轮次的长工具结果换成一句说明。工具调用本身还在，模型知道查过什么 */
+/**
+ * 除最近几条以外的长工具结果换成一句说明（不调模型）。工具调用本身还在，模型知道查过什么。
+ * 会改动较早的消息，只在缓存已经凉了的时候调（isCacheCold）
+ */
 export function clearOldToolResults(messages: readonly Message[]): { messages: Message[]; cleared: number; items: ClearedToolResult[] } {
-  const turns = splitTurns(messages)
-  const protectFrom = turns.length - KEEP_TOOL_TURNS
-  const items: ClearedToolResult[] = []
-  const out = turns.flatMap((turn, i) => {
-    if (i >= protectFrom) return turn
-    const names = new Map<string, string>()
-    for (const m of turn) {
-      if (isAssistantMessage(m)) for (const b of m.message.content) if (b.type === 'tool_use') names.set(b.id, b.name)
+  const names = new Map<string, string>()
+  const results: Message[] = []
+  for (const m of messages) {
+    if (isAssistantMessage(m)) {
+      for (const b of m.message.content) if (b.type === 'tool_use') names.set(b.id, b.name)
+    } else if (m.type === 'user' && m.toolUseResult !== undefined) {
+      results.push(m)
     }
-    return turn.map((m) => {
-      if (m.type !== 'user' || m.toolUseResult === undefined) return m
-      const result = m.toolUseResult
-      if (result.length < CLEAR_MIN_CHARS || result.startsWith(CLEARED_PREFIX)) return m
-      items.push({ name: names.get(m.sourceToolCallId ?? '') ?? '', chars: result.length })
-      const note = clearedNote(result.length)
-      return { ...m, message: { ...m.message, content: note }, toolUseResult: note }
-    })
+  }
+  const keep = new Set(results.slice(-KEEP_RECENT_TOOL_RESULTS))
+  const items: ClearedToolResult[] = []
+  const out = messages.map((m) => {
+    if (m.type !== 'user' || m.toolUseResult === undefined || keep.has(m)) return m
+    const result = m.toolUseResult
+    if (result.length < CLEAR_MIN_CHARS || result.startsWith(CLEARED_PREFIX)) return m
+    items.push({ name: names.get(m.sourceToolCallId ?? '') ?? '', chars: result.length })
+    const note = clearedNote(result.length)
+    return { ...m, message: { ...m.message, content: note }, toolUseResult: note }
   })
   return { messages: items.length > 0 ? dropUsage(out) : out, cleared: items.length, items }
 }
 
 // ── 图片 ──
 
-/**
- * 历史里最多留几张原图，和重新打开会话时带回的张数一样（chat-images.ts MAX_RESTORED_IMAGES）。
- * 原图每次请求都要再发一遍，不按门槛等：每轮回复结束都只留最近这几张，请求体和内存里的 base64 才有上限。
- */
+/** 丢旧图时留下最近几张原图，和重新打开会话时带回的张数一样（chat-images.ts MAX_RESTORED_IMAGES） */
 const MAX_HISTORY_IMAGES = 8
+/**
+ * 缓存热着的时候原图攒到这么多张才丢：丢图要改较早的消息，从那里往后的缓存全部重写，
+ * 所以一次丢够一批，不是每多一张就丢一张。请求体和内存里的 base64 仍然有上限。
+ */
+export const WARM_IMAGE_LIMIT = 20
 
-/** 较早消息里的图片换成一句说明（和重新打开会话时没带回的图同一句话）。从最新的往回数，一条消息的图不拆开 */
-export function dropOldImages(messages: readonly Message[]): { messages: Message[]; dropped: number } {
+function countImages(messages: readonly Message[]): number {
+  let n = 0
+  for (const m of messages) {
+    if (m.type === 'user' && typeof m.message.content !== 'string') n += m.message.content.filter((b) => b.type === 'image').length
+  }
+  return n
+}
+
+/**
+ * 较早消息里的图片换成一句说明（和重新打开会话时没带回的图同一句话）。从最新的往回数，一条消息的图不拆开。
+ * 原图超过 over 张才动手，动手就丢到只剩最近 8 张。缓存凉了用默认值（多于 8 张就丢），热着传 WARM_IMAGE_LIMIT
+ */
+export function dropOldImages(messages: readonly Message[], over = MAX_HISTORY_IMAGES): { messages: Message[]; dropped: number } {
+  if (countImages(messages) <= over) return { messages: [...messages], dropped: 0 }
   const out = [...messages]
   let kept = 0
   let dropped = 0

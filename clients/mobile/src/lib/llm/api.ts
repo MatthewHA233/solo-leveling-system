@@ -47,6 +47,15 @@ export interface ApiRequestSnapshot {
   timestamp: string
 }
 
+/**
+ * 消息里的缓存断点标在哪：
+ *   last   正常聊天：标在末尾，这次新增的内容写进缓存，下一次请求接着读
+ *   prefix 借聊天的缓存发一次旁路请求（写压缩摘要）：标在倒数第二条，也就是和聊天共用的那段前缀的末尾，
+ *          只读不留自己的尾巴（Claude Code 的 skipCacheWrite）
+ *   system 消息不标，只留 system 末尾那个：发出去的历史马上要被换掉，不值得付写入价
+ */
+export type CacheMark = 'last' | 'prefix' | 'system'
+
 export interface QueryOptions {
   apiKey: string
   apiBase: string      // e.g. 'https://dashscope.aliyuncs.com/compatible-mode'
@@ -57,6 +66,8 @@ export interface QueryOptions {
   tools?: readonly ToolDefinition[]  // function calling tools
   // 当前模型看不了图：把历史里的图换成说明再发（见 normalize.ts）
   hideImages?: boolean
+  // 提示缓存的断点标在消息的哪里（只有 Claude 用，见 anthropic-stream.ts markCacheBreakpoints）。不写 = last
+  cacheMark?: CacheMark
   feature?: string
   // 调试：每次实际发出 API 请求前调用，传入完整 payload 快照
   onRequestSnapshot?: (snapshot: ApiRequestSnapshot) => void

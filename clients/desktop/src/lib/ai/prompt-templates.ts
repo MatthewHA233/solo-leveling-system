@@ -464,13 +464,26 @@ export function buildConversationSummary(
 }
 
 // ── 上下文压缩（lib/llm/compact.ts 用） ──
-// 追加在完整历史末尾发给同一个模型，前缀不变好吃缓存。模板参考 Claude Code / opencode / Gemini CLI，
+// 追加在历史末尾发给同一个模型，前缀不变好吃缓存（什么时候带完整历史见 lib/llm/compact.ts）。模板参考 Claude Code / opencode / Gemini CLI，
 // 按陪伴聊天改了段落；有旧摘要时走「更新」，不整份重写（整份重写会越写越短，见 ACE 论文）。
 
-export function compactionPrompt(hasPreviousSummary: boolean, agentCallUser = '主人'): string {
-  const task = hasPreviousSummary
+/**
+ * keptFrom：最近几轮会原样保留时，保留部分第一句话的开头（空字符串 = 那句话没有文字）。
+ * 传了就是整段历史都在上面（好吃缓存），只整理这句话之前的；不传 = 上面只有要整理的部分
+ */
+export function compactionPrompt(hasPreviousSummary: boolean, agentCallUser = '主人', keptFrom?: string): string {
+  const scope = keptFrom === undefined
+    ? ''
+    : keptFrom
+      ? `
+
+只整理${agentCallUser}说「${keptFrom}」这句话之前的部分。从这句话开始的最近几轮会原样保留在摘要后面，不要写进摘要。`
+      : `
+
+最近几轮会原样保留在摘要后面，不要写进摘要，只整理更早的部分。`
+  const task = (hasPreviousSummary
     ? `对话开头那条是旧摘要，它后面是旧摘要之后的新对话。在旧摘要的基础上更新：仍然成立的内容原样保留，过时的改掉，新的补上。不要整份重写，也不要为了篇幅删掉还有用的内容。`
-    : `把上面的对话整理成一份摘要。`
+    : `把上面的对话整理成一份摘要。`) + scope
   return `这不是${agentCallUser}说的话，是系统的整理请求，现在不用回复${agentCallUser}。前面的对话太长，要压缩成一份摘要；之后只带着这份摘要和最近几轮原话继续聊，摘要里没写的细节就找不回来了。不要调用任何工具，只输出文字。
 
 ${task}

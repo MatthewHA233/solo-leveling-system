@@ -13,6 +13,7 @@
 // ══════════════════════════════════════════════
 
 import { queryModel } from './api'
+import { noteCacheRead } from './cache-watch'
 import { capToolResult } from './context-window'
 import { withRetry } from './retry'
 import {
@@ -268,6 +269,8 @@ export async function runQueryLoop(params: QueryParams): Promise<Message[]> {
     }
 
     const { text: accText, pendingCalls, stopReason, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens } = reply
+    // 用了提示缓存的请求：读到的量比上一次掉了一截就在控制台留一行（cache-watch.ts）
+    if (cacheReadTokens + cacheCreationTokens > 0) noteCacheRead(cacheReadTokens)
 
     // ── 构建 AssistantMessage ──
     // 主人打断时流只是提前结束、不报错：已收到的工具调用（可能只有半截参数）不能再执行，也不进历史

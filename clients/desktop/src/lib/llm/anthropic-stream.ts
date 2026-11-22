@@ -8,7 +8,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Stream } from './stream'
 import { normalizeMessagesForAPI } from './normalize'
 import { getModelCallLog } from '../model-audit'
-import type { ApiStreamChunk, QueryOptions } from './api'
+import type { ApiStreamChunk, CacheMark, QueryOptions } from './api'
 import type { AssistantMessage, ContentBlock, Message, UserMessage } from './types'
 
 /** 目前按模型 id 前缀识别 Anthropic（claude-*） */
@@ -149,13 +149,28 @@ function withBreakpoint(m: AnthropicMessage, cache: CacheControl): AnthropicMess
  *   1. 这一轮开头那句话之前的最后一块（1 小时）。那句话带着当轮的实时背景，下一轮就换回原话，
  *      所以含它的前缀下一轮对不上；它之前的历史跨轮不变，下一轮从这里读、只补写上一轮新增的部分。
  *   2. 末尾是工具结果时的最后一块（5 分钟）。同一轮的工具循环里前缀不变，下一次请求从这里读。
- * 压缩、清理旧工具结果、丢旧图片会改动较早的消息，那一次从改动处往后重写，system 和工具定义的缓存不受影响。
+ * 压缩、清理旧工具结果、丢旧图片会改动较早的消息，那一次从改动处往后重写，system 和工具定义的缓存不受影响；
+ * 所以这些事只在该做的时候做（规则见 context-window.ts 文件头）。
+ * mark 不是 last 时见 api.ts 的 CacheMark（写压缩摘要用）。
  *
  * 实时背景走背景消息时（entries 里有 role: 'system'），历史只追加不删改，上面两处都用不着：
  * 只在最后一条 user 消息的最后一块标一个（1 小时），下一次请求从这里读，每段内容只写一次。
  * 背景消息本身不能标断点，也不算进缓存键。
  */
-export function markCacheBreakpoints(entries: AnthropicEntry[]): AnthropicEntry[] {
+export function markCacheBreakpoints(entries: AnthropicEntry[], mark: CacheMark = 'last'): AnthropicEntry[] {
+  if (mark === 'system') return entries
+  if (mark === 'prefix') {
+    // 旁路请求：末尾那条是它自己加的，倒数第二条是和聊天共用的前缀的末尾。标在那里能读到聊天写下的缓存，自己不多写
+    const own = entries.reduce((idx, e, i) => (isTurnReminder(e) ? idx : i), -1)
+    let shared = -1
+    for (let i = own - 1; i >= 0; i--) {
+      if (!isTurnReminder(entries[i])) {
+        shared = i
+        break
+      }
+    }
+    return entries.map((e, i) => (i === shared && !isTurnReminder(e) ? withBreakpoint(e, CACHE_1H) : e))
+  }
   if (entries.some(isTurnReminder)) {
     let lastUser = -1
     for (let i = entries.length - 1; i >= 0; i--) {
@@ -191,7 +206,7 @@ export function buildAnthropicBody(messages: Message[], options: QueryOptions): 
   const body: Record<string, unknown> = {
     model: options.model,
     max_tokens: options.maxTokens ?? 8000,
-    messages: cached ? markCacheBreakpoints(apiMessages) : apiMessages,
+    messages: cached ? markCacheBreakpoints(apiMessages, options.cacheMark) : apiMessages,
     stream: true,
   }
   if (options.systemPrompt) {

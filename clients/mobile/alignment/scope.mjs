@@ -27,6 +27,7 @@ export const SCOPE = [
       { file: `${R}anthropic.rs`, target: `${M}lib/llm/anthropic-stream.ts` },
       { file: `${R}anthropic_stream.rs`, target: `${M}lib/llm/anthropic-stream.ts` },
       { file: LIB_RS, only: /anthropic/, target: `${M}lib/llm/anthropic-stream.ts` },
+      { file: `${D}lib/llm/cache-watch.ts`, target: `${M}lib/llm/cache-watch.ts` },
     ],
   },
   {
