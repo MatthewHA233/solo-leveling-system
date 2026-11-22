@@ -58,7 +58,7 @@ pub struct FishTTSConfig {
     pub reference_id: String,  // 音色 ID
     pub sample_rate: u32,
     pub proxy_port: u16,
-    pub model: String,  // s1 或 s2-pro
+    pub model: String,  // s2.1-pro-free（免费档，不保证速度）、s2-pro 或 drama-3
     pub event_id: String,  // 每个连接一份唯一 ID；事件名 fish-tts-audio-{id} / fish-tts-finish-{id}，避免新旧实例串扰
 }
 

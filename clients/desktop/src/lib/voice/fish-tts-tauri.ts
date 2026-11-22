@@ -10,7 +10,7 @@ import { fetchProxyPort } from '../network-api'
 export interface FishTTSConfig {
   apiKey: string
   referenceId: string
-  model: string  // s1 或 s2-pro
+  model: string  // s2.1-pro-free（免费档，不保证速度）、s2-pro 或 drama-3
   sampleRate?: number
   proxyPort?: number
 }

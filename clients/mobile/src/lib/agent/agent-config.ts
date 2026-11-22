@@ -40,7 +40,7 @@ export interface AgentConfig {
   // ── Voice ──
   readonly fishApiKey: string | null  // 旧版存这里（不同步），启动时搬进 Key 库后清空；读写都走 resolveFishApiKey / saveFishApiKey
   readonly fishReferenceId: string
-  readonly fishModel: string  // s1 或 s2-pro
+  readonly fishModel: string  // s2.1-pro-free（免费档，不保证速度）、s2-pro 或 drama-3
   readonly asrApiKey: string | null    // 单独的 ASR API Key（不填则复用 openaiApiKey）
   readonly asrModel: string            // 如 qwen3-asr-flash-realtime
 
@@ -79,7 +79,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
 
   fishApiKey: null,
   fishReferenceId: '235851fae0da43309a9973fe7285a823',
-  fishModel: 's1',
+  fishModel: 's2-pro',
   asrApiKey: null,
   asrModel: 'qwen3-asr-flash-realtime',
 

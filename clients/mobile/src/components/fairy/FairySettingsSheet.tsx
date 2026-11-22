@@ -59,8 +59,9 @@ const AI_MODE_OPTIONS: { value: SettingsDraft['aiMode']; label: string }[] = [
 ]
 
 const FISH_MODEL_OPTIONS = [
-  { value: 's1', label: 's1' },
+  { value: 's2.1-pro-free', label: 's2 免费' },
   { value: 's2-pro', label: 's2-pro' },
+  { value: 'drama-3', label: 'drama-3' },
 ]
 
 export default function FairySettingsSheet({ visible, onClose }: Props) {

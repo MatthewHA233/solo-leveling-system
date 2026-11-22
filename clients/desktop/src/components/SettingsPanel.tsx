@@ -579,7 +579,7 @@ export default function SettingsPanel({ open: isOpen, initialSection, initialSec
               <Field label="Fish 模型"
                 value={draft.fishModel}
                 onChange={(v) => update('fishModel', v)}
-                placeholder="s1 或 s2-pro，和音色一起同步给已配对的设备"
+                placeholder="s2.1-pro-free（免费）、s2-pro 或 drama-3，和音色一起同步给已配对的设备"
               />
             </>
           ) : (

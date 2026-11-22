@@ -25,7 +25,7 @@ internal class FishTtsConfig(
   val apiKey: String,
   val referenceId: String, // 音色 ID
   val sampleRate: Int,
-  val model: String, // s1 或 s2-pro
+  val model: String, // s2.1-pro-free（免费档，不保证速度）、s2-pro 或 drama-3
   val eventId: String, // 每个连接一份唯一 ID；事件名 fish-tts-audio-{id} / fish-tts-finish-{id}，避免新旧实例串扰
 )
 
