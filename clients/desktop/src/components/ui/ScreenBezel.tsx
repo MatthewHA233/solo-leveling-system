@@ -13,6 +13,7 @@ const NAMES: Record<MainViewMode, string> = {
   motivation: '协议志',
   motivation_static: '协议志 · 静态示范',
   daynight: '昼夜表',
+  notes: '笔记',
   torrent: '洪流域',
   torrent_static: '洪流域 · 静态示范',
 }

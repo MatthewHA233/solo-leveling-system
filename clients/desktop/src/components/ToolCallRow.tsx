@@ -9,6 +9,7 @@
 //   · ContextRow：当时在底部加的一行。清理工具结果点开看清了哪些；整理上下文点它跳到分界那条
 // ══════════════════════════════════════════════
 
+import { revealChatMessage } from './chat-window'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { ArrowUp, Check, ChevronRight, Copy, Eraser, FoldVertical, Wrench } from 'lucide-react'
 import { theme, ti } from '../theme'
@@ -226,6 +227,12 @@ export function CompactRow({ summary, fallback, timestamp }: { summary: string; 
 
 /** 跳到分界处那条压缩提示并闪一下（和历史会话搜索命中的跳转同一个效果） */
 function jumpToBoundary(timestamp: string): void {
+  // 分界那条可能在聊天栏还没画出来的更早一段里：先让它画出来，下一帧再找
+  revealChatMessage(timestamp)
+  requestAnimationFrame(() => requestAnimationFrame(() => flashBoundary(timestamp)))
+}
+
+function flashBoundary(timestamp: string): void {
   const el = document.querySelector<HTMLElement>(`[data-msg-ts="${CSS.escape(timestamp)}"]`)
   if (!el) return
   el.scrollIntoView({ behavior: 'smooth', block: 'center' })

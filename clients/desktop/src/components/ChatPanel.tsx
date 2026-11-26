@@ -10,6 +10,7 @@
 // ══════════════════════════════════════════════
 
 import { useCallback, useMemo, useRef, useEffect, useState, type MutableRefObject } from 'react'
+import { useChatWindow } from './chat-window'
 import { MessageSquare, Camera, Eye, Volume2, VolumeX, Bug, Radio, History, X, Play, Pause, ImagePlus } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -145,6 +146,8 @@ export default function ChatPanel({ messages, isProcessing, onSend, takeVoiceIma
     fairy_omni_chat: 'qwen3.5-omni-flash-realtime',
   })
   const scrollRef = useRef<HTMLDivElement>(null)
+  // 只画最近的一段，往上滚再接更早的（见 chat-window.ts）
+  const chatWindow = useChatWindow(messages, scrollRef)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [activeDebugSnaps, setActiveDebugSnaps] = useState<ApiRequestSnapshot[] | null>(null)
   const [activeOmniDebug, setActiveOmniDebug] = useState<OmniDebugInfo | null>(null)
@@ -429,6 +432,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, takeVoiceIma
         {/* ── Messages ── */}
         <div
           ref={scrollRef}
+          onScroll={chatWindow.onScroll}
           style={{
             flex: 1, overflowY: 'auto',
             padding: '16px 14px 12px',
@@ -450,7 +454,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, takeVoiceIma
             </div>
           )}
 
-          {messages.map((msg) => (
+          {chatWindow.visible.map((msg) => (
             <Bubble
               key={msg.id}
               message={msg}

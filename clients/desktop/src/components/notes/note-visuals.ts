@@ -79,3 +79,26 @@ export const CALLOUT_TONE_LABEL: Record<CalloutTone, string> = {
 export const CALLOUT_TONE_COLOR: Record<CalloutTone, string> = {
   amber: '#FF9A5C', steel: '#B9C4C9', green: '#8FD9A0', blue: '#9ED8F2', red: '#E8685A',
 }
+
+// ── 锚点句的三类（动机 / 观点 / 实践）──
+
+export const SENTENCE_CATEGORIES = ['', 'motive', 'view', 'practice'] as const
+export type SentenceCategory = (typeof SENTENCE_CATEGORIES)[number]
+
+export const SENTENCE_CATEGORY_LABEL: Record<SentenceCategory, string> = {
+  '': '未分类',
+  motive: '动机',
+  view: '观点',
+  practice: '实践',
+}
+
+export const SENTENCE_CATEGORY_COLOR: Record<SentenceCategory, string> = {
+  '': '#8A8F98',
+  motive: '#FF8A4C',
+  view: '#6FB7E8',
+  practice: '#6FCF97',
+}
+
+export function asSentenceCategory(v: string): SentenceCategory {
+  return (SENTENCE_CATEGORIES as readonly string[]).includes(v) ? (v as SentenceCategory) : ''
+}

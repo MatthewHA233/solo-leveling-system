@@ -3,6 +3,7 @@
 //   · 每个页面一个编辑器实例（外面按页面 id 换 key），撤销历史不串页
 //   · 只负责编辑：内容变了通知外面（onChange），保存节奏由页面统一管
 //   · 图片 / 文件上传到本地附件目录，正文里存 note-asset://，显示时换成本地 API 地址
+//   · # 引用锚点（没有就地新建）；选中文字点「批注」= 涂上这片字、在后面写下想法（Ctrl+Shift+M）
 // ══════════════════════════════════════════════
 
 import '@blocknote/mantine/style.css'
@@ -12,33 +13,40 @@ import { zh } from '@blocknote/core/locales'
 import { syntaxHighlighter } from '@blocknote/code-block'
 import { BlockNoteView } from '@blocknote/mantine'
 import {
-  getDefaultReactSlashMenuItems, SideMenuController, SuggestionMenuController, useCreateBlockNote,
+  FormattingToolbar, FormattingToolbarController, getDefaultReactSlashMenuItems, getFormattingToolbarItems,
+  SideMenuController, SuggestionMenuController, useBlockNoteEditor, useComponentsContext, useCreateBlockNote, useEditorState,
   type DefaultReactSuggestionItem,
 } from '@blocknote/react'
-import { Columns2, Columns3, Columns4, FilePlus2, FileText, Lightbulb, Plus } from 'lucide-react'
+import { Columns2, Columns3, Columns4, FilePlus2, FileText, Hash, Lightbulb, MessageSquareQuote, Plus, Quote } from 'lucide-react'
 import { fetchNotePage, resolveNoteAssetUrl, updateNotePage, uploadNoteAsset, type NotePageMeta } from '../../../lib/notes-api'
 import MoveToPicker from '../MoveToPicker'
 import { ancestorsOf, blocksToText, pageTitle } from '../note-model'
+import { guardSuggestionScroll } from './suggestion-scroll-guard'
 import { getNotePagesMap, openNotePage, setBlockDropHandler } from '../notes-store'
 import { NoteSideMenu } from './BlockActionsMenu'
 import { inlineToPlainText, NoteBlockActionsContext, withoutIds, type NoteBlockActions } from './block-actions'
 import { insertColumns, noteDropCursor } from './columns'
 import { noteSchema, type NoteEditorInstance, type NotePartialBlock } from './note-schema'
 import { CJK_SLASH, isEmptyLine, withPinyinAliases } from './slash-aliases'
+import { cursorInThought, insertThought, removeThought, ThoughtExtension, thoughtAtSelection } from './thought-marks'
 
 const NOTE_DICTIONARY = {
   ...zh,
   placeholders: {
     ...zh.placeholders,
-    default: '输入文字；按 / 插入块，@ 链接页面',
+    default: '输入文字；按 / 插入块，@ 链接页面，# 引用锚点',
+    anchorSentence: '写一句锚点句',
+    transcriptLine: '',
   },
 }
 
-/** @ 菜单最多列几条 */
+/** @ / # 菜单最多列几条 */
 const MENTION_LIMIT = 12
 
 export interface NoteEditorProps {
   readonly pageId: string
+  /** 这一页的种类：锚点页的斜杠菜单里多一项「锚点句」 */
+  readonly pageKind: string
   readonly initialContent: readonly unknown[]
   readonly readOnly: boolean
   /** 内容变了（外面决定什么时候存） */
@@ -47,11 +55,13 @@ export interface NoteEditorProps {
   readonly onReady: (editor: NoteEditorInstance | null) => void
   /** 在当前页下建子页面（斜杠菜单「子页面」/ @ 菜单「新建」/ 块转成页面用） */
   readonly onCreateChildPage: (init?: { title?: string; icon?: string }) => Promise<NotePageMeta | null>
+  /** 新建一个锚点（# 菜单里敲了个还没有的词） */
+  readonly onCreateAnchor: (title: string) => Promise<NotePageMeta | null>
   /** 块菜单里跨页面的操作失败了（移动到、转成页面） */
   readonly onError: (message: string) => void
 }
 
-export default function NoteEditor({ pageId, initialContent, readOnly, onChange, onReady, onCreateChildPage, onError }: NoteEditorProps) {
+export default function NoteEditor({ pageId, pageKind, initialContent, readOnly, onChange, onReady, onCreateChildPage, onCreateAnchor, onError }: NoteEditorProps) {
   const editor = useCreateBlockNote({
     schema: noteSchema,
     dictionary: NOTE_DICTIONARY,
@@ -59,7 +69,7 @@ export default function NoteEditor({ pageId, initialContent, readOnly, onChange,
     initialContent: initialContent.length > 0 ? (initialContent as NotePartialBlock[]) : undefined,
     uploadFile: async (file: File) => (await uploadNoteAsset(file, pageId)).url,
     resolveFileUrl: async (url: string) => resolveNoteAssetUrl(url),
-    extensions: [syntaxHighlighter],
+    extensions: [syntaxHighlighter, ThoughtExtension()],
     tabBehavior: 'prefer-indent',
     // 落点线：信号橙；拖到块的左右边缘画竖线 = 放成并排分栏（见 columns.ts）
     dropCursor: noteDropCursor,
@@ -69,6 +79,18 @@ export default function NoteEditor({ pageId, initialContent, readOnly, onChange,
     onReady(editor)
     return () => onReady(null)
   }, [editor, onReady])
+
+  // 提示菜单的滚动闸（见 suggestion-scroll-guard.ts）：编辑器挂上页面以后才有插件视图
+  useEffect(() => {
+    let dispose: (() => void) | null = null
+    const install = () => {
+      if (dispose || !editor.prosemirrorView) return
+      dispose = guardSuggestionScroll(editor.prosemirrorView)
+    }
+    install()
+    const offMount = editor.onMount(install)
+    return () => { offMount(); dispose?.() }
+  }, [editor])
 
   const createChildFromSlash = useCallback(async () => {
     const page = await onCreateChildPage()
@@ -113,8 +135,25 @@ export default function NoteEditor({ pageId, initialContent, readOnly, onChange,
       icon: n === 2 ? <Columns2 size={18} /> : n === 3 ? <Columns3 size={18} /> : <Columns4 size={18} />,
       onItemClick: () => insertColumns(editor, n),
     }))
-    return filterSuggestionItems([...items, subPage, ...columnItems], query)
-  }, [editor, createChildFromSlash])
+    const thought: DefaultReactSuggestionItem = {
+      title: '批注',
+      subtext: '在这里写下你的想法（选中一片字再点工具条上的「批注」，可以连原文一起涂上）',
+      aliases: ['thought', 'note', 'pizhu', 'pz', 'xiangfa', '想法', '想法卡片', '批注'],
+      group: '锚点与批注',
+      icon: <MessageSquareQuote size={18} />,
+      onItemClick: () => { insertThought(editor.prosemirrorView) },
+    }
+    const sentence: DefaultReactSuggestionItem = {
+      title: '锚点句',
+      subtext: '这个锚点里的一条句子，可以一版版改，旧的留着',
+      aliases: ['sentence', 'anchor', 'maodian', 'maodianju', 'mdj', '锚点', '句子'],
+      group: '锚点与批注',
+      icon: <Quote size={18} />,
+      onItemClick: () => { insertOrUpdateBlockForSlashMenu(editor, { type: 'anchorSentence' }) },
+    }
+    const anchorItems = pageKind === 'anchor' ? [sentence, thought] : [thought]
+    return filterSuggestionItems([...items, ...anchorItems, subPage, ...columnItems], query)
+  }, [editor, createChildFromSlash, pageKind])
 
   const getMentionItems = useCallback(async (query: string): Promise<DefaultReactSuggestionItem[]> => {
     const pages = getNotePagesMap()
@@ -145,6 +184,46 @@ export default function NoteEditor({ pageId, initialContent, readOnly, onChange,
     }
     return items
   }, [editor, pageId, onCreateChildPage])
+
+  // # 引用锚点：列出已有的锚点；敲的词还没有，就给一项「新建锚点」
+  const getAnchorItems = useCallback(async (query: string): Promise<DefaultReactSuggestionItem[]> => {
+    const pages = getNotePagesMap()
+    const q = query.trim().toLowerCase()
+    const anchors = [...pages.values()].filter((p) => p.kind === 'anchor' && p.id !== pageId)
+    const matched = anchors
+      .filter((p) => !q || pageTitle(p).toLowerCase().includes(q))
+      // 开头就对上的排前面，其次是最近动过的
+      .sort((a, b) => {
+        const aHead = pageTitle(a).toLowerCase().startsWith(q) ? 0 : 1
+        const bHead = pageTitle(b).toLowerCase().startsWith(q) ? 0 : 1
+        return aHead - bHead || b.updatedAt.localeCompare(a.updatedAt)
+      })
+      .slice(0, MENTION_LIMIT)
+    const insertRef = (id: string) => {
+      const ref = { type: 'anchorRef' as const, props: { anchorId: id, sentenceId: '' } }
+      // 在批注的话里插引用：后面不补空格（空格不带批注的样式，会把这条批注切成两截）
+      editor.insertInlineContent(cursorInThought(editor.prosemirrorState) ? [ref] : [ref, ' '])
+    }
+    const items: DefaultReactSuggestionItem[] = matched.map((p) => ({
+      title: `#${pageTitle(p)}`,
+      subtext: ancestorsOf(p.id, pages).map((a) => pageTitle(a)).join(' / ') || undefined,
+      group: '引用锚点',
+      icon: p.icon ? <span className="nt-suggest-emoji">{p.icon}</span> : <Hash size={16} />,
+      onItemClick: () => insertRef(p.id),
+    }))
+    const exact = anchors.some((p) => pageTitle(p).toLowerCase() === q)
+    if (q && !exact) {
+      items.push({
+        title: `新建锚点「${query.trim()}」`,
+        group: '新建',
+        icon: <Plus size={16} />,
+        onItemClick: () => {
+          void onCreateAnchor(query.trim()).then((p) => { if (p) insertRef(p.id) })
+        },
+      })
+    }
+    return items
+  }, [editor, pageId, onCreateAnchor])
 
   // ── 块菜单（⋮⋮）里要碰页面 / 网络的动作 ──
 
@@ -220,9 +299,16 @@ export default function NoteEditor({ pageId, initialContent, readOnly, onChange,
     },
   }), [duplicate, turnIntoPage])
 
-  // Ctrl+D 创建副本（Notion 的快捷键）：有多选复制整片，没有就复制光标所在的块
+  // Ctrl+Shift+M 批注；Ctrl+D 创建副本（Notion 的快捷键）：有多选复制整片，没有就复制光标所在的块
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (readOnly || !(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'd') return
+    if (readOnly || !(e.ctrlKey || e.metaKey) || e.altKey) return
+    if (e.shiftKey && e.key.toLowerCase() === 'm') {
+      e.preventDefault()
+      e.stopPropagation()
+      insertThought(editor.prosemirrorView)
+      return
+    }
+    if (e.shiftKey || e.key.toLowerCase() !== 'd') return
     e.preventDefault()
     e.stopPropagation()
     const selected = editor.getSelection()?.blocks
@@ -238,6 +324,7 @@ export default function NoteEditor({ pageId, initialContent, readOnly, onChange,
           editable={!readOnly}
           slashMenu={false}
           sideMenu={false}
+          formattingToolbar={false}
           onChange={onChange}
           className="nt-editor"
         >
@@ -245,6 +332,8 @@ export default function NoteEditor({ pageId, initialContent, readOnly, onChange,
           <SuggestionMenuController triggerCharacter="/" getItems={getSlashItems} />
           <SuggestionMenuController triggerCharacter={CJK_SLASH} getItems={getSlashItems} shouldOpen={isEmptyLine} />
           <SuggestionMenuController triggerCharacter="@" getItems={getMentionItems} />
+          <SuggestionMenuController triggerCharacter="#" getItems={getAnchorItems} />
+          <FormattingToolbarController formattingToolbar={NoteFormattingToolbar} />
         </BlockNoteView>
       </div>
       {moveReq && (
@@ -256,5 +345,45 @@ export default function NoteEditor({ pageId, initialContent, readOnly, onChange,
         />
       )}
     </NoteBlockActionsContext.Provider>
+  )
+}
+
+// ── 选中文字时的工具条：自带的那些键 + 「批注」 ──
+
+function NoteFormattingToolbar() {
+  return (
+    <FormattingToolbar>
+      {getFormattingToolbarItems()}
+      <ThoughtButton key="thoughtButton" />
+    </FormattingToolbar>
+  )
+}
+
+/** 选区没碰到批注：涂上这片字并开始写批注；碰到了已有的批注：删掉那条批注 */
+function ThoughtButton() {
+  const Components = useComponentsContext()
+  const editor = useBlockNoteEditor()
+  const state = useEditorState({
+    editor,
+    selector: ({ editor: ed }) => {
+      if (!ed.isEditable) return undefined
+      return { existing: thoughtAtSelection(ed.prosemirrorState) }
+    },
+  })
+  if (!Components || state === undefined) return null
+  const existing = state.existing
+  return (
+    <Components.FormattingToolbar.Button
+      className="bn-button"
+      label={existing ? '删掉这条批注' : '批注'}
+      mainTooltip={existing ? '删掉这条批注（涂色一起去掉）' : '批注：涂上这片字，在后面写下你的想法'}
+      secondaryTooltip={existing ? undefined : 'Ctrl+Shift+M'}
+      isSelected={existing !== ''}
+      onClick={() => {
+        if (existing) removeThought(editor.prosemirrorView, existing)
+        else insertThought(editor.prosemirrorView)
+      }}
+      icon={<MessageSquareQuote size={16} />}
+    />
   )
 }

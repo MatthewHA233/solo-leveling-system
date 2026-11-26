@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from 'react'
 
-export type MainViewMode = 'motivation' | 'motivation_static' | 'daynight' | 'torrent' | 'torrent_static'
+export type MainViewMode = 'motivation' | 'motivation_static' | 'daynight' | 'notes' | 'torrent' | 'torrent_static'
 
 interface Props {
   readonly viewMode: MainViewMode
@@ -19,12 +19,13 @@ const LABELS: Record<MainViewMode, string> = {
   motivation: '今日协议',
   motivation_static: '协议志(静态示范)',
   daynight: '昼夜表',
+  notes: '笔记',
   torrent: '洪流域',
   torrent_static: '洪流域(静态示范)',
 }
 
 // 专注锁不再单独占一个标签：搬进了协议志（协议志 → 视图 → 专注锁）
-const VIEW_ORDER: ReadonlyArray<MainViewMode> = ['motivation', 'motivation_static', 'daynight', 'torrent', 'torrent_static']
+const VIEW_ORDER: ReadonlyArray<MainViewMode> = ['motivation', 'motivation_static', 'daynight', 'notes', 'torrent', 'torrent_static']
 
 const DEMO_MODES: ReadonlyArray<MainViewMode> = ['motivation_static', 'torrent_static']
 const DEMO_STORAGE_KEY = 'slu.viewSwitcher.showDemos'

@@ -1,10 +1,10 @@
-// 洪流域 · 笔记的页面树数据：全部页面元信息 + 增删改移。
+// 笔记的页面树数据：全部页面元信息 + 增删改移。
 // 和清单（use-checklist）同一个套路：改动先落本地状态（界面立刻有反应）再写后端；失败整表重拉，并把错误交给界面提示。
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  createNotePage, fetchNotePages, moveNotePage, restoreNotePage, trashNotePage, updateNotePage,
-  type NotePageMeta,
+  createNotePage, fetchNotePages, moveNotePage, purgeNotePage, restoreNotePage, trashNotePage, updateNotePage,
+  type NotePageKind, type NotePageMeta,
 } from '../../lib/notes-api'
 import { applyMove, indexPages, subtreeIds, type PageIndex } from './note-model'
 import { publishNotePages } from './notes-store'
@@ -20,7 +20,9 @@ export interface NoteTree {
   /** 别处（编辑器的块菜单）出错也走同一条提示 */
   readonly reportError: (message: string) => void
   readonly reload: () => Promise<void>
-  readonly create: (parentId: string | null, init?: { title?: string; icon?: string }) => Promise<NotePageMeta | null>
+  readonly create: (parentId: string | null, init?: { title?: string; icon?: string; kind?: NotePageKind; aliasOf?: string }) => Promise<NotePageMeta | null>
+  /** 去掉一个分身（直接删，不进回收站；锚点本身不受影响） */
+  readonly removeAlias: (id: string) => Promise<void>
   /** 只改本地（页面里打标题时侧栏跟着变；真正保存由页面自己做） */
   readonly patchLocal: (id: string, patch: LocalPatch) => void
   readonly rename: (id: string, title: string) => Promise<void>
@@ -40,8 +42,8 @@ export function useNoteTree(): NoteTree {
 
   const index = useMemo(() => indexPages(pages), [pages])
 
-  // 编辑器里的链接块读这份快照拿标题 / 图标
-  useEffect(() => { publishNotePages(pages) }, [pages])
+  // 编辑器里的链接块读这份快照拿标题 / 图标（分身只是目录里的一格，不是能链接的页）
+  useEffect(() => { publishNotePages(pages.filter((p) => p.kind !== 'alias')) }, [pages])
 
   const reload = useCallback(async () => {
     try {
@@ -111,6 +113,14 @@ export function useNoteTree(): NoteTree {
     await commit(() => trashNotePage(id))
   }, [commit])
 
+  const removeAlias = useCallback<NoteTree['removeAlias']>(async (id) => {
+    setPages((prev) => prev.filter((p) => p.id !== id))
+    await commit(async () => {
+      await trashNotePage(id)
+      await purgeNotePage(id)
+    })
+  }, [commit])
+
   const restore = useCallback<NoteTree['restore']>(async (id) => {
     try {
       const meta = await restoreNotePage(id)
@@ -126,5 +136,5 @@ export function useNoteTree(): NoteTree {
   const clearError = useCallback(() => setError(null), [])
   const reportError = useCallback((message: string) => setError(message), [])
 
-  return { pages, index, loading, error, clearError, reportError, reload, create, patchLocal, rename, setIcon, setFavorite, move, trash, restore }
+  return { pages, index, loading, error, clearError, reportError, reload, create, removeAlias, patchLocal, rename, setIcon, setFavorite, move, trash, restore }
 }

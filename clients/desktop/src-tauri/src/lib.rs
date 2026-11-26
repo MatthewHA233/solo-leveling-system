@@ -9,6 +9,7 @@ mod api;
 mod sync_auth;
 mod notes;
 mod notes_api;
+mod notes_index;
 mod jev;
 mod islands;
 mod protocol;
@@ -1791,6 +1792,12 @@ fn install_seh_handler() {
 
 #[cfg(not(windows))]
 fn install_seh_handler() {}
+
+/// 开发用：单独起一个只有笔记端点的小服务，数据放在指定的目录里（给临时目录，不碰真实的库）。
+/// examples/notes_dev.rs 调它；正式的应用不走这里。
+pub fn run_notes_dev_server(data_dir: std::path::PathBuf, port: u16) -> Result<(), String> {
+    notes_api::serve_notes_only(data_dir, port)
+}
 
 pub fn run() {
     install_panic_hook();

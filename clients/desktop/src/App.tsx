@@ -101,12 +101,14 @@ import ProtocolDemoPanel from './components/ProtocolDemoPanel'
 import TorrentFieldPanel from './components/TorrentFieldPanel'
 import TorrentFieldDemoPanel from './components/TorrentFieldDemoPanel'
 import ViewSwitcher, { type MainViewMode } from './components/ViewSwitcher'
+import NotesPanel from './components/notes/NotesPanel'
 import IconButton from './components/ui/IconButton'
 import WindowControls from './components/ui/WindowControls'
 import './styles/topbar.css'
 import ScreenBezel from './components/ui/ScreenBezel'
 import ChassisPlate from './components/ui/ChassisPlate'
 import ChatPanel from './components/ChatPanel'
+import { revealChatMessage } from './components/chat-window'
 import SessionPicker from './components/SessionPicker'
 import { useDockPresence } from './components/ui/DockCoupler'
 import SettingsPanel from './components/SettingsPanel'
@@ -397,6 +399,7 @@ const StageDayNightChart = memo(DayNightChart)
 const StageProtocolView = memo(ProtocolView)
 const StageProtocolDemoPanel = memo(ProtocolDemoPanel)
 const StageTorrentFieldPanel = memo(TorrentFieldPanel)
+// 笔记：自己带记忆和懒加载（components/notes/NotesPanel.tsx），这里直接用
 const StageTorrentFieldDemoPanel = memo(TorrentFieldDemoPanel)
 // 右侧聊天栏也一直挂着（看详情时只是藏起来），同样按 props 记忆
 const StageChatPanel = memo(ChatPanel)
@@ -3251,6 +3254,8 @@ export default function App() {
   const switchSession = useCallback(async (sessionId: string, jumpToTimestamp?: string, knownTitle?: string) => {
     const performJump = () => {
       if (!jumpToTimestamp) return
+      // 聊天栏只画最近的一段：先让它把这一条画出来
+      revealChatMessage(jumpToTimestamp)
       // 等 React commit + layout 完成（两个 rAF），再定位 + scroll + 闪
       requestAnimationFrame(() => requestAnimationFrame(() => {
         const el = document.querySelector<HTMLElement>(`[data-msg-ts="${CSS.escape(jumpToTimestamp)}"]`)
@@ -3390,8 +3395,9 @@ export default function App() {
       motivation: 0,
       motivation_static: 1,
       daynight: 2,
-      torrent: 3,
-      torrent_static: 4,
+      notes: 3,
+      torrent: 4,
+      torrent_static: 5,
     }
     const active = mainView === mode
     const distance = Math.abs(panelOrder[mode] - panelOrder[mainView])
@@ -3728,6 +3734,11 @@ export default function App() {
           <div style={{ ...mainPanelStyle('motivation_static'), display: 'flex' }}>
             <ScreenBezel view="motivation_static">
               <StageProtocolDemoPanel />
+            </ScreenBezel>
+          </div>
+          <div style={{ ...mainPanelStyle('notes'), display: 'flex' }}>
+            <ScreenBezel view="notes">
+              <NotesPanel active={mainView === 'notes'} />
             </ScreenBezel>
           </div>
           <div style={{ ...mainPanelStyle('torrent'), display: 'flex' }}>

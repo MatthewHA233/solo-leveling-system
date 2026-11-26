@@ -2,26 +2,34 @@
 // 笔记 · 单页：顶条（路径 / 保存灯 / 收藏 / 更多）+ 封面 + 图标 + 标题 + 块编辑器
 //   保存节奏：标题和正文改动攒 600ms 一起写；切页 / 卸载时立刻把没写的写掉（keepalive，页面走了请求也发完）
 //   回收站里的页面只读展示，顶上给「恢复 / 彻底删除」
+//   按页面种类多出来的东西：锚点页 = 标题上方标「锚点」、正文下面列谁引用了它；
+//   单独写的想法卡片 = 标题下一行「关联语境」；语境页 = 标出来源，点转录前面的时间跳播
 // ══════════════════════════════════════════════
 
 import { Component, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronRight, FileText, ImagePlus, Maximize2, MoreHorizontal, RotateCcw, Smile, Star, Trash2, Upload, X } from 'lucide-react'
+import { ChevronRight, FileText, Hash, ImagePlus, Link2, Maximize2, MoreHorizontal, Plus, RotateCcw, Smile, Star, Trash2, Unlink, Upload, X } from 'lucide-react'
+import { fetchContextFeed } from '../../lib/local-api'
 import {
-  fetchNotePage, updateNotePage, uploadNoteAsset,
-  type NotePage, type NotePagePatch,
+  fetchAnchorSentences, fetchNotePage, updateNotePage, uploadNoteAsset,
+  type AnchorSentence, type NotePage, type NotePagePatch,
 } from '../../lib/notes-api'
 import Tooltip from '../Tooltip'
+import AnchorBacklinks from './AnchorBacklinks'
 import EmojiPicker from './EmojiPicker'
 import Floating from './Floating'
 import NoteEditor from './editor/NoteEditor'
 import type { NoteEditorInstance } from './editor/note-schema'
+import MoveToPicker from './MoveToPicker'
 import { ancestorsOf, blocksToText, formatNoteTime, pageTitle } from './note-model'
-import { openNotePage } from './notes-store'
+import { announceIndexChanged, NOTES_TRANSCRIPT_SEEK_EVENT, openNotePage, publishAnchorSentences, useNotePagesMap } from './notes-store'
 import { COVER_PRESETS, coverBackground } from './note-visuals'
+import { CONTEXTS_VIEW, THOUGHTS_VIEW } from './NoteSidebar'
 import PopMenu from './PopMenu'
 import type { NoteTree } from './use-note-tree'
 
 const SAVE_DELAY_MS = 600
+/** 跳到某一块后，那一块亮多久 */
+const FOCUS_FLASH_MS = 1800
 
 type SaveState = 'saved' | 'dirty' | 'saving' | 'error'
 
@@ -41,15 +49,21 @@ export interface NotePageViewProps {
   readonly onTrash: (id: string) => void
   /** 在这一页里建了子页面：侧栏把这一页展开，好看到新页面 */
   readonly onRevealChildren: (id: string) => void
+  /** 打开后跳到这一块（从引用、想法卡片点回原处）；tick 每次请求都变，同一块再点一次也会再跳 */
+  readonly focus: { readonly blockId: string; readonly tick: number } | null
 }
 
-export default function NotePageView({ pageId, tree, onRestore, onPurge, onTrash, onRevealChildren }: NotePageViewProps) {
+export default function NotePageView({ pageId, tree, onRestore, onPurge, onTrash, onRevealChildren, focus }: NotePageViewProps) {
   const [page, setPage] = useState<NotePage | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [title, setTitle] = useState('')
   const [cover, setCover] = useState<string | null>(null)
   const [fullWidth, setFullWidth] = useState(false)
   const [saveState, setSaveState] = useState<SaveState>('saved')
+  const [contextId, setContextId] = useState<string | null>(null)
+  const [sentences, setSentences] = useState<readonly AnchorSentence[]>([])
+  // 正文每存一次加一：下面「谁引用了它」这类从正文里对出来的东西跟着重拉
+  const [savedTick, setSavedTick] = useState(0)
 
   const editorRef = useRef<NoteEditorInstance | null>(null)
   const pendingRef = useRef<{ -readonly [K in keyof NotePagePatch]: NotePagePatch[K] }>({})
@@ -67,6 +81,7 @@ export default function NotePageView({ pageId, tree, onRestore, onPurge, onTrash
         setTitle(p.title)
         setCover(p.cover)
         setFullWidth(p.fullWidth)
+        setContextId(p.contextPageId)
       })
       .catch((e: unknown) => { if (alive) setLoadError(e instanceof Error ? e.message : String(e)) })
     return () => { alive = false }
@@ -98,9 +113,12 @@ export default function NotePageView({ pageId, tree, onRestore, onPurge, onTrash
     if (!leaving) setSaveState('saving')
     return updateNotePage(pageId, withContent, { keepalive: leaving === 'unload' })
       .then(() => {
+        // 正文存进去了：后端已经把引用、批注、锚点句各版重新对过，让用到它们的地方重拉
+        if (withContent.content) announceIndexChanged()
         if (leaving) return
         setSaveState((s) => (s === 'saving' ? 'saved' : s))
         treeRef.current.patchLocal(pageId, { updatedAt: localNow() })
+        if (withContent.content) setSavedTick((t) => t + 1)
       })
       .catch((e: unknown) => {
         console.error('[Notes] 保存失败', e)
@@ -179,6 +197,109 @@ export default function NotePageView({ pageId, tree, onRestore, onPurge, onTrash
     return child
   }, [pageId, onRevealChildren])
 
+  const createAnchor = useCallback((anchorTitle: string) => (
+    treeRef.current.create(null, { title: anchorTitle, kind: 'anchor' })
+  ), [])
+
+  const kind = page?.kind ?? ''
+
+  // 锚点页：各条锚点句现在是第几版、被点到几次（锚点句块读这份快照）
+  useEffect(() => {
+    if (kind !== 'anchor') return
+    let alive = true
+    fetchAnchorSentences(pageId)
+      .then((list) => {
+        if (!alive) return
+        setSentences(list)
+        publishAnchorSentences(pageId, list)
+      })
+      .catch((e: unknown) => console.error('[Notes] 读取锚点句失败', e))
+    return () => { alive = false }
+  }, [pageId, kind, savedTick])
+
+  // 语境页：点了某句转录前面的时间，让洪流域那边的播放器从那里播
+  const sourceId = page?.sourceId ?? null
+  const sourceKind = page?.sourceKind ?? null
+  useEffect(() => {
+    if (kind !== 'context' || sourceKind !== 'bili' || !sourceId) return
+    const onSeek = (e: Event) => {
+      const sec = (e as CustomEvent<{ sec?: number }>).detail?.sec
+      if (typeof sec !== 'number') return
+      fetchContextFeed()
+        .then((feed) => {
+          const video = feed.find((f) => f.kind === 'bili_transcript' && f.bvid === sourceId)
+          if (!video?.ref_path) {
+            treeRef.current.reportError('找不到这个视频的本地文件，播不了')
+            return
+          }
+          window.dispatchEvent(new CustomEvent('solevup:transcript-play', {
+            detail: { refPath: video.ref_path, title: video.title ?? '', sec },
+          }))
+        })
+        .catch((err: unknown) => treeRef.current.reportError(`播放失败：${err instanceof Error ? err.message : String(err)}`))
+    }
+    window.addEventListener(NOTES_TRANSCRIPT_SEEK_EVENT, onSeek)
+    return () => window.removeEventListener(NOTES_TRANSCRIPT_SEEK_EVENT, onSeek)
+  }, [kind, sourceKind, sourceId])
+
+  // 跳到某一块：等编辑器把那一块画出来（最多等 2 秒），滚过去，在它上面盖一层亮一下。
+  // 不直接给那一块加标记：正文的 DOM 归编辑器管，加上去的属性会被它改回去
+  const loaded = page != null
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [flash, setFlash] = useState<{ top: number; left: number; width: number; height: number; tick: number } | null>(null)
+  useEffect(() => {
+    if (!loaded || !focus) return
+    let tries = 0
+    let clearTimer: number | null = null
+    const poll = window.setInterval(() => {
+      tries += 1
+      const target = document.querySelector(`.nt-editor [data-node-type="blockOuter"][data-id="${CSS.escape(focus.blockId)}"]`)
+      if (!target && tries < 20) return
+      window.clearInterval(poll)
+      const scroller = scrollRef.current
+      if (!target || !scroller) return
+      target.scrollIntoView({ block: 'center' })
+      const rect = target.getBoundingClientRect()
+      const base = scroller.getBoundingClientRect()
+      setFlash({
+        top: rect.top - base.top + scroller.scrollTop,
+        left: rect.left - base.left + scroller.scrollLeft,
+        width: rect.width,
+        height: rect.height,
+        tick: focus.tick,
+      })
+      clearTimer = window.setTimeout(() => setFlash(null), FOCUS_FLASH_MS)
+    }, 100)
+    return () => {
+      window.clearInterval(poll)
+      if (clearTimer != null) window.clearTimeout(clearTimer)
+    }
+  }, [loaded, focus])
+
+  const linkContext = (target: string | null) => {
+    setContextId(target)
+    setSaveState('saving')
+    updateNotePage(pageId, { contextPageId: target ?? '' })
+      .then(() => {
+        setSaveState('saved')
+        announceIndexChanged()
+      })
+      .catch((e: unknown) => {
+        console.error('[Notes] 关联语境失败', e)
+        setSaveState('error')
+      })
+  }
+
+  const addSentence = () => {
+    const ed = editorRef.current
+    if (!ed) return
+    const last = ed.document[ed.document.length - 1]
+    if (!last) return
+    const [added] = ed.insertBlocks([{ type: 'anchorSentence' }], last, 'after')
+    if (added) ed.setTextCursorPosition(added, 'end')
+    ed.focus()
+  }
+
   if (loadError) {
     return <div className="nt-page-empty">这一页打不开：{loadError}</div>
   }
@@ -191,12 +312,17 @@ export default function NotePageView({ pageId, tree, onRestore, onPurge, onTrash
   const icon = live ? live.icon : page.icon
   const favorite = live?.favorite ?? false
   const crumbs = live ? ancestorsOf(pageId, tree.index.byId) : []
+  // 语境页、单独写的想法卡片不在页面树里，它们的上一级是那张表：顶条最前面放它，点了回去
+  const homeCrumb = trashed ? null
+    : kind === 'context' ? { id: CONTEXTS_VIEW, icon: null, title: sourceKind === 'bili' ? '语境库·B站' : '语境库' }
+      : kind === 'thought' ? { id: THOUGHTS_VIEW, icon: null, title: '想法卡片' }
+        : null
   const coverBg = coverBackground(cover)
 
   return (
     <div className="nt-page">
       <PageTopBar
-        crumbs={crumbs.map((c) => ({ id: c.id, icon: c.icon, title: pageTitle(c) }))}
+        crumbs={[...(homeCrumb ? [homeCrumb] : []), ...crumbs.map((c) => ({ id: c.id, icon: c.icon, title: pageTitle(c) }))]}
         current={{ icon, title: pageTitle({ title }) }}
         saveState={trashed ? null : saveState}
         editedAt={live?.updatedAt ?? page.updatedAt}
@@ -224,7 +350,11 @@ export default function NotePageView({ pageId, tree, onRestore, onPurge, onTrash
         </div>
       )}
 
-      <div className="nt-page-scroll">
+      <div className="nt-page-scroll" ref={scrollRef}>
+        {flash && (
+          <div key={flash.tick} className="nt-flash" aria-hidden
+            style={{ top: flash.top, left: flash.left, width: flash.width, height: flash.height }} />
+        )}
         {coverBg && (
           <CoverBand background={coverBg} readOnly={trashed} pageId={pageId} onChange={changeCover} />
         )}
@@ -239,19 +369,41 @@ export default function NotePageView({ pageId, tree, onRestore, onPurge, onTrash
             onAddCover={() => changeCover(`preset:${COVER_PRESETS[Math.floor(Math.random() * COVER_PRESETS.length)].key}`)}
             onTitle={changeTitle}
             onTitleEnter={focusEditorStart}
+            kind={kind}
           />
+          {kind === 'thought' && (
+            <ThoughtContextRow pageId={pageId} contextId={contextId} readOnly={trashed} onLink={linkContext} />
+          )}
+          {kind === 'context' && sourceId && (
+            <div className="nt-kind-row">
+              <span className="nt-kind-tag">语境</span>
+              <span className="nt-kind-note">来源：{sourceKind === 'bili' ? 'B 站视频' : sourceKind} · {sourceId}</span>
+            </div>
+          )}
           <EditorBoundary>
             <NoteEditor
               key={pageId}
               pageId={pageId}
+              pageKind={kind}
               initialContent={page.content}
               readOnly={trashed}
               onChange={onEditorChange}
               onReady={onEditorReady}
               onCreateChildPage={createChildPage}
+              onCreateAnchor={createAnchor}
               onError={tree.reportError}
             />
           </EditorBoundary>
+          {kind === 'anchor' && (
+            <>
+              {!trashed && (
+                <button type="button" className="nt-ghost-key nt-add-sentence" onClick={addSentence}>
+                  <Plus size={13} />添一条锚点句
+                </button>
+              )}
+              <AnchorBacklinks anchorId={pageId} refreshKey={savedTick} sentences={sentences} />
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -421,7 +573,55 @@ function CoverPicker({ anchor, pageId, onPick, onClose }: {
 
 // ── 图标 + 标题 ──
 
-function PageHeading({ pageId, icon, hasCover, title, readOnly, onIcon, onAddCover, onTitle, onTitleEnter }: {
+/** 单独写的想法卡片：关联到哪个语境（可以一直不关联，也可以随时改） */
+function ThoughtContextRow({ pageId, contextId, readOnly, onLink }: {
+  readonly pageId: string
+  readonly contextId: string | null
+  readonly readOnly: boolean
+  readonly onLink: (target: string | null) => void
+}) {
+  const context = useNotePagesMap().get(contextId ?? '')
+  const [picker, setPicker] = useState<DOMRect | null>(null)
+  return (
+    <div className="nt-kind-row">
+      <span className="nt-kind-tag">想法卡片</span>
+      {context ? (
+        <>
+          <button type="button" className="nt-context-chip" onClick={() => openNotePage(context.id)}>
+            <span className="nt-crumb-icon">{context.icon ?? <FileText size={12} />}</span>
+            {pageTitle(context)}
+          </button>
+          {!readOnly && (
+            <button type="button" className="nt-ghost-key" onClick={() => onLink(null)}>
+              <Unlink size={12} />取消关联
+            </button>
+          )}
+        </>
+      ) : (
+        <>
+          <span className="nt-kind-note">未关联语境</span>
+          {!readOnly && (
+            <button type="button" className="nt-ghost-key" onClick={(e) => setPicker(e.currentTarget.getBoundingClientRect())}>
+              <Link2 size={12} />关联语境
+            </button>
+          )}
+        </>
+      )}
+      {picker && (
+        <MoveToPicker
+          anchor={picker}
+          title="关联到哪个语境"
+          excludeId={pageId}
+          onPick={(target) => onLink(target)}
+          onClose={() => setPicker(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function PageHeading({ pageId, icon, hasCover, title, readOnly, onIcon, onAddCover, onTitle, onTitleEnter, kind }: {
+  readonly kind: string
   readonly pageId: string
   readonly icon: string | null
   readonly hasCover: boolean
@@ -472,12 +672,18 @@ function PageHeading({ pageId, icon, hasCover, title, readOnly, onIcon, onAddCov
           )}
         </div>
       )}
+      {kind === 'anchor' && (
+        <div className="nt-kind-row" data-tight="1">
+          <span className="nt-kind-tag"><Hash size={11} />锚点</span>
+          <span className="nt-kind-note">标题就是这个词；在别的页面里打 # 引用它</span>
+        </div>
+      )}
       <textarea
         ref={titleRef}
         className="nt-title"
         rows={1}
         value={title}
-        placeholder="无标题"
+        placeholder={kind === 'anchor' ? '这个锚点叫什么' : kind === 'thought' ? '标题（可以不写）' : '无标题'}
         readOnly={readOnly}
         spellCheck={false}
         onChange={(e) => onTitle(e.target.value.replace(/\n/g, ''))}

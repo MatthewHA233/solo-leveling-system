@@ -417,7 +417,7 @@ python3 scripts/release_mobile.py --changelog "..." [--build] [--dry-run] [--min
 - 昼夜表的计划层（任务 `plan_nodes`、计划块 `planned_blocks`、浮岛 `plan_islands`、浮岛勾选 `plan_island_checks`）：跟着全量同步，`updated_at` 新的赢，删除是软删。本机每次改动的 `updated_at` 和上次同一秒就往后挪一秒；时间相同、对面是删除而本地还在，也采用（删除赢）。任务的截止日、优先级、备注、完成时间放在任务行可选的 `detail` 里，老版本不带就不覆盖本地。浮岛按 id、勾选按（日期, 浮岛, 事项）合并。规则两端各有一份（`islands.rs` 文件头、`PlanStore.kt` 文件头），改规则要同时改两端。
 - 浮岛 / 日程带的锁：规则文档里的 `lock`（应用按 `platform` 分 windows / mac / android，网站各端通用，条目可标灰色交给判断模型，`untilDone` = 做完才解开），跟着浮岛行同步。结构在两端的 `lib/islands/island-model.ts`（逐字一致）。执行现在只有桌面端 Windows：`lib/islands/use-island-lock.ts` 盯着今天的落点（位置确定、已开始、没做完才锁；估出来的位置不锁），调 `POST /api/island-lock/sync` 让后端开一局锁名单模式的协议（`protocol.rs island_lock_sync`，`protocol_id = island:<id>`，`rules.mode = block`），拦截和灰色判断复用协议那套（`protocol_watch.rs`、`protocol_gray.rs`、`focus_lock.rs`）。手机端和 Mac 还没有执行，手机端编辑浮岛时原样带回 `lock`。灰色项的判断标准是 `lock.intent`（一段话，最多 500 字，空 = 用名字），主人在浮岛编辑里手写，或 Fairy 用 `SaveIsland` 的 `lock_judge_prompt` 写；`SaveIsland` 还能定 `lock_apps`（只动这台设备平台的那几项，平台在两端各自的 `lib/islands/lock-platform.ts`）、`lock_sites`、`lock_gray`、`lock_until_done`。判断模型的三个选项是固定的。
 - 标签说法：Fairy 记下的「主人这样说就是这个标签」存在标签行的 `aliases`（JSON 字符串数组），跟着标签行全量同步，`updated_at` 新的赢；老版本不带这个字段时不覆盖本地。Fairy 找标签先查它，对话背景里带最近用过的 30 条。规则两端各有一份（`db.rs set_activity_tag_aliases` 和 `import_sync` 的标签一段、`SolevupDb.kt setTagAliases` 和 `importSync`），改规则要同时改两端。
-- 想法卡、锚点等表没有 `updated_at`，不在同步协议里，桌面端是唯一数据源。手机端经 `src/lib/desktop-api.ts` 直接读写已配对的桌面端，连不上时写入进待发送队列（`src/lib/ai/anchor-outbox.ts`）。
+- 想法卡、锚点等表没有 `updated_at`，不在同步协议里，桌面端是唯一数据源。手机端经 `src/lib/desktop-api.ts` 直接读写已配对的桌面端，连不上时写入进待发送队列（`src/lib/ai/anchor-outbox.ts`）。笔记（`note_pages` 和它的索引表）也不在同步协议里，手机端还没有笔记。
 - 手机代理不走同步，每台设备自己的（Fairy 设置 → 网络，`android/.../net/AppProxy.kt`、`src/lib/network.ts`）。只有 Anthropic、Fish 和 models.dev（模型清单）走这个本机端口，留空时跟随系统代理或 VPN。
 
 #### 桌面端对齐清单
@@ -460,6 +460,8 @@ python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
 - `db.rs` — SQLite 持久化（用户数据目录：`%LOCALAPPDATA%/solo-leveling-system/`）
 - `perception.rs` + `perception_windows.rs` — 自研感知层（替代 ManicTime），Windows 走 `_windows.rs`
 - `api.rs` — 本地 HTTP API 端点（端口 39733）
+- `notes.rs` / `notes_index.rs` / `notes_api.rs` — 笔记，所有文字的底座。页面在表 `note_pages`（`kind`：page 普通页 / anchor 锚点页，标题就是那个词 / thought 单独写的想法卡片 / context 语境页，从某个来源生成 / group 结点，只用来归拢锚点，顶层的就是领域 / alias 锚点的分身，`source_id` 指向那个锚点，锚点彻底删掉时跟着删），整页正文原样存在 `content` 里，打开页面读的是它。每次存正文，`notes_index.rs` 把它对进四张索引表：`note_blocks`（每块一行，带创建和更新时间）、`note_refs`（# 引用：哪一块指向哪个锚点、点没点到其中一句）、`note_thoughts`（批注 = 想法卡片：你的话 + 涂上的原文）、`note_sentence_versions`（锚点句的各版，隔十分钟以上再改才算新的一版）。`note_pages.blocks_stamp` 记着索引是照哪一份正文对的：旧版本的应用只改正文不动索引，启动时发现对不上就重对。只在这台电脑上，不进同步。正文里的块名、行内件名、样式名（`anchorSentence`、`anchorRef`、`thought`、`thoughtHl`、`transcriptLine`）前端 `components/notes/editor/note-schema.tsx` 和后端 `notes_index.rs` 各有一份，改名要两边一起改
+- 改笔记功能时不用关正在跑的应用：`cargo xwin build --example notes_dev` 编出一个只有笔记端点的小服务（`examples/notes_dev.rs`），`target/x86_64-pc-windows-msvc/debug/examples/notes_dev.exe <临时数据目录> [端口，默认 39799]`，它拒绝在真实数据目录上跑。界面测试用一个临时入口页，把发往 `http://localhost:39733` 的请求改指到它，再用无头浏览器点
 - `qwen_asr.rs` / `qwen_omni.rs` / `qwen_video.rs` — 阿里百炼语音/多模态
 - `fish_tts.rs` — Fish Audio TTS
 - `bili_download.rs` — B 站视频下载/转录
@@ -470,6 +472,8 @@ python "docs/98借鉴对象/参考软件设计——人升/convert_wiki.py"
 ### 前端（React + Vite，`clients/desktop/src/`）
 
 - `components/` — UI 组件（DayNightChart、FairyWindow、ChatPanel、BiliVideoPanel、ModelDialog 等）
+- `components/notes/` — 笔记，主舞台上和昼夜表平级（`NotesPanel.tsx`，第一次切过去才加载编辑器）。左栏两节（同一棵树）：锚点（按领域分，领域和下级结点是 `group`，锚点可以在别的结点里放分身）和页面。「页面」最上面置顶两张特殊的页面：想法卡片（`ThoughtsView.tsx`：热力图 + 全部批注和单独写的，按时间倒序，可以直接写）、语境库·B站（`ContextLibraryView.tsx`：转录过的视频一张表；语境页由 `context-autofill.ts` 在后台自动生成，带视频封面，不用点开）。提示菜单（/ @ #）的滚动监听换成了带闸的（`editor/suggestion-scroll-guard.ts`）：库自带的那个在窗口里任何地方滚动都会重算菜单，节点多时会卡死。编辑器里：`#` 引用锚点（没有就新建，点引用可以再点到其中一句）；选中文字点「批注」或 Ctrl+Shift+M = 涂上这片字、在后面写下想法（`editor/thought-marks.ts`）；锚点页里是锚点句块（三类之一、能看各版），正文下面列谁引用了它（`AnchorBacklinks.tsx`）。洪流域里旧的想法卡片、语境库、锚点域三个视图还在，数据还没迁（见 `docs/洪流域梳理/`）
+- `components/chat-window.ts` — 聊天栏只画最近 60 条，往上滚到头再接更早的。要跳到某一条消息（按 `data-msg-ts` 找元素）之前先调 `revealChatMessage(时间戳)`，否则目标可能还没画出来
 - `components/hud/` — 像素 HUD 框架视觉（HudFrame、HudCommandStrip、NeonRule 等）
 - `lib/agent/` — Agent 逻辑（memory / config / tools）
 - `lib/llm/` — LLM 流式调用层（stream / retry / normalize）

@@ -1,19 +1,23 @@
 // ══════════════════════════════════════════════
-// 洪流域 · 笔记（Notion 式）：左边页面树，右边单页编辑；全部存本地 SQLite + 本地附件目录
-//   和想法卡片的区别：想法卡是随手一条的流，笔记是能无限嵌套、长篇排版的页面
+// 笔记（Notion 式）：左边页面树，右边单页编辑；全部存本地 SQLite + 本地附件目录
+//   这里是所有文字的底座：普通页、锚点页、想法卡片、语境页都是它的页面（见 lib/notes-api.ts 的 NotePageKind）。
+//   左栏顶上两个固定入口不是页面：想法卡片（全部批注 + 单独写的）和语境库（转录过的视频那张表）
 // ══════════════════════════════════════════════
 
 import './notes.css'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FilePlus2, X } from 'lucide-react'
-import { emptyNoteTrash, purgeNotePage } from '../../lib/notes-api'
+import { emptyNoteTrash, fetchAnchorStats, purgeNotePage, type NotePageKind } from '../../lib/notes-api'
 import { useConfirm } from '../../hooks/useConfirm'
 import { ancestorsOf, subtreeIds } from './note-model'
 import NotePageView from './NotePageView'
+import ContextLibraryView from './ContextLibraryView'
 import NoteSearch from './NoteSearch'
-import NoteSidebar from './NoteSidebar'
+import NoteSidebar, { CONTEXTS_VIEW, THOUGHTS_VIEW } from './NoteSidebar'
 import NoteTrash from './NoteTrash'
-import { NOTES_OPEN_EVENT } from './notes-store'
+import { NOTES_INDEX_CHANGED_EVENT, NOTES_OPEN_EVENT } from './notes-store'
+import { fillMissingContextPages } from './context-autofill'
+import ThoughtsView from './ThoughtsView'
 import { useNoteTree } from './use-note-tree'
 
 const SELECTED_KEY = 'slu.notes.selected'
@@ -33,7 +37,10 @@ function loadExpanded(): Set<string> {
   }
 }
 
-export default function NotesView() {
+export default function NotesView({ active = true }: {
+  /** 笔记面板此刻是不是主舞台上显示的那一块（不是的时候不抢全局快捷键） */
+  readonly active?: boolean
+}) {
   const tree = useNoteTree()
   const [selectedId, setSelectedId] = useState<string | null>(loadSelected)
   const [expanded, setExpanded] = useState<Set<string>>(loadExpanded)
@@ -44,14 +51,58 @@ export default function NotesView() {
   // 从回收站点开的页面不在页面树里，别被「选中项无效 → 落到第一页」的兜底踢走
   const [viewingTrashed, setViewingTrashed] = useState<string | null>(null)
 
-  const { index } = tree
-  const roots = useMemo(() => index.children.get(null) ?? [], [index])
+  // 跳到某一页的某一块（从引用、想法卡片点回原处）；tick 让同一块再点一次也会再跳
+  const [focus, setFocus] = useState<{ pageId: string; blockId: string; tick: number } | null>(null)
+  const [anchorRefs, setAnchorRefs] = useState<ReadonlyMap<string, number>>(new Map())
 
-  // 实际显示的页面：选中的还在（或是从回收站点开的）就用它，否则落到第一个顶层页面
+  const { index } = tree
+  // 兜底落到的第一页：只在树里看得见的页面里挑（想法卡片、语境页不进树）
+  const roots = useMemo(
+    () => (index.children.get(null) ?? []).filter((p) => p.kind === 'page' || p.kind === 'anchor'),
+    [index],
+  )
+
+  const isSpecial = selectedId === THOUGHTS_VIEW || selectedId === CONTEXTS_VIEW
+  // 实际显示的：两个固定入口照用；页面还在（或是从回收站点开的）就用它，否则落到第一个顶层页面
   //（首次进来 / 被删 / 本机记的 id 失效都走这条）
-  const currentId = tree.loading || (selectedId != null && (index.byId.has(selectedId) || viewingTrashed === selectedId))
+  const currentId = tree.loading || isSpecial || (selectedId != null && (index.byId.has(selectedId) || viewingTrashed === selectedId))
     ? selectedId
     : roots[0]?.id ?? null
+
+  // 每个锚点被引用了几处（侧栏锚点行右边的数字）：进来拉一次，之后哪一页存了正文就重拉
+  useEffect(() => {
+    let alive = true
+    let timer: number | null = null
+    const load = () => {
+      fetchAnchorStats()
+        .then((stats) => { if (alive) setAnchorRefs(new Map(stats.map((s) => [s.anchorId, s.refs]))) })
+        .catch((e: unknown) => console.error('[Notes] 读取锚点统计失败', e))
+    }
+    const onChanged = () => {
+      if (timer != null) window.clearTimeout(timer)
+      timer = window.setTimeout(load, 400)
+    }
+    load()
+    window.addEventListener(NOTES_INDEX_CHANGED_EVENT, onChanged)
+    return () => {
+      alive = false
+      if (timer != null) window.clearTimeout(timer)
+      window.removeEventListener(NOTES_INDEX_CHANGED_EVENT, onChanged)
+    }
+  }, [])
+
+  // 转录过的视频自动补成语境页：进来跑一趟，窗口回到前台再看一眼有没有新转录的
+  useEffect(() => {
+    const run = () => { void fillMissingContextPages() }
+    run()
+    // 一个视频刚转录完（你点的或 Fairy 转的）：任务面板会发这个事件，当场补上它的那一页
+    window.addEventListener('focus', run)
+    window.addEventListener('solevup:context-updated', run)
+    return () => {
+      window.removeEventListener('focus', run)
+      window.removeEventListener('solevup:context-updated', run)
+    }
+  }, [])
 
   useEffect(() => {
     if (tree.loading) return
@@ -75,24 +126,31 @@ export default function NotesView() {
     })
   }, [])
 
-  const open = useCallback((id: string) => {
+  const open = useCallback((id: string, blockId?: string) => {
+    if (id === THOUGHTS_VIEW || id === CONTEXTS_VIEW) {
+      setViewingTrashed(null)
+      setSelectedId(id)
+      return
+    }
     setViewingTrashed(index.byId.has(id) ? null : id)
     setSelectedId(id)
+    if (blockId) setFocus((prev) => ({ pageId: id, blockId, tick: (prev?.tick ?? 0) + 1 }))
     expandMany(ancestorsOf(id, index.byId).map((a) => a.id))
   }, [index, expandMany])
 
-  // 编辑器里的链接块 / @页面 / 面包屑点了：切过去
+  // 编辑器里的链接块 / @页面 / # 引用 / 面包屑点了：切过去（带着块 id 就再跳到那一块）
   useEffect(() => {
     const onOpen = (e: Event) => {
-      const id = (e as CustomEvent<{ id?: string }>).detail?.id
-      if (id) open(id)
+      const detail = (e as CustomEvent<{ id?: string; blockId?: string }>).detail
+      if (detail?.id) open(detail.id, detail.blockId)
     }
     window.addEventListener(NOTES_OPEN_EVENT, onOpen)
     return () => window.removeEventListener(NOTES_OPEN_EVENT, onOpen)
   }, [open])
 
-  // Ctrl+P 快速查找（顺手挡住 WebView 的打印对话框）
+  // Ctrl+P 快速查找（顺手挡住 WebView 的打印对话框）；面板没显示时不接
   useEffect(() => {
+    if (!active) return
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p') {
         e.preventDefault()
@@ -101,7 +159,7 @@ export default function NotesView() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [active])
 
   const revealChildren = useCallback((id: string) => {
     expandMany([id, ...ancestorsOf(id, index.byId).map((a) => a.id)])
@@ -119,12 +177,15 @@ export default function NotesView() {
     })
   }, [])
 
-  const create = useCallback(async (parentId: string | null) => {
-    const page = await tree.create(parentId)
-    if (!page) return
+  const create = useCallback(async (parentId: string | null, kind?: NotePageKind) => {
+    const page = await tree.create(parentId, kind ? { kind } : undefined)
+    if (!page) return null
     if (parentId) expandMany([parentId, ...ancestorsOf(parentId, index.byId).map((a) => a.id)])
+    // 结点只是目录里的一格，不是能打开的页：建完留在原处，由左栏直接让它改名
+    if (page.kind === 'group') return page.id
     setViewingTrashed(null)
     setSelectedId(page.id)
+    return page.id
   }, [tree, index, expandMany])
 
   const trash = useCallback(async (id: string) => {
@@ -200,11 +261,12 @@ export default function NotesView() {
     <div className="nt-root">
       <NoteSidebar
         tree={tree}
+        anchorRefs={anchorRefs}
         selectedId={currentId}
         expanded={expanded}
         onToggleExpand={toggleExpand}
-        onSelect={open}
-        onCreate={(parentId) => { void create(parentId) }}
+        onSelect={(id) => open(id)}
+        onCreate={create}
         onTrash={(id) => { void trash(id) }}
         onOpenSearch={() => setSearchOpen(true)}
         trashOpen={trashAnchor != null}
@@ -221,10 +283,15 @@ export default function NotesView() {
             </button>
           </div>
         )}
-        {currentId ? (
+        {currentId === THOUGHTS_VIEW ? (
+          <ThoughtsView />
+        ) : currentId === CONTEXTS_VIEW ? (
+          <ContextLibraryView />
+        ) : currentId ? (
           <NotePageView
             key={currentId}
             pageId={currentId}
+            focus={focus && focus.pageId === currentId ? focus : null}
             tree={tree}
             onRestore={(id) => { void restore(id) }}
             onPurge={(id) => { void purge(id) }}

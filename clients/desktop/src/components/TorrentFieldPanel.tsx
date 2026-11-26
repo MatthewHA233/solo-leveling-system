@@ -1,4 +1,4 @@
-import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { Hash, Image as ImageIcon, Type, List, ListOrdered, AtSign, Send, Check, ChevronDown, ChevronUp, Pencil, Plus, Unlink } from 'lucide-react'
@@ -15,7 +15,6 @@ import ConfirmDialog from './ConfirmDialog'
 import Tooltip from './Tooltip'
 
 // 笔记（Notion 式）带一整套块编辑器，体积大：点进「笔记」视图才加载
-const NotesView = lazy(() => import('./notes/NotesView'))
 
 // 老想法卡迁移标记；原 localStorage 数据保留作备份不删
 const THOUGHT_STORAGE_KEY = 'slu.torrent.thoughtCards.v1'
@@ -120,10 +119,11 @@ function formatTimeOnly(iso: string): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-type TorrentSubview = 'cards' | 'context' | 'anchors' | 'notes'
+// 笔记原来是这里的第四个视图，现在提到主舞台和昼夜表平级了（components/notes/NotesPanel.tsx）
+type TorrentSubview = 'cards' | 'context' | 'anchors'
 
 const SUBVIEW_KEY = 'slu.torrent.subview'
-const SUBVIEWS: readonly TorrentSubview[] = ['cards', 'context', 'anchors', 'notes']
+const SUBVIEWS: readonly TorrentSubview[] = ['cards', 'context', 'anchors']
 
 function loadSubview(): TorrentSubview {
   try {
@@ -240,20 +240,14 @@ export default function TorrentFieldPanel() {
             { value: 'cards', label: '想法卡片', led: ti.ok, tip: '随手记下的想法' },
             { value: 'context', label: '语境库', led: ti.sys, tip: '转录过的视频语境' },
             { value: 'anchors', label: '锚点域', led: '#C9A6F0', tip: '锚点认知地图' },
-            { value: 'notes', label: '笔记', led: theme.warningOrange, tip: 'Notion 式笔记：页面无限嵌套、块编辑，全部存在本地' },
           ]}
         />
         <div className="ti-groove-h" style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }} />
       </div>
 
       <div style={styles.frameWrap}>
-        {/* 笔记自带左栏 + 正文，贴满整块屏，不要外层内边距 */}
-        <main style={subview === 'notes' ? styles.contentBleed : styles.content}>
-          {subview === 'notes' ? (
-            <Suspense fallback={<div style={styles.contextPlaceholder}>正在载入笔记…</div>}>
-              <NotesView />
-            </Suspense>
-          ) : subview === 'cards' ? (
+        <main style={styles.content}>
+          {subview === 'cards' ? (
             <ThoughtDock
               key="cards"
               draft={thoughtDraft}
